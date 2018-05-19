@@ -32,7 +32,7 @@
 
 #ifdef __FreeBSD__
 #include <sys/cdefs.h>
-__FBSDID("$FreeBSD: head/sys/netinet/sctp_pcb.h 246687 2013-02-11 21:02:49Z tuexen $");
+__FBSDID("$FreeBSD: head/sys/netinet/sctp_pcb.h 279859 2015-03-10 19:49:25Z tuexen $");
 #endif
 
 #ifndef _NETINET_SCTP_PCB_H_
@@ -110,7 +110,7 @@ struct sctp_ifa {
 				 */
 	union sctp_sockstore address;
 	uint32_t refcount;	/* number of folks refering to this */
-     	uint32_t flags;
+	uint32_t flags;
 	uint32_t localifa_flags;
 	uint32_t vrf_id;	/* vrf_id of this addr (for deleting) */
 	uint8_t src_is_loop;
@@ -189,6 +189,7 @@ struct sctp_epinfo {
 
 #if defined(__APPLE__)
 	struct inpcbhead inplisthead;
+	struct inpcbinfo sctbinfo;
 #endif
 	/* ep zone info */
 	sctp_zone_t ipi_zone_ep;
@@ -223,20 +224,12 @@ struct sctp_epinfo {
 	userland_mutex_t wq_addr_mtx;
 #elif defined(__APPLE__)
 #ifdef _KERN_LOCKS_H_
-	lck_grp_attr_t *mtx_grp_attr;
-	lck_grp_t *mtx_grp;
-	lck_attr_t *mtx_attr;
-	lck_rw_t *ipi_ep_mtx;
 	lck_mtx_t *ipi_addr_mtx;
 	lck_mtx_t *ipi_count_mtx;
 	lck_mtx_t *ipi_pktlog_mtx;
 	lck_mtx_t *logging_mtx;
 	lck_mtx_t *wq_addr_mtx;
 #else
-	void *mtx_grp_attr;
-	void *mtx_grp;
-	void *mtx_attr;
-	void *ipi_ep_mtx;
 	void *ipi_count_mtx;
 	void *logging_mtx;
 #endif /* _KERN_LOCKS_H_ */
@@ -469,8 +462,8 @@ struct sctp_inpcb {
 
 	/* back pointer to our socket */
 	struct socket *sctp_socket;
+	uint64_t sctp_features;	/* Feature flags */
 	uint32_t sctp_flags;	/* INP state flag set */
-	uint32_t sctp_features;	/* Feature flags */
 	uint32_t sctp_mobility_features; /* Mobility  Feature flags */
 	struct sctp_pcb sctp_ep;/* SCTP ep data */
 	/* head of the hash of all associations */
@@ -485,9 +478,16 @@ struct sctp_inpcb {
 	uint32_t sctp_frag_point;
 	uint32_t partial_delivery_point;
 	uint32_t sctp_context;
+	uint32_t max_cwnd;
 	uint8_t local_strreset_support;
 	uint32_t sctp_cmt_on_off;
-	uint32_t sctp_ecn_enable;
+	uint8_t ecn_supported;
+	uint8_t prsctp_supported;
+	uint8_t auth_supported;
+	uint8_t asconf_supported;
+	uint8_t reconfig_supported;
+	uint8_t nrsack_supported;
+	uint8_t pktdrop_supported;
 	struct sctp_nonpad_sndrcvinfo def_send;
 	/*-
 	 * These three are here for the sosend_dgram
@@ -846,7 +846,6 @@ sctp_set_primary_addr(struct sctp_tcb *, struct sockaddr *,
 
 int sctp_is_vtag_good(uint32_t, uint16_t lport, uint16_t rport, struct timeval *);
 
-/* void sctp_drain(void); */
 
 int sctp_destination_is_reachable(struct sctp_tcb *, struct sockaddr *);
 

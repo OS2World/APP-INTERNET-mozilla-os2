@@ -1,4 +1,5 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
+/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
+/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -14,7 +15,6 @@
 #include "nsIDOMDocument.h"
 #include "nsIDOMWindow.h"
 #include "nsIDocShell.h"
-#include "nsIInterfaceRequestor.h"
 #include "nsIInterfaceRequestorUtils.h"
 #include "nsIScriptGlobalObject.h"
 #include "nsIWebNavigation.h"
@@ -39,8 +39,7 @@ NS_INTERFACE_MAP_END
 NS_IMETHODIMP
 nsDOMWindowList::SetDocShell(nsIDocShell* aDocShell)
 {
-  nsCOMPtr<nsIDocShellTreeNode> docShellAsNode(do_QueryInterface(aDocShell));
-  mDocShellNode = docShellAsNode; // Weak Reference
+  mDocShellNode = aDocShell; // Weak Reference
 
   return NS_OK;
 }
@@ -83,39 +82,30 @@ nsDOMWindowList::GetLength(uint32_t* aLength)
   return NS_OK;
 }
 
-already_AddRefed<nsIDOMWindow>
-nsDOMWindowList::IndexedGetter(uint32_t aIndex, bool& aFound)
+already_AddRefed<nsPIDOMWindowOuter>
+nsDOMWindowList::IndexedGetter(uint32_t aIndex)
 {
-  EnsureFresh();
-
-  aFound = false;
-  NS_ENSURE_TRUE(mDocShellNode, nullptr);
-
-  nsCOMPtr<nsIDocShellTreeItem> item;
-  mDocShellNode->GetChildAt(aIndex, getter_AddRefs(item));
-
+  nsCOMPtr<nsIDocShellTreeItem> item = GetDocShellTreeItemAt(aIndex);
   if (!item) {
     return nullptr;
   }
 
-  nsCOMPtr<nsIDOMWindow> window = do_GetInterface(item);
+  nsCOMPtr<nsPIDOMWindowOuter> window = item->GetWindow();
   MOZ_ASSERT(window);
 
-  aFound = true;
   return window.forget();
 }
 
 NS_IMETHODIMP 
-nsDOMWindowList::Item(uint32_t aIndex, nsIDOMWindow** aReturn)
+nsDOMWindowList::Item(uint32_t aIndex, mozIDOMWindowProxy** aReturn)
 {
-  bool found;
-  nsCOMPtr<nsIDOMWindow> window = IndexedGetter(aIndex, found);
+  nsCOMPtr<nsPIDOMWindowOuter> window = IndexedGetter(aIndex);
   window.forget(aReturn);
   return NS_OK;
 }
 
 NS_IMETHODIMP 
-nsDOMWindowList::NamedItem(const nsAString& aName, nsIDOMWindow** aReturn)
+nsDOMWindowList::NamedItem(const nsAString& aName, mozIDOMWindowProxy** aReturn)
 {
   nsCOMPtr<nsIDocShellTreeItem> item;
 
@@ -124,8 +114,7 @@ nsDOMWindowList::NamedItem(const nsAString& aName, nsIDOMWindow** aReturn)
   EnsureFresh();
 
   if (mDocShellNode) {
-    mDocShellNode->FindChildWithName(PromiseFlatString(aName).get(),
-                                     false, false, nullptr,
+    mDocShellNode->FindChildWithName(aName, false, false, nullptr,
                                      nullptr, getter_AddRefs(item));
 
     nsCOMPtr<nsIScriptGlobalObject> globalObject(do_GetInterface(item));

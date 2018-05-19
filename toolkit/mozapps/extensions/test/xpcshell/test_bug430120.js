@@ -14,6 +14,7 @@ const CATEGORY_UPDATE_TIMER           = "update-timer";
 
 // Get the HTTP server.
 Components.utils.import("resource://testing-common/httpd.js");
+Components.utils.import("resource://testing-common/MockRegistrar.jsm");
 var testserver;
 var gOSVersion;
 var gBlocklist;
@@ -49,16 +50,7 @@ var timerService = {
   }
 };
 
-var TimerServiceFactory = {
-  createInstance: function (outer, iid) {
-    if (outer != null)
-      throw Components.results.NS_ERROR_NO_AGGREGATION;
-    return timerService.QueryInterface(iid);
-  }
-};
-var registrar = Components.manager.QueryInterface(Components.interfaces.nsIComponentRegistrar);
-registrar.registerFactory(Components.ID("{61189e7a-6b1b-44b8-ac81-f180a6105085}"), "TimerService",
-                          "@mozilla.org/updates/timer-manager;1", TimerServiceFactory);
+MockRegistrar.register("@mozilla.org/updates/timer-manager;1", timerService);
 
 function failHandler(metadata, response) {
   do_throw("Should not have attempted to retrieve the blocklist when it is disabled");
@@ -75,7 +67,8 @@ function pathHandler(metadata, response) {
       ABI += "-u-" + macutils.architecturesInBinary;
   }
   do_check_eq(metadata.queryString,
-              "xpcshell@tests.mozilla.org&1&XPCShell&1&2007010101&" +
+              "xpcshell@tests.mozilla.org&1&XPCShell&1&" +
+              gAppInfo.appBuildID + "&" +
               "XPCShell_" + ABI + "&locale&updatechannel&" +
               gOSVersion + "&1.9&distribution&distribution-version");
   gBlocklist.observe(null, "quit-application", "");
@@ -106,7 +99,8 @@ function run_test() {
   testserver = new HttpServer();
   testserver.registerPathHandler("/1", failHandler);
   testserver.registerPathHandler("/2", pathHandler);
-  testserver.start(4444);
+  testserver.start(-1);
+  gPort = testserver.identity.primaryPort;
 
   // Initialise the blocklist service
   gBlocklist = Components.classes["@mozilla.org/extensions/blocklist;1"]
@@ -119,7 +113,7 @@ function run_test() {
   do_test_pending();
 
   // This should have no effect as the blocklist is disabled
-  Services.prefs.setCharPref(PREF_BLOCKLIST_URL, "http://localhost:4444/1");
+  Services.prefs.setCharPref(PREF_BLOCKLIST_URL, "http://localhost:" + gPort + "/1");
   Services.prefs.setBoolPref(PREF_BLOCKLIST_ENABLED, false);
   timerService.fireTimer(BLOCKLIST_TIMER);
 
@@ -132,7 +126,7 @@ function run_test() {
   defaults.setCharPref(PREF_GENERAL_USERAGENT_LOCALE, "locale");
 
   // This should correctly escape everything
-  Services.prefs.setCharPref(PREF_BLOCKLIST_URL, "http://localhost:4444/2?" +
+  Services.prefs.setCharPref(PREF_BLOCKLIST_URL, "http://localhost:" + gPort + "/2?" +
                      "%APP_ID%&%APP_VERSION%&%PRODUCT%&%VERSION%&%BUILD_ID%&" +
                      "%BUILD_TARGET%&%LOCALE%&%CHANNEL%&" +
                      "%OS_VERSION%&%PLATFORM_VERSION%&%DISTRIBUTION%&%DISTRIBUTION_VERSION%");

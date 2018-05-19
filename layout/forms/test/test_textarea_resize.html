@@ -10,14 +10,14 @@
 <div id="content" style="display: none">
 </div>
 
-<textarea id="textarea" style="-moz-appearance: none; border: 2px solid black; padding: 3px; -moz-box-sizing: border-box; min-width: 15px; min-height: 15px;">Text</textarea>
+<textarea id="textarea" style="-moz-appearance: none; border: 2px solid black; padding: 3px; box-sizing: border-box; min-width: 15px; min-height: 15px;">Text</textarea>
 
 <pre id="test">
 <script type="application/javascript">
 
 /** Test for textbox resizing **/
 SimpleTest.waitForExplicitFinish();
-addLoadEvent(function() SimpleTest.executeSoon(doTheTest));
+addLoadEvent(() => SimpleTest.executeSoon(doTheTest));
 
 // -1 means use the default value which is 'both', then test explicitly
 // setting each possible value.
@@ -25,7 +25,7 @@ var currentResize = -1;
 var currentBoxSizing = 0;
 var currentPointer = 0;
 var resizeTypes = [ "horizontal", "vertical", "none", "inherit", "both" ];
-var boxSizingTypes = [ "", "border-box", "padding-box" ];
+var boxSizingTypes = [ "", "border-box" ];
 var pointerTypes = [ synthesizeMouse, synthesizeTouch]
 
 function doTheTest() {

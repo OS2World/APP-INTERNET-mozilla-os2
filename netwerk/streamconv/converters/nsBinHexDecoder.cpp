@@ -20,10 +20,8 @@
 #include "nsMimeTypes.h"
 #include <algorithm>
 
-
-// sadly I couldn't find char defintions for CR LF elsehwere in the code (they are defined as strings in nsCRT.h)
-#define CR  '\015'
-#define LF '\012'
+namespace mozilla {
+namespace net {
 
 nsBinHexDecoder::nsBinHexDecoder() :
   mState(0), mCRC(0), mFileCRC(0), mOctetin(26),
@@ -32,6 +30,8 @@ nsBinHexDecoder::nsBinHexDecoder() :
 {
   mDataBuffer = nullptr;
   mOutgoingBuffer = nullptr;
+  mPosInDataBuffer = 0;
+  mRlebuf = 0;
 
   mOctetBuf.val = 0;
   mHeader.type = 0;
@@ -44,9 +44,9 @@ nsBinHexDecoder::nsBinHexDecoder() :
 nsBinHexDecoder::~nsBinHexDecoder()
 {
   if (mDataBuffer)
-    nsMemory::Free(mDataBuffer);
+    free(mDataBuffer);
   if (mOutgoingBuffer)
-    nsMemory::Free(mOutgoingBuffer);
+    free(mOutgoingBuffer);
 }
 
 NS_IMPL_ADDREF(nsBinHexDecoder)
@@ -62,7 +62,7 @@ NS_INTERFACE_MAP_END
 
 // The binhex 4.0 decoder table....
 
-static signed char binhex_decode[256] =
+static const signed char binhex_decode[256] =
 {
   -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
   -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
@@ -175,7 +175,9 @@ nsresult nsBinHexDecoder::ProcessNextState(nsIRequest * aRequest, nsISupports * 
       break;
 
     case BINHEX_STATE_FNAME:
-      mName.BeginWriting()[mCount] = c;
+      if (mCount < mName.Length()) {
+        mName.BeginWriting()[mCount] = c;
+      }
 
       if (++mCount > mName.Length())
       {
@@ -274,7 +276,7 @@ nsresult nsBinHexDecoder::ProcessNextState(nsIRequest * aRequest, nsISupports * 
         {
           // when we reach the finished state...fire an on stop request on the event listener...
           mNextListener->OnStopRequest(aRequest, aContext, NS_OK);
-          mNextListener = 0;
+          mNextListener = nullptr;
 
           /*   now We are done with everything.  */
           ++mState;
@@ -321,7 +323,7 @@ nsresult nsBinHexDecoder::ProcessNextChunk(nsIRequest * aRequest, nsISupports * 
     while (mPosInDataBuffer < numBytesInBuffer)
     {
       c = mDataBuffer[mPosInDataBuffer++];
-      while (c == CR || c == LF)
+      while (c == nsCRT::CR || c == nsCRT::LF)
       {
         if (mPosInDataBuffer >= numBytesInBuffer)
           break;
@@ -430,10 +432,10 @@ int16_t nsBinHexDecoder::GetNextChar(uint32_t numBytesInBuffer)
   while (mPosInDataBuffer < numBytesInBuffer)
   {
     c = mDataBuffer[mPosInDataBuffer++];
-    if (c != LF && c != CR)
+    if (c != nsCRT::LF && c != nsCRT::CR)
       break;
   }
-  return (c == LF || c == CR) ? 0 : (int) c;
+  return (c == nsCRT::LF || c == nsCRT::CR) ? 0 : (int) c;
 }
 
 //////////////////////////////////////////////////////
@@ -447,8 +449,8 @@ nsBinHexDecoder::OnStartRequest(nsIRequest* request, nsISupports *aCtxt)
 
   NS_ENSURE_TRUE(mNextListener, NS_ERROR_FAILURE);
 
-  mDataBuffer = (char *) nsMemory::Alloc((sizeof(char) * nsIOService::gDefaultSegmentSize));
-  mOutgoingBuffer = (char *) nsMemory::Alloc((sizeof(char) * nsIOService::gDefaultSegmentSize));
+  mDataBuffer = (char *) malloc((sizeof(char) * nsIOService::gDefaultSegmentSize));
+  mOutgoingBuffer = (char *) malloc((sizeof(char) * nsIOService::gDefaultSegmentSize));
   if (!mDataBuffer || !mOutgoingBuffer) return NS_ERROR_FAILURE; // out of memory;
 
   // now we want to create a pipe which we'll use to write our converted data...
@@ -513,3 +515,6 @@ nsBinHexDecoder::OnStopRequest(nsIRequest* request, nsISupports *aCtxt,
 
   return rv;
 }
+
+} // namespace net
+} // namespace mozilla

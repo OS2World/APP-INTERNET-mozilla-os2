@@ -24,9 +24,12 @@ function testSteps()
     let request = indexedDB.open(name, ++j);
     request.onerror = errorHandler;
     request.onupgradeneeded = grabEventAndContinueHandler;
-    let event = yield;
+    let event = yield undefined;
 
     let db = event.target.result;
+    db.onversionchange = function(event) {
+      event.target.close();
+    };
 
     let objectStore =
       db.createObjectStore(objectStores[i].name,
@@ -45,19 +48,18 @@ function testSteps()
     request = objectStore.add(data);
     request.onerror = errorHandler;
     request.onsuccess = grabEventAndContinueHandler;
-    event = yield;
+    event = yield undefined;
 
     ok(event.target.result == 1 || event.target.result == 2, "Good id");
-    db.close();
   }
 
   executeSoon(function() { testGenerator.next(); });
-  yield;
+  yield undefined;
 
   let request = indexedDB.open(name, j);
   request.onerror = errorHandler;
   request.onsuccess = grabEventAndContinueHandler;
-  let event = yield;
+  let event = yield undefined;
 
   let db = event.target.result;
 
@@ -73,11 +75,11 @@ function testSteps()
         is(event.target.result.value.name, "Ben", "Good object");
         executeSoon(function() { testGenerator.next(); });
       }
-      yield;
+      yield undefined;
     }
   }
 
   finishTest();
-  yield;
+  yield undefined;
 }
 

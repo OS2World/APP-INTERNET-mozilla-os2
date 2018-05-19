@@ -1,6 +1,6 @@
 /*  GRAPHITE2 LICENSING
 
-    Copyright 2010, SIL International
+    Copyright 2012, SIL International
     All rights reserved.
 
     This library is free software; you can redistribute it and/or modify
@@ -32,7 +32,7 @@ of the License or (at your option) any later version.
 
 #ifndef GRAPHITE2_NFILEFACE
 
-#include <stdio.h>
+#include <cstdio>
 #include <cassert>
 
 #include "graphite2/Font.h"

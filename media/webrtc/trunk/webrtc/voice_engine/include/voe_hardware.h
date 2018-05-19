@@ -32,7 +32,7 @@
 #ifndef WEBRTC_VOICE_ENGINE_VOE_HARDWARE_H
 #define WEBRTC_VOICE_ENGINE_VOE_HARDWARE_H
 
-#include "common_types.h"
+#include "webrtc/common_types.h"
 
 namespace webrtc {
 
@@ -69,7 +69,7 @@ public:
     // (GUID) for the playout device.
     virtual int GetPlayoutDeviceName(int index, char strNameUTF8[128],
                                      char strGuidUTF8[128]) = 0;
-
+ 
     // Checks if the sound card is available to be opened for recording.
     virtual int GetRecordingDeviceStatus(bool& isAvailable) = 0;
 
@@ -88,17 +88,10 @@ public:
 
     // Gets the currently used (active) audio device layer.
     virtual int GetAudioDeviceLayer(AudioLayers& audioLayer) = 0;
-
+ 
     // Gets the VoiceEngine's current CPU consumption in terms of the percent
     // of total CPU availability. [Windows only]
     virtual int GetCPULoad(int& loadPercent) = 0;
-
-    // Gets the computer's current CPU consumption in terms of the percent
-    // of the total CPU availability. This method may fail a few times on
-    // Windows because it needs a certain warm-up time before reporting the
-    // result. You should check the return value and either try again or
-    // give up when it fails.
-    virtual int GetSystemCPULoad(int& loadPercent) = 0;
 
     // Not supported
     virtual int ResetAudioDevice() = 0;
@@ -118,6 +111,8 @@ public:
     virtual int RecordingSampleRate(unsigned int* samples_per_sec) const = 0;
     virtual int SetPlayoutSampleRate(unsigned int samples_per_sec) = 0;
     virtual int PlayoutSampleRate(unsigned int* samples_per_sec) const = 0;
+
+    virtual bool BuiltInAECIsAvailable() const = 0;
 
     // *Experimental - not recommended for use.*
     // Enables the Windows Core Audio built-in AEC. Fails on other platforms.
@@ -143,6 +138,6 @@ protected:
     virtual ~VoEHardware() {}
 };
 
-} // namespace webrtc
+}  // namespace webrtc
 
 #endif  //  WEBRTC_VOICE_ENGINE_VOE_HARDWARE_H

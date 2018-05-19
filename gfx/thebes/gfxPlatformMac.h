@@ -6,20 +6,16 @@
 #ifndef GFX_PLATFORM_MAC_H
 #define GFX_PLATFORM_MAC_H
 
-#include "nsTArray.h"
+#include "nsTArrayForwardDeclare.h"
 #include "gfxPlatform.h"
+#include "mozilla/LookAndFeel.h"
 
-#define MAC_OS_X_VERSION_10_4_HEX 0x00001040
-#define MAC_OS_X_VERSION_10_5_HEX 0x00001050
-#define MAC_OS_X_VERSION_10_6_HEX 0x00001060
-#define MAC_OS_X_VERSION_10_7_HEX 0x00001070
-
-#define MAC_OS_X_MAJOR_VERSION_MASK 0xFFFFFFF0U
-
-class gfxTextRun;
-class gfxFontFamily;
-
-namespace mozilla { namespace gfx { class DrawTarget; }}
+namespace mozilla {
+namespace gfx {
+class DrawTarget;
+class VsyncSource;
+} // namespace gfx
+} // namespace mozilla
 
 class gfxPlatformMac : public gfxPlatform {
 public:
@@ -30,71 +26,70 @@ public:
         return (gfxPlatformMac*) gfxPlatform::GetPlatform();
     }
 
-    already_AddRefed<gfxASurface> CreateOffscreenSurface(const gfxIntSize& size,
-                                                         gfxASurface::gfxContentType contentType);
     virtual already_AddRefed<gfxASurface>
-      CreateOffscreenImageSurface(const gfxIntSize& aSize,
-                                  gfxASurface::gfxContentType aContentType);
+      CreateOffscreenSurface(const IntSize& aSize,
+                             gfxImageFormat aFormat) override;
 
-    already_AddRefed<gfxASurface> OptimizeImage(gfxImageSurface *aSurface,
-                                                gfxASurface::gfxImageFormat format);
+    already_AddRefed<mozilla::gfx::ScaledFont>
+      GetScaledFontForFont(mozilla::gfx::DrawTarget* aTarget, gfxFont *aFont) override;
 
-    mozilla::TemporaryRef<mozilla::gfx::ScaledFont>
-      GetScaledFontForFont(mozilla::gfx::DrawTarget* aTarget, gfxFont *aFont);
+    gfxFontGroup*
+    CreateFontGroup(const mozilla::FontFamilyList& aFontFamilyList,
+                    const gfxFontStyle *aStyle,
+                    gfxTextPerfMetrics* aTextPerf,
+                    gfxUserFontSet *aUserFontSet,
+                    gfxFloat aDevToCssSize) override;
 
-    nsresult ResolveFontName(const nsAString& aFontName,
-                             FontResolverCallback aCallback,
-                             void *aClosure, bool& aAborted);
+    virtual gfxPlatformFontList* CreatePlatformFontList() override;
 
-    nsresult GetStandardFamilyName(const nsAString& aFontName, nsAString& aFamilyName);
+    bool IsFontFormatSupported(nsIURI *aFontURI, uint32_t aFormatFlags) override;
 
-    gfxFontGroup *CreateFontGroup(const nsAString &aFamilies,
-                                  const gfxFontStyle *aStyle,
-                                  gfxUserFontSet *aUserFontSet);
+    virtual void GetCommonFallbackFonts(uint32_t aCh, uint32_t aNextCh,
+                                        Script aRunScript,
+                                        nsTArray<const char*>& aFontList) override;
 
-    virtual gfxFontEntry* LookupLocalFont(const gfxProxyFontEntry *aProxyEntry,
-                                          const nsAString& aFontName);
+    // lookup the system font for a particular system font type and set
+    // the name and style characteristics
+    static void
+    LookupSystemFont(mozilla::LookAndFeel::FontID aSystemFontID,
+                     nsAString& aSystemFontName,
+                     gfxFontStyle &aFontStyle,
+                     float aDevPixPerCSSPixel);
 
-    virtual gfxPlatformFontList* CreatePlatformFontList();
+    virtual bool CanRenderContentToDataSurface() const override {
+      return true;
+    }
 
-    virtual gfxFontEntry* MakePlatformFont(const gfxProxyFontEntry *aProxyEntry,
-                                           const uint8_t *aFontData,
-                                           uint32_t aLength);
+    virtual bool SupportsApzWheelInput() const override {
+      return true;
+    }
 
-    bool IsFontFormatSupported(nsIURI *aFontURI, uint32_t aFormatFlags);
+    bool RespectsFontStyleSmoothing() const override {
+      // gfxMacFont respects the font smoothing hint.
+      return true;
+    }
 
-    nsresult GetFontList(nsIAtom *aLangGroup,
-                         const nsACString& aGenericFamily,
-                         nsTArray<nsString>& aListOfFonts);
-    nsresult UpdateFontList();
+    bool RequiresAcceleratedGLContextForCompositorOGL() const override {
+      // On OS X in a VM, unaccelerated CompositorOGL shows black flashes, so we
+      // require accelerated GL for CompositorOGL but allow unaccelerated GL for
+      // BasicCompositor.
+      return true;
+    }
 
-    virtual void GetCommonFallbackFonts(const uint32_t aCh,
-                                        int32_t aRunScript,
-                                        nsTArray<const char*>& aFontList);
-
-    // Returns the OS X version as returned from Gestalt(gestaltSystemVersion, ...)
-    // Ex: Mac OS X 10.4.x ==> 0x104x
-    int32_t OSXVersion();
-
-    bool UseAcceleratedCanvas();
+    virtual already_AddRefed<mozilla::gfx::VsyncSource> CreateHardwareVsyncSource() override;
 
     // lower threshold on font anti-aliasing
     uint32_t GetAntiAliasingThreshold() { return mFontAntiAliasingThreshold; }
 
-    virtual already_AddRefed<gfxASurface>
-    GetThebesSurfaceForDrawTarget(mozilla::gfx::DrawTarget *aTarget);
+protected:
+    bool AccelerateLayersByDefault() override;
 
-    virtual already_AddRefed<gfxASurface>
-    CreateThebesSurfaceAliasForDrawTarget_hack(mozilla::gfx::DrawTarget *aTarget);
 private:
-    virtual qcms_profile* GetPlatformCMSOutputProfile();
-
-    virtual bool SupportsOffMainThreadCompositing();
+    virtual void GetPlatformCMSOutputProfile(void* &mem, size_t &size) override;
 
     // read in the pref value for the lower threshold on font anti-aliasing
     static uint32_t ReadAntiAliasingThreshold();
 
-    int32_t mOSXVersion;
     uint32_t mFontAntiAliasingThreshold;
 };
 

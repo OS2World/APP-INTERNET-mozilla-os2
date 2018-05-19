@@ -44,16 +44,17 @@ int main(int argc, char* argv[])
 {
 
   FILE *ifileid,*efileid,*ofileid, *cfileid;
-  WebRtc_Word16 data[BLOCKL_MAX];
-  WebRtc_Word16 encoded_data[ILBCNOOFWORDS_MAX], decoded_data[BLOCKL_MAX];
+  int16_t data[BLOCKL_MAX];
+  uint8_t encoded_data[2 * ILBCNOOFWORDS_MAX];
+  int16_t decoded_data[BLOCKL_MAX];
   int len;
   short pli, mode;
   int blockcount = 0;
   int packetlosscount = 0;
   int frameLen;
-  WebRtc_Word16 speechType;
-  iLBC_encinst_t *Enc_Inst;
-  iLBC_decinst_t *Dec_Inst;
+  int16_t speechType;
+  IlbcEncoderInstance *Enc_Inst;
+  IlbcDecoderInstance *Dec_Inst;
 
 #ifdef __ILBC_WITH_40BITACC
   /* Doublecheck that long long exists */
@@ -155,7 +156,7 @@ int main(int argc, char* argv[])
 
   /* loop over input blocks */
 
-  while (((WebRtc_Word16)fread(data,sizeof(WebRtc_Word16),frameLen,ifileid))==
+  while (((int16_t)fread(data,sizeof(int16_t),frameLen,ifileid))==
          frameLen) {
 
     blockcount++;
@@ -163,20 +164,20 @@ int main(int argc, char* argv[])
     /* encoding */
 
     fprintf(stderr, "--- Encoding block %i --- ",blockcount);
-    len=WebRtcIlbcfix_Encode(Enc_Inst, data, (WebRtc_Word16)frameLen, encoded_data);
+    len = WebRtcIlbcfix_Encode(Enc_Inst, data, (int16_t)frameLen, encoded_data);
     fprintf(stderr, "\r");
 
     /* write byte file */
 
-    if (fwrite(encoded_data, sizeof(WebRtc_Word16),
-               ((len+1)/sizeof(WebRtc_Word16)), efileid) !=
-        (size_t)(((len+1)/sizeof(WebRtc_Word16)))) {
+    if (fwrite(encoded_data, sizeof(int16_t),
+               ((len+1)/sizeof(int16_t)), efileid) !=
+        (size_t)(((len+1)/sizeof(int16_t)))) {
       return -1;
     }
 
     /* get channel data if provided */
     if (argc==6) {
-      if (fread(&pli, sizeof(WebRtc_Word16), 1, cfileid)) {
+      if (fread(&pli, sizeof(int16_t), 1, cfileid)) {
         if ((pli!=0)&&(pli!=1)) {
           fprintf(stderr, "Error in channel file\n");
           exit(0);
@@ -184,7 +185,7 @@ int main(int argc, char* argv[])
         if (pli==0) {
           /* Packet loss -> remove info from frame */
           memset(encoded_data, 0,
-                 sizeof(WebRtc_Word16)*ILBCNOOFWORDS_MAX);
+                 sizeof(int16_t)*ILBCNOOFWORDS_MAX);
           packetlosscount++;
         }
       } else {
@@ -200,7 +201,7 @@ int main(int argc, char* argv[])
     fprintf(stderr, "--- Decoding block %i --- ",blockcount);
     if (pli==1) {
       len=WebRtcIlbcfix_Decode(Dec_Inst, encoded_data,
-                               (WebRtc_Word16)len, decoded_data,&speechType);
+                               (int16_t)len, decoded_data,&speechType);
     } else {
       len=WebRtcIlbcfix_DecodePlc(Dec_Inst, decoded_data, 1);
     }
@@ -208,7 +209,7 @@ int main(int argc, char* argv[])
 
     /* write output file */
 
-    if (fwrite(decoded_data, sizeof(WebRtc_Word16), len,
+    if (fwrite(decoded_data, sizeof(int16_t), len,
                ofileid) != (size_t)len) {
       return -1;
     }

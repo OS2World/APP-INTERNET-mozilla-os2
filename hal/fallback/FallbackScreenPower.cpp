@@ -14,7 +14,17 @@ GetScreenEnabled()
 }
 
 void
-SetScreenEnabled(bool enabled)
+SetScreenEnabled(bool aEnabled)
+{}
+
+bool
+GetKeyLightEnabled()
+{
+  return true;
+}
+
+void
+SetKeyLightEnabled(bool aEnabled)
 {}
 
 double
@@ -24,8 +34,8 @@ GetScreenBrightness()
 }
 
 void
-SetScreenBrightness(double brightness)
+SetScreenBrightness(double aBrightness)
 {}
 
-} // hal_impl
+} // namespace hal_impl
 } // namespace mozilla

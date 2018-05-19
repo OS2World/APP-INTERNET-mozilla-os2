@@ -19,7 +19,6 @@
 #include "nsNetCID.h"
 #include "nsIObjectInputStream.h"
 #include "nsIObjectOutputStream.h"
-#include "nsIProgrammingLanguage.h"
 #include "mozilla/ipc/URIUtils.h"
 
 using namespace mozilla::ipc;
@@ -37,11 +36,12 @@ nsJARURI::~nsJARURI()
 }
 
 // XXX Why is this threadsafe?
-NS_IMPL_THREADSAFE_ADDREF(nsJARURI)
-NS_IMPL_THREADSAFE_RELEASE(nsJARURI)
+NS_IMPL_ADDREF(nsJARURI)
+NS_IMPL_RELEASE(nsJARURI)
 NS_INTERFACE_MAP_BEGIN(nsJARURI)
   NS_INTERFACE_MAP_ENTRY_AMBIGUOUS(nsISupports, nsIJARURI)
   NS_INTERFACE_MAP_ENTRY(nsIURI)
+  NS_INTERFACE_MAP_ENTRY(nsIURIWithQuery)
   NS_INTERFACE_MAP_ENTRY(nsIURL)
   NS_INTERFACE_MAP_ENTRY(nsIJARURI)
   NS_INTERFACE_MAP_ENTRY(nsISerializable)
@@ -120,10 +120,17 @@ nsJARURI::Read(nsIObjectInputStream* aInputStream)
 {
     nsresult rv;
 
-    rv = aInputStream->ReadObject(true, getter_AddRefs(mJARFile));
+    nsCOMPtr<nsISupports> supports;
+    rv = aInputStream->ReadObject(true, getter_AddRefs(supports));
     NS_ENSURE_SUCCESS(rv, rv);
 
-    rv = aInputStream->ReadObject(true, getter_AddRefs(mJAREntry));
+    mJARFile = do_QueryInterface(supports, &rv);
+    NS_ENSURE_SUCCESS(rv, rv);
+
+    rv = aInputStream->ReadObject(true, getter_AddRefs(supports));
+    NS_ENSURE_SUCCESS(rv, rv);
+
+    mJAREntry = do_QueryInterface(supports);
     NS_ENSURE_SUCCESS(rv, rv);
 
     rv = aInputStream->ReadCString(mCharsetHint);
@@ -159,7 +166,7 @@ nsJARURI::GetInterfaces(uint32_t *count, nsIID * **array)
 }
 
 NS_IMETHODIMP 
-nsJARURI::GetHelperForLanguage(uint32_t language, nsISupports **_retval)
+nsJARURI::GetScriptableHelper(nsIXPCScriptable **_retval)
 {
     *_retval = nullptr;
     return NS_OK;
@@ -182,17 +189,10 @@ nsJARURI::GetClassDescription(char * *aClassDescription)
 NS_IMETHODIMP 
 nsJARURI::GetClassID(nsCID * *aClassID)
 {
-    *aClassID = (nsCID*) nsMemory::Alloc(sizeof(nsCID));
+    *aClassID = (nsCID*) moz_xmalloc(sizeof(nsCID));
     if (!*aClassID)
         return NS_ERROR_OUT_OF_MEMORY;
     return GetClassIDNoAlloc(*aClassID);
-}
-
-NS_IMETHODIMP 
-nsJARURI::GetImplementationLanguage(uint32_t *aImplementationLanguage)
-{
-    *aImplementationLanguage = nsIProgrammingLanguage::CPLUSPLUS;
-    return NS_OK;
 }
 
 NS_IMETHODIMP 
@@ -256,7 +256,7 @@ nsJARURI::SetSpecWithBase(const nsACString &aSpec, nsIURI* aBaseURL)
         if (!aBaseURL)
             return NS_ERROR_MALFORMED_URI;
 
-        nsRefPtr<nsJARURI> otherJAR;
+        RefPtr<nsJARURI> otherJAR;
         aBaseURL->QueryInterface(NS_GET_IID(nsJARURI), getter_AddRefs(otherJAR));
         NS_ENSURE_TRUE(otherJAR, NS_NOINTERFACE);
 
@@ -386,6 +386,12 @@ nsJARURI::SetHostPort(const nsACString &aHostPort)
 }
 
 NS_IMETHODIMP
+nsJARURI::SetHostAndPort(const nsACString &aHostPort)
+{
+    return NS_ERROR_FAILURE;
+}
+
+NS_IMETHODIMP
 nsJARURI::GetHost(nsACString &aHost)
 {
     return NS_ERROR_FAILURE;
@@ -431,6 +437,12 @@ nsJARURI::GetAsciiSpec(nsACString &aSpec)
 }
 
 NS_IMETHODIMP
+nsJARURI::GetAsciiHostPort(nsACString &aHostPort)
+{
+    return NS_ERROR_FAILURE;
+}
+
+NS_IMETHODIMP
 nsJARURI::GetAsciiHost(nsACString &aHost)
 {
     return NS_ERROR_FAILURE;
@@ -466,7 +478,7 @@ nsJARURI::EqualsInternal(nsIURI *other,
     if (!other)
         return NS_OK;	// not equal
 
-    nsRefPtr<nsJARURI> otherJAR;
+    RefPtr<nsJARURI> otherJAR;
     other->QueryInterface(NS_GET_IID(nsJARURI), getter_AddRefs(otherJAR));
     if (!otherJAR)
         return NS_OK;   // not equal
@@ -505,7 +517,8 @@ nsJARURI::Clone(nsIURI **result)
     rv = CloneWithJARFileInternal(mJARFile, eHonorRef, getter_AddRefs(uri));
     if (NS_FAILED(rv)) return rv;
 
-    return CallQueryInterface(uri, result);
+    uri.forget(result);
+    return NS_OK;
 }
 
 NS_IMETHODIMP
@@ -517,7 +530,22 @@ nsJARURI::CloneIgnoringRef(nsIURI **result)
     rv = CloneWithJARFileInternal(mJARFile, eIgnoreRef, getter_AddRefs(uri));
     if (NS_FAILED(rv)) return rv;
 
-    return CallQueryInterface(uri, result);
+    uri.forget(result);
+    return NS_OK;
+}
+
+NS_IMETHODIMP
+nsJARURI::CloneWithNewRef(const nsACString& newRef, nsIURI **result)
+{
+    nsresult rv;
+
+    nsCOMPtr<nsIJARURI> uri;
+    rv = CloneWithJARFileInternal(mJARFile, eReplaceRef, newRef,
+                                  getter_AddRefs(uri));
+    if (NS_FAILED(rv)) return rv;
+
+    uri.forget(result);
+    return NS_OK;
 }
 
 NS_IMETHODIMP
@@ -777,6 +805,15 @@ nsJARURI::CloneWithJARFileInternal(nsIURI *jarFile,
                                    nsJARURI::RefHandlingEnum refHandlingMode,
                                    nsIJARURI **result)
 {
+  return CloneWithJARFileInternal(jarFile, refHandlingMode, EmptyCString(), result);
+}
+
+nsresult
+nsJARURI::CloneWithJARFileInternal(nsIURI *jarFile,
+                                   nsJARURI::RefHandlingEnum refHandlingMode,
+                                   const nsACString& newRef,
+                                   nsIJARURI **result)
+{
     if (!jarFile) {
         return NS_ERROR_INVALID_ARG;
     }
@@ -790,10 +827,13 @@ nsJARURI::CloneWithJARFileInternal(nsIURI *jarFile,
     NS_TryToSetImmutable(newJARFile);
 
     nsCOMPtr<nsIURI> newJAREntryURI;
-    rv = refHandlingMode == eHonorRef ?
-        mJAREntry->Clone(getter_AddRefs(newJAREntryURI)) :
-        mJAREntry->CloneIgnoringRef(getter_AddRefs(newJAREntryURI));
-
+    if (refHandlingMode == eHonorRef) {
+      rv = mJAREntry->Clone(getter_AddRefs(newJAREntryURI));
+    } else if (refHandlingMode == eReplaceRef) {
+      rv = mJAREntry->CloneWithNewRef(newRef, getter_AddRefs(newJAREntryURI));
+    } else {
+      rv = mJAREntry->CloneIgnoringRef(getter_AddRefs(newJAREntryURI));
+    }
     if (NS_FAILED(rv)) return rv;
 
     nsCOMPtr<nsIURL> newJAREntry(do_QueryInterface(newJAREntryURI));

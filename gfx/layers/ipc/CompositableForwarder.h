@@ -7,20 +7,30 @@
 #ifndef MOZILLA_LAYERS_COMPOSITABLEFORWARDER
 #define MOZILLA_LAYERS_COMPOSITABLEFORWARDER
 
-#include "mozilla/StandardInteger.h"
-#include "gfxASurface.h"
-#include "GLDefs.h"
-#include "mozilla/layers/ISurfaceAllocator.h"
+#include <stdint.h>                     // for int32_t, uint64_t
+#include "gfxTypes.h"
+#include "mozilla/Attributes.h"         // for override
+#include "mozilla/UniquePtr.h"
+#include "mozilla/layers/CompositableClient.h"  // for CompositableClient
+#include "mozilla/layers/CompositorTypes.h"
+#include "mozilla/layers/ISurfaceAllocator.h"  // for ISurfaceAllocator
+#include "mozilla/layers/LayersTypes.h"  // for LayersBackend
+#include "mozilla/layers/TextureClient.h"  // for TextureClient
+#include "mozilla/layers/TextureForwarder.h"  // for TextureForwarder
+#include "nsRegion.h"                   // for nsIntRegion
+#include "mozilla/gfx/Rect.h"
+#include "nsHashKeys.h"
+#include "nsTHashtable.h"
 
 namespace mozilla {
 namespace layers {
 
 class CompositableClient;
-class TextureFactoryIdentifier;
+class ImageContainer;
 class SurfaceDescriptor;
+class SurfaceDescriptorTiles;
 class ThebesBufferData;
-class TextureClient;
-class BasicTiledLayerBuffer;
+class PTextureChild;
 
 /**
  * A transaction is a set of changes that happenned on the content side, that
@@ -31,78 +41,27 @@ class BasicTiledLayerBuffer;
  * ShadowLayerForwarder is an example of a CompositableForwarder (that can
  * additionally forward modifications of the Layer tree).
  * ImageBridgeChild is another CompositableForwarder.
+ *
+ * CompositableForwarder implements KnowsCompositor for simplicity as all
+ * implementations of CompositableForwarder currently also implement KnowsCompositor.
+ * This dependency could be split if we add new use cases.
  */
-class CompositableForwarder : public ISurfaceAllocator
+class CompositableForwarder : public KnowsCompositor
 {
-  friend class AutoOpenSurface;
-  friend class TextureClientShmem;
 public:
-  typedef gfxASurface::gfxContentType gfxContentType;
-
-  CompositableForwarder()
-  : mMaxTextureSize(0)
-  , mCompositorBackend(layers::LAYERS_NONE)
-  , mSupportsTextureBlitting(false)
-  , mSupportsPartialUploads(false)
-  {}
-
   /**
    * Setup the IPDL actor for aCompositable to be part of layers
    * transactions.
    */
-  virtual void Connect(CompositableClient* aCompositable) = 0;
+  virtual void Connect(CompositableClient* aCompositable,
+                       ImageContainer* aImageContainer = nullptr) = 0;
 
   /**
-   * When using the Thebes layer pattern of swapping or updating
-   * TextureClient/Host pairs without sending SurfaceDescriptors,
-   * use these messages to assign the single or double buffer
-   * (TextureClient/Host pairs) to the CompositableHost.
-   * We expect the textures to already have been created.
-   * With these messages, the ownership of the SurfaceDescriptor(s)
-   * moves to the compositor.
+   * Tell the CompositableHost on the compositor side what TiledLayerBuffer to
+   * use for the next composition.
    */
-  virtual void CreatedSingleBuffer(CompositableClient* aCompositable,
-                                   const SurfaceDescriptor& aDescriptor,
-                                   const TextureInfo& aTextureInfo,
-                                   const SurfaceDescriptor* aDescriptorOnWhite = nullptr) = 0;
-  virtual void CreatedDoubleBuffer(CompositableClient* aCompositable,
-                                   const SurfaceDescriptor& aFrontDescriptor,
-                                   const SurfaceDescriptor& aBackDescriptor,
-                                   const TextureInfo& aTextureInfo,
-                                   const SurfaceDescriptor* aFrontDescriptorOnWhite = nullptr,
-                                   const SurfaceDescriptor* aBackDescriptorOnWhite = nullptr) = 0;
-
-  /**
-   * Notify the CompositableHost that it should create host-side-only
-   * texture(s), that we will update incrementally using UpdateTextureIncremental.
-   */
-  virtual void CreatedIncrementalBuffer(CompositableClient* aCompositable,
-                                        const TextureInfo& aTextureInfo,
-                                        const nsIntRect& aBufferRect) = 0;
-
-  /**
-   * Tell the compositor that a Compositable is killing its buffer(s),
-   * that is TextureClient/Hosts.
-   */
-  virtual void DestroyThebesBuffer(CompositableClient* aCompositable) = 0;
-
-  virtual void PaintedTiledLayerBuffer(CompositableClient* aCompositable,
-                                       BasicTiledLayerBuffer* aTiledLayerBuffer) = 0;
-
-  /**
-   * Communicate to the compositor that the texture identified by aCompositable
-   * and aTextureId has been updated to aImage.
-   */
-  virtual void UpdateTexture(CompositableClient* aCompositable,
-                             TextureIdentifier aTextureId,
-                             SurfaceDescriptor* aDescriptor) = 0;
-
-  /**
-   * Same as UpdateTexture, but performs an asynchronous layer transaction (if possible)
-   */
-  virtual void UpdateTextureNoSwap(CompositableClient* aCompositable,
-                                   TextureIdentifier aTextureId,
-                                   SurfaceDescriptor* aDescriptor) = 0;
+  virtual void UseTiledLayerBuffer(CompositableClient* aCompositable,
+                                   const SurfaceDescriptorTiles& aTiledDescriptor) = 0;
 
   /**
    * Communicate to the compositor that aRegion in the texture identified by
@@ -112,76 +71,57 @@ public:
                                    const ThebesBufferData& aThebesBufferData,
                                    const nsIntRegion& aUpdatedRegion) = 0;
 
-  /**
-   * Notify the compositor to update aTextureId using aDescriptor, and take
-   * ownership of aDescriptor.
-   *
-   * aDescriptor only contains the pixels for aUpdatedRegion, and is relative
-   * to aUpdatedRegion.TopLeft().
-   *
-   * aBufferRect/aBufferRotation define the new valid region contained
-   * within the texture after the update has been applied.
-   */
-  virtual void UpdateTextureIncremental(CompositableClient* aCompositable,
-                                        TextureIdentifier aTextureId,
-                                        SurfaceDescriptor& aDescriptor,
-                                        const nsIntRegion& aUpdatedRegion,
-                                        const nsIntRect& aBufferRect,
-                                        const nsIntPoint& aBufferRotation) = 0;
+  virtual void Destroy(CompositableChild* aCompositable);
+
+  virtual bool DestroyInTransaction(PTextureChild* aTexture, bool synchronously) = 0;
+  virtual bool DestroyInTransaction(PCompositableChild* aCompositable, bool synchronously) = 0;
 
   /**
-   * Communicate the picture rect of a YUV image in aLayer to the compositor
+   * Tell the CompositableHost on the compositor side to remove the texture
+   * from the CompositableHost.
+   * This function does not delete the TextureHost corresponding to the
+   * TextureClient passed in parameter.
+   * When the TextureClient has TEXTURE_DEALLOCATE_CLIENT flag,
+   * the transaction becomes synchronous.
    */
-  virtual void UpdatePictureRect(CompositableClient* aCompositable,
-                                 const nsIntRect& aRect) = 0;
+  virtual void RemoveTextureFromCompositable(CompositableClient* aCompositable,
+                                             TextureClient* aTexture) = 0;
 
+  struct TimedTextureClient {
+    TimedTextureClient()
+        : mTextureClient(nullptr), mFrameID(0), mProducerID(0) {}
+
+    TextureClient* mTextureClient;
+    TimeStamp mTimeStamp;
+    nsIntRect mPictureRect;
+    int32_t mFrameID;
+    int32_t mProducerID;
+  };
   /**
-   * The specified layer is destroying its buffers.
-   * |aBackBufferToDestroy| is deallocated when this transaction is
-   * posted to the parent.  During the parent-side transaction, the
-   * shadow is told to destroy its front buffer.  This can happen when
-   * a new front/back buffer pair have been created because of a layer
-   * resize, e.g.
+   * Tell the CompositableHost on the compositor side what textures to use for
+   * the next composition.
    */
-  virtual void DestroyedThebesBuffer(const SurfaceDescriptor& aBackBufferToDestroy) = 0;
+  virtual void UseTextures(CompositableClient* aCompositable,
+                           const nsTArray<TimedTextureClient>& aTextures) = 0;
+  virtual void UseComponentAlphaTextures(CompositableClient* aCompositable,
+                                         TextureClient* aClientOnBlack,
+                                         TextureClient* aClientOnWhite) = 0;
 
-  void IdentifyTextureHost(const TextureFactoryIdentifier& aIdentifier);
+  virtual void UpdateFwdTransactionId() = 0;
+  virtual uint64_t GetFwdTransactionId() = 0;
 
-  /**
-   * Returns the maximum texture size supported by the compositor.
-   */
-  virtual int32_t GetMaxTextureSize() const { return mMaxTextureSize; }
+  virtual bool InForwarderThread() = 0;
 
-  bool IsOnCompositorSide() const MOZ_OVERRIDE { return false; }
-
-  /**
-   * Returns the type of backend that is used off the main thread.
-   * We only don't allow changing the backend type at runtime so this value can
-   * be queried once and will not change until Gecko is restarted.
-   */
-  LayersBackend GetCompositorBackendType() const
-  {
-    return mCompositorBackend;
-  }
-
-  bool SupportsTextureBlitting() const
-  {
-    return mSupportsTextureBlitting;
-  }
-
-  bool SupportsPartialUploads() const
-  {
-    return mSupportsPartialUploads;
+  void AssertInForwarderThread() {
+    MOZ_ASSERT(InForwarderThread());
   }
 
 protected:
-  uint32_t mMaxTextureSize;
-  LayersBackend mCompositorBackend;
-  bool mSupportsTextureBlitting;
-  bool mSupportsPartialUploads;
+  nsTArray<RefPtr<TextureClient> > mTexturesToRemove;
+  nsTArray<RefPtr<CompositableClient>> mCompositableClientsToRemove;
 };
 
-} // namespace
-} // namespace
+} // namespace layers
+} // namespace mozilla
 
 #endif

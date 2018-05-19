@@ -3,13 +3,6 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-// exceptq trap file generator
-#include <string.h>
-#define INCL_BASE
-#include <os2.h>
-#define INCL_LIBLOADEXCEPTQ
-#include <exceptq.h>
-
 #include "primpl.h"
 #include <process.h>  /* for _beginthread() */
 #include <signal.h>
@@ -163,10 +156,8 @@ typedef struct param_store
 static void
 ExcpStartFunc(void* arg)
 {
-    EXCEPTIONREGISTRATIONRECORD exceptqreg;
-    LibLoadExceptq(&exceptqreg);
-
     EXCEPTIONREGISTRATIONRECORD excpreg;
+
     PARAMSTORE params, *pParams = arg;
 
     PR_OS2_SetFloatExcpHandler(&excpreg);
@@ -176,8 +167,6 @@ ExcpStartFunc(void* arg)
     params.start(params.thread);
 
     PR_OS2_UnsetFloatExcpHandler(&excpreg);
-
-    UninstallExceptq(&exceptqreg);
 }
 
 PRStatus
@@ -289,7 +278,7 @@ PR_EXTERN(PRInt32)
 _PR_MD_SETTHREADAFFINITYMASK(PRThread *thread, PRUint32 mask )
 {
    /* Can we do this on OS/2?  Only on SMP versions? */
-   PR_ASSERT(!"Not implemented");
+   PR_NOT_REACHED("Not implemented");
    return 0;
 
  /* This is what windows does:
@@ -305,7 +294,7 @@ PR_EXTERN(PRInt32)
 _PR_MD_GETTHREADAFFINITYMASK(PRThread *thread, PRUint32 *mask)
 {
    /* Can we do this on OS/2?  Only on SMP versions? */
-   PR_ASSERT(!"Not implemented");
+   PR_NOT_REACHED("Not implemented");
    return 0;
 
  /* This is what windows does:

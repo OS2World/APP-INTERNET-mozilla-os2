@@ -1,5 +1,5 @@
 /* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set sw=2 ts=8 et ft=cpp : */
+/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -8,15 +8,13 @@
 #define mozilla_PreallocatedProcessManager_h
 
 #include "base/basictypes.h"
-#include "mozilla/StaticPtr.h"
 #include "nsCOMPtr.h"
 #include "nsIObserver.h"
-#include "nsAutoPtr.h"
 
 namespace mozilla {
 namespace dom {
 class ContentParent;
-}
+} // namespace dom
 
 /**
  * This class manages a ContentParent that it starts up ahead of any particular
@@ -36,7 +34,7 @@ class ContentParent;
  * method here, you'll need to write a corresponding public method on the
  * singleton.
  */
-class PreallocatedProcessManager MOZ_FINAL
+class PreallocatedProcessManager final
 {
   typedef mozilla::dom::ContentParent ContentParent;
 

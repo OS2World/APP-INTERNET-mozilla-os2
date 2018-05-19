@@ -2,14 +2,16 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-Components.utils.import("resource://gre/modules/XPCOMUtils.jsm");
-
 ////////////////////////////////////////////////////////////////////////////////
 //// Constants
 
 const Ci = Components.interfaces;
 const Cr = Components.results;
 const Cc = Components.classes;
+const Cu = Components.utils;
+
+Cu.import("resource://gre/modules/XPCOMUtils.jsm");
+Cu.import("resource://gre/modules/NetUtil.jsm");
 
 ////////////////////////////////////////////////////////////////////////////////
 //// nsWebHandler class
@@ -78,20 +80,37 @@ nsWebHandlerApp.prototype = {
     
     // if we have a window context, use the URI loader to load there
     if (aWindowContext) {
+      try {
+        // getInterface throws if the object doesn't implement the given
+        // interface, so this try/catch statement is more of an if.
+        // If aWindowContext refers to a remote docshell, send the load
+        // request to the correct process.
+        aWindowContext.getInterface(Ci.nsIRemoteWindowContext)
+                      .openURI(uriToSend);
+        return;
+      } catch (e) {
+        if (e.result != Cr.NS_NOINTERFACE) {
+          throw e;
+        }
+      }
 
       // create a channel from this URI
-      var channel = ioService.newChannelFromURI(uriToSend);
+      var channel = NetUtil.newChannel({
+        uri: uriToSend,
+        loadUsingSystemPrincipal: true
+      });
       channel.loadFlags = Ci.nsIChannel.LOAD_DOCUMENT_URI;
 
       // load the channel
       var uriLoader = Cc["@mozilla.org/uriloader;1"].
                       getService(Ci.nsIURILoader);
-      // XXX ideally, aIsContentPreferred (the second param) should really be
-      // passed in from above.  Practically, true is probably a reasonable
+      // XXX ideally, whether to pass the IS_CONTENT_PREFERRED flag should be
+      // passed in from above.  Practically, the flag is probably a reasonable
       // default since browsers don't care much, and link click is likely to be
       // the more interesting case for non-browser apps.  See 
       // <https://bugzilla.mozilla.org/show_bug.cgi?id=392957#c9> for details.
-      uriLoader.openURI(channel, true, aWindowContext);
+      uriLoader.openURI(channel, Ci.nsIURILoader.IS_CONTENT_PREFERRED,
+                        aWindowContext);
       return;
     } 
 
@@ -122,7 +141,7 @@ nsWebHandlerApp.prototype = {
 
     // openURI
     browserDOMWin.openURI(uriToSend,
-                          null, // no window.opener 
+                          null, // no window.opener
                           Ci.nsIBrowserDOMWindow.OPEN_DEFAULTWINDOW,
                           Ci.nsIBrowserDOMWindow.OPEN_NEW);
       

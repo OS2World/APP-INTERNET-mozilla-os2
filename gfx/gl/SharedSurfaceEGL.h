@@ -6,130 +6,113 @@
 #ifndef SHARED_SURFACE_EGL_H_
 #define SHARED_SURFACE_EGL_H_
 
-#include "SharedSurfaceGL.h"
-#include "SurfaceFactory.h"
-#include "GLLibraryEGL.h"
-#include "SurfaceTypes.h"
 #include "mozilla/Attributes.h"
 #include "mozilla/Mutex.h"
+#include "SharedSurface.h"
 
 namespace mozilla {
 namespace gl {
 
 class GLContext;
+class GLLibraryEGL;
+class TextureGarbageBin;
 
 class SharedSurface_EGLImage
-    : public SharedSurface_GL
+    : public SharedSurface
 {
 public:
-    static SharedSurface_EGLImage* Create(GLContext* prodGL,
-                                                  const GLFormats& formats,
-                                                  const gfxIntSize& size,
-                                                  bool hasAlpha,
-                                                  EGLContext context);
+    static UniquePtr<SharedSurface_EGLImage> Create(GLContext* prodGL,
+                                                    const GLFormats& formats,
+                                                    const gfx::IntSize& size,
+                                                    bool hasAlpha,
+                                                    EGLContext context);
 
     static SharedSurface_EGLImage* Cast(SharedSurface* surf) {
-        MOZ_ASSERT(surf->Type() == SharedSurfaceType::EGLImageShare);
+        MOZ_ASSERT(surf->mType == SharedSurfaceType::EGLImageShare);
 
         return (SharedSurface_EGLImage*)surf;
     }
+
+    static bool HasExtensions(GLLibraryEGL* egl, GLContext* gl);
 
 protected:
     mutable Mutex mMutex;
     GLLibraryEGL* const mEGL;
     const GLFormats mFormats;
     GLuint mProdTex;
-    nsRefPtr<gfxImageSurface> mPixels;
-    GLuint mProdTexForPipe; // Moves to mProdTex when mPipeActive becomes true.
-    EGLImage mImage;
-    GLContext* mCurConsGL;
-    GLuint mConsTex;
-    nsRefPtr<TextureGarbageBin> mGarbageBin;
+public:
+    const EGLImage mImage;
+protected:
     EGLSync mSync;
-    bool mPipeFailed;   // Pipe creation failed, and has been abandoned.
-    bool mPipeComplete; // Pipe connects (mPipeActive ? mProdTex : mProdTexForPipe) to mConsTex.
-    bool mPipeActive;   // Pipe is complete and in use for production.
 
     SharedSurface_EGLImage(GLContext* gl,
                            GLLibraryEGL* egl,
-                           const gfxIntSize& size,
+                           const gfx::IntSize& size,
                            bool hasAlpha,
                            const GLFormats& formats,
-                           GLuint prodTex)
-        : SharedSurface_GL(SharedSurfaceType::EGLImageShare,
-                           AttachmentType::GLTexture,
-                           gl,
-                           size,
-                           hasAlpha)
-        , mMutex("SharedSurface_EGLImage mutex")
-        , mEGL(egl)
-        , mFormats(formats)
-        , mProdTex(prodTex)
-        , mProdTexForPipe(0)
-        , mImage(0)
-        , mCurConsGL(nullptr)
-        , mConsTex(0)
-        , mSync(0)
-        , mPipeFailed(false)
-        , mPipeComplete(false)
-        , mPipeActive(false)
-    {}
+                           GLuint prodTex,
+                           EGLImage image);
 
     EGLDisplay Display() const;
-
-    static bool HasExtensions(GLLibraryEGL* egl, GLContext* gl);
+    void UpdateProdTexture(const MutexAutoLock& curAutoLock);
 
 public:
     virtual ~SharedSurface_EGLImage();
 
-    virtual void LockProdImpl();
-    virtual void UnlockProdImpl() {}
+    virtual layers::TextureFlags GetTextureFlags() const override;
 
+    virtual void LockProdImpl() override {}
+    virtual void UnlockProdImpl() override {}
 
-    virtual void Fence();
-    virtual bool WaitSync();
+    virtual void ProducerAcquireImpl() override {}
+    virtual void ProducerReleaseImpl() override;
 
+    virtual void ProducerReadAcquireImpl() override;
+    virtual void ProducerReadReleaseImpl() override {};
 
-    virtual GLuint Texture() const {
-        return mProdTex;
+    virtual GLuint ProdTexture() override {
+      return mProdTex;
     }
 
     // Implementation-specific functions below:
-    // Returns 0 if the pipe isn't ready. If 0, use GetPixels below.
-    GLuint AcquireConsumerTexture(GLContext* consGL);
+    // Returns texture and target
+    virtual bool ToSurfaceDescriptor(layers::SurfaceDescriptor* const out_descriptor) override;
 
-    // Will be void if AcquireConsumerTexture returns non-zero.
-    gfxImageSurface* GetPixels() const;
+    virtual bool ReadbackBySharedHandle(gfx::DataSourceSurface* out_surface) override;
 };
 
 
 
 class SurfaceFactory_EGLImage
-    : public SurfaceFactory_GL
+    : public SurfaceFactory
 {
 public:
-    // Infallible:
-    static SurfaceFactory_EGLImage* Create(GLContext* prodGL,
-                                           const SurfaceCaps& caps);
+    // Fallible:
+    static UniquePtr<SurfaceFactory_EGLImage> Create(GLContext* prodGL,
+                                                     const SurfaceCaps& caps,
+                                                     const RefPtr<layers::LayersIPCChannel>& allocator,
+                                                     const layers::TextureFlags& flags);
 
 protected:
     const EGLContext mContext;
 
-    SurfaceFactory_EGLImage(GLContext* prodGL,
-                            EGLContext context,
-                            const SurfaceCaps& caps)
-        : SurfaceFactory_GL(prodGL, SharedSurfaceType::EGLImageShare, caps)
+    SurfaceFactory_EGLImage(GLContext* prodGL, const SurfaceCaps& caps,
+                            const RefPtr<layers::LayersIPCChannel>& allocator,
+                            const layers::TextureFlags& flags,
+                            EGLContext context)
+        : SurfaceFactory(SharedSurfaceType::EGLImageShare, prodGL, caps, allocator, flags)
         , mContext(context)
-    {}
+    { }
 
 public:
-    virtual SharedSurface* CreateShared(const gfxIntSize& size) {
+    virtual UniquePtr<SharedSurface> CreateShared(const gfx::IntSize& size) override {
         bool hasAlpha = mReadCaps.alpha;
         return SharedSurface_EGLImage::Create(mGL, mFormats, size, hasAlpha, mContext);
     }
 };
 
-} /* namespace gfx */
+} // namespace gl
+
 } /* namespace mozilla */
 
 #endif /* SHARED_SURFACE_EGL_H_ */

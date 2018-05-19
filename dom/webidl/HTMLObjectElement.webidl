@@ -13,13 +13,14 @@
  */
 
 // http://www.whatwg.org/specs/web-apps/current-work/#the-object-element
-[NeedNewResolve]
+[NeedResolve, UnsafeInPrerendering]
 interface HTMLObjectElement : HTMLElement {
   [Pure, SetterThrows]
            attribute DOMString data;
   [Pure, SetterThrows]
            attribute DOMString type;
-//           attribute boolean typeMustMatch;
+  [Pure, SetterThrows]
+           attribute boolean typeMustMatch;
   [Pure, SetterThrows]
            attribute DOMString name;
   [Pure, SetterThrows]
@@ -31,14 +32,17 @@ interface HTMLObjectElement : HTMLElement {
   [Pure, SetterThrows]
            attribute DOMString height;
   // Not pure: can trigger about:blank instantiation
+  [NeedsSubjectPrincipal]
   readonly attribute Document? contentDocument;
   // Not pure: can trigger about:blank instantiation
+  [NeedsSubjectPrincipal]
   readonly attribute WindowProxy? contentWindow;
 
   readonly attribute boolean willValidate;
   readonly attribute ValidityState validity;
   readonly attribute DOMString validationMessage;
   boolean checkValidity();
+  boolean reportValidity();
   void setCustomValidity(DOMString error);
 
   [Throws]
@@ -72,6 +76,7 @@ partial interface HTMLObjectElement {
 
 partial interface HTMLObjectElement {
   // GetSVGDocument
+  [NeedsSubjectPrincipal]
   Document? getSVGDocument();
 };
 
@@ -128,9 +133,6 @@ interface MozObjectLoadingContent {
   // The plugin is vulnerable (no update available)
   [ChromeOnly]
   const unsigned long PLUGIN_VULNERABLE_NO_UPDATE = 10;
-  // The plugin is in play preview mode
-  [ChromeOnly]
-  const unsigned long PLUGIN_PLAY_PREVIEW         = 11;
 
   /**
    * The actual mime type (the one we got back from the network
@@ -154,17 +156,33 @@ interface MozObjectLoadingContent {
   [ChromeOnly]
   unsigned long getContentTypeForMIMEType(DOMString aMimeType);
 
+
+  [ChromeOnly]
+  sequence<MozPluginParameter> getPluginAttributes();
+
+  [ChromeOnly]
+  sequence<MozPluginParameter> getPluginParameters();
+
   /**
-   * This method will play a plugin that has been stopped by the
-   * click-to-play plugins or play-preview features.
+   * This method will play a plugin that has been stopped by the click-to-play
+   * feature.
    */
   [ChromeOnly, Throws]
   void playPlugin();
 
   /**
+   * Forces a re-evaluation and reload of the tag, optionally invalidating its
+   * click-to-play state.  This can be used when the MIME type that provides a
+   * type has changed, for instance, to force the tag to re-evalulate the
+   * handler to use.
+   */
+  [ChromeOnly, Throws]
+  void reload(boolean aClearActivation);
+
+  /**
    * This attribute will return true if the current content type has been
    * activated, either explicitly or by passing checks that would have it be
-   * click-to-play or play-preview.
+   * click-to-play.
    */
   [ChromeOnly]
   readonly attribute boolean activated;
@@ -189,11 +207,17 @@ interface MozObjectLoadingContent {
   [ChromeOnly]
   readonly attribute boolean hasRunningPlugin;
 
-  /**
-   * This method will disable the play-preview plugin state.
-   */
   [ChromeOnly, Throws]
-  void cancelPlayPreview();
+  readonly attribute unsigned long runID;
+};
+
+/**
+ * Name:Value pair type used for passing parameters to NPAPI or javascript
+ * plugins.
+ */
+dictionary MozPluginParameter {
+  DOMString name = "";
+  DOMString value = "";
 };
 
 HTMLObjectElement implements MozImageLoadingContent;

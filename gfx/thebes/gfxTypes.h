@@ -6,7 +6,12 @@
 #ifndef GFX_TYPES_H
 #define GFX_TYPES_H
 
-#include "nsAtomicRefcnt.h"
+#include <stdint.h>
+
+typedef struct _cairo_surface cairo_surface_t;
+typedef struct _cairo_user_data_key cairo_user_data_key_t;
+
+typedef void (*thebes_destroy_func_t) (void *data);
 
 /**
  * Currently needs to be 'double' for Cairo compatibility. Could
@@ -19,7 +24,7 @@ typedef double gfxFloat;
  *
  * eNoBreak       The line has no break opportunities
  * eWordWrapBreak The line has a break opportunity only within a word. With
- *                word-wrap: break-word we will break at this point only if
+ *                overflow-wrap|word-wrap: break-word we will break at this point only if
  *                there are no other break opportunities in the line.
  * eNormalBreak   The line has a break opportunity determined by the standard
  *                line-breaking algorithm.
@@ -33,10 +38,46 @@ typedef double gfxFloat;
  * @see gfxTextRun::BreakAndMeasureText
  * @see nsLineLayout::NotifyOptionalBreakPosition
  */
-enum gfxBreakPriority {
-    eNoBreak       = 0,
-    eWordWrapBreak,
-    eNormalBreak
+enum class gfxBreakPriority {
+  eNoBreak       = 0,
+  eWordWrapBreak,
+  eNormalBreak
+};
+
+enum class gfxSurfaceType {
+  Image,
+  PDF,
+  PS,
+  Xlib,
+  Xcb,
+  Glitz,           // unused, but needed for cairo parity
+  Quartz,
+  Win32,
+  BeOS,
+  DirectFB,        // unused, but needed for cairo parity
+  SVG,
+  Os2,
+  Win32Printing,
+  QuartzImage,
+  Script,
+  QPainter,
+  Recording,
+  VG,
+  GL,
+  DRM,
+  Tee,
+  XML,
+  Skia,
+  Subsurface,
+  Os2Printing,
+  Max
+};
+
+enum class gfxContentType {
+  COLOR       = 0x1000,
+  ALPHA       = 0x2000,
+  COLOR_ALPHA = 0x3000,
+  SENTINEL    = 0xffff
 };
 
 #endif /* GFX_TYPES_H */

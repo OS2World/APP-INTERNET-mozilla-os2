@@ -25,9 +25,9 @@
 
 #include "nsGTKToolkit.h"
 
-NS_IMPL_ISUPPORTS2(nsGTKRemoteService,
-                   nsIRemoteService,
-                   nsIObserver)
+NS_IMPL_ISUPPORTS(nsGTKRemoteService,
+                  nsIRemoteService,
+                  nsIObserver)
 
 NS_IMETHODIMP
 nsGTKRemoteService::Startup(const char* aAppName, const char* aProfileName)
@@ -43,34 +43,18 @@ nsGTKRemoteService::Startup(const char* aAppName, const char* aProfileName)
   gtk_widget_realize(mServerWindow);
   HandleCommandsFor(mServerWindow, nullptr);
 
-  if (!mWindows.IsInitialized())
-    mWindows.Init();
-
-  mWindows.EnumerateRead(StartupHandler, this);
+  for (auto iter = mWindows.Iter(); !iter.Done(); iter.Next()) {
+    HandleCommandsFor(iter.Key(), iter.UserData());
+  }
 
   return NS_OK;
 }
 
-PLDHashOperator
-nsGTKRemoteService::StartupHandler(GtkWidget* aKey,
-                                   nsIWeakReference* aData,
-                                   void* aClosure)
-{
-  GtkWidget* widget = (GtkWidget*) aKey;
-  nsGTKRemoteService* aThis = (nsGTKRemoteService*) aClosure;
-
-  aThis->HandleCommandsFor(widget, aData);
-  return PL_DHASH_NEXT;
-}
-
-static nsIWidget* GetMainWidget(nsIDOMWindow* aWindow)
+static nsIWidget* GetMainWidget(nsPIDOMWindowInner* aWindow)
 {
   // get the native window for this instance
-  nsCOMPtr<nsPIDOMWindow> window(do_QueryInterface(aWindow));
-  NS_ENSURE_TRUE(window, nullptr);
-
   nsCOMPtr<nsIBaseWindow> baseWindow
-    (do_QueryInterface(window->GetDocShell()));
+    (do_QueryInterface(aWindow->GetDocShell()));
   NS_ENSURE_TRUE(baseWindow, nullptr);
 
   nsCOMPtr<nsIWidget> mainWidget;
@@ -79,9 +63,9 @@ static nsIWidget* GetMainWidget(nsIDOMWindow* aWindow)
 }
 
 NS_IMETHODIMP
-nsGTKRemoteService::RegisterWindow(nsIDOMWindow* aWindow)
+nsGTKRemoteService::RegisterWindow(mozIDOMWindow* aWindow)
 {
-  nsIWidget* mainWidget = GetMainWidget(aWindow);
+  nsIWidget* mainWidget = GetMainWidget(nsPIDOMWindowInner::From(aWindow));
   NS_ENSURE_TRUE(mainWidget, NS_ERROR_FAILURE);
 
   GtkWidget* widget =
@@ -90,9 +74,6 @@ nsGTKRemoteService::RegisterWindow(nsIDOMWindow* aWindow)
 
   nsCOMPtr<nsIWeakReference> weak = do_GetWeakReference(aWindow);
   NS_ENSURE_TRUE(weak, NS_ERROR_FAILURE);
-
-  if (!mWindows.IsInitialized())
-    mWindows.Init();
 
   mWindows.Put(widget, weak);
 
@@ -182,13 +163,13 @@ NS_GENERIC_FACTORY_CONSTRUCTOR(nsGTKRemoteService)
 NS_DEFINE_NAMED_CID(NS_REMOTESERVICE_CID);
 
 static const mozilla::Module::CIDEntry kRemoteCIDs[] = {
-  { &kNS_REMOTESERVICE_CID, false, NULL, nsGTKRemoteServiceConstructor },
-  { NULL }
+  { &kNS_REMOTESERVICE_CID, false, nullptr, nsGTKRemoteServiceConstructor },
+  { nullptr }
 };
 
 static const mozilla::Module::ContractIDEntry kRemoteContracts[] = {
   { "@mozilla.org/toolkit/remote-service;1", &kNS_REMOTESERVICE_CID },
-  { NULL }
+  { nullptr }
 };
 
 static const mozilla::Module kRemoteModule = {

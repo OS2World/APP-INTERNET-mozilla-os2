@@ -14,6 +14,9 @@ package-compare:
 stage-package:
 	@$(MAKE) -C browser/installer stage-package
 
+sdk:
+	@$(MAKE) -C browser/installer make-sdk
+
 install::
 	@$(MAKE) -C browser/installer install
 
@@ -42,16 +45,11 @@ ifdef ENABLE_TESTS
 # Implemented in testing/testsuite-targets.mk
 
 mochitest-browser-chrome:
-	$(RUN_MOCHITEST) --browser-chrome
+	$(RUN_MOCHITEST) --flavor=browser
 	$(CHECK_TEST_ERROR)
 
 mochitest:: mochitest-browser-chrome
 
 .PHONY: mochitest-browser-chrome
-
-mochitest-metro-chrome:
-	$(RUN_MOCHITEST) --metro-immersive --browser-chrome
-	$(CHECK_TEST_ERROR)
-
 
 endif

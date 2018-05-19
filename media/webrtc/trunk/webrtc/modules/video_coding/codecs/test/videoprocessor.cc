@@ -8,16 +8,35 @@
  *  be found in the AUTHORS file in the root of the source tree.
  */
 
-#include "modules/video_coding/codecs/test/videoprocessor.h"
+#include "webrtc/modules/video_coding/codecs/test/videoprocessor.h"
 
-#include <cassert>
-#include <cstring>
+#include <assert.h>
+#include <string.h>
+
 #include <limits>
+#include <vector>
 
-#include "system_wrappers/interface/cpu_info.h"
+#include "webrtc/system_wrappers/interface/cpu_info.h"
 
 namespace webrtc {
 namespace test {
+
+TestConfig::TestConfig()
+    : name(""),
+      description(""),
+      test_number(0),
+      input_filename(""),
+      output_filename(""),
+      output_dir("out"),
+      networking_config(),
+      exclude_frame_types(kExcludeOnlyFirstKeyFrame),
+      frame_length_in_bytes(0),
+      use_single_core(false),
+      keyframe_interval(0),
+      codec_settings(NULL),
+      verbose(true) {}
+
+TestConfig::~TestConfig() {}
 
 VideoProcessorImpl::VideoProcessorImpl(webrtc::VideoEncoder* encoder,
                                        webrtc::VideoDecoder* decoder,
@@ -59,9 +78,9 @@ bool VideoProcessorImpl::Init() {
   bit_rate_factor_ = config_.codec_settings->maxFramerate * 0.001 * 8;  // bits
 
   // Initialize data structures used by the encoder/decoder APIs
-  int frame_length_in_bytes = frame_reader_->FrameLength();
-  source_buffer_ = new WebRtc_UWord8[frame_length_in_bytes];
-  last_successful_frame_buffer_ = new WebRtc_UWord8[frame_length_in_bytes];
+  size_t frame_length_in_bytes = frame_reader_->FrameLength();
+  source_buffer_ = new uint8_t[frame_length_in_bytes];
+  last_successful_frame_buffer_ = new uint8_t[frame_length_in_bytes];
   // Set fixed properties common for all frames.
   // To keep track of spatial resize actions by encoder.
   last_encoder_frame_width_ = config_.codec_settings->width;
@@ -70,7 +89,7 @@ bool VideoProcessorImpl::Init() {
   // Setup required callbacks for the encoder/decoder:
   encode_callback_ = new VideoProcessorEncodeCompleteCallback(this);
   decode_callback_ = new VideoProcessorDecodeCompleteCallback(this);
-  WebRtc_Word32 register_result =
+  int32_t register_result =
       encoder_->RegisterEncodeCompleteCallback(encode_callback_);
   if (register_result != WEBRTC_VIDEO_CODEC_OK) {
     fprintf(stderr, "Failed to register encode complete callback, return code: "
@@ -84,11 +103,11 @@ bool VideoProcessorImpl::Init() {
     return false;
   }
   // Init the encoder and decoder
-  WebRtc_UWord32 nbr_of_cores = 1;
+  uint32_t nbr_of_cores = 1;
   if (!config_.use_single_core) {
     nbr_of_cores = CpuInfo::DetectNumberOfCores();
   }
-  WebRtc_Word32 init_result =
+  int32_t init_result =
       encoder_->InitEncode(config_.codec_settings, nbr_of_cores,
                            config_.networking_config.max_payload_size_in_bytes);
   if (init_result != WEBRTC_VIDEO_CODEC_OK) {
@@ -138,7 +157,7 @@ void VideoProcessorImpl::SetRates(int bit_rate, int frame_rate) {
   num_spatial_resizes_ = 0;
 }
 
-int VideoProcessorImpl::EncodedFrameSize() {
+size_t VideoProcessorImpl::EncodedFrameSize() {
   return encoded_frame_size_;
 }
 
@@ -162,17 +181,10 @@ bool VideoProcessorImpl::ProcessFrame(int frame_number) {
   }
   if (frame_reader_->ReadFrame(source_buffer_)) {
     // Copy the source frame to the newly read frame data.
-    int size_y = config_.codec_settings->width * config_.codec_settings->height;
-    int half_width = (config_.codec_settings->width + 1) / 2;
-    int half_height = (config_.codec_settings->height + 1) / 2;
-    int size_uv = half_width * half_height;
-    source_frame_.CreateFrame(size_y, source_buffer_,
-                              size_uv, source_buffer_ + size_y,
-                              size_uv, source_buffer_ + size_y + size_uv,
+    source_frame_.CreateFrame(source_buffer_,
                               config_.codec_settings->width,
                               config_.codec_settings->height,
-                              config_.codec_settings->width,
-                              half_width, half_width);
+                              kVideoRotation_0);
 
     // Ensure we have a new statistics data object we can fill:
     FrameStatistic& stat = stats_->NewFrame(frame_number);
@@ -191,8 +203,7 @@ bool VideoProcessorImpl::ProcessFrame(int frame_number) {
     // For dropped frames, we regard them as zero size encoded frames.
     encoded_frame_size_ = 0;
 
-    WebRtc_Word32 encode_result = encoder_->Encode(source_frame_, NULL,
-                                                   &frame_types);
+    int32_t encode_result = encoder_->Encode(source_frame_, NULL, &frame_types);
 
     if (encode_result != WEBRTC_VIDEO_CODEC_OK) {
       fprintf(stderr, "Failed to encode frame %d, return code: %d\n",
@@ -205,12 +216,12 @@ bool VideoProcessorImpl::ProcessFrame(int frame_number) {
   }
 }
 
-void VideoProcessorImpl::FrameEncoded(EncodedImage* encoded_image) {
+void VideoProcessorImpl::FrameEncoded(const EncodedImage& encoded_image) {
   // Timestamp is frame number, so this gives us #dropped frames.
-  int num_dropped_from_prev_encode =  encoded_image->_timeStamp -
+  int num_dropped_from_prev_encode =  encoded_image._timeStamp -
       prev_time_stamp_ - 1;
   num_dropped_frames_ +=  num_dropped_from_prev_encode;
-  prev_time_stamp_ =  encoded_image->_timeStamp;
+  prev_time_stamp_ =  encoded_image._timeStamp;
   if (num_dropped_from_prev_encode > 0) {
     // For dropped frames, we write out the last decoded frame to avoid getting
     // out of sync for the computation of PSNR and SSIM.
@@ -220,25 +231,25 @@ void VideoProcessorImpl::FrameEncoded(EncodedImage* encoded_image) {
   }
   // Frame is not dropped, so update the encoded frame size
   // (encoder callback is only called for non-zero length frames).
-  encoded_frame_size_ = encoded_image->_length;
+  encoded_frame_size_ = encoded_image._length;
 
   TickTime encode_stop = TickTime::Now();
-  int frame_number = encoded_image->_timeStamp;
+  int frame_number = encoded_image._timeStamp;
   FrameStatistic& stat = stats_->stats_[frame_number];
   stat.encode_time_in_us = GetElapsedTimeMicroseconds(encode_start_,
                                                       encode_stop);
   stat.encoding_successful = true;
-  stat.encoded_frame_length_in_bytes = encoded_image->_length;
-  stat.frame_number = encoded_image->_timeStamp;
-  stat.frame_type = encoded_image->_frameType;
-  stat.bit_rate_in_kbps = encoded_image->_length * bit_rate_factor_;
-  stat.total_packets = encoded_image->_length /
+  stat.encoded_frame_length_in_bytes = encoded_image._length;
+  stat.frame_number = encoded_image._timeStamp;
+  stat.frame_type = encoded_image._frameType;
+  stat.bit_rate_in_kbps = encoded_image._length * bit_rate_factor_;
+  stat.total_packets = encoded_image._length /
       config_.networking_config.packet_size_in_bytes + 1;
 
   // Perform packet loss if criteria is fullfilled:
   bool exclude_this_frame = false;
   // Only keyframes can be excluded
-  if (encoded_image->_frameType == kKeyFrame) {
+  if (encoded_image._frameType == kKeyFrame) {
     switch (config_.exclude_frame_types) {
       case kExcludeOnlyFirstKeyFrame:
         if (!first_key_frame_has_been_excluded_) {
@@ -253,9 +264,15 @@ void VideoProcessorImpl::FrameEncoded(EncodedImage* encoded_image) {
         assert(false);
     }
   }
+  rtc::scoped_ptr<uint8_t[]> copied_buffer(new uint8_t[encoded_image._length]);
+  memcpy(copied_buffer.get(), encoded_image._buffer, encoded_image._length);
+  EncodedImage copied_image;
+  memcpy(&copied_image, &encoded_image, sizeof(copied_image));
+  copied_image._size = copied_image._length;
+  copied_image._buffer = copied_buffer.get();
   if (!exclude_this_frame) {
     stat.packets_dropped =
-          packet_manipulator_->ManipulatePackets(encoded_image);
+          packet_manipulator_->ManipulatePackets(&copied_image);
   }
 
   // Keep track of if frames are lost due to packet loss so we can tell
@@ -263,8 +280,8 @@ void VideoProcessorImpl::FrameEncoded(EncodedImage* encoded_image) {
   decode_start_ = TickTime::Now();
   // TODO(kjellander): Pass fragmentation header to the decoder when
   // CL 172001 has been submitted and PacketManipulator supports this.
-  WebRtc_Word32 decode_result = decoder_->Decode(*encoded_image,
-                                                 last_frame_missing_, NULL);
+  int32_t decode_result =
+      decoder_->Decode(copied_image, last_frame_missing_, NULL);
   stat.decode_return_code = decode_result;
   if (decode_result != WEBRTC_VIDEO_CODEC_OK) {
     // Write the last successful frame the output file to avoid getting it out
@@ -272,7 +289,7 @@ void VideoProcessorImpl::FrameEncoded(EncodedImage* encoded_image) {
     frame_writer_->WriteFrame(last_successful_frame_buffer_);
   }
   // save status for losses so we can inform the decoder for the next frame:
-  last_frame_missing_ = encoded_image->_length == 0;
+  last_frame_missing_ = copied_image._length == 0;
 }
 
 void VideoProcessorImpl::FrameDecoded(const I420VideoFrame& image) {
@@ -312,11 +329,12 @@ void VideoProcessorImpl::FrameDecoded(const I420VideoFrame& image) {
               frame_number, ret_val);
     }
     // TODO(mikhal): Extracting the buffer for now - need to update test.
-    int length = CalcBufferSize(kI420, up_image.width(), up_image.height());
-    scoped_array<uint8_t> image_buffer(new uint8_t[length]);
-    length = ExtractBuffer(up_image, length, image_buffer.get());
+    size_t length = CalcBufferSize(kI420, up_image.width(), up_image.height());
+    rtc::scoped_ptr<uint8_t[]> image_buffer(new uint8_t[length]);
+    int extracted_length = ExtractBuffer(up_image, length, image_buffer.get());
+    assert(extracted_length > 0);
     // Update our copy of the last successful frame:
-    memcpy(last_successful_frame_buffer_, image_buffer.get(), length);
+    memcpy(last_successful_frame_buffer_, image_buffer.get(), extracted_length);
     bool write_success = frame_writer_->WriteFrame(image_buffer.get());
     assert(write_success);
     if (!write_success) {
@@ -325,11 +343,11 @@ void VideoProcessorImpl::FrameDecoded(const I420VideoFrame& image) {
   } else {  // No resize.
     // Update our copy of the last successful frame:
     // TODO(mikhal): Add as a member function, so won't be allocated per frame.
-    int length = CalcBufferSize(kI420,image.width(), image.height());
-    scoped_array<uint8_t> image_buffer(new uint8_t[length]);
-    length = ExtractBuffer(image, length, image_buffer.get());
-    assert(length > 0);
-    memcpy(last_successful_frame_buffer_, image_buffer.get(), length);
+    size_t length = CalcBufferSize(kI420, image.width(), image.height());
+    rtc::scoped_ptr<uint8_t[]> image_buffer(new uint8_t[length]);
+    int extracted_length = ExtractBuffer(image, length, image_buffer.get());
+    assert(extracted_length > 0);
+    memcpy(last_successful_frame_buffer_, image_buffer.get(), extracted_length);
 
     bool write_success = frame_writer_->WriteFrame(image_buffer.get());
     assert(write_success);
@@ -341,7 +359,7 @@ void VideoProcessorImpl::FrameDecoded(const I420VideoFrame& image) {
 
 int VideoProcessorImpl::GetElapsedTimeMicroseconds(
     const webrtc::TickTime& start, const webrtc::TickTime& stop) {
-  WebRtc_UWord64 encode_time = (stop - start).Microseconds();
+  uint64_t encode_time = (stop - start).Microseconds();
   assert(encode_time <
          static_cast<unsigned int>(std::numeric_limits<int>::max()));
   return static_cast<int>(encode_time);
@@ -378,15 +396,15 @@ const char* VideoCodecTypeToStr(webrtc::VideoCodecType e) {
 }
 
 // Callbacks
-WebRtc_Word32
+int32_t
 VideoProcessorImpl::VideoProcessorEncodeCompleteCallback::Encoded(
-    EncodedImage& encoded_image,
+    const EncodedImage& encoded_image,
     const webrtc::CodecSpecificInfo* codec_specific_info,
     const webrtc::RTPFragmentationHeader* fragmentation) {
-  video_processor_->FrameEncoded(&encoded_image);  // Forward to parent class.
+  video_processor_->FrameEncoded(encoded_image);  // Forward to parent class.
   return 0;
 }
-WebRtc_Word32
+int32_t
 VideoProcessorImpl::VideoProcessorDecodeCompleteCallback::Decoded(
     I420VideoFrame& image) {
   video_processor_->FrameDecoded(image);  // forward to parent class

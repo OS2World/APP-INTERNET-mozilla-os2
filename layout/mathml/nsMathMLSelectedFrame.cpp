@@ -3,22 +3,19 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#include "nsCOMPtr.h"
-#include "nsFrame.h"
-#include "nsPresContext.h"
-#include "nsStyleContext.h"
-#include "nsStyleConsts.h"
 #include "nsMathMLSelectedFrame.h"
 #include "nsDisplayList.h"
+
+using namespace mozilla;
 
 nsMathMLSelectedFrame::~nsMathMLSelectedFrame()
 {
 }
 
 void
-nsMathMLSelectedFrame::Init(nsIContent*      aContent,
-                            nsIFrame*        aParent,
-                            nsIFrame*        aPrevInFlow)
+nsMathMLSelectedFrame::Init(nsIContent*       aContent,
+                            nsContainerFrame* aParent,
+                            nsIFrame*         aPrevInFlow)
 {
   // Init our local attributes
   mInvalidMarkup = false;
@@ -61,16 +58,14 @@ nsMathMLSelectedFrame::ChildListChanged(int32_t aModType)
   return nsMathMLContainerFrame::ChildListChanged(aModType);
 }
 
-NS_IMETHODIMP
+void
 nsMathMLSelectedFrame::SetInitialChildList(ChildListID     aListID,
                                            nsFrameList&    aChildList)
 {
-  nsresult rv = nsMathMLContainerFrame::SetInitialChildList(aListID,
-                                                            aChildList);
+  nsMathMLContainerFrame::SetInitialChildList(aListID, aChildList);
   // This very first call to GetSelectedFrame() will cause us to be marked as an
   // embellished operator if the selected child is an embellished operator
   GetSelectedFrame();
-  return rv;
 }
 
 //  Only paint the selected child...
@@ -103,56 +98,91 @@ nsMathMLSelectedFrame::BuildDisplayList(nsDisplayListBuilder*   aBuilder,
 #endif
 }
 
+/* virtual */
+LogicalSize
+nsMathMLSelectedFrame::ComputeSize(nsRenderingContext *aRenderingContext,
+                                   WritingMode aWM,
+                                   const LogicalSize& aCBSize,
+                                   nscoord aAvailableISize,
+                                   const LogicalSize& aMargin,
+                                   const LogicalSize& aBorder,
+                                   const LogicalSize& aPadding,
+                                   ComputeSizeFlags aFlags)
+{
+  nsIFrame* childFrame = GetSelectedFrame();
+  if (childFrame) {
+    // Delegate size computation to the child frame.
+    // Try to account for border/padding/margin on this frame and the child,
+    // though we don't really support them during reflow anyway...
+    nscoord availableISize = aAvailableISize - aBorder.ISize(aWM) -
+        aPadding.ISize(aWM) - aMargin.ISize(aWM);
+    LogicalSize cbSize = aCBSize - aBorder - aPadding - aMargin;
+    SizeComputationInput offsetState(childFrame, aRenderingContext, aWM,
+                                 availableISize);
+    LogicalSize size =
+        childFrame->ComputeSize(aRenderingContext, aWM, cbSize,
+            availableISize, offsetState.ComputedLogicalMargin().Size(aWM),
+            offsetState.ComputedLogicalBorderPadding().Size(aWM) -
+            offsetState.ComputedLogicalPadding().Size(aWM),
+            offsetState.ComputedLogicalPadding().Size(aWM),
+            aFlags);
+    return size + offsetState.ComputedLogicalBorderPadding().Size(aWM);
+  }
+  return LogicalSize(aWM);
+}
+
 // Only reflow the selected child ...
-NS_IMETHODIMP
+void
 nsMathMLSelectedFrame::Reflow(nsPresContext*          aPresContext,
-                              nsHTMLReflowMetrics&     aDesiredSize,
-                              const nsHTMLReflowState& aReflowState,
+                              ReflowOutput&     aDesiredSize,
+                              const ReflowInput& aReflowInput,
                               nsReflowStatus&          aStatus)
 {
-  nsresult rv = NS_OK;
+  MarkInReflow();
+  mPresentationData.flags &= ~NS_MATHML_ERROR;
   aStatus = NS_FRAME_COMPLETE;
-  aDesiredSize.width = aDesiredSize.height = 0;
-  aDesiredSize.ascent = 0;
+  aDesiredSize.ClearSize();
+  aDesiredSize.SetBlockStartAscent(0);
   mBoundingMetrics = nsBoundingMetrics();
   nsIFrame* childFrame = GetSelectedFrame();
   if (childFrame) {
-    nsSize availSize(aReflowState.ComputedWidth(), NS_UNCONSTRAINEDSIZE);
-    nsHTMLReflowState childReflowState(aPresContext, aReflowState,
+    WritingMode wm = childFrame->GetWritingMode();
+    LogicalSize availSize = aReflowInput.ComputedSize(wm);
+    availSize.BSize(wm) = NS_UNCONSTRAINEDSIZE;
+    ReflowInput childReflowInput(aPresContext, aReflowInput,
                                        childFrame, availSize);
-    rv = ReflowChild(childFrame, aPresContext, aDesiredSize,
-                     childReflowState, aStatus);
+    ReflowChild(childFrame, aPresContext, aDesiredSize,
+                childReflowInput, aStatus);
     SaveReflowAndBoundingMetricsFor(childFrame, aDesiredSize,
                                     aDesiredSize.mBoundingMetrics);
     mBoundingMetrics = aDesiredSize.mBoundingMetrics;
   }
-  FinalizeReflow(*aReflowState.rendContext, aDesiredSize);
-  NS_FRAME_SET_TRUNCATION(aStatus, aReflowState, aDesiredSize);
-  return rv;
+  FinalizeReflow(aReflowInput.mRenderingContext->GetDrawTarget(), aDesiredSize);
+  NS_FRAME_SET_TRUNCATION(aStatus, aReflowInput, aDesiredSize);
 }
 
 // Only place the selected child ...
 /* virtual */ nsresult
-nsMathMLSelectedFrame::Place(nsRenderingContext& aRenderingContext,
+nsMathMLSelectedFrame::Place(DrawTarget*          aDrawTarget,
                              bool                 aPlaceOrigin,
-                             nsHTMLReflowMetrics& aDesiredSize)
+                             ReflowOutput& aDesiredSize)
 {
   nsIFrame* childFrame = GetSelectedFrame();
 
   if (mInvalidMarkup) {
-    return ReflowError(aRenderingContext, aDesiredSize);
+    return ReflowError(aDrawTarget, aDesiredSize);
   }
 
-  aDesiredSize.width = aDesiredSize.height = 0;
-  aDesiredSize.ascent = 0;
+  aDesiredSize.ClearSize();
+  aDesiredSize.SetBlockStartAscent(0);
   mBoundingMetrics = nsBoundingMetrics();
   if (childFrame) {
     GetReflowAndBoundingMetricsFor(childFrame, aDesiredSize, mBoundingMetrics);
     if (aPlaceOrigin) {
-      FinishReflowChild(childFrame, PresContext(), nullptr, aDesiredSize, 0, 0, 0);
+      FinishReflowChild(childFrame, PresContext(), aDesiredSize, nullptr, 0, 0, 0);
     }
     mReference.x = 0;
-    mReference.y = aDesiredSize.ascent;
+    mReference.y = aDesiredSize.BlockStartAscent();
   }
   aDesiredSize.mBoundingMetrics = mBoundingMetrics;
   return NS_OK;

@@ -8,6 +8,7 @@
 {
   'variables' : {
     'build_with_gonk%': 0,
+    'have_ethtool_cmd_speed_hi%': 1
   },
   'targets' : [
       {
@@ -33,9 +34,6 @@
               "./src/net",
               "./src/stun",
               "./src/util",
-
-	      # Mozilla, hopefully towards the end
-             '$(DEPTH)/dist/include',
           ],
 
           'sources' : [
@@ -68,20 +66,34 @@
                 # Net
                 "./src/net/nr_resolver.c",
                 "./src/net/nr_resolver.h",
+                "./src/net/nr_socket_wrapper.c",
+                "./src/net/nr_socket_wrapper.h",
+                "./src/net/nr_proxy_tunnel.c",
+                "./src/net/nr_proxy_tunnel.h",
                 "./src/net/nr_socket.c",
                 "./src/net/nr_socket.h",
                 #"./src/net/nr_socket_local.c",
                 "./src/net/nr_socket_local.h",
+                "./src/net/nr_socket_multi_tcp.c",
+                "./src/net/nr_socket_multi_tcp.h",
                 "./src/net/transport_addr.c",
                 "./src/net/transport_addr.h",
                 "./src/net/transport_addr_reg.c",
                 "./src/net/transport_addr_reg.h",
+                "./src/net/local_addr.c",
+                "./src/net/local_addr.h",
+                "./src/net/nr_interface_prioritizer.c",
+                "./src/net/nr_interface_prioritizer.h",
 
                 # STUN
                 "./src/stun/addrs.c",
                 "./src/stun/addrs.h",
+                "./src/stun/ifaddrs-android.c",
+                "./src/stun/ifaddrs-android.h",
                 "./src/stun/nr_socket_turn.c",
                 "./src/stun/nr_socket_turn.h",
+                "./src/stun/nr_socket_buffered_stun.c",
+                "./src/stun/nr_socket_buffered_stun.h",
                 "./src/stun/stun.h",
                 "./src/stun/stun_build.c",
                 "./src/stun/stun_build.h",
@@ -113,7 +125,7 @@
 
 
           ],
-          
+
           'defines' : [
               'SANITY_CHECKS',
               'USE_TURN',
@@ -124,7 +136,7 @@
               'USE_TURN',
               'NR_SOCKET_IS_VOID_PTR',
               'restrict=',
-	      'R_PLATFORM_INT_TYPES=\'"mozilla/StandardInteger.h"\'',
+	      'R_PLATFORM_INT_TYPES=<stdint.h>',
 	      'R_DEFINED_INT2=int16_t',
 	      'R_DEFINED_UINT2=uint16_t',
 	      'R_DEFINED_INT4=int32_t',
@@ -132,10 +144,20 @@
 	      'R_DEFINED_INT8=int64_t',
 	      'R_DEFINED_UINT8=uint64_t',
           ],
-          
+
           'conditions' : [
-              ## Mac
-              [ 'OS == "mac"', {
+              ## Mac and BSDs
+              [ 'OS == "mac" or OS == "ios"', {
+                'defines' : [
+                    'DARWIN',
+                ],
+              }],
+              [ 'os_bsd == 1', {
+                'defines' : [
+                    'BSD',
+                ],
+              }],
+              [ 'OS == "mac" or OS == "ios" or os_bsd == 1', {
                 'cflags_mozilla': [
                     '-Wall',
                     '-Wno-parentheses',
@@ -143,7 +165,6 @@
                     '-Wmissing-prototypes',
                  ],
                  'defines' : [
-                     'DARWIN',
                      'HAVE_LIBM=1',
                      'HAVE_STRDUP=1',
                      'HAVE_STRLCPY=1',
@@ -152,17 +173,17 @@
                      'NEW_STDIO'
                      'RETSIGTYPE=void',
                      'TIME_WITH_SYS_TIME_H=1',
-                     '__UNUSED__="__attribute__((unused))"',
+                     '__UNUSED__=__attribute__((unused))',
                  ],
 
 		 'include_dirs': [
 		     '../nrappkit/src/port/darwin/include'
 		 ],
-		 
+
 		 'sources': [
 		 ],
               }],
-              
+
               ## Win
               [ 'OS == "win"', {
                 'defines' : [
@@ -200,13 +221,13 @@
                      'NEW_STDIO'
                      'RETSIGTYPE=void',
                      'TIME_WITH_SYS_TIME_H=1',
-                     '__UNUSED__="__attribute__((unused))"',
+                     '__UNUSED__=__attribute__((unused))',
                  ],
 
 		 'include_dirs': [
 		     '../nrappkit/src/port/linux/include'
 		 ],
-		 
+
 		 'sources': [
 		 ],
               }],
@@ -220,6 +241,11 @@
              ['build_with_gonk==1', {
                'defines': [
                   "USE_PLATFORM_NR_STUN_GET_ADDRS",
+               ]
+             }],
+             ['have_ethtool_cmd_speed_hi==0', {
+               'defines': [
+                  "DONT_HAVE_ETHTOOL_SPEED_HI",
                ]
              }]
           ],

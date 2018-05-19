@@ -10,22 +10,21 @@
 enum RTCSdpType {
   "offer",
   "pranswer",
-  "answer"
+  "answer",
+  "rollback"
 };
 
 dictionary RTCSessionDescriptionInit {
   RTCSdpType? type = null;
-  DOMString? sdp = null;
+  DOMString? sdp = "";
 };
 
 [Pref="media.peerconnection.enabled",
  JSImplementation="@mozilla.org/dom/rtcsessiondescription;1",
  Constructor(optional RTCSessionDescriptionInit descriptionInitDict)]
-interface mozRTCSessionDescription {
+interface RTCSessionDescription {
   attribute RTCSdpType? type;
   attribute DOMString? sdp;
 
-  // Bug 863402 serializer support workaround
-  //serializer = {attribute};
-  object toJSON();
+  jsonifier;
 };

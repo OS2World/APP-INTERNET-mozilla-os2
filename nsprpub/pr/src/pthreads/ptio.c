@@ -2854,6 +2854,7 @@ static PRStatus pt_GetSocketOption(PRFileDesc *fd, PRSocketOptionData *data)
             case PR_SockOpt_Keepalive:
             case PR_SockOpt_NoDelay:
             case PR_SockOpt_Broadcast:
+            case PR_SockOpt_Reuseport:
             {
                 PRIntn value;
                 length = sizeof(PRIntn);
@@ -2973,6 +2974,7 @@ static PRStatus pt_SetSocketOption(PRFileDesc *fd, const PRSocketOptionData *dat
             case PR_SockOpt_Keepalive:
             case PR_SockOpt_NoDelay:
             case PR_SockOpt_Broadcast:
+            case PR_SockOpt_Reuseport:
             {
                 PRIntn value = (data->value.reuse_addr) ? 1 : 0;
                 rv = setsockopt(
@@ -3400,7 +3402,7 @@ PR_EXTERN(PRStatus) _pr_push_ipv6toipv4_layer(PRFileDesc *fd);
 extern PRBool _pr_ipv6_is_present(void);
 PR_IMPLEMENT(PRBool) _pr_test_ipv6_socket()
 {
-PRInt32 osfd;
+    int osfd;
 
 #if defined(DARWIN)
     /*
@@ -3763,7 +3765,7 @@ static PRInt32 _pr_poll_with_poll(
      * We use these variables to figure out how much time has
      * elapsed and how much of the timeout still remains.
      */
-    PRIntervalTime start, elapsed, remaining;
+    PRIntervalTime start = 0, elapsed, remaining;
 
     if (pt_TestAbort()) return -1;
 
@@ -4017,7 +4019,7 @@ static PRInt32 _pr_poll_with_select(
      * We use these variables to figure out how much time has
      * elapsed and how much of the timeout still remains.
      */
-    PRIntervalTime start, elapsed, remaining;
+    PRIntervalTime start = 0, elapsed, remaining;
 
     if (pt_TestAbort()) return -1;
 
@@ -4917,7 +4919,7 @@ PR_IMPLEMENT(PRInt32) PR_Select(
      * We use these variables to figure out how much time has elapsed
      * and how much of the timeout still remains.
      */
-    PRIntervalTime start, elapsed, remaining;
+    PRIntervalTime start = 0, elapsed, remaining;
 
     static PRBool unwarned = PR_TRUE;
     if (unwarned) unwarned = _PR_Obsolete( "PR_Select", "PR_Poll");

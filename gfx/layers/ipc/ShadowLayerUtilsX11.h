@@ -8,15 +8,21 @@
 #ifndef mozilla_layers_ShadowLayerUtilsX11_h
 #define mozilla_layers_ShadowLayerUtilsX11_h
 
-#include <X11/extensions/Xrender.h>
-#include <X11/Xlib.h>
-
 #include "ipc/IPCMessageUtils.h"
+#include "mozilla/GfxMessageUtils.h"
+#include "nsCOMPtr.h"                   // for already_AddRefed
 
 #define MOZ_HAVE_SURFACEDESCRIPTORX11
 #define MOZ_HAVE_PLATFORM_SPECIFIC_LAYER_BUFFERS
 
+typedef unsigned long XID;
+typedef XID Drawable;
+
 class gfxXlibSurface;
+
+namespace IPC {
+class Message;
+}
 
 namespace mozilla {
 namespace layers {
@@ -25,10 +31,10 @@ struct SurfaceDescriptorX11 {
   SurfaceDescriptorX11()
   { }
 
-  SurfaceDescriptorX11(gfxXlibSurface* aSurf);
+  explicit SurfaceDescriptorX11(gfxXlibSurface* aSurf, bool aForwardGLX = false);
 
   SurfaceDescriptorX11(Drawable aDrawable, XID aFormatID,
-                       const gfxIntSize& aSize);
+                       const gfx::IntSize& aSize);
 
   // Default copy ctor and operator= are OK
 
@@ -43,9 +49,10 @@ struct SurfaceDescriptorX11 {
 
   already_AddRefed<gfxXlibSurface> OpenForeign() const;
 
-  Drawable mId;
-  XID mFormat; // either a PictFormat or VisualID
-  gfxIntSize mSize;
+  MOZ_INIT_OUTSIDE_CTOR Drawable mId;
+  MOZ_INIT_OUTSIDE_CTOR XID mFormat; // either a PictFormat or VisualID
+  MOZ_INIT_OUTSIDE_CTOR gfx::IntSize mSize;
+  MOZ_INIT_OUTSIDE_CTOR Drawable mGLXPixmap; // used to prevent multiple bindings to the same GLXPixmap in-process
 };
 
 } // namespace layers
@@ -61,12 +68,15 @@ struct ParamTraits<mozilla::layers::SurfaceDescriptorX11> {
     WriteParam(aMsg, aParam.mId);
     WriteParam(aMsg, aParam.mSize);
     WriteParam(aMsg, aParam.mFormat);
+    WriteParam(aMsg, aParam.mGLXPixmap);
   }
 
-  static bool Read(const Message* aMsg, void** aIter, paramType* aResult) {
+  static bool Read(const Message* aMsg, PickleIterator* aIter, paramType* aResult) {
     return (ReadParam(aMsg, aIter, &aResult->mId) &&
             ReadParam(aMsg, aIter, &aResult->mSize) &&
-            ReadParam(aMsg, aIter, &aResult->mFormat));
+            ReadParam(aMsg, aIter, &aResult->mFormat) &&
+            ReadParam(aMsg, aIter, &aResult->mGLXPixmap)
+            );
   }
 };
 

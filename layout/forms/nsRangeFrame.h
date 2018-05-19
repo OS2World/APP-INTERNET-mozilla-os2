@@ -8,12 +8,13 @@
 
 #include "mozilla/Attributes.h"
 #include "mozilla/Decimal.h"
+#include "mozilla/EventForwards.h"
 #include "nsContainerFrame.h"
 #include "nsIAnonymousContentCreator.h"
+#include "nsIDOMEventListener.h"
 #include "nsCOMPtr.h"
 
-class nsBaseContentList;
-class nsGUIEvent;
+class nsDisplayRangeFocusRing;
 
 class nsRangeFrame : public nsContainerFrame,
                      public nsIAnonymousContentCreator
@@ -21,8 +22,13 @@ class nsRangeFrame : public nsContainerFrame,
   friend nsIFrame*
   NS_NewRangeFrame(nsIPresShell* aPresShell, nsStyleContext* aContext);
 
-  nsRangeFrame(nsStyleContext* aContext);
+  friend class nsDisplayRangeFocusRing;
+
+  explicit nsRangeFrame(nsStyleContext* aContext);
   virtual ~nsRangeFrame();
+
+  typedef mozilla::CSSPseudoElementType CSSPseudoElementType;
+  typedef mozilla::dom::Element Element;
 
 public:
   NS_DECL_QUERYFRAME_TARGET(nsRangeFrame)
@@ -30,69 +36,89 @@ public:
   NS_DECL_FRAMEARENA_HELPERS
 
   // nsIFrame overrides
-  virtual void Init(nsIContent*      aContent,
-                    nsIFrame*        aParent,
-                    nsIFrame*        aPrevInFlow) MOZ_OVERRIDE;
+  virtual void Init(nsIContent*       aContent,
+                    nsContainerFrame* aParent,
+                    nsIFrame*         aPrevInFlow) override;
 
-  virtual void DestroyFrom(nsIFrame* aDestructRoot) MOZ_OVERRIDE;
+  virtual void DestroyFrom(nsIFrame* aDestructRoot) override;
 
   void BuildDisplayList(nsDisplayListBuilder*   aBuilder,
                         const nsRect&           aDirtyRect,
-                        const nsDisplayListSet& aLists) MOZ_OVERRIDE;
+                        const nsDisplayListSet& aLists) override;
 
-  NS_IMETHOD Reflow(nsPresContext*           aPresContext,
-                    nsHTMLReflowMetrics&     aDesiredSize,
-                    const nsHTMLReflowState& aReflowState,
-                    nsReflowStatus&          aStatus) MOZ_OVERRIDE;
+  virtual void Reflow(nsPresContext*           aPresContext,
+                      ReflowOutput&     aDesiredSize,
+                      const ReflowInput& aReflowInput,
+                      nsReflowStatus&          aStatus) override;
 
-#ifdef DEBUG
-  NS_IMETHOD GetFrameName(nsAString& aResult) const MOZ_OVERRIDE {
+#ifdef DEBUG_FRAME_DUMP
+  virtual nsresult GetFrameName(nsAString& aResult) const override {
     return MakeFrameName(NS_LITERAL_STRING("Range"), aResult);
   }
 #endif
 
-  virtual bool IsLeaf() const MOZ_OVERRIDE { return true; }
+  virtual bool IsLeaf() const override { return true; }
 
 #ifdef ACCESSIBILITY
-  virtual mozilla::a11y::AccType AccessibleType() MOZ_OVERRIDE;
+  virtual mozilla::a11y::AccType AccessibleType() override;
 #endif
 
   // nsIAnonymousContentCreator
-  virtual nsresult CreateAnonymousContent(nsTArray<ContentInfo>& aElements) MOZ_OVERRIDE;
-  virtual void AppendAnonymousContentTo(nsBaseContentList& aElements,
-                                        uint32_t aFilter) MOZ_OVERRIDE;
+  virtual nsresult CreateAnonymousContent(nsTArray<ContentInfo>& aElements) override;
+  virtual void AppendAnonymousContentTo(nsTArray<nsIContent*>& aElements,
+                                        uint32_t aFilter) override;
 
-  NS_IMETHOD AttributeChanged(int32_t  aNameSpaceID,
-                              nsIAtom* aAttribute,
-                              int32_t  aModType) MOZ_OVERRIDE;
+  virtual nsresult AttributeChanged(int32_t  aNameSpaceID,
+                                    nsIAtom* aAttribute,
+                                    int32_t  aModType) override;
 
-  virtual nsSize ComputeAutoSize(nsRenderingContext *aRenderingContext,
-                                 nsSize aCBSize, nscoord aAvailableWidth,
-                                 nsSize aMargin, nsSize aBorder,
-                                 nsSize aPadding, bool aShrinkWrap) MOZ_OVERRIDE;
+  virtual mozilla::LogicalSize
+  ComputeAutoSize(nsRenderingContext*         aRenderingContext,
+                  mozilla::WritingMode        aWM,
+                  const mozilla::LogicalSize& aCBSize,
+                  nscoord                     aAvailableISize,
+                  const mozilla::LogicalSize& aMargin,
+                  const mozilla::LogicalSize& aBorder,
+                  const mozilla::LogicalSize& aPadding,
+                  ComputeSizeFlags            aFlags) override;
 
-  virtual nscoord GetMinWidth(nsRenderingContext *aRenderingContext) MOZ_OVERRIDE;
-  virtual nscoord GetPrefWidth(nsRenderingContext *aRenderingContext) MOZ_OVERRIDE;
+  virtual nscoord GetMinISize(nsRenderingContext *aRenderingContext) override;
+  virtual nscoord GetPrefISize(nsRenderingContext *aRenderingContext) override;
 
-  virtual nsIAtom* GetType() const MOZ_OVERRIDE;
+  virtual nsIAtom* GetType() const override;
 
-  virtual bool IsFrameOfType(uint32_t aFlags) const MOZ_OVERRIDE
+  virtual bool IsFrameOfType(uint32_t aFlags) const override
   {
     return nsContainerFrame::IsFrameOfType(aFlags &
       ~(nsIFrame::eReplaced | nsIFrame::eReplacedContainsBlock));
   }
 
+  nsStyleContext* GetAdditionalStyleContext(int32_t aIndex) const override;
+  void SetAdditionalStyleContext(int32_t aIndex,
+                                 nsStyleContext* aStyleContext) override;
+
   /**
    * Returns true if the slider's thumb moves horizontally, or else false if it
    * moves vertically.
-   *
-   * aOverrideFrameSize If specified, this will be used instead of the size of
-   *   the frame's rect (i.e. the frame's border-box size) if the frame's
-   *   rect would have otherwise been examined. This should only be specified
-   *   during reflow when the frame's [new] border-box size has not yet been
-   *   stored in its mRect.
    */
-  bool IsHorizontal(const nsSize *aFrameSizeOverride = nullptr) const;
+  bool IsHorizontal() const;
+
+  /**
+   * Returns true if the slider is oriented along the inline axis.
+   */
+  bool IsInlineOriented() const {
+    return IsHorizontal() != GetWritingMode().IsVertical();
+  }
+
+  /**
+   * Returns true if the slider's thumb moves right-to-left for increasing
+   * values; only relevant when IsHorizontal() is true.
+   */
+  bool IsRightToLeft() const {
+    MOZ_ASSERT(IsHorizontal());
+    mozilla::WritingMode wm = GetWritingMode();
+    return wm.IsVertical() ? wm.IsVerticalRL() : !wm.IsBidiLTR();
+  }
 
   double GetMin() const;
   double GetMax() const;
@@ -111,7 +137,7 @@ public:
    */
   bool ShouldUseNativeStyle() const;
 
-  mozilla::Decimal GetValueAtEventPoint(nsGUIEvent* aEvent);
+  mozilla::Decimal GetValueAtEventPoint(mozilla::WidgetGUIEvent* aEvent);
 
   /**
    * Helper that's used when the value of the range changes to reposition the
@@ -122,16 +148,18 @@ public:
    */
   void UpdateForValueChange();
 
+  virtual Element* GetPseudoElement(CSSPseudoElementType aType) override;
+
 private:
 
-  nsresult MakeAnonymousDiv(nsIContent** aResult,
-                            nsCSSPseudoElements::Type aPseudoType,
+  nsresult MakeAnonymousDiv(Element** aResult,
+                            CSSPseudoElementType aPseudoType,
                             nsTArray<ContentInfo>& aElements);
 
   // Helper function which reflows the anonymous div frames.
-  nsresult ReflowAnonymousContent(nsPresContext*           aPresContext,
-                                  nsHTMLReflowMetrics&     aDesiredSize,
-                                  const nsHTMLReflowState& aReflowState);
+  void ReflowAnonymousContent(nsPresContext*           aPresContext,
+                              ReflowOutput&     aDesiredSize,
+                              const ReflowInput& aReflowInput);
 
   void DoUpdateThumbPosition(nsIFrame* aThumbFrame,
                              const nsSize& aRangeSize);
@@ -143,7 +171,7 @@ private:
    * The div used to show the ::-moz-range-track pseudo-element.
    * @see nsRangeFrame::CreateAnonymousContent
    */
-  nsCOMPtr<nsIContent> mTrackDiv;
+  nsCOMPtr<Element> mTrackDiv;
 
   /**
    * The div used to show the ::-moz-range-progress pseudo-element, which is
@@ -151,13 +179,37 @@ private:
    * thumb's current position.
    * @see nsRangeFrame::CreateAnonymousContent
    */
-  nsCOMPtr<nsIContent> mProgressDiv;
+  nsCOMPtr<Element> mProgressDiv;
 
   /**
    * The div used to show the ::-moz-range-thumb pseudo-element.
    * @see nsRangeFrame::CreateAnonymousContent
    */
-  nsCOMPtr<nsIContent> mThumbDiv;
+  nsCOMPtr<Element> mThumbDiv;
+
+  /**
+   * Cached style context for -moz-focus-outer CSS pseudo-element style.
+   */
+  RefPtr<nsStyleContext> mOuterFocusStyle;
+
+  class DummyTouchListener final : public nsIDOMEventListener
+  {
+  private:
+    ~DummyTouchListener() {}
+
+  public:
+    NS_DECL_ISUPPORTS
+
+    NS_IMETHOD HandleEvent(nsIDOMEvent* aEvent) override
+    {
+      return NS_OK;
+    }
+  };
+
+  /**
+   * A no-op touch-listener used for APZ purposes (see nsRangeFrame::Init).
+   */
+  RefPtr<DummyTouchListener> mDummyTouchListener;
 };
 
 #endif

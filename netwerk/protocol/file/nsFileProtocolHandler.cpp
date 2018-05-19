@@ -4,15 +4,11 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+#include "nsIFile.h"
 #include "nsFileProtocolHandler.h"
 #include "nsFileChannel.h"
-#include "nsInputStreamChannel.h"
 #include "nsStandardURL.h"
 #include "nsURLHelper.h"
-#include "nsNetCID.h"
-
-#include "nsIServiceManager.h"
-#include "nsIURL.h"
 
 #include "nsNetUtil.h"
 
@@ -51,10 +47,10 @@ nsFileProtocolHandler::Init()
     return NS_OK;
 }
 
-NS_IMPL_THREADSAFE_ISUPPORTS3(nsFileProtocolHandler,
-                              nsIFileProtocolHandler,
-                              nsIProtocolHandler,
-                              nsISupportsWeakReference)
+NS_IMPL_ISUPPORTS(nsFileProtocolHandler,
+                  nsIFileProtocolHandler,
+                  nsIProtocolHandler,
+                  nsISupportsWeakReference)
 
 //-----------------------------------------------------------------------------
 // nsIProtocolHandler methods:
@@ -78,7 +74,7 @@ nsFileProtocolHandler::ReadURLFile(nsIFile* aFile, nsIURI** aURI)
     rv = NS_ERROR_NOT_AVAILABLE;
 
     IUniformResourceLocatorW* urlLink = nullptr;
-    result = ::CoCreateInstance(CLSID_InternetShortcut, NULL, CLSCTX_INPROC_SERVER,
+    result = ::CoCreateInstance(CLSID_InternetShortcut, nullptr, CLSCTX_INPROC_SERVER,
                                 IID_IUniformResourceLocatorW, (void**)&urlLink);
     if (SUCCEEDED(result) && urlLink) {
         IPersistFile* urlFile = nullptr;
@@ -160,6 +156,12 @@ nsFileProtocolHandler::ReadURLFile(nsIFile* aFile, nsIURI** aURI)
 	!StringEndsWith(leafName, NS_LITERAL_CSTRING(".desktop")))
         return NS_ERROR_NOT_AVAILABLE;
 
+    bool isFile = false;
+    rv = aFile->IsFile(&isFile);
+    if (NS_FAILED(rv) || !isFile) {
+        return NS_ERROR_NOT_AVAILABLE;
+    }
+
     nsINIParser parser;
     rv = parser.Init(aFile);
     if (NS_FAILED(rv))
@@ -233,7 +235,9 @@ nsFileProtocolHandler::NewURI(const nsACString &spec,
 }
 
 NS_IMETHODIMP
-nsFileProtocolHandler::NewChannel(nsIURI *uri, nsIChannel **result)
+nsFileProtocolHandler::NewChannel2(nsIURI* uri,
+                                   nsILoadInfo* aLoadInfo,
+                                   nsIChannel** result)
 {
     nsFileChannel *chan = new nsFileChannel(uri);
     if (!chan)
@@ -246,8 +250,21 @@ nsFileProtocolHandler::NewChannel(nsIURI *uri, nsIChannel **result)
         return rv;
     }
 
+    // set the loadInfo on the new channel
+    rv = chan->SetLoadInfo(aLoadInfo);
+    if (NS_FAILED(rv)) {
+        NS_RELEASE(chan);
+        return rv;
+    }
+
     *result = chan;
     return NS_OK;
+}
+
+NS_IMETHODIMP
+nsFileProtocolHandler::NewChannel(nsIURI *uri, nsIChannel **result)
+{
+    return NewChannel2(uri, nullptr, result);
 }
 
 NS_IMETHODIMP 

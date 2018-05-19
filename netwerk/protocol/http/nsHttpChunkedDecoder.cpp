@@ -5,10 +5,13 @@
 
 // HttpLog.h should generally be included first
 #include "HttpLog.h"
-
+#include <errno.h>
 #include "nsHttpChunkedDecoder.h"
-#include "nsHttp.h"
 #include <algorithm>
+#include "plstr.h"
+
+namespace mozilla {
+namespace net {
 
 //-----------------------------------------------------------------------------
 // nsHttpChunkedDecoder <public>
@@ -93,14 +96,18 @@ nsHttpChunkedDecoder::ParseChunkRemaining(char *buf,
     char *p = static_cast<char *>(memchr(buf, '\n', count));
     if (p) {
         *p = 0;
-        if ((p > buf) && (*(p-1) == '\r')) // eliminate a preceding CR
+        count = p - buf; // new length
+        *bytesConsumed = count + 1; // length + newline
+        if ((p > buf) && (*(p-1) == '\r')) { // eliminate a preceding CR
             *(p-1) = 0;
-        *bytesConsumed = p - buf + 1;
+            count--;
+        }
 
         // make buf point to the full line buffer to parse
         if (!mLineBuf.IsEmpty()) {
-            mLineBuf.Append(buf);
+            mLineBuf.Append(buf, count);
             buf = (char *) mLineBuf.get();
+            count = mLineBuf.Length();
         }
 
         if (mWaitEOF) {
@@ -110,7 +117,7 @@ nsHttpChunkedDecoder::ParseChunkRemaining(char *buf,
                 if (!mTrailers) {
                     mTrailers = new nsHttpHeaderArray();
                 }
-                mTrailers->ParseHeaderLine(buf);
+                mTrailers->ParseHeaderLine(nsDependentCSubstring(buf, count));
             }
             else {
                 mWaitEOF = false;
@@ -119,12 +126,21 @@ nsHttpChunkedDecoder::ParseChunkRemaining(char *buf,
             }
         }
         else if (*buf) {
+            char *endptr;
+            unsigned long parsedval; // could be 64 bit, could be 32
+
             // ignore any chunk-extensions
             if ((p = PL_strchr(buf, ';')) != nullptr)
                 *p = 0;
 
-            if (!sscanf(buf, "%x", &mChunkRemaining)) {
-                LOG(("sscanf failed parsing hex on string [%s]\n", buf));
+            // mChunkRemaining is an uint32_t!
+            parsedval = strtoul(buf, &endptr, 16);
+            mChunkRemaining = (uint32_t) parsedval;
+
+            if ((endptr == buf) ||
+                ((errno == ERANGE) && (parsedval == ULONG_MAX))  ||
+                (parsedval != mChunkRemaining) ) {
+                LOG(("failed parsing hex on string [%s]\n", buf));
                 return NS_ERROR_UNEXPECTED;
             }
 
@@ -147,3 +163,6 @@ nsHttpChunkedDecoder::ParseChunkRemaining(char *buf,
 
     return NS_OK;
 }
+
+} // namespace net
+} // namespace mozilla

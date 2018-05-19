@@ -4,18 +4,21 @@
  * You can obtain one at http://mozilla.org/MPL/2.0/.
  *
  * The origin of this IDL file is
- * https://dvcs.w3.org/hg/audio/raw-file/tip/webaudio/specification.html
+ * https://webaudio.github.io/web-audio-api/
  *
  * Copyright © 2012 W3C® (MIT, ERCIM, Keio), All Rights Reserved. W3C
  * liability, trademark and document use rules apply.
  */
 
-[PrefControlled]
+[Pref="dom.webaudio.enabled"]
 interface AudioProcessingEvent : Event {
 
-    readonly attribute double playbackTime;
-    readonly attribute AudioBuffer inputBuffer;
-    readonly attribute AudioBuffer outputBuffer;
+  readonly attribute double playbackTime;
+
+  [Throws]
+  readonly attribute AudioBuffer inputBuffer;
+  [Throws]
+  readonly attribute AudioBuffer outputBuffer;
 
 };
 

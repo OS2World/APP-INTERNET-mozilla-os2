@@ -6,9 +6,11 @@
 #include "nsShellService.h"
 #include "nsString.h"
 
-#include "AndroidBridge.h"
+#include "GeneratedJNIWrappers.h"
 
-NS_IMPL_ISUPPORTS1(nsShellService, nsIShellService)
+using namespace mozilla;
+
+NS_IMPL_ISUPPORTS(nsShellService, nsIShellService)
 
 NS_IMETHODIMP
 nsShellService::SwitchTask()
@@ -17,11 +19,12 @@ nsShellService::SwitchTask()
 }
 
 NS_IMETHODIMP
-nsShellService::CreateShortcut(const nsAString& aTitle, const nsAString& aURI, const nsAString& aIconData, const nsAString& aIntent)
+nsShellService::CreateShortcut(const nsAString& aTitle, const nsAString& aURI,
+                                const nsAString& aIcondata, const nsAString& aIntent)
 {
-  if (!aTitle.Length() || !aURI.Length() || !aIconData.Length())
+  if (!aTitle.Length() || !aURI.Length())
     return NS_ERROR_FAILURE;
 
-  mozilla::AndroidBridge::Bridge()->CreateShortcut(aTitle, aURI, aIconData, aIntent);
+  java::GeckoAppShell::CreateShortcut(aTitle, aURI);
   return NS_OK;
 }

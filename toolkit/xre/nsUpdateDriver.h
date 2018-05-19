@@ -8,20 +8,18 @@
 #define nsUpdateDriver_h__
 
 #include "nscore.h"
-#ifdef MOZ_UPDATER
 #include "nsIUpdateService.h"
 #include "nsIThread.h"
 #include "nsCOMPtr.h"
 #include "nsString.h"
 #include "mozilla/Attributes.h"
-#endif
 
 class nsIFile;
 
 #if defined(XP_WIN)
 #include <windows.h>
   typedef HANDLE     ProcessType;
-#elif defined(XP_MACOSX)
+#elif defined(XP_UNIX)
   typedef pid_t      ProcessType;
 #else
 #include "prproces.h"
@@ -35,7 +33,7 @@ class nsIFile;
  * Two directories are passed to this function: greDir (where the actual
  * binary resides) and appDir (which contains application.ini for XULRunner
  * apps). If this is not a XULRunner app then appDir is identical to greDir.
- * 
+ *
  * The argc and argv passed to this function should be what is needed to
  * relaunch the current process.
  *
@@ -48,7 +46,7 @@ class nsIFile;
  *
  * This function does not modify appDir.
  */
-NS_HIDDEN_(nsresult) ProcessUpdates(nsIFile *greDir, nsIFile *appDir,
+nsresult ProcessUpdates(nsIFile *greDir, nsIFile *appDir,
                                     nsIFile *updRootDir,
                                     int argc, char **argv,
                                     const char *appVersion,
@@ -57,27 +55,28 @@ NS_HIDDEN_(nsresult) ProcessUpdates(nsIFile *greDir, nsIFile *appDir,
                                     nsIFile *osApplyToDir = nullptr,
                                     ProcessType *pid = nullptr);
 
-#ifdef MOZ_UPDATER
 // The implementation of the update processor handles the task of loading the
-// updater application in the background for applying an update.
+// updater application for staging an update.
 // XXX ehsan this is living in this file in order to make use of the existing
 // stuff here, we might want to move it elsewhere in the future.
-class nsUpdateProcessor MOZ_FINAL : public nsIUpdateProcessor
+class nsUpdateProcessor final : public nsIUpdateProcessor
 {
 public:
   nsUpdateProcessor();
 
-  NS_DECL_ISUPPORTS
+  NS_DECL_THREADSAFE_ISUPPORTS
   NS_DECL_NSIUPDATEPROCESSOR
 
 private:
-  struct BackgroundUpdateInfo {
-    BackgroundUpdateInfo()
+  ~nsUpdateProcessor();
+
+  struct StagedUpdateInfo {
+    StagedUpdateInfo()
       : mArgc(0),
         mArgv(nullptr),
         mIsOSUpdate(false)
     {}
-    ~BackgroundUpdateInfo() {
+    ~StagedUpdateInfo() {
       for (int i = 0; i < mArgc; ++i) {
         delete[] mArgv[i];
       }
@@ -90,12 +89,12 @@ private:
     nsCOMPtr<nsIFile> mOSApplyToDir;
     int mArgc;
     char **mArgv;
-    nsAutoCString mAppVersion;
+    nsCString mAppVersion;
     bool mIsOSUpdate;
   };
 
 private:
-  void StartBackgroundUpdate();
+  void StartStagedUpdate();
   void WaitForProcess();
   void UpdateDone();
   void ShutdownWatcherThread();
@@ -103,9 +102,6 @@ private:
 private:
   ProcessType mUpdaterPID;
   nsCOMPtr<nsIThread> mProcessWatcher;
-  nsCOMPtr<nsIUpdate> mUpdate;
-  BackgroundUpdateInfo mInfo;
+  StagedUpdateInfo mInfo;
 };
-#endif
-
 #endif  // nsUpdateDriver_h__

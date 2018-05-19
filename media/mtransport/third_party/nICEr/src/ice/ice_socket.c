@@ -35,16 +35,19 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 static char *RCSSTRING __UNUSED__="$Id: ice_socket.c,v 1.2 2008/04/28 17:59:01 ekr Exp $";
 
 #include <assert.h>
+#include <string.h>
 #include "nr_api.h"
 #include "ice_ctx.h"
 #include "stun.h"
+#include "nr_socket_buffered_stun.h"
+#include "nr_socket_multi_tcp.h"
 
 static void nr_ice_socket_readable_cb(NR_SOCKET s, int how, void *cb_arg)
   {
     int r;
     nr_ice_stun_ctx *sc1,*sc2;
     nr_ice_socket *sock=cb_arg;
-    UCHAR buf[8192];
+    UCHAR buf[9216];
     char string[256];
     nr_transport_addr addr;
     int len;
@@ -59,10 +62,16 @@ static void nr_ice_socket_readable_cb(NR_SOCKET s, int how, void *cb_arg)
     r_log(LOG_ICE,LOG_DEBUG,"ICE(%s): Socket ready to read",sock->ctx->label);
 
     /* Re-arm first! */
-    NR_ASYNC_WAIT(s,how,nr_ice_socket_readable_cb,cb_arg);
+    if (sock->type != NR_ICE_SOCKET_TYPE_STREAM_TCP) {
+      r_log(LOG_ICE,LOG_DEBUG,"ICE(%s): rearming",sock->ctx->label);
+      NR_ASYNC_WAIT(s,how,nr_ice_socket_readable_cb,cb_arg);
+    }
 
     if(r=nr_socket_recvfrom(sock->sock,buf,sizeof(buf),&len_s,0,&addr)){
-      r_log(LOG_ICE,LOG_ERR,"ICE(%s): Error reading from socket",sock->ctx->label);
+      if (r != R_WOULDBLOCK && (sock->type != NR_ICE_SOCKET_TYPE_DGRAM)) {
+        /* Report this error upward. Bug 946423 */
+        r_log(LOG_ICE,LOG_ERR,"ICE(%s): Error %d on reliable socket(%p). Abandoning.",sock->ctx->label, r, s);
+      }
       return;
     }
 
@@ -76,7 +85,7 @@ static void nr_ice_socket_readable_cb(NR_SOCKET s, int how, void *cb_arg)
 #ifdef USE_TURN
   re_process:
 #endif /* USE_TURN */
-    r_log(LOG_ICE,LOG_DEBUG,"ICE(%s): Read %d bytes",sock->ctx->label,len);
+    r_log(LOG_ICE,LOG_DEBUG,"ICE(%s): Read %d bytes %sfrom %s",sock->ctx->label,len,(processed_indication ? "relayed " : ""),addr.as_string);
 
     /* First question: is this STUN or not? */
     is_stun=nr_is_stun_message(buf,len);
@@ -134,7 +143,7 @@ static void nr_ice_socket_readable_cb(NR_SOCKET s, int how, void *cb_arg)
 
                 if (processed_indication) {
                   /* Don't allow recursively wrapped indications */
-                  r_log(LOG_ICE, LOG_ERR,
+                  r_log(LOG_ICE, LOG_WARNING,
                         "ICE(%s): discarding recursively wrapped indication",
                         sock->ctx->label);
                   break;
@@ -173,7 +182,7 @@ static void nr_ice_socket_readable_cb(NR_SOCKET s, int how, void *cb_arg)
         if (nr_ice_ctx_is_known_id(sock->ctx,((nr_stun_message_header*)buf)->id.octet))
             r_log(LOG_ICE,LOG_DEBUG,"ICE(%s): Message is a retransmit",sock->ctx->label);
         else
-            r_log(LOG_ICE,LOG_DEBUG,"ICE(%s): Message does not correspond to any registered stun ctx",sock->ctx->label);
+            r_log(LOG_ICE,LOG_NOTICE,"ICE(%s): Message does not correspond to any registered stun ctx",sock->ctx->label);
       }
     }
     else{
@@ -185,11 +194,12 @@ static void nr_ice_socket_readable_cb(NR_SOCKET s, int how, void *cb_arg)
     return;
   }
 
-int nr_ice_socket_create(nr_ice_ctx *ctx,nr_ice_component *comp, nr_socket *nsock, nr_ice_socket **sockp)
+int nr_ice_socket_create(nr_ice_ctx *ctx,nr_ice_component *comp, nr_socket *nsock, int type, nr_ice_socket **sockp)
   {
     nr_ice_socket *sock=0;
     NR_SOCKET fd;
-    int _status;
+    nr_transport_addr addr;
+    int r,_status;
 
     if(!(sock=RCALLOC(sizeof(nr_ice_socket))))
       ABORT(R_NO_MEMORY);
@@ -198,11 +208,36 @@ int nr_ice_socket_create(nr_ice_ctx *ctx,nr_ice_component *comp, nr_socket *nsoc
     sock->ctx=ctx;
     sock->component=comp;
 
+    if(r=nr_socket_getaddr(nsock, &addr))
+      ABORT(r);
+
+    if (type == NR_ICE_SOCKET_TYPE_DGRAM) {
+      assert(addr.protocol == IPPROTO_UDP);
+    }
+    else {
+      assert(addr.protocol == IPPROTO_TCP);
+    }
+    sock->type=type;
+
     TAILQ_INIT(&sock->candidates);
     TAILQ_INIT(&sock->stun_ctxs);
 
-    nr_socket_getfd(nsock,&fd);
-    NR_ASYNC_WAIT(fd,NR_ASYNC_WAIT_READ,nr_ice_socket_readable_cb,sock);
+    if (sock->type == NR_ICE_SOCKET_TYPE_DGRAM){
+      if((r=nr_socket_getfd(nsock,&fd)))
+        ABORT(r);
+      NR_ASYNC_WAIT(fd,NR_ASYNC_WAIT_READ,nr_ice_socket_readable_cb,sock);
+    }
+    else if (sock->type == NR_ICE_SOCKET_TYPE_STREAM_TURN) {
+      /* some OS's (e.g. Linux) don't like to see un-connected TCP sockets in
+       * the poll socket set. */
+      nr_socket_buffered_stun_set_readable_cb(nsock,nr_ice_socket_readable_cb,sock);
+    }
+    else if (sock->type == NR_ICE_SOCKET_TYPE_STREAM_TCP) {
+      /* in this case we can't hook up using NR_ASYNC_WAIT, because nr_socket_multi_tcp
+         consists of multiple nr_sockets and file descriptors. */
+      if((r=nr_socket_multi_tcp_set_readable_cb(nsock,nr_ice_socket_readable_cb,sock)))
+        ABORT(r);
+    }
 
     *sockp=sock;
 
@@ -254,13 +289,15 @@ int nr_ice_socket_close(nr_ice_socket *isock)
     if (!isock||!isock->sock)
       return(0);
 
-    nr_socket_getfd(isock->sock,&fd);
-    assert(isock->sock!=0);
-    if(fd != no_socket){
-      NR_ASYNC_CANCEL(fd,NR_ASYNC_WAIT_READ);
-      NR_ASYNC_CANCEL(fd,NR_ASYNC_WAIT_WRITE);
-      nr_socket_destroy(&isock->sock);
+    if (isock->type != NR_ICE_SOCKET_TYPE_STREAM_TCP){
+      nr_socket_getfd(isock->sock,&fd);
+      assert(isock->sock!=0);
+      if(fd != no_socket){
+        NR_ASYNC_CANCEL(fd,NR_ASYNC_WAIT_READ);
+        NR_ASYNC_CANCEL(fd,NR_ASYNC_WAIT_WRITE);
+      }
     }
+    nr_socket_destroy(&isock->sock);
 
     return(0);
   }

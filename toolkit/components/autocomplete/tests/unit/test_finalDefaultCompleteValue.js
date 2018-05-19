@@ -2,11 +2,10 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-function AutoCompleteResult(aValues, aComments) {
+function AutoCompleteResult(aValues, aFinalCompleteValues) {
   this._values = aValues;
-  this._comments = aComments;
+  this._finalCompleteValues = aFinalCompleteValues;
   this.defaultIndex = 0;
-  this._typeAheadResult = true;
 }
 AutoCompleteResult.prototype = Object.create(AutoCompleteResultBase.prototype);
 
@@ -37,16 +36,16 @@ add_test(function test_handleEnter() {
   });
 });
 
-function doSearch(aSearchString, aResultValue, aCommentValue, aOnCompleteCallback) {
+function doSearch(aSearchString, aResultValue, aFinalCompleteValue, aOnCompleteCallback) {
   let search = new AutoCompleteSearchBase(
     "search",
-    new AutoCompleteResult([ aResultValue ], [ aCommentValue ], 0)
+    new AutoCompleteResult([ aResultValue ], [ aFinalCompleteValue ])
   );
   registerAutoCompleteSearch(search);
 
   let controller = Cc["@mozilla.org/autocomplete/controller;1"].
-                   getService(Ci.nsIAutoCompleteController);  
-  
+                   getService(Ci.nsIAutoCompleteController);
+
   // Make an AutoCompleteInput that uses our searches and confirms results.
   let input = new AutoCompleteInput([ search.name ]);
   input.textValue = aSearchString;

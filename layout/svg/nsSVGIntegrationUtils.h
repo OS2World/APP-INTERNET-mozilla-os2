@@ -7,20 +7,26 @@
 #define NSSVGINTEGRATIONUTILS_H_
 
 #include "gfxMatrix.h"
-#include "gfxPattern.h"
 #include "gfxRect.h"
-#include "nsRect.h"
+#include "nsRegionFwd.h"
+#include "mozilla/gfx/Rect.h"
 
+class gfxContext;
+class gfxDrawable;
 class nsDisplayList;
 class nsDisplayListBuilder;
 class nsIFrame;
-class nsRenderingContext;
+
+struct nsRect;
 
 namespace mozilla {
+namespace gfx {
+class DrawTarget;
+} // namespace gfx
 namespace layers {
 class LayerManager;
-}
-}
+} // namespace layers
+} // namespace mozilla
 
 struct nsPoint;
 struct nsSize;
@@ -29,8 +35,12 @@ struct nsSize;
  * Integration of SVG effects (clipPath clipping, masking and filters) into
  * regular display list based painting and hit-testing.
  */
-class nsSVGIntegrationUtils MOZ_FINAL
+class nsSVGIntegrationUtils final
 {
+  typedef mozilla::gfx::DrawTarget DrawTarget;
+  typedef mozilla::gfx::IntRect IntRect;
+  typedef mozilla::image::DrawResult DrawResult;
+
 public:
   /**
    * Returns true if SVG effects are currently applied to this frame.
@@ -39,31 +49,10 @@ public:
   UsingEffectsForFrame(const nsIFrame* aFrame);
 
   /**
-   * In SVG, an element's "user space" is simply the coordinate system in place
-   * at the time that it is drawn. For non-SVG frames, we want any SVG effects
-   * to be applied to the union of the border-box rects of all of a given
-   * frame's continuations. This means that, when we paint a non-SVG frame with
-   * effects, we want to offset the effects by the distance from the frame's
-   * origin (the top left of its border box) to the top left of the union of
-   * the border-box rects of all its continuations. In other words, we need to
-   * apply this offset as a suplimental translation to the current coordinate
-   * system in order to establish the correct user space before calling into
-   * the SVG effects code. For the purposes of the nsSVGIntegrationUtils code
-   * we somewhat misappropriate the term "user space" by using it to refer
-   * specifically to this adjusted coordinate system.
-   *
-   * For consistency with nsIFrame::GetOffsetTo, the offset this method returns
-   * is the offset you need to add to a point that's relative to aFrame's
-   * origin (the top left of its border box) to convert it to aFrame's user
-   * space. In other words the value returned is actually the offset from the
-   * origin of aFrame's user space to aFrame.
-   *
-   * Note: This method currently only accepts a frame's first continuation
-   * since none of our current callers need to be able to pass in other
-   * continuations.
+   * Returns true if mask or clippath are currently applied to this frame.
    */
-  static nsPoint
-  GetOffsetToUserSpace(nsIFrame* aFrame);
+  static bool
+  UsingMaskOrClipPathForFrame(const nsIFrame* aFrame);
 
   /**
    * Returns the size of the union of the border-box rects of all of
@@ -80,7 +69,7 @@ public:
    * frame's continuations' border boxes, converted to SVG user units (equal to
    * CSS px units), as required by the SVG code.
    */
-  static gfxSize
+  static mozilla::gfx::Size
   GetSVGCoordContextForNonSVGFrame(nsIFrame* aNonSVGFrame);
 
   /**
@@ -119,14 +108,14 @@ public:
    * @param aFrame The effects frame.
    * @param aToReferenceFrame The offset (in app units) from aFrame to its
    * reference display item.
-   * @param aInvalidRect The pre-effects invalid rect in pixels relative to
+   * @param aInvalidRegion The pre-effects invalid region in pixels relative to
    * the reference display item.
    * @return The post-effects invalid rect in pixels relative to the reference
    * display item.
    */
-  static nsIntRect
+  static nsIntRegion
   AdjustInvalidAreaForSVGEffects(nsIFrame* aFrame, const nsPoint& aToReferenceFrame,
-                                 const nsIntRect& aInvalidRect);
+                                 const nsIntRegion& aInvalidRegion);
 
   /**
    * Figure out which area of the source is needed given an area to
@@ -142,14 +131,53 @@ public:
   static bool
   HitTestFrameForEffects(nsIFrame* aFrame, const nsPoint& aPt);
 
+  struct PaintFramesParams {
+    gfxContext& ctx;
+    nsIFrame* frame;
+    const nsRect& dirtyRect;
+    const nsRect& borderArea;
+    nsDisplayListBuilder* builder;
+    mozilla::layers::LayerManager* layerManager;
+    bool handleOpacity; // If true, PaintMaskAndClipPath/ PaintFilter should
+                        // apply css opacity.
+    IntRect maskRect;
+
+    explicit PaintFramesParams(gfxContext& aCtx, nsIFrame* aFrame,
+                               const nsRect& aDirtyRect,
+                               const nsRect& aBorderArea,
+                               nsDisplayListBuilder* aBuilder,
+                               mozilla::layers::LayerManager* aLayerManager,
+                               bool aHandleOpacity)
+      : ctx(aCtx), frame(aFrame), dirtyRect(aDirtyRect),
+        borderArea(aBorderArea), builder(aBuilder),
+        layerManager(aLayerManager), handleOpacity(aHandleOpacity)
+    { }
+  };
+
   /**
-   * Paint non-SVG frame with SVG effects.
+   * Paint non-SVG frame with mask, clipPath and opacity effect.
    */
-  static void
-  PaintFramesWithEffects(nsRenderingContext* aCtx,
-                         nsIFrame* aFrame, const nsRect& aDirtyRect,
-                         nsDisplayListBuilder* aBuilder,
-                         mozilla::layers::LayerManager* aManager);
+  static DrawResult
+  PaintMaskAndClipPath(const PaintFramesParams& aParams);
+
+  /**
+   * Paint mask of non-SVG frame onto a given context, aParams.ctx.
+   * aParams.ctx must contain an A8 surface.
+   */
+  static DrawResult
+  PaintMask(const PaintFramesParams& aParams);
+
+  /**
+   * Return true if all the mask resource of aFrame are ready.
+   */
+  static bool
+  IsMaskResourceReady(nsIFrame* aFrame);
+
+  /**
+   * Paint non-SVG frame with filter and opacity effect.
+   */
+  static DrawResult
+  PaintFilter(const PaintFramesParams& aParams);
 
   /**
    * SVG frames expect to paint in SVG user units, which are equal to CSS px
@@ -176,17 +204,28 @@ public:
    * background-repeat:no-repeat and background-size:auto. For normal background
    * images, this would be the intrinsic size of the image; for gradients and
    * patterns this would be the whole target frame fill area.
+   * @param aFlags pass FLAG_SYNC_DECODE_IMAGES and any images in the paint
+   * server will be decoding synchronously if they are not decoded already.
    */
-  static void
-  DrawPaintServer(nsRenderingContext* aRenderingContext,
-                  nsIFrame*            aTarget,
-                  nsIFrame*            aPaintServer,
-                  gfxPattern::GraphicsFilter aFilter,
-                  const nsRect&        aDest,
-                  const nsRect&        aFill,
-                  const nsPoint&       aAnchor,
-                  const nsRect&        aDirty,
-                  const nsSize&        aPaintServerSize);
+  enum {
+    FLAG_SYNC_DECODE_IMAGES = 0x01,
+  };
+
+  static already_AddRefed<gfxDrawable>
+  DrawableFromPaintServer(nsIFrame* aFrame,
+                          nsIFrame* aTarget,
+                          const nsSize& aPaintServerSize,
+                          const mozilla::gfx::IntSize& aRenderSize,
+                          const DrawTarget* aDrawTarget,
+                          const gfxMatrix& aContextMatrix,
+                          uint32_t aFlags);
+
+  /**
+   * For non-SVG frames, this gives the offset to the frame's "user space".
+   * For SVG frames, this returns a zero offset.
+   */
+  static nsPoint
+  GetOffsetToBoundingBox(nsIFrame* aFrame);
 };
 
 #endif /*NSSVGINTEGRATIONUTILS_H_*/

@@ -1,3 +1,5 @@
+/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
+/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -5,76 +7,74 @@
 #ifndef mozilla_dom_textencoder_h_
 #define mozilla_dom_textencoder_h_
 
-#include "mozilla/dom/TextEncoderBase.h"
+#include "mozilla/dom/NonRefcountedDOMObject.h"
 #include "mozilla/dom/TextEncoderBinding.h"
+#include "mozilla/dom/TypedArray.h"
+#include "nsIUnicodeEncoder.h"
 
 namespace mozilla {
+class ErrorResult;
+
 namespace dom {
 
-class TextEncoder MOZ_FINAL
-  : public nsWrapperCache, public TextEncoderBase
+class TextEncoder final : public NonRefcountedDOMObject
 {
 public:
-  NS_INLINE_DECL_CYCLE_COLLECTING_NATIVE_REFCOUNTING(TextEncoder)
-  NS_DECL_CYCLE_COLLECTION_SCRIPT_HOLDER_NATIVE_CLASS(TextEncoder)
-
   // The WebIDL constructor.
-  static already_AddRefed<TextEncoder>
+
+  static TextEncoder*
   Constructor(const GlobalObject& aGlobal,
-              const nsAString& aEncoding,
               ErrorResult& aRv)
   {
-    nsRefPtr<TextEncoder> txtEncoder = new TextEncoder(aGlobal.Get());
-    txtEncoder->Init(aEncoding, aRv);
-    if (aRv.Failed()) {
-      return nullptr;
-    }
+    nsAutoPtr<TextEncoder> txtEncoder(new TextEncoder());
+    txtEncoder->Init();
     return txtEncoder.forget();
   }
 
-  TextEncoder(nsISupports* aGlobal)
-    : mGlobal(aGlobal)
+  TextEncoder()
   {
-    MOZ_ASSERT(aGlobal);
-    SetIsDOMBinding();
   }
 
   virtual
   ~TextEncoder()
   {}
 
-  virtual JSObject* WrapObject(JSContext* aCx,
-                               JS::Handle<JSObject*> aScope) MOZ_OVERRIDE
+  bool WrapObject(JSContext* aCx, JS::Handle<JSObject*> aGivenProto, JS::MutableHandle<JSObject*> aReflector)
   {
-    return TextEncoderBinding::Wrap(aCx, aScope, this);
-  }
-
-  nsISupports*
-  GetParentObject()
-  {
-    return mGlobal;
-  }
-
-  JSObject* Encode(JSContext* aCx,
-                   const nsAString& aString,
-                   const TextEncodeOptions& aOptions,
-                   ErrorResult& aRv) {
-    return TextEncoderBase::Encode(aCx, aString, aOptions.mStream, aRv);
+    return TextEncoderBinding::Wrap(aCx, this, aGivenProto, aReflector);
   }
 
 protected:
-  virtual JSObject*
-  CreateUint8Array(JSContext* aCx, char* aBuf, uint32_t aLen) MOZ_OVERRIDE
-  {
-    return Uint8Array::Create(aCx, this, aLen,
-                              reinterpret_cast<uint8_t*>(aBuf));
-  }
 
+  void Init();
+
+public:
+  /**
+   * Return the encoding name.
+   *
+   * @param aEncoding, current encoding.
+   */
+  void GetEncoding(nsAString& aEncoding);
+
+  /**
+   * Encodes incoming utf-16 code units/ DOM string to utf-8.
+   *
+   * @param aCx        Javascript context.
+   * @param aObj       the wrapper of the TextEncoder
+   * @param aString    utf-16 code units to be encoded.
+   * @return JSObject* The Uint8Array wrapped in a JS object.  Returned via
+   *                   the aRetval out param.
+   */
+  void Encode(JSContext* aCx,
+              JS::Handle<JSObject*> aObj,
+              const nsAString& aString,
+              JS::MutableHandle<JSObject*> aRetval,
+              ErrorResult& aRv);
 private:
-  nsCOMPtr<nsISupports> mGlobal;
+  nsCOMPtr<nsIUnicodeEncoder> mEncoder;
 };
 
-} // dom
-} // mozilla
+} // namespace dom
+} // namespace mozilla
 
 #endif // mozilla_dom_textencoder_h_

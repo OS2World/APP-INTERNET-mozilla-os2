@@ -1,5 +1,5 @@
 /* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=2 et sw=2 tw=80: */
+/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -8,40 +8,46 @@
 #define mozilla_dom_domrequest_h__
 
 #include "nsIDOMDOMRequest.h"
-#include "nsDOMEventTargetHelper.h"
 #include "mozilla/Attributes.h"
+#include "mozilla/DOMEventTargetHelper.h"
 #include "mozilla/dom/DOMError.h"
 #include "mozilla/dom/DOMRequestBinding.h"
 
 #include "nsCOMPtr.h"
 
 namespace mozilla {
+
+class ErrorResult;
+
 namespace dom {
 
-class DOMRequest : public nsDOMEventTargetHelper,
+class AnyCallback;
+class Promise;
+
+class DOMRequest : public DOMEventTargetHelper,
                    public nsIDOMDOMRequest
 {
 protected:
   JS::Heap<JS::Value> mResult;
-  nsRefPtr<DOMError> mError;
+  RefPtr<DOMError> mError;
+  RefPtr<Promise> mPromise;
   bool mDone;
 
 public:
   NS_DECL_ISUPPORTS_INHERITED
   NS_DECL_NSIDOMDOMREQUEST
-  NS_REALLY_FORWARD_NSIDOMEVENTTARGET(nsDOMEventTargetHelper)
+  NS_REALLY_FORWARD_NSIDOMEVENTTARGET(DOMEventTargetHelper)
 
   NS_DECL_CYCLE_COLLECTION_SCRIPT_HOLDER_CLASS_INHERITED(DOMRequest,
-                                                         nsDOMEventTargetHelper)
+                                                         DOMEventTargetHelper)
 
   // WrapperCache
-  nsPIDOMWindow* GetParentObject() const
+  nsPIDOMWindowInner* GetParentObject() const
   {
     return GetOwner();
   }
 
-  virtual JSObject* WrapObject(JSContext* aCx,
-                               JS::Handle<JSObject*> aScope) MOZ_OVERRIDE;
+  virtual JSObject* WrapObject(JSContext* aCx, JS::Handle<JSObject*> aGivenProto) override;
 
   // WebIDL Interface
   DOMRequestReadyState ReadyState() const
@@ -50,11 +56,11 @@ public:
                  : DOMRequestReadyState::Pending;
   }
 
-  JS::Value Result(JSContext* = nullptr) const
+  void GetResult(JSContext*, JS::MutableHandle<JS::Value> aRetval) const
   {
-    NS_ASSERTION(mDone || mResult == JSVAL_VOID,
-               "Result should be undefined when pending");
-    return mResult;
+    NS_ASSERTION(mDone || mResult.isUndefined(),
+                 "Result should be undefined when pending");
+    aRetval.set(mResult);
   }
 
   DOMError* GetError() const
@@ -67,30 +73,32 @@ public:
   IMPL_EVENT_HANDLER(success)
   IMPL_EVENT_HANDLER(error)
 
+  void
+  Then(JSContext* aCx, AnyCallback* aResolveCallback,
+       AnyCallback* aRejectCallback,
+       JS::MutableHandle<JS::Value> aRetval,
+       mozilla::ErrorResult& aRv);
 
   void FireSuccess(JS::Handle<JS::Value> aResult);
   void FireError(const nsAString& aError);
   void FireError(nsresult aError);
+  void FireDetailedError(DOMError* aError);
 
-  DOMRequest(nsIDOMWindow* aWindow);
-  DOMRequest();
-
-  virtual ~DOMRequest()
-  {
-    mResult = JSVAL_VOID;
-    NS_DROP_JS_OBJECTS(this, DOMRequest);
-  }
+  explicit DOMRequest(nsPIDOMWindowInner* aWindow);
+  explicit DOMRequest(nsIGlobalObject* aGlobal);
 
 protected:
+  virtual ~DOMRequest();
+
   void FireEvent(const nsAString& aType, bool aBubble, bool aCancelable);
 
   void RootResultVal();
-
-  void Init(nsIDOMWindow* aWindow);
 };
 
-class DOMRequestService MOZ_FINAL : public nsIDOMRequestService
+class DOMRequestService final : public nsIDOMRequestService
 {
+  ~DOMRequestService() {}
+
 public:
   NS_DECL_ISUPPORTS
   NS_DECL_NSIDOMREQUESTSERVICE

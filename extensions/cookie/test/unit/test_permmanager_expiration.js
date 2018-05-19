@@ -3,7 +3,7 @@
 
 // Test that permissions with specific expiry times behave as expected.
 
-let test_generator = do_run_test();
+var test_generator = do_run_test();
 
 function run_test() {
   do_test_pending();
@@ -19,9 +19,9 @@ function do_run_test() {
   // Set up a profile.
   let profile = do_get_profile();
 
-  let pm = Services.permissions;
+  let pm = Services.perms;
   let permURI = NetUtil.newURI("http://example.com");
-  let principal = Services.scriptSecurityManager.getNoAppCodebasePrincipal(permURI);
+  let principal = Services.scriptSecurityManager.createCodebasePrincipal(permURI, {});
 
   let now = Number(Date.now());
 

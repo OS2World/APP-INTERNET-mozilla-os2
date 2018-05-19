@@ -4,12 +4,13 @@
  * You can obtain one at http://mozilla.org/MPL/2.0/.
  *
  * The origin of this IDL file is
- * http://dev.w3.org/2011/webrtc/editor/webrtc.html#idl-def-RTCPeerConnection
+ * http://w3c.github.io/webrtc-pc/#interface-definition
  */
 
-callback RTCSessionDescriptionCallback = void (mozRTCSessionDescription sdp);
-callback RTCPeerConnectionErrorCallback = void (DOMString errorInformation);
+callback RTCSessionDescriptionCallback = void (RTCSessionDescription sdp);
+callback RTCPeerConnectionErrorCallback = void (DOMError error);
 callback VoidFunction = void ();
+callback RTCStatsCallback = void (RTCStatsReport report);
 
 enum RTCSignalingState {
     "stable",
@@ -51,65 +52,133 @@ dictionary RTCDataChannelInit {
   unsigned short stream; // now id
 };
 
+dictionary RTCOfferAnswerOptions {
+//  boolean voiceActivityDetection = true; // TODO: support this (Bug 1184712)
+};
+
+dictionary RTCAnswerOptions : RTCOfferAnswerOptions {
+};
+
+dictionary RTCOfferOptions : RTCOfferAnswerOptions {
+  long    offerToReceiveVideo;
+  long    offerToReceiveAudio;
+  boolean iceRestart = false;
+
+  // Mozilla proprietary options (at risk: Bug 1196974)
+  boolean mozDontOfferDataChannel;
+  boolean mozBundleOnly;
+
+  // TODO: Remove old constraint-like RTCOptions support soon (Bug 1064223).
+  DeprecatedRTCOfferOptionsSet mandatory;
+  sequence<DeprecatedRTCOfferOptionsSet> _optional;
+};
+
+dictionary DeprecatedRTCOfferOptionsSet {
+  boolean OfferToReceiveAudio;     // Note the uppercase 'O'
+  boolean OfferToReceiveVideo;     // Note the uppercase 'O'
+  boolean MozDontOfferDataChannel; // Note the uppercase 'M'
+  boolean MozBundleOnly;           // Note the uppercase 'M'
+};
+
 interface RTCDataChannel;
 
 [Pref="media.peerconnection.enabled",
  JSImplementation="@mozilla.org/dom/peerconnection;1",
  Constructor (optional RTCConfiguration configuration,
               optional object? constraints)]
-// moz-prefixed until sufficiently standardized.
-interface mozRTCPeerConnection : EventTarget  {
-  void createOffer (RTCSessionDescriptionCallback successCallback,
-                    RTCPeerConnectionErrorCallback? failureCallback, // for apprtc
-                    optional object? constraints);
-  void createAnswer (RTCSessionDescriptionCallback successCallback,
-                     RTCPeerConnectionErrorCallback? failureCallback, // for apprtc
-                     optional object? constraints);
-  void setLocalDescription (mozRTCSessionDescription description,
-                            optional VoidFunction successCallback,
-                            optional RTCPeerConnectionErrorCallback failureCallback);
-  void setRemoteDescription (mozRTCSessionDescription description,
-                             optional VoidFunction successCallback,
-                             optional RTCPeerConnectionErrorCallback failureCallback);
-  readonly attribute mozRTCSessionDescription? localDescription;
-  readonly attribute mozRTCSessionDescription? remoteDescription;
+interface RTCPeerConnection : EventTarget  {
+  [Throws, StaticClassOverride="mozilla::dom::RTCCertificate"]
+  static Promise<RTCCertificate> generateCertificate (AlgorithmIdentifier keygenAlgorithm);
+
+  [Pref="media.peerconnection.identity.enabled"]
+  void setIdentityProvider (DOMString provider,
+                            optional DOMString protocol,
+                            optional DOMString username);
+  [Pref="media.peerconnection.identity.enabled"]
+  Promise<DOMString> getIdentityAssertion();
+  Promise<RTCSessionDescription> createOffer (optional RTCOfferOptions options);
+  Promise<RTCSessionDescription> createAnswer (optional RTCAnswerOptions options);
+  Promise<void> setLocalDescription (RTCSessionDescription description);
+  Promise<void> setRemoteDescription (RTCSessionDescription description);
+  readonly attribute RTCSessionDescription? localDescription;
+  readonly attribute RTCSessionDescription? remoteDescription;
   readonly attribute RTCSignalingState signalingState;
-  void updateIce (optional RTCConfiguration configuration,
-                  optional object? constraints);
-  void addIceCandidate (mozRTCIceCandidate candidate,
-                        optional VoidFunction successCallback,
-                        optional RTCPeerConnectionErrorCallback failureCallback);
+  Promise<void> addIceCandidate (RTCIceCandidate candidate);
+  readonly attribute boolean? canTrickleIceCandidates;
   readonly attribute RTCIceGatheringState iceGatheringState;
   readonly attribute RTCIceConnectionState iceConnectionState;
+  [Pref="media.peerconnection.identity.enabled"]
+  readonly attribute Promise<RTCIdentityAssertion> peerIdentity;
+  [Pref="media.peerconnection.identity.enabled"]
+  readonly attribute DOMString? idpLoginUrl;
+
+  [ChromeOnly]
+  attribute DOMString id;
+
+  RTCConfiguration      getConfiguration ();
+  [UnsafeInPrerendering, Deprecated="RTCPeerConnectionGetStreams"]
   sequence<MediaStream> getLocalStreams ();
+  [UnsafeInPrerendering, Deprecated="RTCPeerConnectionGetStreams"]
   sequence<MediaStream> getRemoteStreams ();
+  [UnsafeInPrerendering]
   MediaStream? getStreamById (DOMString streamId);
-  void addStream (MediaStream stream, optional object? constraints);
-  void removeStream (MediaStream stream);
+  void addStream (MediaStream stream);
+
+  // replaces addStream; fails if already added
+  // because a track can be part of multiple streams, stream parameters
+  // indicate which particular streams should be referenced in signaling
+
+  RTCRtpSender addTrack(MediaStreamTrack track,
+                        MediaStream stream,
+                        MediaStream... moreStreams);
+  void removeTrack(RTCRtpSender sender);
+
+  sequence<RTCRtpSender> getSenders();
+  sequence<RTCRtpReceiver> getReceivers();
+
+  [ChromeOnly]
+  void mozSelectSsrc(RTCRtpReceiver receiver, unsigned short ssrcIndex);
+
   void close ();
   attribute EventHandler onnegotiationneeded;
   attribute EventHandler onicecandidate;
   attribute EventHandler onsignalingstatechange;
-  attribute EventHandler onaddstream;
+  attribute EventHandler onaddstream; // obsolete
+  attribute EventHandler onaddtrack;  // obsolete
+  attribute EventHandler ontrack;     // replaces onaddtrack and onaddstream.
   attribute EventHandler onremovestream;
   attribute EventHandler oniceconnectionstatechange;
-};
 
-// Mozilla extensions.
-partial interface mozRTCPeerConnection {
-  // Deprecated callbacks (use causes warning)
-  attribute RTCPeerConnectionErrorCallback onicechange;
-  attribute RTCPeerConnectionErrorCallback ongatheringchange;
-
-  // Deprecated attributes (use causes warning)
-  readonly attribute object localStreams;
-  readonly attribute object remoteStreams;
-  readonly attribute DOMString readyState;
+  Promise<RTCStatsReport> getStats (optional MediaStreamTrack? selector);
 
   // Data channel.
   RTCDataChannel createDataChannel (DOMString label,
                                     optional RTCDataChannelInit dataChannelDict);
   attribute EventHandler ondatachannel;
-  attribute EventHandler onconnection;
-  attribute EventHandler onclosedconnection;
+};
+
+// Legacy callback API
+
+partial interface RTCPeerConnection {
+
+  // Dummy Promise<void> return values avoid "WebIDL.WebIDLError: error:
+  // We have overloads with both Promise and non-Promise return types"
+
+  Promise<void> createOffer (RTCSessionDescriptionCallback successCallback,
+                             RTCPeerConnectionErrorCallback failureCallback,
+                             optional RTCOfferOptions options);
+  Promise<void> createAnswer (RTCSessionDescriptionCallback successCallback,
+                              RTCPeerConnectionErrorCallback failureCallback);
+  Promise<void> setLocalDescription (RTCSessionDescription description,
+                                     VoidFunction successCallback,
+                                     RTCPeerConnectionErrorCallback failureCallback);
+  Promise<void> setRemoteDescription (RTCSessionDescription description,
+                                      VoidFunction successCallback,
+                                      RTCPeerConnectionErrorCallback failureCallback);
+  Promise<void> addIceCandidate (RTCIceCandidate candidate,
+                                 VoidFunction successCallback,
+                                 RTCPeerConnectionErrorCallback failureCallback);
+  Promise<void> getStats (MediaStreamTrack? selector,
+                          RTCStatsCallback successCallback,
+                          RTCPeerConnectionErrorCallback failureCallback);
 };

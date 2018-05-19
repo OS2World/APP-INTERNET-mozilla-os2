@@ -9,6 +9,7 @@
 #include "gfxFT2Fonts.h"
 #include "gfxPlatform.h"
 #include "gfxUserFontSet.h"
+#include "nsCOMPtr.h"
 #include "nsTArray.h"
 
 namespace mozilla {
@@ -30,53 +31,53 @@ public:
     }
 
     virtual already_AddRefed<gfxASurface>
-    CreateOffscreenSurface(const gfxIntSize& size,
-                           gfxASurface::gfxContentType contentType);
+    CreateOffscreenSurface(const IntSize& aSize,
+                           gfxImageFormat aFormat) override;
     
-    virtual gfxImageFormat GetOffscreenFormat() { return mOffscreenFormat; }
+    virtual gfxImageFormat GetOffscreenFormat() override { return mOffscreenFormat; }
     
-    mozilla::TemporaryRef<mozilla::gfx::ScaledFont>
-      GetScaledFontForFont(mozilla::gfx::DrawTarget* aTarget, gfxFont *aFont);
+    already_AddRefed<mozilla::gfx::ScaledFont>
+      GetScaledFontForFont(mozilla::gfx::DrawTarget* aTarget, gfxFont *aFont) override;
 
     // to support IPC font list (sharing between chrome and content)
-    void GetFontList(InfallibleTArray<FontListEntry>* retValue);
+    void GetSystemFontList(InfallibleTArray<FontListEntry>* retValue);
 
     // platform implementations of font functions
-    virtual bool IsFontFormatSupported(nsIURI *aFontURI, uint32_t aFormatFlags);
-    virtual gfxPlatformFontList* CreatePlatformFontList();
-    virtual gfxFontEntry* MakePlatformFont(const gfxProxyFontEntry *aProxyEntry,
-                                           const uint8_t *aFontData, uint32_t aLength);
+    virtual bool IsFontFormatSupported(nsIURI *aFontURI, uint32_t aFormatFlags) override;
+    virtual gfxPlatformFontList* CreatePlatformFontList() override;
 
-    virtual void GetCommonFallbackFonts(const uint32_t aCh,
-                                        int32_t aRunScript,
-                                        nsTArray<const char*>& aFontList);
+    virtual void GetCommonFallbackFonts(uint32_t aCh, uint32_t aNextCh,
+                                        Script aRunScript,
+                                        nsTArray<const char*>& aFontList) override;
 
-    virtual nsresult GetFontList(nsIAtom *aLangGroup,
-                                 const nsACString& aGenericFamily,
-                                 nsTArray<nsString>& aListOfFonts);
+    gfxFontGroup*
+    CreateFontGroup(const mozilla::FontFamilyList& aFontFamilyList,
+                    const gfxFontStyle *aStyle,
+                    gfxTextPerfMetrics* aTextPerf,
+                    gfxUserFontSet *aUserFontSet,
+                    gfxFloat aDevToCssSize) override;
 
-    virtual nsresult UpdateFontList();
-
-    virtual nsresult ResolveFontName(const nsAString& aFontName,
-                                     FontResolverCallback aCallback,
-                                     void *aClosure, bool& aAborted);
-
-    virtual nsresult GetStandardFamilyName(const nsAString& aFontName,
-                                           nsAString& aFamilyName);
-
-    virtual gfxFontGroup *CreateFontGroup(const nsAString &aFamilies,
-                                          const gfxFontStyle *aStyle,
-                                          gfxUserFontSet* aUserFontSet);
-
-    virtual bool FontHintingEnabled() MOZ_OVERRIDE;
-    virtual bool RequiresLinearZoom() MOZ_OVERRIDE;
+    virtual bool FontHintingEnabled() override;
+    virtual bool RequiresLinearZoom() override;
 
     FT_Library GetFTLibrary();
 
-    virtual int GetScreenDepth() const;
+    virtual bool CanRenderContentToDataSurface() const override {
+      return true;
+    }
+
+    virtual already_AddRefed<mozilla::gfx::VsyncSource> CreateHardwareVsyncSource() override;
+
+    virtual bool SupportsApzTouchInput() const override {
+      return true;
+    }
+
+protected:
+    bool AccelerateLayersByDefault() override {
+      return true;
+    }
 
 private:
-    int mScreenDepth;
     gfxImageFormat mOffscreenFormat;
 };
 

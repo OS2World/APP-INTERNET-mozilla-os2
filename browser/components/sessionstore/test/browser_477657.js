@@ -7,9 +7,7 @@ function test() {
   waitForExplicitFinish();
 
   let newWin = openDialog(location, "_blank", "chrome,all,dialog=no");
-  newWin.addEventListener("load", function(aEvent) {
-    newWin.removeEventListener("load", arguments.callee, false);
-
+  promiseWindowLoaded(newWin).then(() => {
     let newState = { windows: [{
       tabs: [{ entries: [] }],
       _closedTabs: [{
@@ -54,10 +52,9 @@ function test() {
           isnot(newWin.windowState, newWin.STATE_MAXIMIZED,
                 "the window was explicitly unmaximized");
 
-          newWin.close();
-          finish();
+          BrowserTestUtils.closeWindow(newWin).then(finish);
         }, 0);
       }, 0);
     }, 0);
-  }, false);
+  });
 }

@@ -7,16 +7,9 @@
 #define nsIComboboxControlFrame_h___
 
 #include "nsQueryFrame.h"
-#include "nsFont.h"
-
-class nsString;
-class nsIContent;
-class nsCSSFrameConstructor;
 
 /** 
-  * nsIComboboxControlFrame is the common interface for frames of form controls. It
-  * provides a uniform way of creating widgets, resizing, and painting.
-  * @see nsLeafFrame and its base classes for more info
+  * nsIComboboxControlFrame is the interface for comboboxes.
   */
 class nsIComboboxControlFrame : public nsQueryFrame
 {
@@ -27,6 +20,11 @@ public:
    * Indicates whether the list is dropped down
    */
   virtual bool IsDroppedDown() = 0;
+
+  virtual bool IsOpenInParentProcess() = 0;
+  virtual void SetOpenInParentProcess(bool aVal) = 0;
+
+  bool IsDroppedDownOrHasParentPopup() { return IsDroppedDown() || IsOpenInParentProcess(); }
 
   /**
    * Shows or hides the drop down

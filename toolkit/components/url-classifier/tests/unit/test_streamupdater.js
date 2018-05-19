@@ -1,32 +1,14 @@
-var gClientKeyRaw="TESTCLIENTKEY";
-// no btoa() available in xpcshell, precalculated for TESTCLIENTKEY.
-var gClientKey = "VEVTVENMSUVOVEtFWQ==";
-
-function MAC(content, clientKey)
-{
-  var hmac = Cc["@mozilla.org/security/hmac;1"].createInstance(Ci.nsICryptoHMAC);
-  var converter = Cc["@mozilla.org/intl/scriptableunicodeconverter"].
-                  createInstance(Ci.nsIScriptableUnicodeConverter);
-  converter.charset = "UTF-8";
-
-  var keyObject = Cc["@mozilla.org/security/keyobjectfactory;1"]
-    .getService(Ci.nsIKeyObjectFactory).keyFromString(Ci.nsIKeyObject.HMAC, clientKey);
-  hmac.init(Ci.nsICryptoHMAC.SHA1, keyObject);
-
-  var data = converter.convertToByteArray(content);
-  hmac.update(data, data.length);
-  return hmac.finish(true);
-}
-
-function doTest(updates, assertions, expectError, clientKey)
+function doTest(updates, assertions, expectError)
 {
   if (expectError) {
-    doUpdateTest(updates, assertions, updateError, runNextTest, clientKey);
+    doUpdateTest(updates, assertions, updateError, runNextTest);
   } else {
-    doUpdateTest(updates, assertions, runNextTest, updateError, clientKey);
+    doUpdateTest(updates, assertions, runNextTest, updateError);
   }
 }
 
+// Never use the same URLs for multiple tests, because we aren't guaranteed
+// to reset the database between tests.
 function testFillDb() {
   var add1Urls = [ "zaz.com/a", "yxz.com/c" ];
 
@@ -47,9 +29,9 @@ function testFillDb() {
 }
 
 function testSimpleForward() {
-  var add1Urls = [ "foo.com/a", "bar.com/c" ];
-  var add2Urls = [ "foo.com/b" ];
-  var add3Urls = [ "bar.com/d" ];
+  var add1Urls = [ "foo-simple.com/a", "bar-simple.com/c" ];
+  var add2Urls = [ "foo-simple.com/b" ];
+  var add3Urls = [ "bar-simple.com/d" ];
 
   var update = "n:1000\n";
   update += "i:test-phish-simple\n";
@@ -80,8 +62,8 @@ function testSimpleForward() {
 // Make sure that a nested forward (a forward within a forward) causes
 // the update to fail.
 function testNestedForward() {
-  var add1Urls = [ "foo.com/a", "bar.com/c" ];
-  var add2Urls = [ "foo.com/b" ];
+  var add1Urls = [ "foo-nested.com/a", "bar-nested.com/c" ];
+  var add2Urls = [ "foo-nested.com/b" ];
 
   var update = "n:1000\n";
   update += "i:test-phish-simple\n";
@@ -111,46 +93,46 @@ function testNestedForward() {
 
 // An invalid URL forward causes the update to fail.
 function testInvalidUrlForward() {
-  var add1Urls = [ "foo.com/a", "bar.com/c" ];
+  var add1Urls = [ "foo-invalid.com/a", "bar-invalid.com/c" ];
 
   var update = buildPhishingUpdate(
     [{ "chunkNum" : 1,
        "urls" : add1Urls }]);
   update += "u:asdf://blah/blah\n";  // invalid URL scheme
 
-  // The first part of the update should have succeeded.
-
+  // add1Urls is present, but that is an artifact of the way we do the test.
   var assertions = {
-    "tableData" : "test-phish-simple;a:1",
+    "tableData" : "",
     "urlsExist" : add1Urls
   };
 
-  doTest([update], assertions, false);
+  doTest([update], assertions, true);
 }
 
 // A failed network request causes the update to fail.
 function testErrorUrlForward() {
-  var add1Urls = [ "foo.com/a", "bar.com/c" ];
+  var add1Urls = [ "foo-forward.com/a", "bar-forward.com/c" ];
 
   var update = buildPhishingUpdate(
     [{ "chunkNum" : 1,
        "urls" : add1Urls }]);
   update += "u:http://test.invalid/asdf/asdf\n";  // invalid URL scheme
 
-  // The first part of the update should have succeeded
-
+  // add1Urls is present, but that is an artifact of the way we do the test.
   var assertions = {
-    "tableData" : "test-phish-simple;a:1",
+    "tableData" : "",
     "urlsExist" : add1Urls
   };
 
-  doTest([update], assertions, false);
+  doTest([update], assertions, true);
 }
 
 function testMultipleTables() {
-  var add1Urls = [ "foo.com/a", "bar.com/c" ];
-  var add2Urls = [ "foo.com/b" ];
-  var add3Urls = [ "bar.com/d" ];
+  var add1Urls = [ "foo-multiple.com/a", "bar-multiple.com/c" ];
+  var add2Urls = [ "foo-multiple.com/b" ];
+  var add3Urls = [ "bar-multiple.com/d" ];
+  var add4Urls = [ "bar-multiple.com/e" ];
+  var add6Urls = [ "bar-multiple.com/g" ];
 
   var update = "n:1000\n";
   update += "i:test-phish-simple\n";
@@ -172,74 +154,31 @@ function testMultipleTables() {
        "urls" : add3Urls }]);
   update += "u:data:," + encodeURIComponent(update3) + "\n";
 
+  update += "i:test-unwanted-simple\n";
+  var update4 = buildBareUpdate(
+    [{ "chunkNum" : 4,
+       "urls" : add4Urls }]);
+  update += "u:data:," + encodeURIComponent(update4) + "\n";
+
+  update += "i:test-block-simple\n";
+  var update6 = buildBareUpdate(
+    [{ "chunkNum" : 6,
+       "urls" : add6Urls }]);
+  update += "u:data:," + encodeURIComponent(update6) + "\n";
+
   var assertions = {
-    "tableData" : "test-malware-simple;a:3\ntest-phish-simple;a:1-2",
+    "tableData" : "test-block-simple;a:6\ntest-malware-simple;a:3\ntest-phish-simple;a:1-2\ntest-unwanted-simple;a:4",
     "urlsExist" : add1Urls.concat(add2Urls),
-    "malwareUrlsExist" : add3Urls
+    "malwareUrlsExist" : add3Urls,
+    "unwantedUrlsExist" : add4Urls,
+    "blockedUrlsExist" : add6Urls
   };
 
   doTest([update], assertions, false);
 }
 
-// Test a simple update with a valid message authentication code.
-function testValidMAC() {
-  var addUrls = [ "foo.com/a", "foo.com/b", "bar.com/c" ];
-  var update = buildPhishingUpdate(
-        [
-          { "chunkNum" : 1,
-            "urls" : addUrls
-          }]);
-  update = "m:" + MAC(update, gClientKeyRaw) + "\n" + update;
-
-  var assertions = {
-    "tableData" : "test-phish-simple;a:1",
-    "urlsExist" : addUrls
-  };
-
-  doTest([update], assertions, false, gClientKey);
-}
-
-// Test a simple update with an invalid message authentication code.
-function testInvalidMAC() {
-  var addUrls = [ "foo.com/a", "foo.com/b", "bar.com/c" ];
-  var update = buildPhishingUpdate(
-        [
-          { "chunkNum" : 1,
-            "urls" : addUrls
-          }]);
-  update = "m:INVALIDMAC\n" + update;
-
-  var assertions = {
-    "tableData" : "",
-    "urlsDontExist" : addUrls
-  };
-
-  doTest([update], assertions, true, gClientKey);
-}
-
-// Test a simple  update without a message authentication code, when it is
-// expecting one.
-function testNoMAC() {
-  var addUrls = [ "foo.com/a", "foo.com/b", "bar.com/c" ];
-  var update = buildPhishingUpdate(
-        [
-          { "chunkNum" : 1,
-            "urls" : addUrls
-          }]);
-
-  var assertions = {
-    "tableData" : "",
-    "urlsDontExist" : addUrls
-  };
-
-  doTest([update], assertions, true, gClientKey);
-}
-
-// Test an update with a valid message authentication code, with forwards.
-function testValidForwardMAC() {
-  var add1Urls = [ "foo.com/a", "bar.com/c" ];
-  var add2Urls = [ "foo.com/b" ];
-  var add3Urls = [ "bar.com/d" ];
+function testUrlInMultipleTables() {
+  var add1Urls = [ "foo-forward.com/a" ];
 
   var update = "n:1000\n";
   update += "i:test-phish-simple\n";
@@ -247,112 +186,27 @@ function testValidForwardMAC() {
   var update1 = buildBareUpdate(
     [{ "chunkNum" : 1,
        "urls" : add1Urls }]);
-  update += "u:data:," + encodeURIComponent(update1) +
-    "," + MAC(update1, gClientKeyRaw) + "\n";
+  update += "u:data:," + encodeURIComponent(update1) + "\n";
 
+  update += "i:test-malware-simple\n";
   var update2 = buildBareUpdate(
     [{ "chunkNum" : 2,
-       "urls" : add2Urls }]);
-  update += "u:data:," + encodeURIComponent(update2) +
-    "," + MAC(update2, gClientKeyRaw) + "\n";
-
-
-  var update3 = buildBareUpdate(
-    [{ "chunkNum" : 3,
-       "urls" : add3Urls }]);
-  update += "u:data:," + encodeURIComponent(update3) +
-    "," + MAC(update3, gClientKeyRaw) + "\n";
-
-  var assertions = {
-    "tableData" : "test-phish-simple;a:1-3",
-    "urlsExist" : add1Urls.concat(add2Urls).concat(add3Urls)
-  };
-
-  update = "m:" + MAC(update, gClientKeyRaw) + "\n" + update;
-
-  doTest([update], assertions, false, gClientKey);
-}
-
-// Test an update with a valid message authentication code, but with
-// invalid MACs on the forwards.
-function testInvalidForwardMAC() {
-  var add1Urls = [ "foo.com/a", "bar.com/c" ];
-  var add2Urls = [ "foo.com/b" ];
-  var add3Urls = [ "bar.com/d" ];
-
-  var update = "n:1000\n";
-  update += "i:test-phish-simple\n";
-
-  var update1 = buildBareUpdate(
-    [{ "chunkNum" : 1,
        "urls" : add1Urls }]);
-  update += "u:data:," + encodeURIComponent(update1) +
-    ",BADMAC\n";
+  update += "u:data:," + encodeURIComponent(update2) + "\n";
 
-  var update2 = buildBareUpdate(
-    [{ "chunkNum" : 2,
-       "urls" : add2Urls }]);
-  update += "u:data:," + encodeURIComponent(update2) +
-    ",BADMAC\n";
-
-
+  update += "i:test-unwanted-simple\n";
   var update3 = buildBareUpdate(
     [{ "chunkNum" : 3,
-       "urls" : add3Urls }]);
-  update += "u:data:," + encodeURIComponent(update3) +
-    ",BADMAC\n";
-
-  var assertions = {
-    "tableData" : "",
-    "urlsDontExist" : add1Urls.concat(add2Urls).concat(add3Urls)
-  };
-
-  update = "m:" + MAC(update, gClientKeyRaw) + "\n" + update;
-
-  doTest([update], assertions, true, gClientKey);
-}
-
-// Test an update with a valid message authentication code, but no MAC
-// specified for sub-urls.
-function testNoForwardMAC() {
-  var add1Urls = [ "foo.com/a", "bar.com/c" ];
-  var add2Urls = [ "foo.com/b" ];
-  var add3Urls = [ "bar.com/d" ];
-
-  var update = "n:1000\n";
-  update += "i:test-phish-simple\n";
-
-  // XXX : This test presents invalid data: urls as forwards.  A valid
-  // data url requires a comma, which the code will interpret as the
-  // separator for a MAC.
-
-  // Unfortunately this means that the update will fail even if the code
-  // isn't properly detecting a missing MAC update.  I'm not sure how to
-  // test that :/
-
-  var update1 = buildBareUpdate(
-    [{ "chunkNum" : 1,
        "urls" : add1Urls }]);
-  update += "u:data:" + encodeURIComponent(update1) + "\n";
-
-  var update2 = buildBareUpdate(
-    [{ "chunkNum" : 2,
-       "urls" : add2Urls }]);
-  update += "u:data:" + encodeURIComponent(update2) + "\n";
-
-  var update3 = buildBareUpdate(
-    [{ "chunkNum" : 3,
-       "urls" : add3Urls }]);
-  update += "u:data:" + encodeURIComponent(update3) + "\n";
+  update += "u:data:," + encodeURIComponent(update3) + "\n";
 
   var assertions = {
-    "tableData" : "",
-    "urlsDontExist" : add1Urls.concat(add2Urls).concat(add3Urls)
+    "tableData" : "test-malware-simple;a:2\ntest-phish-simple;a:1\ntest-unwanted-simple;a:3",
+    "urlExistInMultipleTables" : { url: add1Urls,
+                                   tables: "test-malware-simple,test-phish-simple,test-unwanted-simple" }
   };
 
-  update = "m:" + MAC(update, gClientKeyRaw) + "\n" + update;
-
-  doTest([update], assertions, true, gClientKey);
+  doTest([update], assertions, false);
 }
 
 function Observer(callback) {
@@ -371,47 +225,24 @@ QueryInterface: function(iid)
 }
 };
 
-var gGotRekey;
-
-gAssertions.gotRekey = function(data, cb)
-{
-  do_check_eq(gGotRekey, data);
-  cb();
-}
-
-// Tests a rekey request.
-function testRekey() {
-  var addUrls = [ "foo.com/a", "foo.com/b", "bar.com/c" ];
-  var update = buildPhishingUpdate(
-        [
-          { "chunkNum" : 1,
-            "urls" : addUrls
-          }]);
-  update = "e:pleaserekey\n" + update;
-
-  var assertions = {
-    "tableData" : "",
-    "urlsDontExist" : addUrls,
-    "gotRekey" : true
-  };
-
-  gGotRekey = false;
-  var observerService = Cc["@mozilla.org/observer-service;1"].getService(Ci.nsIObserverService);
-
-  observerService.addObserver(new Observer(function(subject, topic, data) {
-        if (topic == "url-classifier-rekey-requested") {
-          gGotRekey = true;
-        }
-      }),
-    "url-classifier-rekey-requested",
-    false);
-
-  doTest([update], assertions, true, gClientKey);
-}
-
 // Tests a database reset request.
 function testReset() {
-  var addUrls1 = [ "foo.com/a", "foo.com/b" ];
+  // The moz-phish-simple table is populated separately from the other update in
+  // a separate update request. Therefore it should not be reset when we run the
+  // updates later in this function.
+  var mozAddUrls = [ "moz-reset.com/a" ];
+  var mozUpdate = buildMozPhishingUpdate(
+    [
+      { "chunkNum" : 1,
+        "urls" : mozAddUrls
+      }]);
+
+  var dataUpdate = "data:," + encodeURIComponent(mozUpdate);
+
+  streamUpdater.downloadUpdates(mozTables, "", true,
+                                dataUpdate, () => {}, updateError, updateError);
+
+  var addUrls1 = [ "foo-reset.com/a", "foo-reset.com/b" ];
   var update1 = buildPhishingUpdate(
     [
       { "chunkNum" : 1,
@@ -420,7 +251,7 @@ function testReset() {
 
   var update2 = "n:1000\nr:pleasereset\n";
 
-  var addUrls3 = [ "bar.com/a", "bar.com/b" ];
+  var addUrls3 = [ "bar-reset.com/a", "bar-reset.com/b" ];
   var update3 = buildPhishingUpdate(
     [
       { "chunkNum" : 3,
@@ -428,11 +259,15 @@ function testReset() {
       }]);
 
   var assertions = {
-    "tableData" : "test-phish-simple;a:3",
-    "urlsExist" : addUrls3,
-    "urlsDontExist" : addUrls1
+    "tableData" : "moz-phish-simple;a:1\ntest-phish-simple;a:3", // tables that should still be there.
+    "mozPhishingUrlsExist" : mozAddUrls,                         // mozAddUrls added prior to the reset
+                                                                 // but it should still exist after reset.
+    "urlsExist" : addUrls3,                                      // addUrls3 added after the reset.
+    "urlsDontExist" : addUrls1                                   // addUrls1 added prior to the reset
   };
 
+  // Use these update responses in order. The update request only
+  // contains test-*-simple tables so the reset will only apply to these.
   doTest([update1, update2, update3], assertions, false);
 }
 
@@ -445,16 +280,8 @@ function run_test()
     testInvalidUrlForward,
     testErrorUrlForward,
     testMultipleTables,
-    testReset,
-    // XXX: we're currently "once MAC, always MAC",
-    // so any test not using a MAC must go above
-    testValidMAC,
-    testInvalidMAC,
-    testNoMAC,
-    testValidForwardMAC,
-    testInvalidForwardMAC,
-    testNoForwardMAC,
-    testRekey
+    testUrlInMultipleTables,
+    testReset
   ]);
 }
 

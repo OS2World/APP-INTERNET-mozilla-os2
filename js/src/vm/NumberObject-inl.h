@@ -7,21 +7,20 @@
 #ifndef vm_NumberObject_inl_h
 #define vm_NumberObject_inl_h
 
-#include "NumberObject.h"
+#include "vm/NumberObject.h"
 
 #include "jsobjinlines.h"
 
 namespace js {
 
-inline NumberObject *
-NumberObject::create(JSContext *cx, double d)
+inline NumberObject*
+NumberObject::create(JSContext* cx, double d, HandleObject proto /* = nullptr */)
 {
-    JSObject *obj = NewBuiltinClassInstance(cx, &class_);
+    NumberObject* obj = NewObjectWithClassProto<NumberObject>(cx, proto);
     if (!obj)
-        return NULL;
-    NumberObject &numobj = obj->as<NumberObject>();
-    numobj.setPrimitiveValue(d);
-    return &numobj;
+        return nullptr;
+    obj->setPrimitiveValue(d);
+    return obj;
 }
 
 } // namespace js

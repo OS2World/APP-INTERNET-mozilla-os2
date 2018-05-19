@@ -20,10 +20,10 @@
 #include "nsStringAPI.h"
 #include "nsIPrefBranch.h"
 #include "nsIPrefService.h"
-#include "nsITelemetry.h"
 #include "nsIXPConnect.h"
-#include "jsapi.h"
 #include "prio.h"
+#include "mozilla/Maybe.h"
+#include "mozilla/UniquePtr.h"
 
 using namespace JS;
 
@@ -31,7 +31,7 @@ namespace mozilla {
 namespace scache {
 
 NS_IMPORT nsresult
-NewObjectInputStreamFromBuffer(char* buffer, uint32_t len, 
+NewObjectInputStreamFromBuffer(UniquePtr<char[]> buffer, uint32_t len, 
                                nsIObjectInputStream** stream);
 
 // We can't retrieve the wrapped stream from the objectOutputStream later,
@@ -42,11 +42,12 @@ NewObjectOutputWrappedStorageStream(nsIObjectOutputStream **wrapperStream,
 
 NS_IMPORT nsresult
 NewBufferFromStorageStream(nsIStorageStream *storageStream, 
-                           char** buffer, uint32_t* len);
-}
-}
+                           UniquePtr<char[]>* buffer, uint32_t* len);
+} // namespace scache
+} // namespace mozilla
 
 using namespace mozilla::scache;
+using mozilla::UniquePtr;
 
 #define NS_ENSURE_STR_MATCH(str1, str2, testname)  \
 PR_BEGIN_MACRO                                     \
@@ -91,26 +92,23 @@ TestStartupWriteRead() {
   
   const char* buf = "Market opportunities for BeardBook";
   const char* id = "id";
-  char* outbufPtr = NULL;
-  nsAutoArrayPtr<char> outbuf;  
+  UniquePtr<char[]> outbuf;  
   uint32_t len;
   
   rv = sc->PutBuffer(id, buf, strlen(buf) + 1);
   NS_ENSURE_SUCCESS(rv, rv);
   
-  rv = sc->GetBuffer(id, &outbufPtr, &len);
+  rv = sc->GetBuffer(id, &outbuf, &len);
   NS_ENSURE_SUCCESS(rv, rv);
-  outbuf = outbufPtr;
-  NS_ENSURE_STR_MATCH(buf, outbuf, "pre-write read");
+  NS_ENSURE_STR_MATCH(buf, outbuf.get(), "pre-write read");
 
   rv = sc->ResetStartupWriteTimer();
   rv = WaitForStartupTimer();
   NS_ENSURE_SUCCESS(rv, rv);
   
-  rv = sc->GetBuffer(id, &outbufPtr, &len);
+  rv = sc->GetBuffer(id, &outbuf, &len);
   NS_ENSURE_SUCCESS(rv, rv);
-  outbuf = outbufPtr;
-  NS_ENSURE_STR_MATCH(buf, outbuf, "simple write/read");
+  NS_ENSURE_STR_MATCH(buf, outbuf.get(), "simple write/read");
 
   return NS_OK;
 }
@@ -120,7 +118,7 @@ TestWriteInvalidateRead() {
   nsresult rv;
   const char* buf = "BeardBook competitive analysis";
   const char* id = "id";
-  char* outbuf = NULL;
+  UniquePtr<char[]> outbuf;
   uint32_t len;
   nsCOMPtr<nsIStartupCache> sc
     = do_GetService("@mozilla.org/startupcache/cache;1", &rv);
@@ -132,7 +130,6 @@ TestWriteInvalidateRead() {
   sc->InvalidateCache();
 
   rv = sc->GetBuffer(id, &outbuf, &len);
-  delete[] outbuf;
   if (rv == NS_ERROR_NOT_AVAILABLE) {
     passed("buffer not available after invalidate");
   } else if (NS_SUCCEEDED(rv)) {
@@ -158,7 +155,8 @@ TestWriteObject() {
     return NS_ERROR_UNEXPECTED;
   }
   NS_NAMED_LITERAL_CSTRING(spec, "http://www.mozilla.org");
-  obj->SetSpec(spec);
+  rv = obj->SetSpec(spec);
+  NS_ENSURE_SUCCESS(rv, rv);
   nsCOMPtr<nsIStartupCache> sc = do_GetService("@mozilla.org/startupcache/cache;1", &rv);
 
   sc->InvalidateCache();
@@ -172,7 +170,7 @@ TestWriteObject() {
     = do_CreateInstance("@mozilla.org/storagestream;1");
   NS_ENSURE_ARG_POINTER(storageStream);
   
-  rv = storageStream->Init(256, (uint32_t) -1, nullptr);
+  rv = storageStream->Init(256, (uint32_t) -1);
   NS_ENSURE_SUCCESS(rv, rv);
   
   nsCOMPtr<nsIObjectOutputStream> objectOutput
@@ -196,37 +194,33 @@ TestWriteObject() {
     return rv;
   }
 
-  char* bufPtr = NULL;
-  nsAutoArrayPtr<char> buf;
+  UniquePtr<char[]> buf;
   uint32_t len;
-  NewBufferFromStorageStream(storageStream, &bufPtr, &len);
-  buf = bufPtr;
+  NewBufferFromStorageStream(storageStream, &buf, &len);
 
   // Since this is a post-startup write, it should be written and
   // available.
-  rv = sc->PutBuffer(id, buf, len);
+  rv = sc->PutBuffer(id, buf.get(), len);
   if (NS_FAILED(rv)) {
     fail("failed to insert input stream");
     return rv;
   }
     
-  char* buf2Ptr = NULL;
-  nsAutoArrayPtr<char> buf2;
+  UniquePtr<char[]> buf2;
   uint32_t len2;
   nsCOMPtr<nsIObjectInputStream> objectInput;
-  rv = sc->GetBuffer(id, &buf2Ptr, &len2);
+  rv = sc->GetBuffer(id, &buf2, &len2);
   if (NS_FAILED(rv)) {
     fail("failed to retrieve buffer");
     return rv;
   }
-  buf2 = buf2Ptr;
 
-  rv = NewObjectInputStreamFromBuffer(buf2, len2, getter_AddRefs(objectInput));
+  rv = NewObjectInputStreamFromBuffer(Move(buf2), len2,
+                                      getter_AddRefs(objectInput));
   if (NS_FAILED(rv)) {
     fail("failed to created input stream");
     return rv;
   }  
-  buf2.forget();
 
   nsCOMPtr<nsISupports> deserialized;
   rv = objectInput->ReadObject(true, getter_AddRefs(deserialized));
@@ -239,7 +233,11 @@ TestWriteObject() {
   nsCOMPtr<nsIURI> uri(do_QueryInterface(deserialized));
   if (uri) {
     nsCString outSpec;
-    uri->GetSpec(outSpec);
+    rv = uri->GetSpec(outSpec);
+    if (NS_FAILED(rv)) {
+      fail("failed to get spec");
+      return rv;
+    }
     match = outSpec.Equals(spec);
   }
   if (!match) {
@@ -315,7 +313,7 @@ TestIgnoreDiskCache(nsIFile* profileDir) {
   
   const char* buf = "Get a Beardbook app for your smartphone";
   const char* id = "id";
-  char* outbuf = NULL;
+  UniquePtr<char[]> outbuf;
   uint32_t len;
   
   rv = sc->PutBuffer(id, buf, strlen(buf) + 1);
@@ -334,8 +332,6 @@ TestIgnoreDiskCache(nsIFile* profileDir) {
 
   nsresult r = LockCacheFile(false, profileDir);
   NS_ENSURE_SUCCESS(r, r);
-
-  delete[] outbuf;
 
   if (rv == NS_ERROR_NOT_AVAILABLE) {
     passed("buffer not available after ignoring disk cache");
@@ -361,7 +357,7 @@ TestEarlyShutdown() {
   const char* buf = "Find your soul beardmate on BeardBook";
   const char* id = "id";
   uint32_t len;
-  char* outbuf = NULL;
+  UniquePtr<char[]> outbuf;
   
   sc->ResetStartupWriteTimer();
   rv = sc->PutBuffer(id, buf, strlen(buf) + 1);
@@ -374,7 +370,6 @@ TestEarlyShutdown() {
   NS_ENSURE_SUCCESS(rv, rv);
   
   rv = sc->GetBuffer(id, &outbuf, &len);
-  delete[] outbuf;
 
   if (NS_SUCCEEDED(rv)) {
     passed("GetBuffer succeeded after early shutdown");
@@ -399,92 +394,6 @@ TestEarlyShutdown() {
   return NS_OK;
 }
 
-static bool
-GetHistogramCounts(const char *testmsg, const nsACString &histogram_id,
-                   JSContext *cx, MutableHandle<Value> counts)
-{
-  nsCOMPtr<nsITelemetry> telemetry = do_GetService("@mozilla.org/base/telemetry;1");
-  Rooted<Value> h(cx);
-  nsresult trv = telemetry->GetHistogramById(histogram_id, cx, h.address());
-  if (NS_FAILED(trv)) {
-    fail("%s: couldn't get histogram %s", testmsg, ToNewCString(histogram_id));
-    return false;
-  }
-  passed(testmsg);
-
-  Rooted<Value> snapshot_val(cx);
-  JSFunction *snapshot_fn = NULL;
-  Rooted<Value> ss(cx);
-  return (JS_GetProperty(cx, JSVAL_TO_OBJECT(h), "snapshot",
-                         snapshot_val.address())
-          && (snapshot_fn = JS_ValueToFunction(cx, snapshot_val))
-          && JS::Call(cx, JSVAL_TO_OBJECT(h),
-                      snapshot_fn, 0, NULL, ss.address())
-          && JS_GetProperty(cx, JSVAL_TO_OBJECT(ss), "counts", counts.address()));
-}
-
-nsresult
-CompareCountArrays(JSContext *cx, JSObject *aBefore, JSObject *aAfter)
-{
-  uint32_t before_size, after_size;
-  JS::RootedObject before(cx, aBefore);
-  JS::RootedObject after(cx, aAfter);
-  if (!(JS_GetArrayLength(cx, before, &before_size)
-        && JS_GetArrayLength(cx, after, &after_size))) {
-    return NS_ERROR_UNEXPECTED;
-  }
-
-  if (before_size != after_size) {
-    return NS_ERROR_UNEXPECTED;
-  }
-
-  JS::RootedValue before_num(cx), after_num(cx);
-  for (uint32_t i = 0; i < before_size; ++i) {
-    if (!(JS_GetElement(cx, before, i, before_num.address())
-          && JS_GetElement(cx, after, i, after_num.address()))) {
-      return NS_ERROR_UNEXPECTED;
-    }
-
-    JSBool same = JS_TRUE;
-    if (!JS_LooselyEqual(cx, before_num, after_num, &same)) {
-      return NS_ERROR_UNEXPECTED;
-    } else {
-      if (same) {
-        continue;
-      } else {
-        // Some element of the histograms's count arrays differed.
-        // That's a good thing!
-        return NS_OK;
-      }
-    }
-  }
-
-  // None of the elements of the histograms's count arrays differed.
-  // Not good, we should have recorded something.
-  return NS_ERROR_FAILURE;
-}
-
-nsresult
-TestHistogramValues(const char* type, bool use_js, JSContext *cx,
-                    JSObject *before, JSObject *after)
-{
-  if (!use_js) {
-    fail("couldn't check histogram recording");
-    return NS_ERROR_FAILURE;
-  }
-  nsresult compare = CompareCountArrays(cx, before, after);
-  if (compare == NS_ERROR_UNEXPECTED) {
-    fail("count comparison error");
-    return compare;
-  }
-  if (compare == NS_ERROR_FAILURE) {
-    fail("histogram didn't record %s", type);
-    return compare;
-  }
-  passed("histogram records %s", type);
-  return NS_OK;
-}
-
 int main(int argc, char** argv)
 {
   ScopedXPCOM xpcom("Startup Cache");
@@ -492,61 +401,57 @@ int main(int argc, char** argv)
     return 1;
 
   nsCOMPtr<nsIPrefBranch> prefs = do_GetService(NS_PREFSERVICE_CONTRACTID);
+  if (!prefs) {
+    fail("prefs");
+    return 1;
+  }
   prefs->SetIntPref("hangmonitor.timeout", 0);
-  
+
   int rv = 0;
-  // nsITelemetry doesn't have a nice C++ interface.
-  JSContext *cx = nullptr;
-
-  // XPCOM initialization spins up XPConnect, which spins up a JSRuntime, which
-  // we can only have one of per thread. So we need to get a JSContext out of
-  // XPConnect here, rather than creating our own runtime. XPConnect rules
-  // dictate that we push the context as well, but we're trying to make the
-  // pushing/popping APIs accessible only through nsCxPusher, which isn't
-  // accessible via the external linkage used by this test. We can get away with
-  // using the cx here without triggering a cx stack assert, so just do that
-  // for now. Eventually, the whole notion of pushing and popping will just go
-  // away.
-  nsCOMPtr<nsIXPConnect> xpc = do_GetService(nsIXPConnect::GetCID());
-  if (xpc)
-    cx = xpc->GetSafeJSContext();
-
-  bool use_js = !!cx;
-  JSAutoRequest req(cx);
-  static JSClass global_class = {
-    "global", JSCLASS_NEW_RESOLVE | JSCLASS_GLOBAL_FLAGS | JSCLASS_HAS_PRIVATE,
-    JS_PropertyStub,  JS_DeletePropertyStub,
-    JS_PropertyStub,  JS_StrictPropertyStub,
-    JS_EnumerateStub, JS_ResolveStub,
-    JS_ConvertStub
-  };
-  JSObject *glob = nullptr;
-  if (use_js)
-    glob = JS_NewGlobalObject(cx, &global_class, NULL);
-  if (!glob)
-    use_js = false;
-  mozilla::Maybe<JSAutoCompartment> ac;
-  if (use_js)
-    ac.construct(cx, glob);
-  if (use_js && !JS_InitStandardClasses(cx, glob))
-    use_js = false;
-
-  NS_NAMED_LITERAL_CSTRING(age_histogram_id, "STARTUP_CACHE_AGE_HOURS");
-  NS_NAMED_LITERAL_CSTRING(invalid_histogram_id, "STARTUP_CACHE_INVALID");
-
-  Rooted<Value> age_before_counts(cx);
-  if (use_js &&
-      !GetHistogramCounts("STARTUP_CACHE_AGE_HOURS histogram before test",
-                          age_histogram_id, cx, &age_before_counts))
-    use_js = false;
-  
-  Rooted<Value> invalid_before_counts(cx);
-  if (use_js &&
-      !GetHistogramCounts("STARTUP_CACHE_INVALID histogram before test",
-                          invalid_histogram_id, cx, &invalid_before_counts))
-    use_js = false;
-  
   nsresult scrv;
+
+  // Register TestStartupCacheTelemetry
+  nsCOMPtr<nsIFile> manifest;
+  scrv = NS_GetSpecialDirectory(NS_GRE_DIR,
+                                getter_AddRefs(manifest));
+  if (NS_FAILED(scrv)) {
+    fail("NS_XPCOM_CURRENT_PROCESS_DIR");
+    return 1;
+  }
+
+#ifdef XP_MACOSX
+  nsCOMPtr<nsIFile> tempManifest;
+  manifest->Clone(getter_AddRefs(tempManifest));
+  manifest->AppendNative(
+    NS_LITERAL_CSTRING("TestStartupCacheTelemetry.manifest"));
+  bool exists;
+  manifest->Exists(&exists);
+  if (!exists) {
+    // Workaround for bug 1080338 in mozharness.
+    manifest = tempManifest.forget();
+    manifest->SetNativeLeafName(NS_LITERAL_CSTRING("MacOS"));
+    manifest->AppendNative(
+      NS_LITERAL_CSTRING("TestStartupCacheTelemetry.manifest"));
+  }
+#else
+  manifest->AppendNative(
+    NS_LITERAL_CSTRING("TestStartupCacheTelemetry.manifest"));
+#endif
+
+  XRE_AddManifestLocation(NS_APP_LOCATION, manifest);
+
+  nsCOMPtr<nsIObserver> telemetryThing =
+    do_GetService("@mozilla.org/testing/startup-cache-telemetry.js");
+  if (!telemetryThing) {
+    fail("telemetryThing");
+    return 1;
+  }
+  scrv = telemetryThing->Observe(nullptr, "save-initial", nullptr);
+  if (NS_FAILED(scrv)) {
+    fail("save-initial");
+    rv = 1;
+  }
+
   nsCOMPtr<nsIStartupCache> sc 
     = do_GetService("@mozilla.org/startupcache/cache;1", &scrv);
   if (NS_FAILED(scrv))
@@ -565,28 +470,11 @@ int main(int argc, char** argv)
   if (NS_FAILED(TestEarlyShutdown()))
     rv = 1;
 
-  Rooted<Value> age_after_counts(cx);
-  if (use_js &&
-      !GetHistogramCounts("STARTUP_CACHE_AGE_HOURS histogram after test",
-                          age_histogram_id, cx, &age_after_counts))
-    use_js = false;
-
-  if (NS_FAILED(TestHistogramValues("age samples", use_js, cx,
-                                    age_before_counts.toObjectOrNull(),
-                                    age_after_counts.toObjectOrNull())))
+  scrv = telemetryThing->Observe(nullptr, "save-initial", nullptr);
+  if (NS_FAILED(scrv)) {
+    fail("check-final");
     rv = 1;
-                                                    
-  Rooted<Value> invalid_after_counts(cx);
-  if (use_js &&
-      !GetHistogramCounts("STARTUP_CACHE_INVALID histogram after test",
-                          invalid_histogram_id, cx, &invalid_after_counts))
-    use_js = false;
-
-  // STARTUP_CACHE_INVALID should have been triggered by TestIgnoreDiskCache()
-  if (NS_FAILED(TestHistogramValues("invalid disk cache", use_js, cx,
-                                    invalid_before_counts.toObjectOrNull(),
-                                    invalid_after_counts.toObjectOrNull())))
-    rv = 1;
+  }
 
   return rv;
 }

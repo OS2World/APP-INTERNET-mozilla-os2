@@ -30,7 +30,7 @@ else:
 
 _in_msys = False
 
-if os.environ.get('MSYSTEM', None) == 'MINGW32':
+if os.environ.get('MSYSTEM', None) in ('MINGW32', 'MINGW64'):
     _in_msys = True
 
     if not _current_shell.lower().endswith('.exe'):
@@ -75,7 +75,7 @@ class ProcessExecutionMixin(LoggingMixin):
         """
         args = self._normalize_command(args, require_unix_environment)
 
-        self.log(logging.INFO, 'new_process', {'args': args}, ' '.join(args))
+        self.log(logging.INFO, 'new_process', {'args': ' '.join(args)}, '{args}')
 
         def handleLine(line):
             # Converts str to unicode on Python 2 and bytes to str on Python 3.
@@ -88,7 +88,7 @@ class ProcessExecutionMixin(LoggingMixin):
             if not log_name:
                 return
 
-            self.log(log_level, log_name, {'line': line.strip()}, '{line}')
+            self.log(log_level, log_name, {'line': line.rstrip()}, '{line}')
 
         use_env = {}
         if explicit_env:
@@ -101,8 +101,34 @@ class ProcessExecutionMixin(LoggingMixin):
 
         self.log(logging.DEBUG, 'process', {'env': use_env}, 'Environment: {env}')
 
+        # There is a bug in subprocess where it doesn't like unicode types in
+        # environment variables. Here, ensure all unicode are converted to
+        # binary. utf-8 is our globally assumed default. If the caller doesn't
+        # want UTF-8, they shouldn't pass in a unicode instance.
+        normalized_env = {}
+        for k, v in use_env.items():
+            if isinstance(k, unicode):
+                k = k.encode('utf-8', 'strict')
+
+            if isinstance(v, unicode):
+                v = v.encode('utf-8', 'strict')
+
+            normalized_env[k] = v
+
+        use_env = normalized_env
+
         if pass_thru:
-            status = subprocess.call(args, cwd=cwd, env=use_env)
+            proc = subprocess.Popen(args, cwd=cwd, env=use_env)
+            status = None
+            # Leave it to the subprocess to handle Ctrl+C. If it terminates as
+            # a result of Ctrl+C, proc.wait() will return a status code, and,
+            # we get out of the loop. If it doesn't, like e.g. gdb, we continue
+            # waiting.
+            while status is None:
+                try:
+                    status = proc.wait()
+                except KeyboardInterrupt:
+                    pass
         else:
             p = ProcessHandlerMixin(args, cwd=cwd, env=use_env,
                 processOutputLine=[handleLine], universal_newlines=True,
@@ -118,7 +144,7 @@ class ProcessExecutionMixin(LoggingMixin):
             ensure_exit_code = 0
 
         if status != ensure_exit_code:
-            raise Exception('Process executed with non-0 exit code: %s' % args)
+            raise Exception('Process executed with non-0 exit code %d: %s' % (status, args))
 
         return status
 

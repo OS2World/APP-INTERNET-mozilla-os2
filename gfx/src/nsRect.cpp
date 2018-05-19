@@ -4,12 +4,35 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "nsRect.h"
-#include "nsString.h"
-#include "nsDeviceContext.h"
-#include "prlog.h"
+#include "mozilla/gfx/Types.h"          // for NS_SIDE_BOTTOM, etc
+#include "mozilla/CheckedInt.h"         // for CheckedInt
+#include "nsDeviceContext.h"            // for nsDeviceContext
+#include "nsString.h"               // for nsAutoString, etc
+#include "nsMargin.h"                   // for nsMargin
 
-// the mozilla::css::Side sequence must match the nsMargin nscoord sequence
-PR_STATIC_ASSERT((NS_SIDE_TOP == 0) && (NS_SIDE_RIGHT == 1) && (NS_SIDE_BOTTOM == 2) && (NS_SIDE_LEFT == 3));
+static_assert((int(NS_SIDE_TOP) == 0) &&
+              (int(NS_SIDE_RIGHT) == 1) &&
+              (int(NS_SIDE_BOTTOM) == 2) &&
+              (int(NS_SIDE_LEFT) == 3),
+              "The mozilla::css::Side sequence must match the nsMargin nscoord sequence");
+
+const mozilla::gfx::IntRect& GetMaxSizedIntRect() {
+  static const mozilla::gfx::IntRect r(0, 0, INT32_MAX, INT32_MAX);
+  return r;
+}
+
+
+bool nsRect::Overflows() const {
+#ifdef NS_COORD_IS_FLOAT
+  return false;
+#else
+  mozilla::CheckedInt<int32_t> xMost = this->x;
+  xMost += this->width;
+  mozilla::CheckedInt<int32_t> yMost = this->y;
+  yMost += this->height;
+  return !xMost.isValid() || !yMost.isValid();
+#endif
+}
 
 #ifdef DEBUG
 // Diagnostics
@@ -19,7 +42,7 @@ FILE* operator<<(FILE* out, const nsRect& rect)
   nsAutoString tmp;
 
   // Output the coordinates in fractional pixels so they're easier to read
-  tmp.AppendLiteral("{");
+  tmp.Append('{');
   tmp.AppendFloat(NSAppUnitsToFloatPixels(rect.x,
                        nsDeviceContext::AppUnitsPerCSSPixel()));
   tmp.AppendLiteral(", ");
@@ -31,7 +54,7 @@ FILE* operator<<(FILE* out, const nsRect& rect)
   tmp.AppendLiteral(", ");
   tmp.AppendFloat(NSAppUnitsToFloatPixels(rect.height,
                        nsDeviceContext::AppUnitsPerCSSPixel()));
-  tmp.AppendLiteral("}");
+  tmp.Append('}');
   fputs(NS_LossyConvertUTF16toASCII(tmp).get(), out);
   return out;
 }

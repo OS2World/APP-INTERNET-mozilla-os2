@@ -13,15 +13,14 @@
 
 namespace js {
 
-inline BooleanObject *
-BooleanObject::create(JSContext *cx, bool b)
+inline BooleanObject*
+BooleanObject::create(JSContext* cx, bool b, HandleObject proto /* = nullptr */)
 {
-    JSObject *obj = NewBuiltinClassInstance(cx, &class_);
+    BooleanObject* obj = NewObjectWithClassProto<BooleanObject>(cx, proto);
     if (!obj)
-        return NULL;
-    BooleanObject &boolobj = obj->as<BooleanObject>();
-    boolobj.setPrimitiveValue(b);
-    return &boolobj;
+        return nullptr;
+    obj->setPrimitiveValue(b);
+    return obj;
 }
 
 } // namespace js

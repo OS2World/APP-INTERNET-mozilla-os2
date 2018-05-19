@@ -1,8 +1,10 @@
-# -*- Mode: python; c-basic-offset: 4; indent-tabs-mode: nil; tab-width: 40 -*-
+# -*- Mode: python; indent-tabs-mode: nil; tab-width: 40 -*-
 # vim: set filetype=python:
 # This Source Code Form is subject to the terms of the Mozilla Public
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+JAR_MANIFESTS += ['jar.mn']
 
 interfaces = [
     'base',
@@ -10,8 +12,6 @@ interfaces = [
     'core',
     'html',
     'events',
-    'devicestorage',
-    'contacts',
     'settings',
     'stylesheets',
     'sidebar',
@@ -21,43 +21,56 @@ interfaces = [
     'xbl',
     'xpath',
     'xul',
+    'security',
     'storage',
     'json',
     'offline',
     'geolocation',
     'notification',
     'permission',
-    'push',
     'svg',
     'smil',
     'apps',
-    'gamepad',
+    'push',
 ]
 
-PARALLEL_DIRS += ['interfaces/' + i for i in interfaces]
+DIRS += ['interfaces/' + i for i in interfaces]
 
-PARALLEL_DIRS += [
+DIRS += [
+    'animation',
     'apps',
     'base',
-    'activities',
+    'archivereader',
     'bindings',
     'battery',
-    'bluetooth',
     'browser-element',
-    'contacts',
-    'phonenumberutils',
-    'alarm',
-    'devicestorage',
+    'cache',
+    'canvas',
+    'crypto',
     'encoding',
-    'file',
+    'events',
+    'fetch',
+    'filehandle',
+    'filesystem',
+    'flyweb',
+    'gamepad',
+    'geolocation',
+    'grid',
+    'html',
+    'json',
+    'jsurl',
+    'asmjscache',
+    'mathml',
     'media',
-    'messages',
+    'notification',
+    'offline',
     'power',
     'push',
     'quota',
+    'security',
     'settings',
-    'mobilemessage',
-    'src',
+    'storage',
+    'svg',
     'time',
     'locales',
     'network',
@@ -67,45 +80,53 @@ PARALLEL_DIRS += [
     'indexedDB',
     'system',
     'ipc',
-    'identity',
     'workers',
-    'camera',
     'audiochannel',
-    'future',
-    'wappush'
+    'broadcastchannel',
+    'messagechannel',
+    'promise',
+    'smil',
+    'url',
+    'inputmethod',
+    'webidl',
+    'xbl',
+    'xml',
+    'xslt',
+    'xul',
+    'manifest',
+    'vr',
+    'u2f',
+    'console',
+    'performance',
+    'xhr',
+    'worklet',
 ]
 
 if CONFIG['OS_ARCH'] == 'WINNT':
-    PARALLEL_DIRS += ['plugins/ipc/hangui']
+    DIRS += ['plugins/ipc/hangui']
 
-if CONFIG['MOZ_B2G_RIL']:
-    PARALLEL_DIRS += [
-        'telephony',
+if CONFIG['MOZ_WIDGET_TOOLKIT'] == 'gonk':
+    DIRS += [
+        'speakermanager',
+        'tethering',
         'wifi',
-        'icc',
-        'cellbroadcast',
-        'voicemail',
     ]
 
-if CONFIG['MOZ_B2G_FM']:
-    PARALLEL_DIRS += ['fm']
+if CONFIG['MOZ_SECUREELEMENT']:
+    DIRS += ['secureelement']
 
-if CONFIG['MOZ_PAY']:
-    PARALLEL_DIRS += ['payment']
+if CONFIG['MOZ_B2G']:
+    DIRS += [
+        'downloads',
+    ]
 
-if CONFIG['MOZ_GAMEPAD']:
-    PARALLEL_DIRS += ['gamepad']
+DIRS += ['presentation']
 
-# bindings/test is here, because it needs to build after bindings/, and
-# we build subdirectories before ourselves.
 TEST_DIRS += [
     'tests',
     'imptests',
-    'bindings/test',
 ]
 
-if CONFIG['MOZ_WIDGET_TOOLKIT'] in ('gtk2', 'cocoa', 'windows', 'android', 'qt', 'os2'):
+if CONFIG['MOZ_WIDGET_TOOLKIT'] in ('gtk2', 'gtk3', 'cocoa', 'windows', 'android', 'os2'):
     TEST_DIRS += ['plugins/test']
-
-MODULE = 'dom'
 

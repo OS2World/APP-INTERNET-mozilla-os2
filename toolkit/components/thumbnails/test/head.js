@@ -1,18 +1,25 @@
 /* Any copyright is dedicated to the Public Domain.
    http://creativecommons.org/publicdomain/zero/1.0/ */
 
-let tmp = {};
+var tmp = {};
 Cu.import("resource://gre/modules/PageThumbs.jsm", tmp);
+Cu.import("resource://gre/modules/BackgroundPageThumbs.jsm", tmp);
+Cu.import("resource://gre/modules/NewTabUtils.jsm", tmp);
 Cu.import("resource:///modules/sessionstore/SessionStore.jsm", tmp);
 Cu.import("resource://gre/modules/FileUtils.jsm", tmp);
 Cu.import("resource://gre/modules/osfile.jsm", tmp);
-let {PageThumbs, PageThumbsStorage, SessionStore, FileUtils, OS} = tmp;
+var {PageThumbs, BackgroundPageThumbs, NewTabUtils, PageThumbsStorage, SessionStore, FileUtils, OS} = tmp;
 
-Cu.import("resource://gre/modules/PlacesUtils.jsm");
+XPCOMUtils.defineLazyModuleGetter(this, "PlacesTestUtils",
+  "resource://testing-common/PlacesTestUtils.jsm");
+
+var oldEnabledPref = Services.prefs.getBoolPref("browser.pagethumbnails.capturing_disabled");
+Services.prefs.setBoolPref("browser.pagethumbnails.capturing_disabled", false);
 
 registerCleanupFunction(function () {
   while (gBrowser.tabs.length > 1)
     gBrowser.removeTab(gBrowser.tabs[1]);
+  Services.prefs.setBoolPref("browser.pagethumbnails.capturing_disabled", oldEnabledPref)
 });
 
 /**
@@ -25,7 +32,7 @@ function test() {
 /**
  * The test runner that controls the execution flow of our tests.
  */
-let TestRunner = {
+var TestRunner = {
   /**
    * Starts the test runner.
    */
@@ -44,23 +51,34 @@ let TestRunner = {
 
   /**
    * Runs the next available test or finishes if there's no test left.
+   * @param aValue This value will be passed to the yielder via the runner's
+   *               iterator.
    */
-  next: function () {
-    try {
-      let value = TestRunner._iter.next();
-      if (value && typeof value.then == "function")
-        value.then(next);
-    } catch (e if e instanceof StopIteration) {
+  next: function (aValue) {
+    let obj = TestRunner._iter.next(aValue);
+    if (obj.done) {
       finish();
+      return;
+    }
+
+    let value = obj.value || obj;
+    if (value && typeof value.then == "function") {
+      value.then(result => {
+        next(result);
+      }, error => {
+        ok(false, error + "\n" + error.stack);
+      });
     }
   }
 };
 
 /**
  * Continues the current test execution.
+ * @param aValue This value will be passed to the yielder via the runner's
+ *               iterator.
  */
-function next() {
-  TestRunner.next();
+function next(aValue) {
+  TestRunner.next(aValue);
 }
 
 /**
@@ -78,7 +96,7 @@ function addTab(aURI, aCallback) {
  * @param aURI The URI to load.
  */
 function navigateTo(aURI) {
-  let browser = gBrowser.selectedTab.linkedBrowser;
+  let browser = gBrowser.selectedBrowser;
   whenLoaded(browser);
   browser.loadURI(aURI);
 }
@@ -106,11 +124,14 @@ function whenLoaded(aElement, aCallback = next) {
  */
 function captureAndCheckColor(aRed, aGreen, aBlue, aMessage) {
   let browser = gBrowser.selectedBrowser;
+  // We'll get oranges if the expiration filter removes the file during the
+  // test.
+  dontExpireThumbnailURLs([browser.currentURI.spec]);
 
   // Capture the screenshot.
   PageThumbs.captureAndStore(browser, function () {
     retrieveImageDataForURL(browser.currentURI.spec, function ([r, g, b]) {
-      is("" + [r,g,b], "" + [aRed, aGreen, aBlue], aMessage);
+      is("" + [r, g, b], "" + [aRed, aGreen, aBlue], aMessage);
       next();
     });
   });
@@ -119,6 +140,7 @@ function captureAndCheckColor(aRed, aGreen, aBlue, aMessage) {
 /**
  * For a given URL, loads the corresponding thumbnail
  * to a canvas and passes its image data to the callback.
+ * Note, not compat with e10s!
  * @param aURL The url associated with the thumbnail.
  * @param aCallback The function to pass the image data to.
  */
@@ -138,8 +160,17 @@ function retrieveImageDataForURL(aURL, aCallback) {
     // Draw the image to a canvas and compare the pixel color values.
     let ctx = canvas.getContext("2d");
     ctx.drawImage(img, 0, 0, width, height);
-    aCallback(ctx.getImageData(0, 0, 100, 100).data);
+    let result = ctx.getImageData(0, 0, 100, 100).data;
+    aCallback(result);
   });
+}
+
+/**
+ * Returns the file of the thumbnail with the given URL.
+ * @param aURL The URL of the thumbnail.
+ */
+function thumbnailFile(aURL) {
+  return new FileUtils.File(PageThumbsStorage.getFilePathForURL(aURL));
 }
 
 /**
@@ -147,64 +178,30 @@ function retrieveImageDataForURL(aURL, aCallback) {
  * @param aURL The url associated to the thumbnail.
  */
 function thumbnailExists(aURL) {
-  let file = new FileUtils.File(PageThumbsStorage.getFilePathForURL(aURL));
+  let file = thumbnailFile(aURL);
   return file.exists() && file.fileSize;
 }
 
 /**
- * Asynchronously adds visits to a page, invoking a callback function when done.
- *
- * @param aPlaceInfo
- *        Can be an nsIURI, in such a case a single LINK visit will be added.
- *        Otherwise can be an object describing the visit to add, or an array
- *        of these objects:
- *          { uri: nsIURI of the page,
- *            transition: one of the TRANSITION_* from nsINavHistoryService,
- *            [optional] title: title of the page,
- *            [optional] visitDate: visit date in microseconds from the epoch
- *            [optional] referrer: nsIURI of the referrer for this visit
- *          }
- * @param [optional] aCallback
- *        Function to be invoked on completion.
+ * Removes the thumbnail for the given URL.
+ * @param aURL The URL associated with the thumbnail.
  */
-function addVisits(aPlaceInfo, aCallback) {
-  let places = [];
-  if (aPlaceInfo instanceof Ci.nsIURI) {
-    places.push({ uri: aPlaceInfo });
-  }
-  else if (Array.isArray(aPlaceInfo)) {
-    places = places.concat(aPlaceInfo);
-  } else {
-    places.push(aPlaceInfo)
-  }
+function removeThumbnail(aURL) {
+  let file = thumbnailFile(aURL);
+  file.remove(false);
+}
 
-  // Create mozIVisitInfo for each entry.
-  let now = Date.now();
-  for (let i = 0; i < places.length; i++) {
-    if (!places[i].title) {
-      places[i].title = "test visit for " + places[i].uri.spec;
-    }
-    places[i].visits = [{
-      transitionType: places[i].transition === undefined ? PlacesUtils.history.TRANSITION_LINK
-                                                         : places[i].transition,
-      visitDate: places[i].visitDate || (now++) * 1000,
-      referrerURI: places[i].referrer
-    }];
-  }
-
-  PlacesUtils.asyncHistory.updatePlaces(
-    places,
-    {
-      handleError: function AAV_handleError() {
-        throw("Unexpected error in adding visit.");
-      },
-      handleResult: function () {},
-      handleCompletion: function UP_handleCompletion() {
-        if (aCallback)
-          aCallback();
-      }
-    }
-  );
+/**
+ * Calls addVisits, and then forces the newtab module to repopulate its links.
+ * See addVisits for parameter descriptions.
+ */
+function addVisitsAndRepopulateNewTabLinks(aPlaceInfo, aCallback) {
+  PlacesTestUtils.addVisits(makeURI(aPlaceInfo)).then(() => {
+    NewTabUtils.links.populateCache(aCallback, true);
+  });
+}
+function promiseAddVisitsAndRepopulateNewTabLinks(aPlaceInfo) {
+  return new Promise(resolve => addVisitsAndRepopulateNewTabLinks(aPlaceInfo, resolve));
 }
 
 /**
@@ -218,7 +215,7 @@ function addVisits(aPlaceInfo, aCallback) {
 function whenFileExists(aURL, aCallback = next) {
   let callback = aCallback;
   if (!thumbnailExists(aURL)) {
-    callback = function () whenFileExists(aURL, aCallback);
+    callback = () => whenFileExists(aURL, aCallback);
   }
 
   executeSoon(callback);
@@ -235,10 +232,14 @@ function whenFileExists(aURL, aCallback = next) {
 function whenFileRemoved(aFile, aCallback) {
   let callback = aCallback;
   if (aFile.exists()) {
-    callback = function () whenFileRemoved(aFile, aCallback);
+    callback = () => whenFileRemoved(aFile, aCallback);
   }
 
   executeSoon(callback || next);
+}
+
+function wait(aMillis) {
+  setTimeout(next, aMillis);
 }
 
 /**
@@ -253,4 +254,103 @@ function dontExpireThumbnailURLs(aURLs) {
   registerCleanupFunction(function () {
     PageThumbs.removeExpirationFilter(dontExpireURLs);
   });
+}
+
+function bgCapture(aURL, aOptions) {
+  bgCaptureWithMethod("capture", aURL, aOptions);
+}
+
+function bgCaptureIfMissing(aURL, aOptions) {
+  bgCaptureWithMethod("captureIfMissing", aURL, aOptions);
+}
+
+function bgCaptureWithMethod(aMethodName, aURL, aOptions = {}) {
+  // We'll get oranges if the expiration filter removes the file during the
+  // test.
+  dontExpireThumbnailURLs([aURL]);
+  if (!aOptions.onDone)
+    aOptions.onDone = next;
+  BackgroundPageThumbs[aMethodName](aURL, aOptions);
+}
+
+function bgTestPageURL(aOpts = {}) {
+  let TEST_PAGE_URL = "http://mochi.test:8888/browser/toolkit/components/thumbnails/test/thumbnails_background.sjs";
+  return TEST_PAGE_URL + "?" + encodeURIComponent(JSON.stringify(aOpts));
+}
+
+function bgAddPageThumbObserver(url) {
+  return new Promise((resolve, reject) => {
+    function observe(subject, topic, data) { // jshint ignore:line
+      if (data === url) {
+        switch (topic) {
+          case "page-thumbnail:create":
+            resolve();
+            break;
+          case "page-thumbnail:error":
+            reject(new Error("page-thumbnail:error"));
+            break;
+        }
+        Services.obs.removeObserver(observe, "page-thumbnail:create");
+        Services.obs.removeObserver(observe, "page-thumbnail:error");
+      }
+    }
+    Services.obs.addObserver(observe, "page-thumbnail:create", false);
+    Services.obs.addObserver(observe, "page-thumbnail:error", false);
+  });
+}
+
+function bgAddCrashObserver() {
+  let crashed = false;
+  Services.obs.addObserver(function crashObserver(subject, topic, data) {
+    is(topic, 'ipc:content-shutdown', 'Received correct observer topic.');
+    ok(subject instanceof Components.interfaces.nsIPropertyBag2,
+       'Subject implements nsIPropertyBag2.');
+    // we might see this called as the process terminates due to previous tests.
+    // We are only looking for "abnormal" exits...
+    if (!subject.hasKey("abnormal")) {
+      info("This is a normal termination and isn't the one we are looking for...");
+      return;
+    }
+    Services.obs.removeObserver(crashObserver, 'ipc:content-shutdown');
+    crashed = true;
+
+    var dumpID;
+    if ('nsICrashReporter' in Components.interfaces) {
+      dumpID = subject.getPropertyAsAString('dumpID');
+      ok(dumpID, "dumpID is present and not an empty string");
+    }
+
+    if (dumpID) {
+      var minidumpDirectory = getMinidumpDirectory();
+      removeFile(minidumpDirectory, dumpID + '.dmp');
+      removeFile(minidumpDirectory, dumpID + '.extra');
+    }
+  }, 'ipc:content-shutdown', false);
+  return {
+    get crashed() {
+      return crashed;
+    }
+  };
+}
+
+function bgInjectCrashContentScript() {
+  const TEST_CONTENT_HELPER = "chrome://mochitests/content/browser/toolkit/components/thumbnails/test/thumbnails_crash_content_helper.js";
+  let thumbnailBrowser = BackgroundPageThumbs._thumbBrowser;
+  let mm = thumbnailBrowser.messageManager;
+  mm.loadFrameScript(TEST_CONTENT_HELPER, false);
+  return mm;
+}
+
+function getMinidumpDirectory() {
+  var dir = Services.dirsvc.get('ProfD', Components.interfaces.nsIFile);
+  dir.append("minidumps");
+  return dir;
+}
+
+function removeFile(directory, filename) {
+  var file = directory.clone();
+  file.append(filename);
+  if (file.exists()) {
+    file.remove(false);
+  }
 }

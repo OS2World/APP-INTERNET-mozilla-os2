@@ -1,5 +1,6 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
+/* vim: set ts=8 sts=2 et sw=2 tw=80: */
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
@@ -32,26 +33,32 @@
 #elif defined(XP_WIN)
 #include <windows.h>
 #elif defined(XP_OS2)
-#define INCL_DOSFILEMGR
+#define INCL_BASE
+#define INCL_PM
 #include <os2.h>
+#include <io.h>
+#include <fcntl.h>
+#include <sys/stat.h>
 #endif
 
 // Functions that are not to be used in standalone glue must be implemented
 // within this #if block
 #if !defined(XPCOM_GLUE)
 
-bool 
-mozilla::fallocate(PRFileDesc *aFD, int64_t aLength) 
+bool
+mozilla::fallocate(PRFileDesc* aFD, int64_t aLength)
 {
 #if defined(HAVE_POSIX_FALLOCATE)
   return posix_fallocate(PR_FileDesc2NativeHandle(aFD), 0, aLength) == 0;
 #elif defined(XP_WIN)
   int64_t oldpos = PR_Seek64(aFD, 0, PR_SEEK_CUR);
-  if (oldpos == -1)
+  if (oldpos == -1) {
     return false;
+  }
 
-  if (PR_Seek64(aFD, aLength, PR_SEEK_SET) != aLength)
+  if (PR_Seek64(aFD, aLength, PR_SEEK_SET) != aLength) {
     return false;
+  }
 
   bool retval = (0 != SetEndOfFile((HANDLE)PR_FileDesc2NativeHandle(aFD)));
 
@@ -65,14 +72,15 @@ mozilla::fallocate(PRFileDesc *aFD, int64_t aLength)
   fstore_t store = {F_ALLOCATECONTIG, F_PEOFPOSMODE, 0, aLength};
   // Try to get a continous chunk of disk space
   int ret = fcntl(fd, F_PREALLOCATE, &store);
-  if (-1 == ret) {
+  if (ret == -1) {
     // OK, perhaps we are too fragmented, allocate non-continuous
     store.fst_flags = F_ALLOCATEALL;
     ret = fcntl(fd, F_PREALLOCATE, &store);
-    if (-1 == ret)
+    if (ret == -1) {
       return false;
+    }
   }
-  return 0 == ftruncate(fd, aLength);
+  return ftruncate(fd, aLength) == 0;
 #elif defined(XP_UNIX)
   // The following is copied from fcntlSizeHint in sqlite
   /* If the OS does not have posix_fallocate(), fake it. First use
@@ -82,32 +90,40 @@ mozilla::fallocate(PRFileDesc *aFD, int64_t aLength)
   ** on systems that do not have a real fallocate() system call.
   */
   int64_t oldpos = PR_Seek64(aFD, 0, PR_SEEK_CUR);
-  if (oldpos == -1)
+  if (oldpos == -1) {
     return false;
+  }
 
   struct stat buf;
   int fd = PR_FileDesc2NativeHandle(aFD);
-  if (fstat(fd, &buf))
+  if (fstat(fd, &buf)) {
     return false;
+  }
 
-  if (buf.st_size >= aLength)
+  if (buf.st_size >= aLength) {
     return false;
+  }
 
   const int nBlk = buf.st_blksize;
 
-  if (!nBlk)
+  if (!nBlk) {
     return false;
+  }
 
-  if (ftruncate(fd, aLength))
+  if (ftruncate(fd, aLength)) {
     return false;
+  }
 
   int nWrite; // Return value from write()
   int64_t iWrite = ((buf.st_size + 2 * nBlk - 1) / nBlk) * nBlk - 1; // Next offset to write to
   while (iWrite < aLength) {
     nWrite = 0;
-    if (PR_Seek64(aFD, iWrite, PR_SEEK_SET) == iWrite)
+    if (PR_Seek64(aFD, iWrite, PR_SEEK_SET) == iWrite) {
       nWrite = PR_Write(aFD, "", 1);
-    if (nWrite != 1) break;
+    }
+    if (nWrite != 1) {
+      break;
+    }
     iWrite += nBlk;
   }
 
@@ -136,8 +152,8 @@ mozilla::ReadSysFile(
   ssize_t bytesRead;
   size_t offset = 0;
   do {
-    bytesRead = MOZ_TEMP_FAILURE_RETRY(
-      read(fd, aBuf + offset, aBufSize - offset));
+    bytesRead = MOZ_TEMP_FAILURE_RETRY(read(fd, aBuf + offset,
+                                            aBufSize - offset));
     if (bytesRead == -1) {
       return false;
     }
@@ -182,6 +198,35 @@ mozilla::ReadSysFile(
 
 #endif /* ReadSysFile_PRESENT */
 
+#ifdef WriteSysFile_PRESENT
+
+bool
+mozilla::WriteSysFile(
+  const char* aFilename,
+  const char* aBuf)
+{
+  size_t aBufSize = strlen(aBuf);
+  int fd = MOZ_TEMP_FAILURE_RETRY(open(aFilename, O_WRONLY));
+  if (fd < 0) {
+    return false;
+  }
+  ScopedClose autoClose(fd);
+  ssize_t bytesWritten;
+  size_t offset = 0;
+  do {
+    bytesWritten = MOZ_TEMP_FAILURE_RETRY(write(fd, aBuf + offset,
+                                                aBufSize - offset));
+    if (bytesWritten == -1) {
+      return false;
+    }
+    offset += bytesWritten;
+  } while (bytesWritten > 0 && offset < aBufSize);
+  MOZ_ASSERT(offset == aBufSize);
+  return true;
+}
+
+#endif /* WriteSysFile_PRESENT */
+
 void
 mozilla::ReadAheadLib(nsIFile* aFile)
 {
@@ -191,7 +236,7 @@ mozilla::ReadAheadLib(nsIFile* aFile)
     return;
   }
   ReadAheadLib(path.get());
-#elif defined(LINUX) && !defined(ANDROID) || defined(XP_MACOSX)
+#elif defined(LINUX) && !defined(ANDROID) || defined(XP_MACOSX) || defined(XP_OS2)
   nsAutoCString nativePath;
   if (!aFile || NS_FAILED(aFile->GetNativePath(nativePath))) {
     return;
@@ -210,7 +255,7 @@ mozilla::ReadAheadFile(nsIFile* aFile, const size_t aOffset,
     return;
   }
   ReadAheadFile(path.get(), aOffset, aCount, aOutFd);
-#elif defined(LINUX) && !defined(ANDROID) || defined(XP_MACOSX)
+#elif defined(LINUX) && !defined(ANDROID) || defined(XP_MACOSX) || defined(XP_OS2)
   nsAutoCString nativePath;
   if (!aFile || NS_FAILED(aFile->GetNativePath(nativePath))) {
     return;
@@ -225,7 +270,7 @@ mozilla::ReadAheadFile(nsIFile* aFile, const size_t aOffset,
 
 static const unsigned int bufsize = 4096;
 
-#ifdef HAVE_64BIT_OS
+#ifdef __LP64__
 typedef Elf64_Ehdr Elf_Ehdr;
 typedef Elf64_Phdr Elf_Phdr;
 static const unsigned char ELFCLASS = ELFCLASS64;
@@ -251,7 +296,7 @@ static const uint32_t CPU_TYPE = CPU_TYPE_POWERPC64;
 #error Unsupported CPU type
 #endif
 
-#ifdef HAVE_64BIT_OS
+#ifdef __LP64__
 #undef LC_SEGMENT
 #define LC_SEGMENT LC_SEGMENT_64
 #undef MH_MAGIC
@@ -265,8 +310,8 @@ static const uint32_t CPU_TYPE = CPU_TYPE_POWERPC64;
 class ScopedMMap
 {
 public:
-  ScopedMMap(const char *aFilePath)
-    : buf(NULL)
+  explicit ScopedMMap(const char* aFilePath)
+    : buf(nullptr)
   {
     fd = open(aFilePath, O_RDONLY);
     if (fd < 0) {
@@ -277,7 +322,7 @@ public:
       return;
     }
     size = st.st_size;
-    buf = (char *)mmap(NULL, size, PROT_READ, MAP_PRIVATE, fd, 0);
+    buf = (char*)mmap(nullptr, size, PROT_READ, MAP_PRIVATE, fd, 0);
   }
   ~ScopedMMap()
   {
@@ -288,11 +333,11 @@ public:
       close(fd);
     }
   }
-  operator char *() { return buf; }
+  operator char*() { return buf; }
   int getFd() { return fd; }
 private:
   int fd;
-  char *buf;
+  char* buf;
   size_t size;
 };
 #endif
@@ -347,6 +392,30 @@ mozilla::ReadAhead(mozilla::filedesc_t aFd, const size_t aOffset,
   // Restore the file pointer
   SetFilePointerEx(aFd, fpOriginal, nullptr, FILE_BEGIN);
 
+#elif defined(XP_OS2)
+
+  // Do it similar to Windows
+
+  // Save the current position and go to the given offset
+  off_t curPos = tell(aFd);
+  if (curPos == -1)
+      return;
+  if (lseek(aFd, aOffset, SEEK_SET) == -1)
+      return;
+
+  char buf[64 * 1024];
+  size_t totalBytesRead = 0;
+  size_t bytesRead;
+
+  // Dummy read the file into the buffer hoping the kernel will cache it
+  while (totalBytesRead < aCount &&
+         (bytesRead = read(aFd, buf, sizeof(buf))) == sizeof(buf)) {
+    totalBytesRead += bytesRead;
+  }
+
+  // Restore the file position
+   lseek(aFd, curPos, SEEK_SET);
+
 #elif defined(LINUX) && !defined(ANDROID)
 
   readahead(aFd, aOffset, aCount);
@@ -368,7 +437,7 @@ mozilla::ReadAheadLib(mozilla::pathstr_t aFilePath)
   if (!aFilePath) {
     return;
   }
-#if defined(XP_WIN)
+#if defined(XP_WIN) || defined(XP_OS2)
   ReadAheadFile(aFilePath);
 #elif defined(LINUX) && !defined(ANDROID)
   int fd = open(aFilePath, O_RDONLY);
@@ -376,7 +445,8 @@ mozilla::ReadAheadLib(mozilla::pathstr_t aFilePath)
     return;
   }
 
-  union {
+  union
+  {
     char buf[bufsize];
     Elf_Ehdr ehdr;
   } elf;
@@ -387,7 +457,11 @@ mozilla::ReadAheadLib(mozilla::pathstr_t aFilePath)
   if ((read(fd, elf.buf, bufsize) <= 0) ||
       (memcmp(elf.buf, ELFMAG, 4)) ||
       (elf.ehdr.e_ident[EI_CLASS] != ELFCLASS) ||
-      (elf.ehdr.e_phoff + elf.ehdr.e_phentsize * elf.ehdr.e_phnum >= bufsize)) {
+      // Upcast e_phentsize so the multiplication is done in the same precision
+      // as the subsequent addition, to satisfy static analyzers and avoid
+      // issues with abnormally large program header tables.
+      (elf.ehdr.e_phoff + (static_cast<Elf_Off>(elf.ehdr.e_phentsize) *
+                           elf.ehdr.e_phnum) >= bufsize)) {
     close(fd);
     return;
   }
@@ -396,7 +470,7 @@ mozilla::ReadAheadLib(mozilla::pathstr_t aFilePath)
   // is going to map the file in memory. We use that information to
   // find the biggest offset from the library that will be mapped in
   // memory.
-  Elf_Phdr *phdr = (Elf_Phdr *)&elf.buf[elf.ehdr.e_phoff];
+  Elf_Phdr* phdr = (Elf_Phdr*)&elf.buf[elf.ehdr.e_phoff];
   Elf_Off end = 0;
   for (int phnum = elf.ehdr.e_phnum; phnum; phdr++, phnum--) {
     if ((phdr->p_type == PT_LOAD) &&
@@ -412,7 +486,7 @@ mozilla::ReadAheadLib(mozilla::pathstr_t aFilePath)
   close(fd);
 #elif defined(XP_MACOSX)
   ScopedMMap buf(aFilePath);
-  char *base = buf;
+  char* base = buf;
   if (!base) {
     return;
   }
@@ -421,11 +495,11 @@ mozilla::ReadAheadLib(mozilla::pathstr_t aFilePath)
   // Mach-O binary. A fat binary actually embeds several Mach-O
   // binaries. If we have a fat binary, find the offset where the
   // Mach-O binary for our CPU type can be found.
-  struct fat_header *fh = (struct fat_header *)base;
+  struct fat_header* fh = (struct fat_header*)base;
 
   if (OSSwapBigToHostInt32(fh->magic) == FAT_MAGIC) {
     uint32_t nfat_arch = OSSwapBigToHostInt32(fh->nfat_arch);
-    struct fat_arch *arch = (struct fat_arch *)&buf[sizeof(struct fat_header)];
+    struct fat_arch* arch = (struct fat_arch*)&buf[sizeof(struct fat_header)];
     for (; nfat_arch; arch++, nfat_arch--) {
       if (OSSwapBigToHostInt32(arch->cputype) == CPU_TYPE) {
         base += OSSwapBigToHostInt32(arch->offset);
@@ -438,7 +512,7 @@ mozilla::ReadAheadLib(mozilla::pathstr_t aFilePath)
   }
 
   // Check Mach-O magic in the Mach header
-  struct cpu_mach_header *mh = (struct cpu_mach_header *)base;
+  struct cpu_mach_header* mh = (struct cpu_mach_header*)base;
   if (mh->magic != MH_MAGIC) {
     return;
   }
@@ -449,10 +523,10 @@ mozilla::ReadAheadLib(mozilla::pathstr_t aFilePath)
   // loader is going to map the file in memory. We use that
   // information to find the biggest offset from the library that
   // will be mapped in memory.
-  char *cmd = &base[sizeof(struct cpu_mach_header)];
-  off_t end = 0;
+  char* cmd = &base[sizeof(struct cpu_mach_header)];
+  uint32_t end = 0;
   for (uint32_t ncmds = mh->ncmds; ncmds; ncmds--) {
-    struct segment_command *sh = (struct segment_command *)cmd;
+    struct segment_command* sh = (struct segment_command*)cmd;
     if (sh->cmd != LC_SEGMENT) {
       continue;
     }
@@ -480,8 +554,8 @@ mozilla::ReadAheadFile(mozilla::pathstr_t aFilePath, const size_t aOffset,
     }
     return;
   }
-  HANDLE fd = CreateFileW(aFilePath, GENERIC_READ, FILE_SHARE_READ,
-                          NULL, OPEN_EXISTING, FILE_FLAG_SEQUENTIAL_SCAN, NULL);
+  HANDLE fd = CreateFileW(aFilePath, GENERIC_READ, FILE_SHARE_READ, nullptr,
+                          OPEN_EXISTING, FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
   if (aOutFd) {
     *aOutFd = fd;
   }
@@ -492,7 +566,7 @@ mozilla::ReadAheadFile(mozilla::pathstr_t aFilePath, const size_t aOffset,
   if (!aOutFd) {
     CloseHandle(fd);
   }
-#elif defined(LINUX) && !defined(ANDROID) || defined(XP_MACOSX)
+#elif defined(LINUX) && !defined(ANDROID) || defined(XP_MACOSX) || defined(XP_OS2)
   if (!aFilePath) {
     if (aOutFd) {
       *aOutFd = -1;

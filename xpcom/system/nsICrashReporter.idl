@@ -14,13 +14,20 @@ interface nsIURL;
  *                    future releases.
  */
 
-[scriptable, uuid(56761088-57ad-4f5c-bd61-f678c2807fe0)]
+[scriptable, uuid(4b74c39a-cf69-4a8a-8e63-169d81ad1ecf)]
 interface nsICrashReporter : nsISupports
 {
   /**
-   * Enable or disable the crashreporter at runtime.
+   * Get the enabled status of the crash reporter.
    */
-  attribute boolean enabled;
+  readonly attribute boolean enabled;
+
+  /**
+   * Enable or disable crash reporting at runtime. Not available to script
+   * because the JS engine relies on proper exception handler chaining.
+   */
+  [noscript]
+  void setEnabled(in bool enabled);
 
   /**
    * Get or set the URL to which crash reports will be submitted.
@@ -54,7 +61,7 @@ interface nsICrashReporter : nsISupports
    *                             Invalid characters for key are '=' and
    *                             '\n'.  Invalid character for data is '\0'.
    */
-  void annotateCrashReport(in ACString key, in ACString data);
+  void annotateCrashReport(in AUTF8String key, in AUTF8String data);
 
   /**
    * Append some data to the "Notes" field, to be submitted with a crash report.
@@ -102,4 +109,27 @@ interface nsICrashReporter : nsISupports
    * User preference for submitting crash reports.
    */
   attribute boolean submitReports;
+
+  /**
+   * Cause the crash reporter to re-evaluate where crash events should go.
+   *
+   * This should be called during application startup and whenever profiles
+   * change.
+   */
+  void UpdateCrashEventsDir();
+
+  /**
+   * Save an anonymized memory report file for inclusion in a future crash
+   * report in this session.
+   *
+   * @throws NS_ERROR_NOT_INITIALIZED if crash reporting is disabled.
+   */
+  void saveMemoryReport();
+
+  /**
+   * Set the telemetry session ID which is recorded in crash metadata. This is
+   * saved in the crash manager and telemetry but is not submitted as a
+   * crash-stats annotation.
+   */
+  void setTelemetrySessionId(in AUTF8String id);
 };

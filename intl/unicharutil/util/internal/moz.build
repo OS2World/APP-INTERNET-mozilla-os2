@@ -1,14 +1,21 @@
-# -*- Mode: python; c-basic-offset: 4; indent-tabs-mode: nil; tab-width: 40 -*-
+# -*- Mode: python; indent-tabs-mode: nil; tab-width: 40 -*-
 # vim: set filetype=python:
 # This Source Code Form is subject to the terms of the Mozilla Public
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
-MODULE = 'unicharutil'
+# This file builds the version of unicharutils_s static library which uses
+# internal linkage. Components that use frozen (external) linkage should use
+# unicharutil_external_s.
 
-CPP_SOURCES += [
-    '$(INTL_UNICHARUTIL_UTIL_LCPPSRCS)',
+include('../objs.mozbuild')
+
+UNIFIED_SOURCES += intl_unicharutil_util_cppsrcs
+
+FINAL_LIBRARY = 'xul'
+
+LOCAL_INCLUDES += [
+    '..',
 ]
 
-LIBRARY_NAME = 'unicharutil_s'
-
+DIST_INSTALL = True

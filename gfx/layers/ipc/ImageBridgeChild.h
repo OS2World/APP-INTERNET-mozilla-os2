@@ -6,29 +6,47 @@
 #ifndef MOZILLA_GFX_IMAGEBRIDGECHILD_H
 #define MOZILLA_GFX_IMAGEBRIDGECHILD_H
 
-#include "mozilla/layers/PImageBridgeChild.h"
-#include "nsAutoPtr.h"
+#include <stddef.h>                     // for size_t
+#include <stdint.h>                     // for uint32_t, uint64_t
+#include "mozilla/Attributes.h"         // for override
+#include "mozilla/Atomics.h"
+#include "mozilla/RefPtr.h"             // for already_AddRefed
+#include "mozilla/ipc/SharedMemory.h"   // for SharedMemory, etc
+#include "mozilla/layers/CanvasClient.h"
 #include "mozilla/layers/CompositableForwarder.h"
-#include "mozilla/layers/LayersTypes.h"
+#include "mozilla/layers/CompositorTypes.h"
+#include "mozilla/layers/PImageBridgeChild.h"
+#include "mozilla/Mutex.h"
+#include "nsDebug.h"                    // for NS_RUNTIMEABORT
+#include "nsIObserver.h"
+#include "nsRegion.h"                   // for nsIntRegion
+#include "mozilla/gfx/Rect.h"
+#include "mozilla/ReentrantMonitor.h"   // for ReentrantMonitor, etc
 
-class gfxSharedImageSurface;
+class MessageLoop;
 
 namespace base {
 class Thread;
-}
+} // namespace base
 
 namespace mozilla {
+namespace ipc {
+class Shmem;
+} // namespace ipc
+
 namespace layers {
 
+class AsyncCanvasRenderer;
 class ImageClient;
 class ImageContainer;
+class ImageContainerChild;
 class ImageBridgeParent;
-class SurfaceDescriptor;
 class CompositableClient;
-class CompositableTransaction;
-class ShadowableLayer;
+struct CompositableTransaction;
 class Image;
-
+class TextureClient;
+class SynchronousTask;
+struct AllocShmemParams;
 
 /**
  * Returns true if the current thread is the ImageBrdigeChild's thread.
@@ -88,11 +106,18 @@ bool InImageBridgeChildThread();
  * not used at all (except for the very first transaction that provides the
  * CompositableHost with an AsyncID).
  */
-class ImageBridgeChild : public PImageBridgeChild
-                       , public CompositableForwarder
+class ImageBridgeChild final : public PImageBridgeChild
+                             , public CompositableForwarder
+                             , public TextureForwarder
 {
   friend class ImageContainer;
+
+  typedef InfallibleTArray<AsyncParentMessageData> AsyncParentMessageArray;
 public:
+  NS_INLINE_DECL_THREADSAFE_REFCOUNTING(ImageBridgeChild, override);
+
+  TextureForwarder* GetTextureForwarder() override { return this; }
+  LayersIPCActor* GetLayersIPCActor() override { return this; }
 
   /**
    * Creates the image bridge with a dedicated thread for ImageBridgeChild.
@@ -100,10 +125,11 @@ public:
    * We may want to use a specifi thread in the future. In this case, use
    * CreateWithThread instead.
    */
-  static void StartUp();
+  static void InitSameProcess();
 
-  static PImageBridgeChild*
-  StartUpInChildProcess(Transport* aTransport, ProcessId aOtherProcess);
+  static void InitWithGPUProcess(Endpoint<PImageBridgeChild>&& aEndpoint);
+  static bool InitForContent(Endpoint<PImageBridgeChild>&& aEndpoint);
+  static bool ReinitForContent(Endpoint<PImageBridgeChild>&& aEndpoint);
 
   /**
    * Destroys the image bridge by calling DestroyBridge, and destroys the
@@ -115,38 +141,12 @@ public:
   static void ShutDown();
 
   /**
-   * Creates the ImageBridgeChild manager protocol.
-   */
-  static bool StartUpOnThread(base::Thread* aThread);
-
-  /**
-   * Destroys The ImageBridge protcol.
-   *
-   * The actual destruction happens synchronously on the ImageBridgeChild thread
-   * which means that if this function is called from another thread, the current
-   * thread will be paused until the destruction is done.
-   */
-  static void DestroyBridge();
-
-  /**
-   * Returns true if the singleton has been created.
-   *
-   * Can be called from any thread.
-   */
-  static bool IsCreated();
-
-  /**
    * returns the singleton instance.
    *
    * can be called from any thread.
    */
-  static ImageBridgeChild* GetSingleton();
+  static RefPtr<ImageBridgeChild> GetSingleton();
 
-
-  /**
-   * Dispatches a task to the ImageBridgeChild thread to do the connection
-   */
-  void ConnectAsync(ImageBridgeParent* aParent);
 
   static void IdentifyCompositorTextureHost(const TextureFactoryIdentifier& aIdentifier);
 
@@ -165,10 +165,63 @@ public:
    *
    * Can be called from any thread.
    */
-  MessageLoop * GetMessageLoop() const;
+  virtual MessageLoop * GetMessageLoop() const override;
 
-  PCompositableChild* AllocPCompositable(const TextureInfo& aInfo, uint64_t* aID) MOZ_OVERRIDE;
-  bool DeallocPCompositable(PCompositableChild* aActor) MOZ_OVERRIDE;
+  virtual base::ProcessId GetParentPid() const override { return OtherPid(); }
+
+  PCompositableChild* AllocPCompositableChild(const TextureInfo& aInfo,
+                                              PImageContainerChild* aChild, uint64_t* aID) override;
+  bool DeallocPCompositableChild(PCompositableChild* aActor) override;
+
+  virtual PTextureChild*
+  AllocPTextureChild(const SurfaceDescriptor& aSharedData, const LayersBackend& aLayersBackend, const TextureFlags& aFlags, const uint64_t& aSerial) override;
+
+  virtual bool
+  DeallocPTextureChild(PTextureChild* actor) override;
+
+  PMediaSystemResourceManagerChild*
+  AllocPMediaSystemResourceManagerChild() override;
+  bool
+  DeallocPMediaSystemResourceManagerChild(PMediaSystemResourceManagerChild* aActor) override;
+
+  virtual PImageContainerChild*
+  AllocPImageContainerChild() override;
+  virtual bool
+  DeallocPImageContainerChild(PImageContainerChild* actor) override;
+
+  virtual bool
+  RecvParentAsyncMessages(InfallibleTArray<AsyncParentMessageData>&& aMessages) override;
+
+  virtual bool
+  RecvDidComposite(InfallibleTArray<ImageCompositeNotification>&& aNotifications) override;
+
+  // Create an ImageClient from any thread.
+  RefPtr<ImageClient> CreateImageClient(
+    CompositableType aType,
+    ImageContainer* aImageContainer,
+    ImageContainerChild* aContainerChild);
+
+  // Create an ImageClient from the ImageBridge thread.
+  RefPtr<ImageClient> CreateImageClientNow(
+    CompositableType aType,
+    ImageContainer* aImageContainer,
+    ImageContainerChild* aContainerChild);
+
+  already_AddRefed<CanvasClient> CreateCanvasClient(CanvasClient::CanvasClientType aType,
+                                                    TextureFlags aFlag);
+  void ReleaseImageContainer(RefPtr<ImageContainerChild> aChild);
+  void UpdateAsyncCanvasRenderer(AsyncCanvasRenderer* aClient);
+  void UpdateImageClient(RefPtr<ImageClient> aClient, RefPtr<ImageContainer> aContainer);
+  static void DispatchReleaseTextureClient(TextureClient* aClient);
+
+  /**
+   * Flush all Images sent to CompositableHost.
+   */
+  void FlushAllImages(ImageClient* aClient, ImageContainer* aContainer);
+
+  virtual bool IPCOpen() const override { return mCanSend; }
+
+private:
 
   /**
    * This must be called by the static function DeleteImageBridgeSync defined
@@ -176,131 +229,88 @@ public:
    */
   ~ImageBridgeChild();
 
-  virtual PGrallocBufferChild*
-  AllocPGrallocBuffer(const gfxIntSize&, const uint32_t&, const uint32_t&,
-                      MaybeMagicGrallocBufferHandle*) MOZ_OVERRIDE;
+  // Helpers for dispatching.
+  already_AddRefed<CanvasClient> CreateCanvasClientNow(
+    CanvasClient::CanvasClientType aType,
+    TextureFlags aFlags);
+  void CreateCanvasClientSync(
+    SynchronousTask* aTask,
+    CanvasClient::CanvasClientType aType,
+    TextureFlags aFlags,
+    RefPtr<CanvasClient>* const outResult);
 
-  virtual bool
-  DeallocPGrallocBuffer(PGrallocBufferChild* actor) MOZ_OVERRIDE;
+  void CreateImageClientSync(
+    SynchronousTask* aTask,
+    RefPtr<ImageClient>* result,
+    CompositableType aType,
+    ImageContainer* aImageContainer,
+    ImageContainerChild* aContainerChild);
 
-  /**
-   * Allocate a gralloc SurfaceDescriptor remotely.
-   */
-  bool
-  AllocSurfaceDescriptorGralloc(const gfxIntSize& aSize,
-                                const uint32_t& aFormat,
-                                const uint32_t& aUsage,
-                                SurfaceDescriptor* aBuffer);
+  void ReleaseTextureClientNow(TextureClient* aClient);
 
-  /**
-   * Part of the allocation of gralloc SurfaceDescriptor that is
-   * executed on the ImageBridgeChild thread after invoking
-   * AllocSurfaceDescriptorGralloc.
-   *
-   * Must be called from the ImageBridgeChild thread.
-   */
-  bool
-  AllocSurfaceDescriptorGrallocNow(const gfxIntSize& aSize,
-                                   const uint32_t& aFormat,
-                                   const uint32_t& aUsage,
-                                   SurfaceDescriptor* aBuffer);
+  void UpdateAsyncCanvasRendererNow(AsyncCanvasRenderer* aClient);
+  void UpdateAsyncCanvasRendererSync(
+    SynchronousTask* aTask,
+    AsyncCanvasRenderer* aWrapper);
 
-  /**
-   * Deallocate a remotely allocated gralloc buffer.
-   */
-  bool
-  DeallocSurfaceDescriptorGralloc(const SurfaceDescriptor& aBuffer);
+  void FlushAllImagesSync(
+    SynchronousTask* aTask,
+    ImageClient* aClient,
+    ImageContainer* aContainer);
 
-  /**
-   * Part of the deallocation of gralloc SurfaceDescriptor that is
-   * executed on the ImageBridgeChild thread after invoking
-   * DeallocSurfaceDescriptorGralloc.
-   *
-   * Must be called from the ImageBridgeChild thread.
-   */
-  bool
-  DeallocSurfaceDescriptorGrallocNow(const SurfaceDescriptor& aBuffer);
+  void ProxyAllocShmemNow(SynchronousTask* aTask, AllocShmemParams* aParams);
+  void ProxyDeallocShmemNow(SynchronousTask* aTask, Shmem* aShmem, bool* aResult);
 
-  TemporaryRef<ImageClient> CreateImageClient(CompositableType aType);
-  TemporaryRef<ImageClient> CreateImageClientNow(CompositableType aType);
-
-  static void DispatchReleaseImageClient(ImageClient* aClient);
-  static void DispatchImageClientUpdate(ImageClient* aClient, ImageContainer* aContainer);
-
-
+public:
   // CompositableForwarder
 
-  virtual void Connect(CompositableClient* aCompositable) MOZ_OVERRIDE;
+  virtual void Connect(CompositableClient* aCompositable,
+                       ImageContainer* aImageContainer) override;
 
-  virtual void PaintedTiledLayerBuffer(CompositableClient* aCompositable,
-                                       BasicTiledLayerBuffer* aTiledLayerBuffer) MOZ_OVERRIDE
-  {
-    NS_RUNTIMEABORT("should not be called");
-  }
+  virtual bool UsesImageBridge() const override { return true; }
 
   /**
-   * Communicate to the compositor that the texture identified by aCompositable
-   * and aTextureId has been updated to aDescriptor.
+   * See CompositableForwarder::UseTextures
    */
-  virtual void UpdateTexture(CompositableClient* aCompositable,
-                             TextureIdentifier aTextureId,
-                             SurfaceDescriptor* aDescriptor) MOZ_OVERRIDE;
+  virtual void UseTextures(CompositableClient* aCompositable,
+                           const nsTArray<TimedTextureClient>& aTextures) override;
+  virtual void UseComponentAlphaTextures(CompositableClient* aCompositable,
+                                         TextureClient* aClientOnBlack,
+                                         TextureClient* aClientOnWhite) override;
 
-  virtual void UpdateTextureNoSwap(CompositableClient* aCompositable,
-                                   TextureIdentifier aTextureId,
-                                   SurfaceDescriptor* aDescriptor) MOZ_OVERRIDE;
-  virtual void UpdateTextureIncremental(CompositableClient* aCompositable,
-                                        TextureIdentifier aTextureId,
-                                        SurfaceDescriptor& aDescriptor,
-                                        const nsIntRegion& aUpdatedRegion,
-                                        const nsIntRect& aBufferRect,
-                                        const nsIntPoint& aBufferRotation) MOZ_OVERRIDE
-  {
-    NS_RUNTIMEABORT("should not be called");
-  }
+  void Destroy(CompositableChild* aCompositable) override;
 
   /**
-   * Communicate the picture rect of a YUV image in aLayer to the compositor
+   * Hold TextureClient ref until end of usage on host side if TextureFlags::RECYCLE is set.
+   * Host side's usage is checked via CompositableRef.
    */
-  virtual void UpdatePictureRect(CompositableClient* aCompositable,
-                                 const nsIntRect& aRect) MOZ_OVERRIDE;
+  void HoldUntilCompositableRefReleasedIfNecessary(TextureClient* aClient);
 
+  /**
+   * Notify id of Texture When host side end its use. Transaction id is used to
+   * make sure if there is no newer usage.
+   */
+  void NotifyNotUsed(uint64_t aTextureId, uint64_t aFwdTransactionId);
 
-  // at the moment we don't need to implement these. They are only used for
-  // thebes layers which don't support async updates.
-  virtual void CreatedSingleBuffer(CompositableClient* aCompositable,
-                                   const SurfaceDescriptor& aDescriptor,
-                                   const TextureInfo& aTextureInfo,
-                                   const SurfaceDescriptor* aDescriptorOnWhite = nullptr) MOZ_OVERRIDE {
-    NS_RUNTIMEABORT("should not be called");
-  }
-  virtual void CreatedIncrementalBuffer(CompositableClient* aCompositable,
-                                        const TextureInfo& aTextureInfo,
-                                        const nsIntRect& aBufferRect) MOZ_OVERRIDE
+  virtual void CancelWaitForRecycle(uint64_t aTextureId) override;
+
+  virtual bool DestroyInTransaction(PTextureChild* aTexture, bool synchronously) override;
+  virtual bool DestroyInTransaction(PCompositableChild* aCompositable, bool synchronously) override;
+
+  virtual void RemoveTextureFromCompositable(CompositableClient* aCompositable,
+                                             TextureClient* aTexture) override;
+
+  virtual void UseTiledLayerBuffer(CompositableClient* aCompositable,
+                                   const SurfaceDescriptorTiles& aTileLayerDescriptor) override
   {
     NS_RUNTIMEABORT("should not be called");
   }
-  virtual void CreatedDoubleBuffer(CompositableClient* aCompositable,
-                                   const SurfaceDescriptor& aFrontDescriptor,
-                                   const SurfaceDescriptor& aBackDescriptor,
-                                   const TextureInfo& aTextureInfo,
-                                   const SurfaceDescriptor* aFrontDescriptorOnWhite = nullptr,
-                                   const SurfaceDescriptor* aBackDescriptorOnWhite = nullptr) MOZ_OVERRIDE {
-    NS_RUNTIMEABORT("should not be called");
-  }
-  virtual void DestroyThebesBuffer(CompositableClient* aCompositable) MOZ_OVERRIDE {
-    NS_RUNTIMEABORT("should not be called");
-  }
+
   virtual void UpdateTextureRegion(CompositableClient* aCompositable,
                                    const ThebesBufferData& aThebesBufferData,
-                                   const nsIntRegion& aUpdatedRegion) MOZ_OVERRIDE {
+                                   const nsIntRegion& aUpdatedRegion) override {
     NS_RUNTIMEABORT("should not be called");
   }
-  virtual void DestroyedThebesBuffer(const SurfaceDescriptor& aBackBufferToDestroy) MOZ_OVERRIDE
-  {
-    NS_RUNTIMEABORT("should not be called");
-  }
-
 
   // ISurfaceAllocator
 
@@ -311,24 +321,35 @@ public:
    * call on the ImageBridgeChild thread.
    */
   virtual bool AllocUnsafeShmem(size_t aSize,
-                                ipc::SharedMemory::SharedMemoryType aType,
-                                ipc::Shmem* aShmem) MOZ_OVERRIDE;
-  /**
-   * See ISurfaceAllocator.h
-   * Can be used from any thread.
-   * If used outside the ImageBridgeChild thread, it will proxy a synchronous
-   * call on the ImageBridgeChild thread.
-   */
+                                mozilla::ipc::SharedMemory::SharedMemoryType aShmType,
+                                mozilla::ipc::Shmem* aShmem) override;
   virtual bool AllocShmem(size_t aSize,
-                          ipc::SharedMemory::SharedMemoryType aType,
-                          ipc::Shmem* aShmem) MOZ_OVERRIDE;
+                          mozilla::ipc::SharedMemory::SharedMemoryType aShmType,
+                          mozilla::ipc::Shmem* aShmem) override;
+
   /**
    * See ISurfaceAllocator.h
    * Can be used from any thread.
    * If used outside the ImageBridgeChild thread, it will proxy a synchronous
    * call on the ImageBridgeChild thread.
    */
-  virtual void DeallocShmem(ipc::Shmem& aShmem);
+  virtual bool DeallocShmem(mozilla::ipc::Shmem& aShmem) override;
+
+  virtual PTextureChild* CreateTexture(const SurfaceDescriptor& aSharedData,
+                                       LayersBackend aLayersBackend,
+                                       TextureFlags aFlags,
+                                       uint64_t aSerial) override;
+
+  virtual bool IsSameProcess() const override;
+
+  virtual void UpdateFwdTransactionId() override { ++mFwdTransactionId; }
+  virtual uint64_t GetFwdTransactionId() override { return mFwdTransactionId; }
+
+  bool InForwarderThread() override {
+    return InImageBridgeChildThread();
+  }
+
+  virtual void HandleFatalError(const char* aName, const char* aMsg) const override;
 
 protected:
   ImageBridgeChild();
@@ -337,15 +358,43 @@ protected:
                                   Shmem* aShmem,
                                   bool aUnsafe);
 
+  void Bind(Endpoint<PImageBridgeChild>&& aEndpoint);
+  void BindSameProcess(RefPtr<ImageBridgeParent> aParent);
+
+  void SendImageBridgeThreadId();
+
+  void WillShutdown();
+  void ShutdownStep1(SynchronousTask* aTask);
+  void ShutdownStep2(SynchronousTask* aTask);
+  void MarkShutDown();
+
+  void ActorDestroy(ActorDestroyReason aWhy) override;
+  void DeallocPImageBridgeChild() override;
+
+  bool CanSend() const;
+
+  static void ShutdownSingleton();
+
+private:
   CompositableTransaction* mTxn;
 
-  // ISurfaceAllocator
-  virtual PGrallocBufferChild* AllocGrallocBuffer(const gfxIntSize& aSize,
-                                                  uint32_t aFormat, uint32_t aUsage,
-                                                  MaybeMagicGrallocBufferHandle* aHandle) MOZ_OVERRIDE;
+  bool mCanSend;
+  bool mCalledClose;
+
+  /**
+   * Transaction id of CompositableForwarder.
+   * It is incrementaed by UpdateFwdTransactionId() in each BeginTransaction() call.
+   */
+  uint64_t mFwdTransactionId;
+
+  /**
+   * Hold TextureClients refs until end of their usages on host side.
+   * It defer calling of TextureClient recycle callback.
+   */
+  nsDataHashtable<nsUint64HashKey, RefPtr<TextureClient> > mTexturesWaitingRecycled;
 };
 
-} // layers
-} // mozilla
+} // namespace layers
+} // namespace mozilla
 
 #endif

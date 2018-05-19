@@ -1,15 +1,20 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
+/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
+/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "nsDOMNavigationTiming.h"
-#include "nsCOMPtr.h"
-#include "nscore.h"
-#include "TimeStamp.h"
-#include "nsContentUtils.h"
 
+#include "GeckoProfiler.h"
+#include "nsCOMPtr.h"
+#include "nsContentUtils.h"
 #include "nsIScriptSecurityManager.h"
+#include "prtime.h"
+#include "nsIURI.h"
+#include "nsPrintfCString.h"
+#include "mozilla/dom/PerformanceNavigation.h"
+#include "mozilla/TimeStamp.h"
 
 nsDOMNavigationTiming::nsDOMNavigationTiming()
 {
@@ -23,12 +28,8 @@ nsDOMNavigationTiming::~nsDOMNavigationTiming()
 void
 nsDOMNavigationTiming::Clear()
 {
-  mNavigationType = mozilla::dom::PerformanceNavigation::TYPE_RESERVED;
-  mNavigationStart = 0;
-  mFetchStart = 0;
-  mRedirectStart = 0;
-  mRedirectEnd = 0;
-  mRedirectCount = 0;
+  mNavigationType = TYPE_RESERVED;
+  mNavigationStartHighRes = 0;
   mBeforeUnloadStart = 0;
   mUnloadStart = 0;
   mUnloadEnd = 0;
@@ -39,7 +40,6 @@ nsDOMNavigationTiming::Clear()
   mDOMContentLoadedEventStart = 0;
   mDOMContentLoadedEventEnd = 0;
   mDOMComplete = 0;
-  mRedirectCheck = NOT_CHECKED;
 
   mLoadEventStartSet = false;
   mLoadEventEndSet = false;
@@ -48,6 +48,7 @@ nsDOMNavigationTiming::Clear()
   mDOMContentLoadedEventStartSet = false;
   mDOMContentLoadedEventEndSet = false;
   mDOMCompleteSet = false;
+  mDocShellHasBeenActiveSinceNavigationStart = false;
 }
 
 DOMTimeMilliSec
@@ -57,54 +58,29 @@ nsDOMNavigationTiming::TimeStampToDOM(mozilla::TimeStamp aStamp) const
     return 0;
   }
   mozilla::TimeDuration duration = aStamp - mNavigationStartTimeStamp;
-  return mNavigationStart + static_cast<int32_t>(duration.ToMilliseconds());
+  return GetNavigationStart() + static_cast<int64_t>(duration.ToMilliseconds());
 }
 
-DOMTimeMilliSec
-nsDOMNavigationTiming::TimeStampToDOMOrFetchStart(mozilla::TimeStamp aStamp) const
+DOMTimeMilliSec nsDOMNavigationTiming::DurationFromStart()
 {
-  if (!aStamp.IsNull()) {
-    return TimeStampToDOM(aStamp);
-  } else {
-    return GetFetchStart();
-  }
-}
-
-DOMTimeMilliSec nsDOMNavigationTiming::DurationFromStart(){
   return TimeStampToDOM(mozilla::TimeStamp::Now());
 }
 
 void
-nsDOMNavigationTiming::NotifyNavigationStart()
+nsDOMNavigationTiming::NotifyNavigationStart(DocShellState aDocShellState)
 {
-  mNavigationStart = PR_Now() / PR_USEC_PER_MSEC;
+  mNavigationStartHighRes = (double)PR_Now() / PR_USEC_PER_MSEC;
   mNavigationStartTimeStamp = mozilla::TimeStamp::Now();
+  mDocShellHasBeenActiveSinceNavigationStart = (aDocShellState == DocShellState::eActive);
 }
 
 void
-nsDOMNavigationTiming::NotifyFetchStart(nsIURI* aURI, nsDOMPerformanceNavigationType aNavigationType)
+nsDOMNavigationTiming::NotifyFetchStart(nsIURI* aURI, Type aNavigationType)
 {
-  mFetchStart = DurationFromStart();
   mNavigationType = aNavigationType;
   // At the unload event time we don't really know the loading uri.
   // Need it for later check for unload timing access.
   mLoadedURI = aURI;
-}
-
-void
-nsDOMNavigationTiming::NotifyRedirect(nsIURI* aOldURI, nsIURI* aNewURI)
-{
-  if (mRedirects.Count() == 0) {
-    mRedirectStart = mFetchStart;
-  }
-  mFetchStart = DurationFromStart();
-  mRedirectEnd = mFetchStart;
-
-  // At the unload event time we don't really know the loading uri.
-  // Need it for later check for unload timing access.
-  mLoadedURI = aNewURI;
-
-  mRedirects.AppendObject(aOldURI);
 }
 
 void
@@ -148,32 +124,6 @@ nsDOMNavigationTiming::NotifyLoadEventEnd()
     mLoadEventEnd = DurationFromStart();
     mLoadEventEndSet = true;
   }
-}
-
-bool
-nsDOMNavigationTiming::ReportRedirects()
-{
-  if (mRedirectCheck == NOT_CHECKED) {
-    mRedirectCount = mRedirects.Count();
-    if (mRedirects.Count() == 0) {
-      mRedirectCheck = NO_REDIRECTS;
-    } else {
-      mRedirectCheck = CHECK_PASSED;
-      nsIScriptSecurityManager* ssm = nsContentUtils::GetSecurityManager();
-      for (int i = mRedirects.Count() - 1; i >= 0; --i) {
-        nsIURI * curr = mRedirects[i];
-        nsresult rv = ssm->CheckSameOriginURI(curr, mLoadedURI, false);
-        if (!NS_SUCCEEDED(rv)) {
-          mRedirectCheck = CHECK_FAILED;
-          mRedirectCount = 0;
-          break;
-        }
-      }
-      // All we need to know is in mRedirectCheck now. Clear history.
-      mRedirects.Clear();
-    }
-  }
-  return mRedirectCheck == CHECK_PASSED;
 }
 
 void
@@ -236,31 +186,42 @@ nsDOMNavigationTiming::NotifyDOMContentLoadedEnd(nsIURI* aURI)
   }
 }
 
-uint16_t
-nsDOMNavigationTiming::GetRedirectCount()
+void
+nsDOMNavigationTiming::NotifyNonBlankPaintForRootContentDocument()
 {
-  if (ReportRedirects()) {
-    return mRedirectCount;
+  MOZ_ASSERT(NS_IsMainThread());
+  MOZ_ASSERT(!mNavigationStartTimeStamp.IsNull());
+
+  if (!mNonBlankPaintTimeStamp.IsNull()) {
+    return;
   }
-  return 0;
+
+  mNonBlankPaintTimeStamp = TimeStamp::Now();
+  TimeDuration elapsed = mNonBlankPaintTimeStamp - mNavigationStartTimeStamp;
+
+  if (profiler_is_active()) {
+    nsAutoCString spec;
+    if (mLoadedURI) {
+      mLoadedURI->GetSpec(spec);
+    }
+    nsPrintfCString marker("Non-blank paint after %dms for URL %s, %s",
+                           int(elapsed.ToMilliseconds()), spec.get(),
+                           mDocShellHasBeenActiveSinceNavigationStart ? "foreground tab" : "this tab was inactive some of the time between navigation start and first non-blank paint");
+    PROFILER_MARKER(marker.get());
+  }
+
+  if (mDocShellHasBeenActiveSinceNavigationStart) {
+    Telemetry::AccumulateTimeDelta(Telemetry::TIME_TO_NON_BLANK_PAINT_MS,
+                                   mNavigationStartTimeStamp,
+                                   mNonBlankPaintTimeStamp);
+  }
 }
 
-DOMTimeMilliSec
-nsDOMNavigationTiming::GetRedirectStart()
+void
+nsDOMNavigationTiming::NotifyDocShellStateChanged(DocShellState aDocShellState)
 {
-  if (ReportRedirects()) {
-    return mRedirectStart;
-  }
-  return 0;
-}
-
-DOMTimeMilliSec
-nsDOMNavigationTiming::GetRedirectEnd()
-{
-  if (ReportRedirects()) {
-    return mRedirectEnd;
-  }
-  return 0;
+  mDocShellHasBeenActiveSinceNavigationStart &=
+    (aDocShellState == DocShellState::eActive);
 }
 
 DOMTimeMilliSec
@@ -284,4 +245,3 @@ nsDOMNavigationTiming::GetUnloadEventEnd()
   }
   return 0;
 }
-

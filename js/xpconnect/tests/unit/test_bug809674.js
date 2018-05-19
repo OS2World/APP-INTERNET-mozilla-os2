@@ -22,9 +22,10 @@ function test_property_throws(contractid) {
   // Test the initial values.
   try {
     o.jsvalProperty;
-    do_check_true(false, "Should have thrown");
+    do_check_true(false);
   } catch (e) {
-    do_check_true(/implicit_jscontext/.test(e), "Should throw a helpful error");
+    do_check_true(true);
+    do_check_true(/implicit_jscontext/.test(e))
   }
 
 }

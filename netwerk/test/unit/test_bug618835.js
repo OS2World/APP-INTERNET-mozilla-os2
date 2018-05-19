@@ -11,20 +11,14 @@
 // "/redirect" and "/cl" are loaded from server the expected number of times.
 //
 
-const Cc = Components.classes;
-const Ci = Components.interfaces;
-const Cu = Components.utils;
-const Cr = Components.results;
-
 Cu.import("resource://testing-common/httpd.js");
+Cu.import("resource://gre/modules/NetUtil.jsm");
 
 var httpserv;
 
 function setupChannel(path) {
-    var ios =
-        Cc["@mozilla.org/network/io-service;1"].getService(Ci.nsIIOService);
-    return chan = ios.newChannel(path, "", null)
-                                .QueryInterface(Ci.nsIHttpChannel);
+  return NetUtil.newChannel({uri: path, loadUsingSystemPrincipal: true})
+                .QueryInterface(Ci.nsIHttpChannel);
 }
 
 // Verify that Content-Location-URI has been loaded once, load post_target
@@ -34,9 +28,10 @@ InitialListener.prototype = {
     onStopRequest: function(request, context, status) {
         do_check_eq(1, numberOfCLHandlerCalls);
         do_execute_soon(function() {
-            var channel = setupChannel("http://localhost:4444/post");
-            channel.requestMethod = "post";
-            channel.asyncOpen(new RedirectingListener(), null);
+            var channel = setupChannel("http://localhost:" +
+                                       httpserv.identity.primaryPort + "/post");
+            channel.requestMethod = "POST";
+            channel.asyncOpen2(new RedirectingListener());
         });
     }
 };
@@ -48,9 +43,10 @@ RedirectingListener.prototype = {
     onStopRequest: function(request, context, status) {
         do_check_eq(1, numberOfHandlerCalls);
         do_execute_soon(function() {
-            var channel = setupChannel("http://localhost:4444/post");
-            channel.requestMethod = "post";
-            channel.asyncOpen(new VerifyingListener(), null);
+            var channel = setupChannel("http://localhost:" +
+                                       httpserv.identity.primaryPort + "/post");
+            channel.requestMethod = "POST";
+            channel.asyncOpen2(new VerifyingListener());
         });
     }
 };
@@ -62,8 +58,9 @@ VerifyingListener.prototype = {
     onStartRequest: function(request, context) { },
     onStopRequest: function(request, context, status) {
         do_check_eq(2, numberOfHandlerCalls);
-        var channel = setupChannel("http://localhost:4444/cl");
-        channel.asyncOpen(new FinalListener(), null);
+        var channel = setupChannel("http://localhost:" +
+                                   httpserv.identity.primaryPort + "/cl");
+        channel.asyncOpen2(new FinalListener());
     }
 };
 
@@ -83,14 +80,15 @@ function run_test() {
   httpserv.registerPathHandler("/cl", content_location);
   httpserv.registerPathHandler("/post", post_target);
   httpserv.registerPathHandler("/redirect", redirect_target);
-  httpserv.start(4444);
+  httpserv.start(-1);
 
   // Clear cache
   evict_cache_entries();
 
   // Load Content-Location URI into cache and start the chain of loads
-  var channel = setupChannel("http://localhost:4444/cl");
-  channel.asyncOpen(new InitialListener(), null);
+  var channel = setupChannel("http://localhost:" +
+                             httpserv.identity.primaryPort + "/cl");
+  channel.asyncOpen2(new InitialListener());
 
   do_test_pending();
 }

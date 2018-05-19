@@ -11,8 +11,6 @@
 
 class nsIChannel;
 class nsIContentViewer;
-class nsIFile;
-class nsIInputStream;
 class nsILoadGroup;
 class nsIStreamListener;
 
@@ -21,9 +19,11 @@ class nsIStreamListener;
 
 class nsContentDLF : public nsIDocumentLoaderFactory
 {
+protected:
+  virtual ~nsContentDLF();
+
 public:
   nsContentDLF();
-  virtual ~nsContentDLF();
 
   NS_DECL_ISUPPORTS
   NS_DECL_NSIDOCUMENTLOADERFACTORY
@@ -33,7 +33,7 @@ public:
   nsresult CreateDocument(const char* aCommand,
                           nsIChannel* aChannel,
                           nsILoadGroup* aLoadGroup,
-                          nsISupports* aContainer,
+                          nsIDocShell* aContainer,
                           const nsCID& aDocumentCID,
                           nsIStreamListener** aDocListener,
                           nsIContentViewer** aContentViewer);
@@ -41,8 +41,7 @@ public:
   nsresult CreateXULDocument(const char* aCommand,
                              nsIChannel* aChannel,
                              nsILoadGroup* aLoadGroup,
-                             const char* aContentType,
-                             nsISupports* aContainer,
+                             nsIDocShell* aContainer,
                              nsISupports* aExtraInfo,
                              nsIStreamListener** aDocListener,
                              nsIContentViewer** aContentViewer);
@@ -63,13 +62,6 @@ NS_NewContentDocumentLoaderFactory(nsIDocumentLoaderFactory** aResult);
 #define CONTENTDLF_WEBM_CATEGORIES
 #endif
 
-#ifdef MOZ_DASH
-#define CONTENTDLF_DASH_CATEGORIES \
-    { "Gecko-Content-Viewers", APPLICATION_DASH, "@mozilla.org/content/document-loader-factory;1" },
-#else
-#define CONTENTDLF_DASH_CATEGORIES
-#endif
-
 #define CONTENTDLF_CATEGORIES \
     { "Gecko-Content-Viewers", TEXT_HTML, "@mozilla.org/content/document-loader-factory;1" }, \
     { "Gecko-Content-Viewers", TEXT_PLAIN, "@mozilla.org/content/document-loader-factory;1" }, \
@@ -81,6 +73,7 @@ NS_NewContentDocumentLoaderFactory(nsIDocumentLoaderFactory** aResult);
     { "Gecko-Content-Viewers", APPLICATION_ECMASCRIPT, "@mozilla.org/content/document-loader-factory;1" }, \
     { "Gecko-Content-Viewers", APPLICATION_XJAVASCRIPT, "@mozilla.org/content/document-loader-factory;1" }, \
     { "Gecko-Content-Viewers", APPLICATION_JSON, "@mozilla.org/content/document-loader-factory;1" }, \
+    { "Gecko-Content-Viewers", TEXT_JSON, "@mozilla.org/content/document-loader-factory;1" }, \
     { "Gecko-Content-Viewers", APPLICATION_XHTML_XML, "@mozilla.org/content/document-loader-factory;1" }, \
     { "Gecko-Content-Viewers", TEXT_XML, "@mozilla.org/content/document-loader-factory;1" }, \
     { "Gecko-Content-Viewers", APPLICATION_XML, "@mozilla.org/content/document-loader-factory;1" }, \
@@ -91,8 +84,9 @@ NS_NewContentDocumentLoaderFactory(nsIDocumentLoaderFactory** aResult);
     { "Gecko-Content-Viewers", VIEWSOURCE_CONTENT_TYPE, "@mozilla.org/content/document-loader-factory;1" }, \
     { "Gecko-Content-Viewers", IMAGE_SVG_XML, "@mozilla.org/content/document-loader-factory;1" }, \
     { "Gecko-Content-Viewers", APPLICATION_MATHML_XML, "@mozilla.org/content/document-loader-factory;1" }, \
-    CONTENTDLF_WEBM_CATEGORIES \
-    CONTENTDLF_DASH_CATEGORIES
+    { "Gecko-Content-Viewers", TEXT_VTT, "@mozilla.org/content/document-loader-factory;1" }, \
+    { "Gecko-Content-Viewers", APPLICATION_WAPXHTML_XML, "@mozilla.org/content/document-loader-factory;1" }, \
+    CONTENTDLF_WEBM_CATEGORIES
 
 
 #endif

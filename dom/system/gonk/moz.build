@@ -1,4 +1,4 @@
-# -*- Mode: python; c-basic-offset: 4; indent-tabs-mode: nil; tab-width: 40 -*-
+# -*- Mode: python; indent-tabs-mode: nil; tab-width: 40 -*-
 # vim: set filetype=python:
 # Copyright 2013 Mozilla Foundation and Mozilla contributors
 #
@@ -16,11 +16,13 @@
 
 XPIDL_SOURCES += [
     'nsIAudioManager.idl',
-    'nsINavigatorAudioChannelManager.idl',
+    'nsINetworkInterface.idl',
     'nsINetworkInterfaceListService.idl',
     'nsINetworkManager.idl',
-    'nsIRadioInterfaceLayer.idl',
+    'nsINetworkService.idl',
+    'nsINetworkWorker.idl',
     'nsISystemWorkerManager.idl',
+    'nsITetheringService.idl',
     'nsIVolume.idl',
     'nsIVolumeMountLock.idl',
     'nsIVolumeService.idl',
@@ -30,47 +32,76 @@ XPIDL_SOURCES += [
 
 XPIDL_MODULE = 'dom_system_gonk'
 
-XPIDL_FLAGS += [
-    '-I$(topsrcdir)/dom/network/interfaces',
+EXPORTS += [
+    'GeolocationUtil.h',
+    'GonkGPSGeolocationProvider.h',
+    'nsVolume.h',
+    'nsVolumeService.h',
+    'SystemProperty.h',
+]
+UNIFIED_SOURCES += [
+    'AudioChannelManager.cpp',
+    'AudioManager.cpp',
+    'AutoMounter.cpp',
+    'AutoMounterSetting.cpp',
+    'GeolocationUtil.cpp',
+    'GonkGPSGeolocationProvider.cpp',
+    'MozMtpDatabase.cpp',
+    'MozMtpServer.cpp',
+    'MozMtpStorage.cpp',
+    'NetIdManager.cpp',
+    'NetworkUtils.cpp',
+    'NetworkWorker.cpp',
+    'nsVolume.cpp',
+    'nsVolumeMountLock.cpp',
+    'nsVolumeService.cpp',
+    'nsVolumeStat.cpp',
+    'OpenFileFinder.cpp',
+    'SystemProperty.cpp',
+    'SystemWorkerManager.cpp',
+    'TimeZoneSettingObserver.cpp',
+    'Volume.cpp',
+    'VolumeCommand.cpp',
+    'VolumeManager.cpp',
+    'VolumeServiceIOThread.cpp',
+    'VolumeServiceTest.cpp',
 ]
 
-MODULE = 'dom'
-
-if CONFIG['MOZ_WIDGET_TOOLKIT'] == 'gonk':
-    EXPORTS += [
-        'GonkGPSGeolocationProvider.h',
-        'nsVolume.h',
-        'nsVolumeService.h',
-    ]
-    CPP_SOURCES += [
-        'AudioManager.cpp',
-        'AutoMounter.cpp',
-        'AutoMounterSetting.cpp',
-        'GonkGPSGeolocationProvider.cpp',
-        'AudioChannelManager.cpp',
-        'nsVolume.cpp',
-        'nsVolumeMountLock.cpp',
-        'nsVolumeService.cpp',
-        'nsVolumeStat.cpp',
-        'TimeZoneSettingObserver.cpp',
-        'Volume.cpp',
-        'VolumeCommand.cpp',
-        'VolumeManager.cpp',
-        'VolumeServiceIOThread.cpp',
-        'VolumeServiceTest.cpp',
-    ]
+if CONFIG['ANDROID_VERSION'] >= '17':
+    LOCAL_INCLUDES += ['%' + '%s/frameworks/av/media/mtp' % CONFIG['ANDROID_SOURCE']]
+else:
+    LOCAL_INCLUDES += ['%' + '%s/frameworks/base/media/mtp' % CONFIG['ANDROID_SOURCE']]
 
 if CONFIG['ENABLE_TESTS']:
     XPCSHELL_TESTS_MANIFESTS += ['tests/xpcshell.ini']
 
-CPP_SOURCES += [
-    'SystemWorkerManager.cpp',
+EXTRA_COMPONENTS += [
+    'NetworkInterfaceListService.js',
+    'NetworkInterfaceListService.manifest',
+    'NetworkManager.js',
+    'NetworkManager.manifest',
+    'NetworkService.js',
+    'NetworkService.manifest',
+    'TetheringService.js',
+    'TetheringService.manifest',
 ]
-
 EXTRA_JS_MODULES += [
-    'net_worker.js',
-    'ril_consts.js',
-    'ril_worker.js',
     'systemlibs.js',
 ]
 
+include('/ipc/chromium/chromium-config.mozbuild')
+
+DEFINES['HAVE_ANDROID_OS'] = True
+
+LOCAL_INCLUDES += [
+    '/dom/base',
+    '/dom/bluetooth/common',
+    '/dom/geolocation',
+    '/dom/wifi',
+]
+
+FINAL_LIBRARY = 'xul'
+
+FINAL_TARGET_FILES.modules.workers += [
+    'worker_buf.js',
+]

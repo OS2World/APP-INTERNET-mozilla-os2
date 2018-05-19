@@ -2,6 +2,8 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
+from __future__ import absolute_import
+
 import posixpath
 import os
 import re
@@ -20,6 +22,8 @@ def normsep(path):
     '''
     if os.sep != '/':
         path = path.replace(os.sep, '/')
+    if os.altsep and os.altsep != '/':
+        path = path.replace(os.altsep, '/')
     return path
 
 
@@ -28,9 +32,16 @@ def relpath(path, start):
     return '' if rel == '.' else rel
 
 
+def realpath(path):
+    return normsep(os.path.realpath(path))
+
+
+def abspath(path):
+    return normsep(os.path.abspath(path))
+
+
 def join(*paths):
-    paths = [normsep(p) for p in paths]
-    return posixpath.join(*paths)
+    return normsep(os.path.join(*paths))
 
 
 def normpath(path):
@@ -77,6 +88,8 @@ def basedir(path, bases):
             return b
 
 
+re_cache = {}
+
 def match(path, pattern):
     '''
     Return whether the given path matches the given pattern.
@@ -94,27 +107,13 @@ def match(path, pattern):
     '''
     if not pattern:
         return True
-    if isinstance(path, basestring):
-        path = split(path)
-    if isinstance(pattern, basestring):
-        pattern = split(pattern)
-
-    if pattern[0] == '**':
-        if len(pattern) == 1:
-            return True
-        return any(match(path[n:], pattern[1:]) for n in xrange(len(path)))
-    if len(pattern) > 1:
-        return match(path[:1], pattern[:1]) and match(path[1:], pattern[1:])
-    if path:
-        return re.match(translate(pattern[0]), path[0]) is not None
-    return False
-
-
-def translate(pattern):
-    '''
-    Translate the globbing pattern to a regular expression.
-    '''
-    return re.escape(pattern).replace('\*', '.*') + '$'
+    if pattern not in re_cache:
+        p = re.escape(pattern)
+        p = re.sub(r'(^|\\\/)\\\*\\\*\\\/', r'\1(?:.+/)?', p)
+        p = re.sub(r'(^|\\\/)\\\*\\\*$', r'(?:\1.+)?', p)
+        p = p.replace(r'\*', '[^/]*') + '(?:/.*)?$'
+        re_cache[pattern] = re.compile(p)
+    return re_cache[pattern].match(path) is not None
 
 
 def rebase(oldbase, base, relativepath):

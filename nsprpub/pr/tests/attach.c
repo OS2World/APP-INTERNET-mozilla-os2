@@ -48,8 +48,8 @@
 #elif defined(SOLARIS)
 #include <thread.h>
 #elif defined(OS2)
-#define INCL_DOS
-#define INCL_ERRORS
+#define INCL_BASE
+#define INCL_PM
 #include <os2.h>
 #include <process.h>
 #elif defined(XP_BEOS)
@@ -260,7 +260,7 @@ int main(int argc, char **argv)
 #elif defined(WIN32)
 
     hThread = (HANDLE) _beginthreadex(NULL, 0, threadStartFunc, NULL,
-            0, &threadID); 
+            STACK_SIZE_PARAM_IS_A_RESERVATION, &threadID);
     if (hThread == 0) {
         fprintf(stderr, "thread creation failed: error code %d\n",
                 GetLastError());

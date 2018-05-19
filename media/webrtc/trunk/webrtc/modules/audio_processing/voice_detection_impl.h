@@ -11,46 +11,48 @@
 #ifndef WEBRTC_MODULES_AUDIO_PROCESSING_VOICE_DETECTION_IMPL_H_
 #define WEBRTC_MODULES_AUDIO_PROCESSING_VOICE_DETECTION_IMPL_H_
 
-#include "audio_processing.h"
-#include "processing_component.h"
+#include "webrtc/modules/audio_processing/include/audio_processing.h"
+#include "webrtc/modules/audio_processing/processing_component.h"
 
 namespace webrtc {
-class AudioProcessingImpl;
+
 class AudioBuffer;
+class CriticalSectionWrapper;
 
 class VoiceDetectionImpl : public VoiceDetection,
                            public ProcessingComponent {
  public:
-  explicit VoiceDetectionImpl(const AudioProcessingImpl* apm);
+  VoiceDetectionImpl(const AudioProcessing* apm, CriticalSectionWrapper* crit);
   virtual ~VoiceDetectionImpl();
 
   int ProcessCaptureAudio(AudioBuffer* audio);
 
   // VoiceDetection implementation.
-  virtual bool is_enabled() const;
+  bool is_enabled() const override;
 
   // ProcessingComponent implementation.
-  virtual int Initialize();
+  int Initialize() override;
 
  private:
   // VoiceDetection implementation.
-  virtual int Enable(bool enable);
-  virtual int set_stream_has_voice(bool has_voice);
-  virtual bool stream_has_voice() const;
-  virtual int set_likelihood(Likelihood likelihood);
-  virtual Likelihood likelihood() const;
-  virtual int set_frame_size_ms(int size);
-  virtual int frame_size_ms() const;
+  int Enable(bool enable) override;
+  int set_stream_has_voice(bool has_voice) override;
+  bool stream_has_voice() const override;
+  int set_likelihood(Likelihood likelihood) override;
+  Likelihood likelihood() const override;
+  int set_frame_size_ms(int size) override;
+  int frame_size_ms() const override;
 
   // ProcessingComponent implementation.
-  virtual void* CreateHandle() const;
-  virtual int InitializeHandle(void* handle) const;
-  virtual int ConfigureHandle(void* handle) const;
-  virtual int DestroyHandle(void* handle) const;
-  virtual int num_handles_required() const;
-  virtual int GetHandleError(void* handle) const;
+  void* CreateHandle() const override;
+  int InitializeHandle(void* handle) const override;
+  int ConfigureHandle(void* handle) const override;
+  void DestroyHandle(void* handle) const override;
+  int num_handles_required() const override;
+  int GetHandleError(void* handle) const override;
 
-  const AudioProcessingImpl* apm_;
+  const AudioProcessing* apm_;
+  CriticalSectionWrapper* crit_;
   bool stream_has_voice_;
   bool using_external_vad_;
   Likelihood likelihood_;

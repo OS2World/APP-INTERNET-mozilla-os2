@@ -9,307 +9,29 @@
 #include <jni.h>
 #include <android/input.h>
 #include <android/log.h>
+#include <android/api-level.h>
 
-#include "nsGeoPosition.h"
-#include "nsPoint.h"
 #include "nsRect.h"
 #include "nsString.h"
 #include "nsTArray.h"
-#include "nsIObserver.h"
+#include "nsIAndroidBridge.h"
 #include "mozilla/gfx/Rect.h"
 #include "mozilla/dom/Touch.h"
+#include "mozilla/EventForwards.h"
 #include "InputData.h"
 #include "Units.h"
+#include "FrameMetrics.h"
 
 //#define FORCE_ALOG 1
 
-#ifndef ALOG
-#if defined(DEBUG) || defined(FORCE_ALOG)
-#define ALOG(args...)  __android_log_print(ANDROID_LOG_INFO, "Gecko" , ## args)
-#else
-#define ALOG(args...) ((void)0)
-#endif
-#endif
-
 class nsIAndroidDisplayport;
-class nsIAndroidViewport;
 class nsIWidget;
 
 namespace mozilla {
 
-class AndroidGeckoLayerClient;
-class AutoLocalJNIFrame;
-
-void InitAndroidJavaWrappers(JNIEnv *jEnv);
-
-/*
- * Note: do not store global refs to any WrappedJavaObject;
- * these are live only during a particular JNI method, as
- * NewGlobalRef is -not- called on the jobject.
- *
- * If this is needed, WrappedJavaObject can be extended to
- * handle it.
- */
-
-class RefCountedJavaObject {
-public:
-    RefCountedJavaObject(JNIEnv* env, jobject obj) : mRefCnt(0), mObject(env->NewGlobalRef(obj)) {}
-
-    ~RefCountedJavaObject();
-
-    int32_t AddRef() { return ++mRefCnt; }
-
-    int32_t Release() {
-        int32_t refcnt = --mRefCnt;
-        if (refcnt == 0)
-            delete this;
-        return refcnt;
-    }
-
-    jobject GetObject() { return mObject; }
-private:
-    int32_t mRefCnt;
-    jobject mObject;
-};
-
-class WrappedJavaObject {
-public:
-    WrappedJavaObject() :
-        wrapped_obj(0)
-    { }
-
-    WrappedJavaObject(jobject jobj) {
-        Init(jobj);
-    }
-
-    void Init(jobject jobj) {
-        wrapped_obj = jobj;
-    }
-
-    bool isNull() const {
-        return wrapped_obj == 0;
-    }
-
-    jobject wrappedObject() const {
-        return wrapped_obj;
-    }
-
-protected:
-    jobject wrapped_obj;
-};
-
-class AndroidPoint : public WrappedJavaObject
-{
-public:
-    static void InitPointClass(JNIEnv *jEnv);
-
-    AndroidPoint() { }
-    AndroidPoint(JNIEnv *jenv, jobject jobj) {
-        Init(jenv, jobj);
-    }
-
-    void Init(JNIEnv *jenv, jobject jobj);
-
-    int X() { return mX; }
-    int Y() { return mY; }
-
-protected:
-    int mX;
-    int mY;
-
-    static jclass jPointClass;
-    static jfieldID jXField;
-    static jfieldID jYField;
-};
-
-class AndroidRect : public WrappedJavaObject
-{
-public:
-    static void InitRectClass(JNIEnv *jEnv);
-
-    AndroidRect() { }
-    AndroidRect(JNIEnv *jenv, jobject jobj) {
-        Init(jenv, jobj);
-    }
-
-    void Init(JNIEnv *jenv, jobject jobj);
-
-    int Bottom() { return mBottom; }
-    int Left() { return mLeft; }
-    int Right() { return mRight; }
-    int Top() { return mTop; }
-    int Width() { return mRight - mLeft; }
-    int Height() { return mBottom - mTop; }
-
-protected:
-    int mBottom;
-    int mLeft;
-    int mRight;
-    int mTop;
-
-    static jclass jRectClass;
-    static jfieldID jBottomField;
-    static jfieldID jLeftField;
-    static jfieldID jRightField;
-    static jfieldID jTopField;
-};
-
-class AndroidRectF : public WrappedJavaObject
-{
-public:
-    static void InitRectFClass(JNIEnv *jEnv);
-
-    AndroidRectF() { }
-    AndroidRectF(JNIEnv *jenv, jobject jobj) {
-        Init(jenv, jobj);
-    }
-
-    void Init(JNIEnv *jenv, jobject jobj);
-
-    float Bottom() { return mBottom; }
-    float Left() { return mLeft; }
-    float Right() { return mRight; }
-    float Top() { return mTop; }
-    float Width() { return mRight - mLeft; }
-    float Height() { return mBottom - mTop; }
-
-protected:
-    float mBottom;
-    float mLeft;
-    float mRight;
-    float mTop;
-
-    static jclass jRectClass;
-    static jfieldID jBottomField;
-    static jfieldID jLeftField;
-    static jfieldID jRightField;
-    static jfieldID jTopField;
-};
-
-class AndroidViewTransform : public WrappedJavaObject {
-public:
-    static void InitViewTransformClass(JNIEnv *jEnv);
-
-    void Init(jobject jobj);
-
-    AndroidViewTransform() {}
-    AndroidViewTransform(jobject jobj) { Init(jobj); }
-
-    float GetX(JNIEnv *env);
-    float GetY(JNIEnv *env);
-    float GetScale(JNIEnv *env);
-    void GetFixedLayerMargins(JNIEnv *env, gfx::Margin &aFixedLayerMargins);
-    float GetOffsetX(JNIEnv *env);
-    float GetOffsetY(JNIEnv *env);
-
-private:
-    static jclass jViewTransformClass;
-    static jfieldID jXField;
-    static jfieldID jYField;
-    static jfieldID jScaleField;
-    static jfieldID jFixedLayerMarginLeft;
-    static jfieldID jFixedLayerMarginTop;
-    static jfieldID jFixedLayerMarginRight;
-    static jfieldID jFixedLayerMarginBottom;
-    static jfieldID jOffsetXField;
-    static jfieldID jOffsetYField;
-};
-
-class AndroidProgressiveUpdateData : public WrappedJavaObject {
-public:
-    static void InitProgressiveUpdateDataClass(JNIEnv *jEnv);
-
-    void Init(jobject jobj);
-
-    AndroidProgressiveUpdateData() {}
-    AndroidProgressiveUpdateData(jobject jobj) { Init(jobj); }
-
-    float GetX(JNIEnv *env);
-    float GetY(JNIEnv *env);
-    float GetWidth(JNIEnv *env);
-    float GetHeight(JNIEnv *env);
-    float GetScale(JNIEnv *env);
-    bool GetShouldAbort(JNIEnv *env);
-
-private:
-    static jclass jProgressiveUpdateDataClass;
-    static jfieldID jXField;
-    static jfieldID jYField;
-    static jfieldID jWidthField;
-    static jfieldID jHeightField;
-    static jfieldID jScaleField;
-    static jfieldID jShouldAbortField;
-};
-
-class AndroidLayerRendererFrame : public WrappedJavaObject {
-public:
-    static void InitLayerRendererFrameClass(JNIEnv *jEnv);
-
-    void Init(JNIEnv *env, jobject jobj);
-    void Dispose(JNIEnv *env);
-
-    bool BeginDrawing(AutoLocalJNIFrame *jniFrame);
-    bool DrawBackground(AutoLocalJNIFrame *jniFrame);
-    bool DrawForeground(AutoLocalJNIFrame *jniFrame);
-    bool EndDrawing(AutoLocalJNIFrame *jniFrame);
-
-private:
-    static jclass jLayerRendererFrameClass;
-    static jmethodID jBeginDrawingMethod;
-    static jmethodID jDrawBackgroundMethod;
-    static jmethodID jDrawForegroundMethod;
-    static jmethodID jEndDrawingMethod;
-};
-
-class AndroidGeckoLayerClient : public WrappedJavaObject {
-public:
-    static void InitGeckoLayerClientClass(JNIEnv *jEnv);
-
-    void Init(jobject jobj);
-
-    AndroidGeckoLayerClient() {}
-    AndroidGeckoLayerClient(jobject jobj) { Init(jobj); }
-
-    void SetFirstPaintViewport(const LayerIntPoint& aOffset, const CSSToLayerScale& aZoom, const CSSRect& aCssPageRect);
-    void SetPageRect(const CSSRect& aCssPageRect);
-    void SyncViewportInfo(const LayerIntRect& aDisplayPort, const CSSToLayerScale& aDisplayResolution,
-                          bool aLayersUpdated, ScreenPoint& aScrollOffset, CSSToScreenScale& aScale,
-                          gfx::Margin& aFixedLayerMargins, ScreenPoint& aOffset);
-    void SyncFrameMetrics(const ScreenPoint& aScrollOffset, float aZoom, const CSSRect& aCssPageRect,
-                          bool aLayersUpdated, const CSSRect& aDisplayPort, const CSSToLayerScale& aDisplayResolution,
-                          bool aIsFirstPaint, gfx::Margin& aFixedLayerMargins, ScreenPoint& aOffset);
-    bool ProgressiveUpdateCallback(bool aHasPendingNewThebesContent, const LayerRect& aDisplayPort, float aDisplayResolution, bool aDrawingCritical, gfx::Rect& aViewport, float& aScaleX, float& aScaleY);
-    bool CreateFrame(AutoLocalJNIFrame *jniFrame, AndroidLayerRendererFrame& aFrame);
-    bool ActivateProgram(AutoLocalJNIFrame *jniFrame);
-    bool DeactivateProgram(AutoLocalJNIFrame *jniFrame);
-    void GetDisplayPort(AutoLocalJNIFrame *jniFrame, bool aPageSizeUpdate, bool aIsBrowserContentDisplayed, int32_t tabId, nsIAndroidViewport* metrics, nsIAndroidDisplayport** displayPort);
-    void ContentDocumentChanged(AutoLocalJNIFrame *jniFrame);
-    bool IsContentDocumentDisplayed(AutoLocalJNIFrame *jniFrame);
-
-protected:
-    static jclass jGeckoLayerClientClass;
-    static jmethodID jSetFirstPaintViewport;
-    static jmethodID jSetPageRect;
-    static jmethodID jSyncViewportInfoMethod;
-    static jmethodID jSyncFrameMetricsMethod;
-    static jmethodID jCreateFrameMethod;
-    static jmethodID jActivateProgramMethod;
-    static jmethodID jDeactivateProgramMethod;
-    static jmethodID jGetDisplayPort;
-    static jmethodID jContentDocumentChanged;
-    static jmethodID jIsContentDocumentDisplayed;
-    static jmethodID jProgressiveUpdateCallbackMethod;
-
-public:
-    static jclass jViewportClass;
-    static jclass jDisplayportClass;
-    static jmethodID jViewportCtor;
-    static jfieldID jDisplayportPosition;
-    static jfieldID jDisplayportResolution;
-};
-
 enum {
     // These keycode masks are not defined in android/keycodes.h:
+#if __ANDROID_API__ < 13
     AKEYCODE_ESCAPE             = 111,
     AKEYCODE_FORWARD_DEL        = 112,
     AKEYCODE_CTRL_LEFT          = 113,
@@ -403,13 +125,19 @@ enum {
     AKEYCODE_BUTTON_14          = 201,
     AKEYCODE_BUTTON_15          = 202,
     AKEYCODE_BUTTON_16          = 203,
+#endif
+#if __ANDROID_API__ < 14
     AKEYCODE_LANGUAGE_SWITCH    = 204,
     AKEYCODE_MANNER_MODE        = 205,
     AKEYCODE_3D_MODE            = 206,
+#endif
+#if __ANDROID_API__ < 15
     AKEYCODE_CONTACTS           = 207,
     AKEYCODE_CALENDAR           = 208,
     AKEYCODE_MUSIC              = 209,
     AKEYCODE_CALCULATOR         = 210,
+#endif
+#if __ANDROID_API__ < 16
     AKEYCODE_ZENKAKU_HANKAKU    = 211,
     AKEYCODE_EISU               = 212,
     AKEYCODE_MUHENKAN           = 213,
@@ -419,13 +147,18 @@ enum {
     AKEYCODE_RO                 = 217,
     AKEYCODE_KANA               = 218,
     AKEYCODE_ASSIST             = 219,
+#endif
 
+    AMETA_FUNCTION_ON           = 0x00000008,
     AMETA_CTRL_ON               = 0x00001000,
     AMETA_CTRL_LEFT_ON          = 0x00002000,
     AMETA_CTRL_RIGHT_ON         = 0x00004000,
     AMETA_META_ON               = 0x00010000,
     AMETA_META_LEFT_ON          = 0x00020000,
     AMETA_META_RIGHT_ON         = 0x00040000,
+    AMETA_CAPS_LOCK_ON          = 0x00100000,
+    AMETA_NUM_LOCK_ON           = 0x00200000,
+    AMETA_SCROLL_LOCK_ON        = 0x00400000,
 
     AMETA_ALT_MASK              = AMETA_ALT_LEFT_ON   | AMETA_ALT_RIGHT_ON   | AMETA_ALT_ON,
     AMETA_CTRL_MASK             = AMETA_CTRL_LEFT_ON  | AMETA_CTRL_RIGHT_ON  | AMETA_CTRL_ON,
@@ -459,294 +192,12 @@ public:
         SAMPLE_PRESSURE = 2,
         SAMPLE_SIZE = 3,
         NUM_SAMPLE_DATA = 4,
+        TOOL_TYPE_UNKNOWN = 0,
+        TOOL_TYPE_FINGER = 1,
+        TOOL_TYPE_STYLUS = 2,
+        TOOL_TYPE_MOUSE = 3,
+        TOOL_TYPE_ERASER = 4,
         dummy_java_enum_list_end
-    };
-};
-
-class AndroidLocation : public WrappedJavaObject
-{
-public:
-    static void InitLocationClass(JNIEnv *jEnv);
-    static nsGeoPosition* CreateGeoPosition(JNIEnv *jenv, jobject jobj);
-    static jclass jLocationClass;
-    static jmethodID jGetLatitudeMethod;
-    static jmethodID jGetLongitudeMethod;
-    static jmethodID jGetAltitudeMethod;
-    static jmethodID jGetAccuracyMethod;
-    static jmethodID jGetBearingMethod;
-    static jmethodID jGetSpeedMethod;
-    static jmethodID jGetTimeMethod;
-};
-
-class AndroidGeckoEvent : public WrappedJavaObject
-{
-private:
-    AndroidGeckoEvent() {
-    }
-
-    void Init(JNIEnv *jenv, jobject jobj);
-    void Init(int aType);
-    void Init(AndroidGeckoEvent *aResizeEvent);
-
-public:
-    static void InitGeckoEventClass(JNIEnv *jEnv);
-
-    static AndroidGeckoEvent* MakeNativePoke() {
-        AndroidGeckoEvent *event = new AndroidGeckoEvent();
-        event->Init(NATIVE_POKE);
-        return event;
-    }
-
-    static AndroidGeckoEvent* MakeIMEEvent(int aAction) {
-        AndroidGeckoEvent *event = new AndroidGeckoEvent();
-        event->Init(IME_EVENT);
-        event->mAction = aAction;
-        return event;
-    }
-
-    static AndroidGeckoEvent* MakeDrawEvent(const nsIntRect& aRect) {
-        AndroidGeckoEvent *event = new AndroidGeckoEvent();
-        event->Init(DRAW);
-        event->mRect = aRect;
-        return event;
-    }
-
-    static AndroidGeckoEvent* MakeFromJavaObject(JNIEnv *jenv, jobject jobj) {
-        AndroidGeckoEvent *event = new AndroidGeckoEvent();
-        event->Init(jenv, jobj);
-        return event;
-    }
-
-    static AndroidGeckoEvent* CopyResizeEvent(AndroidGeckoEvent *aResizeEvent) {
-        AndroidGeckoEvent *event = new AndroidGeckoEvent();
-        event->Init(aResizeEvent);
-        return event;
-    }
-
-    static AndroidGeckoEvent* MakeBroadcastEvent(const nsCString& topic, const nsCString& data) {
-        AndroidGeckoEvent* event = new AndroidGeckoEvent();
-        event->Init(BROADCAST);
-        CopyUTF8toUTF16(topic, event->mCharacters);
-        CopyUTF8toUTF16(data, event->mCharactersExtra);
-        return event;
-    }
-
-    static AndroidGeckoEvent* MakeAddObserver(const nsAString &key, nsIObserver *observer) {
-        AndroidGeckoEvent *event = new AndroidGeckoEvent();
-        event->Init(ADD_OBSERVER);
-        event->mCharacters.Assign(key);
-        event->mObserver = observer;
-        return event;
-    }
-
-    int Action() { return mAction; }
-    int Type() { return mType; }
-    bool AckNeeded() { return mAckNeeded; }
-    int64_t Time() { return mTime; }
-    const nsTArray<nsIntPoint>& Points() { return mPoints; }
-    const nsTArray<int>& PointIndicies() { return mPointIndicies; }
-    const nsTArray<float>& Pressures() { return mPressures; }
-    const nsTArray<float>& Orientations() { return mOrientations; }
-    const nsTArray<nsIntPoint>& PointRadii() { return mPointRadii; }
-    double X() { return mX; }
-    double Y() { return mY; }
-    double Z() { return mZ; }
-    const nsIntRect& Rect() { return mRect; }
-    nsAString& Characters() { return mCharacters; }
-    nsAString& CharactersExtra() { return mCharactersExtra; }
-    nsAString& Data() { return mData; }
-    int KeyCode() { return mKeyCode; }
-    int MetaState() { return mMetaState; }
-    uint32_t DomKeyLocation() { return mDomKeyLocation; }
-    bool IsAltPressed() const { return (mMetaState & AMETA_ALT_MASK) != 0; }
-    bool IsShiftPressed() const { return (mMetaState & AMETA_SHIFT_MASK) != 0; }
-    bool IsCtrlPressed() const { return (mMetaState & AMETA_CTRL_MASK) != 0; }
-    bool IsMetaPressed() const { return (mMetaState & AMETA_META_MASK) != 0; }
-    int Flags() { return mFlags; }
-    int UnicodeChar() { return mUnicodeChar; }
-    int BaseUnicodeChar() { return mBaseUnicodeChar; }
-    int RepeatCount() const { return mRepeatCount; }
-    int Count() { return mCount; }
-    int Start() { return mStart; }
-    int End() { return mEnd; }
-    int PointerIndex() { return mPointerIndex; }
-    int RangeType() { return mRangeType; }
-    int RangeStyles() { return mRangeStyles; }
-    int RangeLineStyle() { return mRangeLineStyle; }
-    bool RangeBoldLine() { return mRangeBoldLine; }
-    int RangeForeColor() { return mRangeForeColor; }
-    int RangeBackColor() { return mRangeBackColor; }
-    int RangeLineColor() { return mRangeLineColor; }
-    nsGeoPosition* GeoPosition() { return mGeoPosition; }
-    double Bandwidth() { return mBandwidth; }
-    bool CanBeMetered() { return mCanBeMetered; }
-    short ScreenOrientation() { return mScreenOrientation; }
-    RefCountedJavaObject* ByteBuffer() { return mByteBuffer; }
-    int Width() { return mWidth; }
-    int Height() { return mHeight; }
-    nsTouchEvent MakeTouchEvent(nsIWidget* widget);
-    MultiTouchInput MakeMultiTouchInput(nsIWidget* widget);
-    void UnionRect(nsIntRect const& aRect);
-    nsIObserver *Observer() { return mObserver; }
-
-protected:
-    int mAction;
-    int mType;
-    bool mAckNeeded;
-    int64_t mTime;
-    nsTArray<nsIntPoint> mPoints;
-    nsTArray<nsIntPoint> mPointRadii;
-    nsTArray<int> mPointIndicies;
-    nsTArray<float> mOrientations;
-    nsTArray<float> mPressures;
-    nsIntRect mRect;
-    int mFlags, mMetaState;
-    uint32_t mDomKeyLocation;
-    int mKeyCode, mUnicodeChar, mBaseUnicodeChar;
-    int mRepeatCount;
-    int mCount;
-    int mStart, mEnd;
-    int mRangeType, mRangeStyles, mRangeLineStyle;
-    bool mRangeBoldLine;
-    int mRangeForeColor, mRangeBackColor, mRangeLineColor;
-    double mX, mY, mZ;
-    int mPointerIndex;
-    nsString mCharacters, mCharactersExtra, mData;
-    nsRefPtr<nsGeoPosition> mGeoPosition;
-    double mBandwidth;
-    bool mCanBeMetered;
-    short mScreenOrientation;
-    nsRefPtr<RefCountedJavaObject> mByteBuffer;
-    int mWidth, mHeight;
-    nsCOMPtr<nsIObserver> mObserver;
-
-    void ReadIntArray(nsTArray<int> &aVals,
-                      JNIEnv *jenv,
-                      jfieldID field,
-                      int32_t count);
-    void ReadFloatArray(nsTArray<float> &aVals,
-                        JNIEnv *jenv,
-                        jfieldID field,
-                        int32_t count);
-    void ReadPointArray(nsTArray<nsIntPoint> &mPoints,
-                        JNIEnv *jenv,
-                        jfieldID field,
-                        int32_t count);
-    void ReadRectField(JNIEnv *jenv);
-    void ReadCharactersField(JNIEnv *jenv);
-    void ReadCharactersExtraField(JNIEnv *jenv);
-    void ReadDataField(JNIEnv *jenv);
-
-    uint32_t ReadDomKeyLocation(JNIEnv* jenv, jobject jGeckoEventObj);
-
-    static jclass jGeckoEventClass;
-    static jfieldID jActionField;
-    static jfieldID jTypeField;
-    static jfieldID jAckNeededField;
-    static jfieldID jTimeField;
-    static jfieldID jPoints;
-    static jfieldID jPointIndicies;
-    static jfieldID jOrientations;
-    static jfieldID jPressures;
-    static jfieldID jPointRadii;
-    static jfieldID jXField;
-    static jfieldID jYField;
-    static jfieldID jZField;
-    static jfieldID jDistanceField;
-    static jfieldID jRectField;
-    static jfieldID jNativeWindowField;
-
-    static jfieldID jCharactersField;
-    static jfieldID jCharactersExtraField;
-    static jfieldID jDataField;
-    static jfieldID jKeyCodeField;
-    static jfieldID jMetaStateField;
-    static jfieldID jDomKeyLocationField;
-    static jfieldID jFlagsField;
-    static jfieldID jCountField;
-    static jfieldID jStartField;
-    static jfieldID jEndField;
-    static jfieldID jPointerIndexField;
-    static jfieldID jUnicodeCharField;
-    static jfieldID jBaseUnicodeCharField;
-    static jfieldID jRepeatCountField;
-    static jfieldID jRangeTypeField;
-    static jfieldID jRangeStylesField;
-    static jfieldID jRangeLineStyleField;
-    static jfieldID jRangeBoldLineField;
-    static jfieldID jRangeForeColorField;
-    static jfieldID jRangeBackColorField;
-    static jfieldID jRangeLineColorField;
-    static jfieldID jLocationField;
-
-    static jfieldID jBandwidthField;
-    static jfieldID jCanBeMeteredField;
-
-    static jfieldID jScreenOrientationField;
-    static jfieldID jByteBufferField;
-
-    static jfieldID jWidthField;
-    static jfieldID jHeightField;
-
-    static jclass jDomKeyLocationClass;
-    static jfieldID jDomKeyLocationValueField;
-
-public:
-    enum {
-        NATIVE_POKE = 0,
-        KEY_EVENT = 1,
-        MOTION_EVENT = 2,
-        SENSOR_EVENT = 3,
-        LOCATION_EVENT = 5,
-        IME_EVENT = 6,
-        DRAW = 7,
-        SIZE_CHANGED = 8,
-        APP_BACKGROUNDING = 9,
-        APP_FOREGROUNDING = 10,
-        LOAD_URI = 12,
-        NOOP = 15,
-        FORCED_RESIZE = 16, // used internally in nsAppShell/nsWindow
-        BROADCAST = 19,
-        VIEWPORT = 20,
-        VISITED = 21,
-        NETWORK_CHANGED = 22,
-        THUMBNAIL = 25,
-        SCREENORIENTATION_CHANGED = 27,
-        COMPOSITOR_CREATE = 28,
-        COMPOSITOR_PAUSE = 29,
-        COMPOSITOR_RESUME = 30,
-        NATIVE_GESTURE_EVENT = 31,
-        IME_KEY_EVENT = 32,
-        CALL_OBSERVER = 33,
-        REMOVE_OBSERVER = 34,
-        LOW_MEMORY = 35,
-        NETWORK_LINK_CHANGE = 36,
-        ADD_OBSERVER = 37,
-        dummy_java_enum_list_end
-    };
-
-    enum {
-        // Memory pressue levels, keep in sync with those in MemoryMonitor.java
-        MEMORY_PRESSURE_NONE = 0,
-        MEMORY_PRESSURE_CLEANUP = 1,
-        MEMORY_PRESSURE_LOW = 2,
-        MEMORY_PRESSURE_MEDIUM = 3,
-        MEMORY_PRESSURE_HIGH = 4
-    };
-
-    enum {
-        // Internal Gecko events
-        IME_FLUSH_CHANGES = -2,
-        IME_UPDATE_CONTEXT = -1,
-        // Events from Java to Gecko
-        IME_SYNCHRONIZE = 0,
-        IME_REPLACE_TEXT = 1,
-        IME_SET_SELECTION = 2,
-        IME_ADD_COMPOSITION_RANGE = 3,
-        IME_UPDATE_COMPOSITION = 4,
-        IME_REMOVE_COMPOSITION = 5,
-        IME_ACKNOWLEDGE_FOCUS = 6,
-        dummy_ime_enum_list_end
     };
 };
 
@@ -754,6 +205,12 @@ class nsJNIString : public nsString
 {
 public:
     nsJNIString(jstring jstr, JNIEnv *jenv);
+};
+
+class nsJNICString : public nsCString
+{
+public:
+    nsJNICString(jstring jstr, JNIEnv *jenv);
 };
 
 }

@@ -3,12 +3,8 @@
 // caching resources with size out of bounds
 //
 
-const Cc = Components.classes;
-const Ci = Components.interfaces;
-const Cu = Components.utils;
-const Cr = Components.results;
-
 Cu.import("resource://testing-common/httpd.js");
+Cu.import("resource://gre/modules/NetUtil.jsm");
 
 do_get_profile();
 
@@ -25,9 +21,10 @@ function repeatToLargerThan1K(data) {
 }
 
 function setupChannel(suffix, value) {
-    var ios = Components.classes["@mozilla.org/network/io-service;1"]
-            .getService(Ci.nsIIOService);
-    var chan = ios.newChannel("http://localhost:4444" + suffix, "", null);
+    var chan = NetUtil.newChannel({
+        uri: "http://localhost:" + httpserver.identity.primaryPort + suffix,
+        loadUsingSystemPrincipal: true
+    });
     var httpChan = chan.QueryInterface(Components.interfaces.nsIHttpChannel);
     httpChan.setRequestHeader("x-request", value, false);
     
@@ -62,7 +59,7 @@ function nextTest() {
     // We really want each test to be self-contained. Make sure cache is
     // cleared and also let all operations finish before starting a new test
     syncWithCacheIOThread(function() {
-        evict_cache_entries();
+        get_cache_service().clear();
         syncWithCacheIOThread(runNextTest);
     });
 }
@@ -104,9 +101,7 @@ function InitializeCacheDevices(memDevice, diskDevice) {
             }
         }
         var channel = setupChannel("/bug650995", "Initial value");
-        channel.asyncOpen(new ChannelListener(
-            nextTest, null),
-            null);
+        channel.asyncOpen2(new ChannelListener(nextTest, null));
     }
 }
 
@@ -123,14 +118,14 @@ function TestCacheEntrySize(setSizeFunc, firstRequest, secondRequest, secondExpe
     this.start = function() {
         setSizeFunc();
         var channel = setupChannel("/bug650995", firstRequest);
-        channel.asyncOpen(new ChannelListener(this.initialLoad, this), null);
+        channel.asyncOpen2(new ChannelListener(this.initialLoad, this));
     },
 
     this.initialLoad = function(request, data, ctx) {
         do_check_eq(firstRequest, data);
         var channel = setupChannel("/bug650995", secondRequest);
         do_execute_soon(function() {
-            channel.asyncOpen(new ChannelListener(ctx.testAndTriggerNext, ctx), null);
+            channel.asyncOpen2(new ChannelListener(ctx.testAndTriggerNext, ctx));
             });
     },
 
@@ -143,7 +138,7 @@ function TestCacheEntrySize(setSizeFunc, firstRequest, secondRequest, secondExpe
 function run_test()
 {
     httpserver.registerPathHandler("/bug650995", handler);
-    httpserver.start(4444);
+    httpserver.start(-1);
 
     prefService.setBoolPref("browser.cache.offline.enable", false);
 

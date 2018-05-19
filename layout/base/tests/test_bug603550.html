@@ -53,17 +53,16 @@ function fireEvent(target, event) {
 }
 
 function fireDrop(element) {
-  netscape.security.PrivilegeManager.enablePrivilege('UniversalXPConnect');
-  var ds = Components.classes["@mozilla.org/widget/dragservice;1"].
-    getService(Components.interfaces.nsIDragService);
+  var ds = SpecialPowers.Cc["@mozilla.org/widget/dragservice;1"].
+    getService(SpecialPowers.Ci.nsIDragService);
 
   ds.startDragSession();
 
-  var event = document.createEvent("DragEvents");
+  var event = document.createEvent("DragEvent");
   event.initDragEvent("dragover", true, true, window, 0, 0, 0, 0, 0, false, false, false, false, 0, null, null);
   fireEvent(element, event);
 
-  event = document.createEvent("DragEvents");
+  event = document.createEvent("DragEvent");
   event.initDragEvent("drop", true, true, window, 0, 0, 0, 0, 0, false, false, false, false, 0, null, null);
   fireEvent(element, event);
 

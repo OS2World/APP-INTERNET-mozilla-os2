@@ -2,10 +2,17 @@
  * http://creativecommons.org/publicdomain/zero/1.0/
  */
 
-// Checks that we migrate data from a previous version of the sqlite database
+// Checks that we migrate data from a previous version of the JSON database
 
 // The test extension uses an insecure update url.
 Services.prefs.setBoolPref("extensions.checkUpdateSecurity", false);
+
+Components.utils.import("resource://testing-common/httpd.js");
+var testserver = new HttpServer();
+testserver.start(-1);
+gPort = testserver.identity.primaryPort;
+mapFile("/data/test_migrate4.rdf", testserver);
+testserver.registerDirectory("/addons/", do_get_file("addons"));
 
 var addon1 = {
   id: "addon1@tests.mozilla.org",
@@ -56,7 +63,7 @@ var addon5 = {
   id: "addon5@tests.mozilla.org",
   version: "2.0",
   name: "Test 5",
-  updateURL: "http://localhost:4444/data/test_migrate4.rdf",
+  updateURL: "http://localhost:" + gPort + "/data/test_migrate4.rdf",
   targetApplications: [{
     id: "xpcshell@tests.mozilla.org",
     minVersion: "0",
@@ -68,7 +75,7 @@ var addon6 = {
   id: "addon6@tests.mozilla.org",
   version: "1.0",
   name: "Test 6",
-  updateURL: "http://localhost:4444/data/test_migrate4.rdf",
+  updateURL: "http://localhost:" + gPort + "/data/test_migrate4.rdf",
   targetApplications: [{
     id: "xpcshell@tests.mozilla.org",
     minVersion: "0",
@@ -91,19 +98,10 @@ var defaultTheme = {
 const profileDir = gProfD.clone();
 profileDir.append("extensions");
 
-Components.utils.import("resource://testing-common/httpd.js");
-var testserver;
-
-let oldSyncGUIDs = {};
+var oldSyncGUIDs = {};
 
 function prepare_profile() {
   createAppInfo("xpcshell@tests.mozilla.org", "XPCShell", "1", "1.9.2");
-
-  // Create and configure the HTTP server.
-  testserver = new HttpServer();
-  testserver.registerDirectory("/data/", do_get_file("data"));
-  testserver.registerDirectory("/addons/", do_get_file("addons"));
-  testserver.start(4444);
 
   writeInstallRDFForExtension(addon1, profileDir);
   writeInstallRDFForExtension(addon2, profileDir);
@@ -134,31 +132,29 @@ function prepare_profile() {
       a6.userDisabled = true;
       a9.userDisabled = false;
 
-      for each (let addon in [a1, a2, a3, a4, a5, a6]) {
+      for (let addon of [a1, a2, a3, a4, a5, a6]) {
         oldSyncGUIDs[addon.id] = addon.syncGUID;
       }
 
       a6.findUpdates({
         onUpdateAvailable: function(aAddon, aInstall6) {
-          AddonManager.getInstallForURL("http://localhost:4444/addons/test_migrate4_7.xpi", function(aInstall7) {
+          AddonManager.getInstallForURL("http://localhost:" + gPort + "/addons/test_migrate4_7.xpi", function(aInstall7) {
             completeAllInstalls([aInstall6, aInstall7], function() {
               restartManager();
-  
+
               AddonManager.getAddonsByIDs(["addon1@tests.mozilla.org",
                                            "addon2@tests.mozilla.org",
                                            "addon3@tests.mozilla.org",
                                            "addon4@tests.mozilla.org",
                                            "addon5@tests.mozilla.org",
                                            "addon6@tests.mozilla.org"],
-                                           function([a1, a2, a3, a4, a5, a6]) {
-                a3.userDisabled = true;
-                a4.userDisabled = false;
-  
-                a5.findUpdates({
+                                           function([a1_2, a2_2, a3_2, a4_2, a5_2, a6_2]) {
+                a3_2.userDisabled = true;
+                a4_2.userDisabled = false;
+
+                a5_2.findUpdates({
                   onUpdateFinished: function() {
-                    shutdownManager();
-  
-                    perform_migration();
+                    do_execute_soon(perform_migration);
                   }
                 }, AddonManager.UPDATE_WHEN_USER_REQUESTED);
               });
@@ -171,17 +167,18 @@ function prepare_profile() {
 }
 
 function perform_migration() {
+  shutdownManager();
+
   // Turn on disabling for all scopes
   Services.prefs.setIntPref("extensions.autoDisableScopes", 15);
 
-  let dbfile = gProfD.clone();
-  dbfile.append("extensions.sqlite");
-  let db = AM_Cc["@mozilla.org/storage/service;1"].
-           getService(AM_Ci.mozIStorageService).
-           openDatabase(dbfile);
-  db.schemaVersion = 1;
+  changeXPIDBVersion(1, data => {
+    // Delete the seen property from all add-ons to make sure it defaults to true
+    for (let addon of data.addons) {
+      delete addon.seen;
+    }
+  });
   Services.prefs.setIntPref("extensions.databaseSchema", 1);
-  db.close();
 
   gAppInfo.version = "2"
   startupManager(true);
@@ -213,6 +210,7 @@ function test_results() {
     do_check_true(a1.isActive);
     do_check_eq(a1.applyBackgroundUpdates, AddonManager.AUTOUPDATE_DEFAULT);
     do_check_true(a1.foreignInstall);
+    do_check_true(a1.seen);
     do_check_false(a1.hasBinaryComponents);
     do_check_false(a1.strictCompatibility);
 
@@ -224,6 +222,7 @@ function test_results() {
     do_check_false(a2.isActive);
     do_check_eq(a2.applyBackgroundUpdates, AddonManager.AUTOUPDATE_DISABLE);
     do_check_true(a2.foreignInstall);
+    do_check_true(a2.seen);
     do_check_false(a2.hasBinaryComponents);
     do_check_false(a2.strictCompatibility);
 
@@ -235,6 +234,7 @@ function test_results() {
     do_check_false(a3.isActive);
     do_check_eq(a3.applyBackgroundUpdates, AddonManager.AUTOUPDATE_ENABLE);
     do_check_true(a3.foreignInstall);
+    do_check_true(a3.seen);
     do_check_false(a3.hasBinaryComponents);
     do_check_false(a3.strictCompatibility);
 
@@ -246,16 +246,18 @@ function test_results() {
     do_check_true(a4.isActive);
     do_check_eq(a4.applyBackgroundUpdates, AddonManager.AUTOUPDATE_DEFAULT);
     do_check_true(a4.foreignInstall);
+    do_check_true(a4.seen);
     do_check_false(a4.hasBinaryComponents);
     do_check_true(a4.strictCompatibility);
 
-    // addon5 was enabled in the database but needed a compatibiltiy update
+    // addon5 was enabled in the database but needed a compatibility update
     do_check_neq(a5, null);
     do_check_false(a5.userDisabled);
     do_check_false(a5.appDisabled);
     do_check_true(a5.isActive);
     do_check_eq(a4.applyBackgroundUpdates, AddonManager.AUTOUPDATE_DEFAULT);
     do_check_true(a5.foreignInstall);
+    do_check_true(a5.seen);
     do_check_false(a5.hasBinaryComponents);
     do_check_false(a5.strictCompatibility);
 
@@ -268,7 +270,8 @@ function test_results() {
     do_check_false(a6.isActive);
     do_check_eq(a6.applyBackgroundUpdates, AddonManager.AUTOUPDATE_DEFAULT);
     do_check_true(a6.foreignInstall);
-    do_check_eq(a6.sourceURI.spec, "http://localhost:4444/addons/test_migrate4_6.xpi");
+    do_check_true(a6.seen);
+    do_check_eq(a6.sourceURI.spec, "http://localhost:" + gPort + "/addons/test_migrate4_6.xpi");
     do_check_eq(a6.releaseNotesURI.spec, "http://example.com/updateInfo.xhtml");
     do_check_false(a6.hasBinaryComponents);
     do_check_false(a6.strictCompatibility);
@@ -281,7 +284,8 @@ function test_results() {
     do_check_true(a7.isActive);
     do_check_eq(a7.applyBackgroundUpdates, AddonManager.AUTOUPDATE_DEFAULT);
     do_check_false(a7.foreignInstall);
-    do_check_eq(a7.sourceURI.spec, "http://localhost:4444/addons/test_migrate4_7.xpi");
+    do_check_true(a7.seen);
+    do_check_eq(a7.sourceURI.spec, "http://localhost:" + gPort + "/addons/test_migrate4_7.xpi");
     do_check_eq(a7.releaseNotesURI, null);
     do_check_false(a7.hasBinaryComponents);
     do_check_false(a7.strictCompatibility);
@@ -292,6 +296,7 @@ function test_results() {
     do_check_false(a8.appDisabled);
     do_check_true(a8.isActive);
     do_check_false(a8.foreignInstall);
+    do_check_true(a8.seen);
     do_check_true(a8.hasBinaryComponents);
     do_check_false(a8.strictCompatibility);
 
@@ -301,6 +306,7 @@ function test_results() {
     do_check_false(a9.appDisabled);
     do_check_true(a9.isActive);
     do_check_false(a9.foreignInstall);
+    do_check_true(a9.seen);
     do_check_false(a9.hasBinaryComponents);
     do_check_true(a9.strictCompatibility);
 

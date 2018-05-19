@@ -17,6 +17,7 @@ import shutil
 import tempfile
 from datetime import datetime
 from mozbuild.base import MozbuildObject
+from buildconfig import substs
 
 PORT = 8888
 
@@ -48,12 +49,32 @@ if __name__ == '__main__':
       prefs[pref] = Preferences.cast(prefs[pref])
     profile = FirefoxProfile(profile=profilePath,
                              preferences=prefs,
-                             #addons=[os.path.join(here, 'extension')],
+                             addons=[os.path.join(build.topsrcdir, 'tools', 'quitter', 'quitter@mozilla.org.xpi')],
                              locations=locations)
 
     env = os.environ.copy()
     env["MOZ_CRASHREPORTER_NO_REPORT"] = "1"
     env["XPCOM_DEBUG_BREAK"] = "warn"
+
+    # For VC12+, make sure we can find the right bitness of pgort1x0.dll
+    if not substs.get('HAVE_64BIT_BUILD'):
+        for e in ('VS140COMNTOOLS', 'VS120COMNTOOLS'):
+            if e not in env:
+                continue
+
+            vcdir = os.path.abspath(os.path.join(env[e], '../../VC/bin'))
+            if os.path.exists(vcdir):
+                env['PATH'] = '%s;%s' % (vcdir, env['PATH'])
+                break
+
+    # Run Firefox a first time to initialize its profile
+    runner = FirefoxRunner(profile=profile,
+                           binary=build.get_binary_path(where="staged-package"),
+                           cmdargs=['javascript:Quitter.quit()'],
+                           env=env)
+    runner.start()
+    runner.wait()
+
     jarlog = os.getenv("JARLOG_FILE")
     if jarlog:
       env["MOZ_JAR_LOG_FILE"] = os.path.abspath(jarlog)

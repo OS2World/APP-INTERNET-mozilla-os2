@@ -5,6 +5,7 @@
 
 #include "ImageScaling.h"
 #include "2D.h"
+#include "DataSurfaceHelpers.h"
 
 #include <math.h>
 #include <algorithm>
@@ -64,20 +65,26 @@ ImageHalfScaler::ScaleForSize(const IntSize &aSize)
     return;
   }
 
-  IntSize internalSurfSize;
+  delete [] mDataStorage;
 
+  IntSize internalSurfSize;
   internalSurfSize.width = max(scaleSize.width, mOrigSize.width / 2);
   internalSurfSize.height = max(scaleSize.height, mOrigSize.height / 2);
 
-  mStride = internalSurfSize.width * 4;
-  if (mStride % 16) {
-    mStride += 16 - (mStride % 16);
+  size_t bufLen = 0;
+  mStride = GetAlignedStride<16>(internalSurfSize.width, 4);
+  if (mStride > 0) {
+    // Allocate 15 bytes extra to make sure we can get 16 byte alignment. We
+    // should add tools for this, see bug 751696.
+    bufLen = BufferSizeFromStrideAndHeight(mStride, internalSurfSize.height, 15);
   }
 
-  delete [] mDataStorage;
-  // Allocate 15 bytes extra to make sure we can get 16 byte alignment. We
-  // should add tools for this, see bug 751696.
-  mDataStorage = new uint8_t[internalSurfSize.height * mStride + 15];
+  if (bufLen == 0) {
+    mSize.SizeTo(0, 0);
+    mDataStorage = nullptr;
+    return;
+  }
+  mDataStorage = new uint8_t[bufLen];
 
   if (uintptr_t(mDataStorage) % 16) {
     // Our storage does not start at a 16-byte boundary. Make sure mData does!
@@ -240,5 +247,5 @@ ImageHalfScaler::HalfImageHorizontal_C(uint8_t *aSource, int32_t aSourceStride,
   }
 }
 
-}
-}
+} // namespace gfx
+} // namespace mozilla

@@ -11,14 +11,13 @@ Cu.import("resource://services-sync/util.js");
 
 loadAddonTestFunctions();
 startupManager();
-Svc.Prefs.set("addons.ignoreRepositoryChecking", true);
 Svc.Prefs.set("engine.addons", true);
 
 Service.engineManager.register(AddonsEngine);
-let engine     = Service.engineManager.get("addons");
-let reconciler = engine._reconciler;
-let store      = engine._store;
-let tracker    = engine._tracker;
+var engine     = Service.engineManager.get("addons");
+var reconciler = engine._reconciler;
+var store      = engine._store;
+var tracker    = engine._tracker;
 
 // Don't write out by default.
 tracker.persistChangedIDs = false;
@@ -27,7 +26,7 @@ const addon1ID = "addon1@tests.mozilla.org";
 
 function cleanup_and_advance() {
   Svc.Obs.notify("weave:engine:stop-tracking");
-  tracker.observe(null, "weave:engine:stop-tracking");
+  tracker.stopTracking();
 
   tracker.resetScore();
   tracker.clearChangedIDs();
@@ -43,9 +42,9 @@ function cleanup_and_advance() {
 
 function run_test() {
   initTestLogging("Trace");
-  Log4Moz.repository.getLogger("Sync.Engine.Addons").level = Log4Moz.Level.Trace;
-  Log4Moz.repository.getLogger("Sync.AddonsReconciler").level =
-    Log4Moz.Level.Trace;
+  Log.repository.getLogger("Sync.Engine.Addons").level = Log.Level.Trace;
+  Log.repository.getLogger("Sync.AddonsReconciler").level =
+    Log.Level.Trace;
 
   cleanup_and_advance();
 }

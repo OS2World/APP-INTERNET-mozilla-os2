@@ -8,76 +8,44 @@
  *  be found in the AUTHORS file in the root of the source tree.
  */
 
-#ifndef WEBRTC_MODULES_RTP_RTCP_SOURCE_REMOTE_RATE_CONTROL_H_
-#define WEBRTC_MODULES_RTP_RTCP_SOURCE_REMOTE_RATE_CONTROL_H_
+#ifndef WEBRTC_MODULES_REMOTE_BITRATE_ESTIMATOR_REMOTE_RATE_CONTROL_H_
+#define WEBRTC_MODULES_REMOTE_BITRATE_ESTIMATOR_REMOTE_RATE_CONTROL_H_
 
-#include "modules/remote_bitrate_estimator/include/bwe_defines.h"
-#include "typedefs.h"
-
-#ifdef MATLAB
-#include "../test/BWEStandAlone/MatlabPlot.h"
-#endif
+#include "webrtc/modules/remote_bitrate_estimator/include/bwe_defines.h"
+#include "webrtc/modules/remote_bitrate_estimator/include/remote_bitrate_estimator.h"
 
 namespace webrtc {
-class RemoteRateControl
-{
-public:
-    RemoteRateControl();
-    ~RemoteRateControl();
-    WebRtc_Word32 SetConfiguredBitRates(WebRtc_UWord32 minBitRate,
-                                        WebRtc_UWord32 maxBitRate);
-    WebRtc_UWord32 LatestEstimate() const;
-    WebRtc_UWord32 UpdateBandwidthEstimate(WebRtc_Word64 nowMS);
-    void SetRtt(unsigned int rtt);
-    RateControlRegion Update(const RateControlInput* input,
-                             WebRtc_Word64 nowMS);
-    void Reset();
 
-    // Returns true if there is a valid estimate of the incoming bitrate, false
-    // otherwise.
-    bool ValidEstimate() const;
+class RemoteRateControl {
+ public:
+  static RemoteRateControl* Create(RateControlType control_type,
+                                   uint32_t min_bitrate_bps);
 
-private:
-    WebRtc_UWord32 ChangeBitRate(WebRtc_UWord32 currentBitRate,
-                                 WebRtc_UWord32 incomingBitRate,
-                                 double delayFactor,
-                                 WebRtc_Word64 nowMS);
-    double RateIncreaseFactor(WebRtc_Word64 nowMs,
-                              WebRtc_Word64 lastMs,
-                              WebRtc_UWord32 reactionTimeMs,
-                              double noiseVar) const;
-    void UpdateChangePeriod(WebRtc_Word64 nowMs);
-    void UpdateMaxBitRateEstimate(float incomingBitRateKbps);
-    void ChangeState(const RateControlInput& input, WebRtc_Word64 nowMs);
-    void ChangeState(RateControlState newState);
-    void ChangeRegion(RateControlRegion region);
-    static void StateStr(RateControlState state, char* str);
-    static void StateStr(BandwidthUsage state, char* str);
+  virtual ~RemoteRateControl() {}
 
-    WebRtc_UWord32        _minConfiguredBitRate;
-    WebRtc_UWord32        _maxConfiguredBitRate;
-    WebRtc_UWord32        _currentBitRate;
-    WebRtc_UWord32        _maxHoldRate;
-    float               _avgMaxBitRate;
-    float               _varMaxBitRate;
-    RateControlState    _rcState;
-    RateControlState    _cameFromState;
-    RateControlRegion   _rcRegion;
-    WebRtc_Word64         _lastBitRateChange;
-    RateControlInput    _currentInput;
-    bool                _updated;
-    WebRtc_Word64         _timeFirstIncomingEstimate;
-    bool                _initializedBitRate;
+  // Returns true if there is a valid estimate of the incoming bitrate, false
+  // otherwise.
+  virtual bool ValidEstimate() const = 0;
+  virtual RateControlType GetControlType() const = 0;
+  virtual uint32_t GetMinBitrate() const = 0;
+  virtual int64_t GetFeedbackInterval() const = 0;
 
-    float               _avgChangePeriod;
-    WebRtc_Word64         _lastChangeMs;
-    float               _beta;
-    unsigned int _rtt;
-#ifdef MATLAB
-    MatlabPlot          *_plot1;
-    MatlabPlot          *_plot2;
-#endif
+  // Returns true if the bitrate estimate hasn't been changed for more than
+  // an RTT, or if the incoming_bitrate is more than 5% above the current
+  // estimate. Should be used to decide if we should reduce the rate further
+  // when over-using.
+  virtual bool TimeToReduceFurther(int64_t time_now,
+                                   uint32_t incoming_bitrate_bps) const = 0;
+  virtual uint32_t LatestEstimate() const = 0;
+  virtual uint32_t UpdateBandwidthEstimate(int64_t now_ms) = 0;
+  virtual void SetRtt(int64_t rtt) = 0;
+  virtual RateControlRegion Update(const RateControlInput* input,
+                                   int64_t now_ms) = 0;
+  virtual void SetEstimate(int bitrate_bps, int64_t time_now_ms) = 0;
+
+ protected:
+  static const int64_t kMaxFeedbackIntervalMs;
 };
-} // namespace webrtc
+}  // namespace webrtc
 
-#endif // WEBRTC_MODULES_RTP_RTCP_SOURCE_REMOTE_RATE_CONTROL_H_
+#endif // WEBRTC_MODULES_REMOTE_BITRATE_ESTIMATOR_REMOTE_RATE_CONTROL_H_

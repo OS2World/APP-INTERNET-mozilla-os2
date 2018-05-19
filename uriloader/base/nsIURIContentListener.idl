@@ -16,7 +16,7 @@ interface nsIURI;
  * a nsIURIContentListener for each of its content windows with the uri
  * dispatcher service. 
  */
-[scriptable, uuid(94928AB3-8B63-11d3-989D-001083010E9B)]
+[scriptable, uuid(10a28f38-32e8-4c63-8aa1-12eaaebc369a)]
 interface nsIURIContentListener : nsISupports
 {
  /**
@@ -41,16 +41,18 @@ interface nsIURIContentListener : nsISupports
   * @param aContentHandler      nsIStreamListener that will consume the data.
   *                             This should be set to <code>nullptr</code> if
   *                             this content listener can't handle the content
-  *                             type.
+  *                             type; in this case, doContent should also fail
+  *                             (i.e., return failure nsresult).
   *
-  * @return                     <code>true</code> if the consumer wants to
+  * @return                     <code>true</code> if the load should
+  *                             be aborted and consumer wants to
   *                             handle the load completely by itself.  This
   *                             causes the URI Loader do nothing else...
   *                             <code>false</code> if the URI Loader should
   *                             continue handling the load and call the
   *                             returned streamlistener's methods. 
   */
-  boolean doContent(in string aContentType,
+  boolean doContent(in ACString aContentType,
                     in boolean aIsContentPreferred,
                     in nsIRequest aRequest,
                     out nsIStreamListener aContentHandler);

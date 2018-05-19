@@ -10,14 +10,7 @@ installer:
 package:
 	@$(MAKE) -C mobile/android/installer
 
-fast-package:
-	@$(MAKE) package MOZ_FAST_PACKAGE=1
-
 ifeq ($(OS_TARGET),Android)
-# $(ADB) is defined in config/android-common.mk, but that file is not
-# in scope when this file is read, so we define it locally.
-ADB=$(ANDROID_PLATFORM_TOOLS)/adb
-
 ifneq ($(MOZ_ANDROID_INSTALL_TARGET),)
 ANDROID_SERIAL = $(MOZ_ANDROID_INSTALL_TARGET)
 endif
@@ -25,25 +18,28 @@ ifneq ($(ANDROID_SERIAL),)
 export ANDROID_SERIAL
 else
 # Determine if there's more than one device connected
-android_devices=$(filter device,$(shell $(ADB) devices))
-ifeq ($(android_devices),)
-install::
-	@echo "No devices are connected.  Connect a device or start an emulator."
+android_devices=$(words $(filter device,$(shell $(ADB) devices)))
+define no_device
+	@echo 'No devices are connected.  Connect a device or start an emulator.'
 	@exit 1
-else
-ifneq ($(android_devices),device)
-install::
-	@echo "Multiple devices are connected. Define ANDROID_SERIAL to specify the install target."
+endef
+define multiple_devices
+	@echo 'Multiple devices are connected. Define ANDROID_SERIAL to specify the install target.'
 	$(ADB) devices
 	@exit 1
-endif
-endif
+endef
+
+install::
+	@# Use foreach to avoid running adb multiple times here
+	$(foreach val,$(android_devices),\
+		$(if $(filter 0,$(val)),$(no_device),\
+			$(if $(filter-out 1,$(val)),$(multiple_devices))))
 endif
 
 install::
 	$(ADB) install -r $(DIST)/$(PKG_PATH)$(PKG_BASENAME).apk
 else
-	@echo "Mobile can't be installed directly."
+	@echo 'Mobile can't be installed directly.'
 	@exit 1
 endif
 
@@ -57,7 +53,7 @@ ifdef ENABLE_TESTS
 # Implemented in testing/testsuite-targets.mk
 
 mochitest-browser-chrome:
-	$(RUN_MOCHITEST) --browser-chrome
+	$(RUN_MOCHITEST) --flavor=browser
 	$(CHECK_TEST_ERROR)
 
 mochitest:: mochitest-browser-chrome

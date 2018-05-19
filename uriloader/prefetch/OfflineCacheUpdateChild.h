@@ -11,13 +11,14 @@
 
 #include "nsCOMArray.h"
 #include "nsCOMPtr.h"
-#include "nsICacheService.h"
 #include "nsIDOMDocument.h"
 #include "nsIObserver.h"
 #include "nsIObserverService.h"
 #include "nsIURI.h"
 #include "nsString.h"
 #include "nsWeakReference.h"
+
+class nsPIDOMWindowInner;
 
 namespace mozilla {
 namespace docshell {
@@ -31,29 +32,28 @@ public:
 
     virtual bool
     RecvNotifyStateEvent(const uint32_t& stateEvent,
-                         const uint64_t& byteProgress);
+                         const uint64_t& byteProgress) override;
 
     virtual bool
     RecvAssociateDocuments(
             const nsCString& cacheGroupId,
-            const nsCString& cacheClientId);
+            const nsCString& cacheClientId) override;
 
     virtual bool
-    RecvFinish(const bool& succeded,
-               const bool& isUpgrade);
+    RecvFinish(const bool& succeeded,
+               const bool& isUpgrade) override;
 
-    OfflineCacheUpdateChild(nsIDOMWindow* aWindow);
-    ~OfflineCacheUpdateChild();
+    explicit OfflineCacheUpdateChild(nsPIDOMWindowInner* aWindow);
 
     void SetDocument(nsIDOMDocument *aDocument);
 
 private:
+    ~OfflineCacheUpdateChild();
+
     nsresult AssociateDocument(nsIDOMDocument *aDocument,
                                nsIApplicationCache *aApplicationCache);
     void GatherObservers(nsCOMArray<nsIOfflineCacheUpdateObserver> &aObservers);
     nsresult Finish();
-
-    void RefcountHitZero();
 
     enum {
         STATE_UNINITIALIZED,
@@ -66,16 +66,13 @@ private:
 
     bool mIsUpgrade;
     bool mSucceeded;
-    bool mIPCActivated;
 
     nsCString mUpdateDomain;
     nsCOMPtr<nsIURI> mManifestURI;
     nsCOMPtr<nsIURI> mDocumentURI;
+    nsCOMPtr<nsIPrincipal> mLoadingPrincipal;
 
     nsCOMPtr<nsIObserverService> mObserverService;
-
-    uint32_t mAppID;
-    bool mInBrowser;
 
     /* Clients watching this update for changes */
     nsCOMArray<nsIWeakReference> mWeakObservers;
@@ -86,12 +83,12 @@ private:
 
     /* Keep reference to the window that owns this update to call the
        parent offline cache update construcor */
-    nsCOMPtr<nsIDOMWindow> mWindow;
+    nsCOMPtr<nsPIDOMWindowInner> mWindow;
 
     uint64_t mByteProgress;
 };
 
-}
-}
+} // namespace docshell
+} // namespace mozilla
 
 #endif

@@ -8,22 +8,22 @@
  *  be found in the AUTHORS file in the root of the source tree.
  */
 
-#include "common_types.h"  // NOLINT
-#include "engine_configurations.h"  // NOLINT
 #include "gflags/gflags.h"
+#include "webrtc/common_types.h"
+#include "webrtc/engine_configurations.h"
 #include "webrtc/modules/video_capture/include/video_capture_factory.h"
-#include "system_wrappers/interface/tick_util.h"
-#include "video_engine/include/vie_base.h"
-#include "video_engine/include/vie_capture.h"
-#include "video_engine/include/vie_codec.h"
-#include "video_engine/include/vie_network.h"
-#include "video_engine/include/vie_render.h"
-#include "video_engine/include/vie_rtp_rtcp.h"
-#include "video_engine/test/auto_test/interface/vie_autotest.h"
-#include "video_engine/test/auto_test/interface/vie_autotest_defines.h"
-#include "video_engine/test/libvietest/include/tb_interfaces.h"
-#include "video_engine/test/libvietest/include/tb_video_channel.h"
-#include "voice_engine/include/voe_base.h"
+#include "webrtc/system_wrappers/interface/tick_util.h"
+#include "webrtc/video_engine/include/vie_base.h"
+#include "webrtc/video_engine/include/vie_capture.h"
+#include "webrtc/video_engine/include/vie_codec.h"
+#include "webrtc/video_engine/include/vie_network.h"
+#include "webrtc/video_engine/include/vie_render.h"
+#include "webrtc/video_engine/include/vie_rtp_rtcp.h"
+#include "webrtc/video_engine/test/auto_test/interface/vie_autotest.h"
+#include "webrtc/video_engine/test/auto_test/interface/vie_autotest_defines.h"
+#include "webrtc/video_engine/test/libvietest/include/tb_interfaces.h"
+#include "webrtc/video_engine/test/libvietest/include/tb_video_channel.h"
+#include "webrtc/voice_engine/include/voe_base.h"
 
 DEFINE_bool(capture_test_ensure_resolution_alignment_in_capture_device, true,
             "If true, we will give resolutions slightly below a reasonable "
@@ -83,8 +83,11 @@ class CaptureEffectFilter : public webrtc::ViEEffectFilter {
   }
 
   // Implements video_engineEffectFilter.
-  virtual int Transform(int size, unsigned char* frame_buffer,
-                        unsigned int timeStamp90KHz, unsigned int width,
+  virtual int Transform(size_t size,
+                        unsigned char* frame_buffer,
+                        int64_t ntp_time_ms,
+                        unsigned int timestamp,
+                        unsigned int width,
                         unsigned int height) {
     EXPECT_TRUE(frame_buffer != NULL);
     EXPECT_EQ(expected_width_, width);
@@ -151,7 +154,7 @@ void ViEAutoTest::ViECaptureStandardTest() {
                                            capability));
       ViETest::Log("Capture capability %d (of %u)", cap_index + 1,
                    number_of_capabilities);
-      ViETest::Log("witdh %d, height %d, frame rate %d",
+      ViETest::Log("width %d, height %d, frame rate %d",
                    capability.width, capability.height, capability.maxFPS);
       ViETest::Log("expected delay %d, color type %d, encoding %d",
                    capability.expectedCaptureDelay, capability.rawType,
@@ -357,26 +360,26 @@ void ViEAutoTest::ViECaptureAPITest() {
   EXPECT_EQ(kViECaptureDeviceDoesNotExist, video_engine.LastError());
 
   // Test GetOrientation.
-  webrtc::VideoCaptureRotation orientation;
+  webrtc::VideoRotation orientation;
   char dummy_name[5];
   EXPECT_NE(0, dev_info->GetOrientation(dummy_name, orientation));
 
   // Test SetRotation.
-  EXPECT_NE(0, video_engine.capture->SetRotateCapturedFrames(
-      capture_id, webrtc::RotateCapturedFrame_90));
+  EXPECT_NE(0, video_engine.capture->SetVideoRotation(
+                   capture_id, webrtc::kVideoRotation_90));
   EXPECT_EQ(kViECaptureDeviceDoesNotExist, video_engine.LastError());
 
   // Allocate capture device.
   EXPECT_EQ(0, video_engine.capture->AllocateCaptureDevice(*vcpm, capture_id));
 
-  EXPECT_EQ(0, video_engine.capture->SetRotateCapturedFrames(
-      capture_id, webrtc::RotateCapturedFrame_0));
-  EXPECT_EQ(0, video_engine.capture->SetRotateCapturedFrames(
-      capture_id, webrtc::RotateCapturedFrame_90));
-  EXPECT_EQ(0, video_engine.capture->SetRotateCapturedFrames(
-      capture_id, webrtc::RotateCapturedFrame_180));
-  EXPECT_EQ(0, video_engine.capture->SetRotateCapturedFrames(
-      capture_id, webrtc::RotateCapturedFrame_270));
+  EXPECT_EQ(0, video_engine.capture->SetVideoRotation(
+                   capture_id, webrtc::kVideoRotation_0));
+  EXPECT_EQ(0, video_engine.capture->SetVideoRotation(
+                   capture_id, webrtc::kVideoRotation_90));
+  EXPECT_EQ(0, video_engine.capture->SetVideoRotation(
+                   capture_id, webrtc::kVideoRotation_180));
+  EXPECT_EQ(0, video_engine.capture->SetVideoRotation(
+                   capture_id, webrtc::kVideoRotation_270));
 
   // Release the capture device
   EXPECT_EQ(0, video_engine.capture->ReleaseCaptureDevice(capture_id));
@@ -442,7 +445,7 @@ void ViEAutoTest::ViECaptureExternalCaptureTest() {
   /// **************************************************************
   //  Engine ready. Begin testing class
   /// **************************************************************
-  const unsigned int video_frame_length = (176 * 144 * 3) / 2;
+  const size_t video_frame_length = (176 * 144 * 3) / 2;
   unsigned char* video_frame = new unsigned char[video_frame_length];
   memset(video_frame, 128, 176 * 144);
 

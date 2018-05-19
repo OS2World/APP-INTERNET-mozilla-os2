@@ -6,64 +6,138 @@
 #ifndef nsWindowBase_h_
 #define nsWindowBase_h_
 
+#include "mozilla/EventForwards.h"
 #include "nsBaseWidget.h"
-#include "nsGUIEvent.h"
-#include "npapi.h"
+#include "nsClassHashtable.h"
+
 #include <windows.h>
+#include "touchinjection_sdk80.h"
 
 /*
  * nsWindowBase - Base class of common methods other classes need to access
  * in both win32 and winrt window classes.
  */
-
 class nsWindowBase : public nsBaseWidget
 {
 public:
+  typedef mozilla::WidgetEventTime WidgetEventTime;
+
   /*
    * Return the HWND or null for this widget.
    */
-  virtual HWND GetWindowHandle() MOZ_FINAL {
+  virtual HWND GetWindowHandle() final {
     return static_cast<HWND>(GetNativeData(NS_NATIVE_WINDOW));
   }
 
   /*
-   * Init a standard gecko event for this widget.
+   * Return the parent window, if it exists.
    */
-  virtual void InitEvent(nsGUIEvent& aEvent, nsIntPoint* aPoint = nullptr) = 0;
+  virtual nsWindowBase* GetParentWindowBase(bool aIncludeOwner) = 0;
+
+  /*
+   * Return true if this is a top level widget.
+   */
+  virtual bool IsTopLevelWidget() = 0;
+
+  /*
+   * Init a standard gecko event for this widget.
+   * @param aEvent the event to initialize.
+   * @param aPoint message position in physical coordinates.
+   */
+  virtual void InitEvent(mozilla::WidgetGUIEvent& aEvent,
+                         LayoutDeviceIntPoint* aPoint = nullptr) = 0;
+
+  /*
+   * Returns WidgetEventTime instance which is initialized with current message
+   * time.
+   */
+  virtual WidgetEventTime CurrentMessageWidgetEventTime() const = 0;
 
   /*
    * Dispatch a gecko event for this widget.
+   * Returns true if it's consumed.  Otherwise, false.
    */
-  virtual bool DispatchWindowEvent(nsGUIEvent* aEvent) = 0;
+  virtual bool DispatchWindowEvent(mozilla::WidgetGUIEvent* aEvent) = 0;
 
   /*
-   * Dispatch a plugin event with the message.
+   * Dispatch a gecko keyboard event for this widget. This
+   * is called by KeyboardLayout to dispatch gecko events.
+   * Returns true if it's consumed.  Otherwise, false.
    */
-  virtual bool DispatchPluginEvent(const MSG &aMsg) MOZ_FINAL
+  virtual bool DispatchKeyboardEvent(mozilla::WidgetKeyboardEvent* aEvent) = 0;
+
+  /*
+   * Dispatch a gecko wheel event for this widget. This
+   * is called by ScrollHandler to dispatch gecko events.
+   * Returns true if it's consumed.  Otherwise, false.
+   */
+  virtual bool DispatchWheelEvent(mozilla::WidgetWheelEvent* aEvent) = 0;
+
+  /*
+   * Dispatch a gecko content command event for this widget. This
+   * is called by ScrollHandler to dispatch gecko events.
+   * Returns true if it's consumed.  Otherwise, false.
+   */
+  virtual bool DispatchContentCommandEvent(mozilla::WidgetContentCommandEvent* aEvent) = 0;
+
+  /*
+   * Default dispatch of a plugin event.
+   */
+  virtual bool DispatchPluginEvent(const MSG& aMsg);
+
+  /*
+   * Returns true if this should dispatch a plugin event.
+   */
+  bool ShouldDispatchPluginEvent();
+
+  /*
+   * Touch input injection apis
+   */
+  virtual nsresult SynthesizeNativeTouchPoint(uint32_t aPointerId,
+                                              TouchPointerState aPointerState,
+                                              LayoutDeviceIntPoint aPoint,
+                                              double aPointerPressure,
+                                              uint32_t aPointerOrientation,
+                                              nsIObserver* aObserver) override;
+  virtual nsresult ClearNativeTouchSequence(nsIObserver* aObserver) override;
+
+  /*
+   * WM_APPCOMMAND common handler.
+   * Sends events via NativeKey::HandleAppCommandMessage().
+   */
+  virtual bool HandleAppCommandMsg(const MSG& aAppCommandMsg,
+                                   LRESULT *aRetValue);
+
+protected:
+  virtual int32_t LogToPhys(double aValue) = 0;
+  void ChangedDPI();
+
+  static bool InitTouchInjection();
+  bool InjectTouchPoint(uint32_t aId, LayoutDeviceIntPoint& aPoint,
+                        POINTER_FLAGS aFlags, uint32_t aPressure = 1024,
+                        uint32_t aOrientation = 90);
+
+  class PointerInfo
   {
-    if (!PluginHasFocus()) {
-      return false;
+  public:
+    PointerInfo(int32_t aPointerId, LayoutDeviceIntPoint& aPoint) :
+      mPointerId(aPointerId),
+      mPosition(aPoint)
+    {
     }
-    nsPluginEvent pluginEvent(true, NS_PLUGIN_INPUT_EVENT, this);
-    nsIntPoint point(0, 0);
-    InitEvent(pluginEvent, &point);
-    NPEvent npEvent;
-    npEvent.event = aMsg.message;
-    npEvent.wParam = aMsg.wParam;
-    npEvent.lParam = aMsg.lParam;
-    pluginEvent.pluginEvent = (void *)&npEvent;
-    pluginEvent.retargetToFocusedDocument = true;
-    return DispatchWindowEvent(&pluginEvent);
-  }
 
-  /*
-   * Returns true if a plugin has focus on this widget.  Otherwise, false.
-   */
-  virtual bool PluginHasFocus() const MOZ_FINAL
-  {
-    return (mInputContext.mIMEState.mEnabled == IMEState::PLUGIN);
-  }
+    int32_t mPointerId;
+    LayoutDeviceIntPoint mPosition;
+  };
 
+  nsClassHashtable<nsUint32HashKey, PointerInfo> mActivePointers;
+  static bool sTouchInjectInitialized;
+  static InjectTouchInputPtr sInjectTouchFuncPtr;
+
+  // This is used by SynthesizeNativeTouchPoint to maintain state between
+  // multiple synthesized points, in the case where we can't call InjectTouch
+  // directly.
+  mozilla::UniquePtr<mozilla::MultiTouchInput> mSynthesizedTouchInput;
 protected:
   InputContext mInputContext;
 };

@@ -1,3 +1,5 @@
+/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
+/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -8,6 +10,27 @@
 #include <windows.h>
 #include "nsAutoRef.h"
 #include "nscore.h"
+#include "mozilla/Assertions.h"
+
+// ----------------------------------------------------------------------------
+// Critical Section helper class
+// ----------------------------------------------------------------------------
+
+class AutoCriticalSection
+{
+public:
+  AutoCriticalSection(LPCRITICAL_SECTION aSection)
+    : mSection(aSection)
+  {
+    ::EnterCriticalSection(mSection);
+  }
+  ~AutoCriticalSection()
+  {
+    ::LeaveCriticalSection(mSection);
+  }
+private:
+  LPCRITICAL_SECTION mSection;
+};
 
 template<>
 class nsAutoRefTraits<HKEY>
@@ -16,7 +39,7 @@ public:
   typedef HKEY RawRef;
   static HKEY Void()
   {
-    return NULL;
+    return nullptr;
   }
 
   static void Release(RawRef aFD)
@@ -28,13 +51,85 @@ public:
 };
 
 template<>
+class nsAutoRefTraits<HDC>
+{
+public:
+  typedef HDC RawRef;
+  static HDC Void()
+  {
+    return nullptr;
+  }
+
+  static void Release(RawRef aFD)
+  {
+    if (aFD != Void()) {
+      ::DeleteDC(aFD);
+    }
+  }
+};
+
+template<>
+class nsAutoRefTraits<HBRUSH>
+{
+public:
+  typedef HBRUSH RawRef;
+  static HBRUSH Void()
+  {
+    return nullptr;
+  }
+
+  static void Release(RawRef aFD)
+  {
+    if (aFD != Void()) {
+      ::DeleteObject(aFD);
+    }
+  }
+};
+
+template<>
+class nsAutoRefTraits<HRGN>
+{
+public:
+  typedef HRGN RawRef;
+  static HRGN Void()
+  {
+    return nullptr;
+  }
+
+  static void Release(RawRef aFD)
+  {
+    if (aFD != Void()) {
+      ::DeleteObject(aFD);
+    }
+  }
+};
+
+template<>
+class nsAutoRefTraits<HBITMAP>
+{
+public:
+  typedef HBITMAP RawRef;
+  static HBITMAP Void()
+  {
+    return nullptr;
+  }
+
+  static void Release(RawRef aFD)
+  {
+    if (aFD != Void()) {
+      ::DeleteObject(aFD);
+    }
+  }
+};
+
+template<>
 class nsAutoRefTraits<SC_HANDLE>
 {
 public:
   typedef SC_HANDLE RawRef;
   static SC_HANDLE Void()
   {
-    return NULL;
+    return nullptr;
   }
 
   static void Release(RawRef aFD)
@@ -51,7 +146,7 @@ class nsSimpleRef<HANDLE>
 protected:
   typedef HANDLE RawRef;
 
-  nsSimpleRef() : mRawRef(NULL)
+  nsSimpleRef() : mRawRef(nullptr)
   {
   }
 
@@ -61,7 +156,7 @@ protected:
 
   bool HaveResource() const
   {
-    return mRawRef != NULL && mRawRef != INVALID_HANDLE_VALUE;
+    return mRawRef && mRawRef != INVALID_HANDLE_VALUE;
   }
 
 public:
@@ -72,7 +167,7 @@ public:
 
   static void Release(RawRef aRawRef)
   {
-    if (aRawRef != NULL && aRawRef != INVALID_HANDLE_VALUE) {
+    if (aRawRef && aRawRef != INVALID_HANDLE_VALUE) {
       CloseHandle(aRawRef);
     }
   }
@@ -87,7 +182,7 @@ public:
   typedef HMODULE RawRef;
   static RawRef Void()
   {
-    return NULL;
+    return nullptr;
   }
 
   static void Release(RawRef aFD)
@@ -98,80 +193,179 @@ public:
   }
 };
 
+
+template<>
+class nsAutoRefTraits<DEVMODEW*>
+{
+public:
+  typedef DEVMODEW* RawRef;
+  static RawRef Void()
+  {
+    return nullptr;
+  }
+
+  static void Release(RawRef aDevMode)
+  {
+    if (aDevMode != Void()) {
+      ::HeapFree(::GetProcessHeap(), 0, aDevMode);
+    }
+  }
+};
+
+
+// HGLOBAL is just a typedef of HANDLE which nsSimpleRef has a specialization of,
+// that means having a nsAutoRefTraits specialization for HGLOBAL is useless.
+// Therefore we create a wrapper class for HGLOBAL to make nsAutoRefTraits and
+// nsAutoRef work as intention.
+class nsHGLOBAL {
+public:
+  nsHGLOBAL(HGLOBAL hGlobal) : m_hGlobal(hGlobal)
+  {
+  }
+
+  operator HGLOBAL() const
+  {
+    return m_hGlobal;
+  }
+
+private:
+  HGLOBAL m_hGlobal;
+};
+
+
+template<>
+class nsAutoRefTraits<nsHGLOBAL>
+{
+public:
+  typedef nsHGLOBAL RawRef;
+  static RawRef Void()
+  {
+    return nullptr;
+  }
+
+  static void Release(RawRef hGlobal)
+  {
+    ::GlobalFree(hGlobal);
+  }
+};
+
+
+// Because Printer's HANDLE uses ClosePrinter and we already have nsAutoRef<HANDLE>
+// which uses CloseHandle so we need to create a wrapper class for HANDLE to have
+// another specialization for nsAutoRefTraits.
+class nsHPRINTER {
+public:
+  nsHPRINTER(HANDLE hPrinter) : m_hPrinter(hPrinter)
+  {
+  }
+
+  operator HANDLE() const
+  {
+    return m_hPrinter;
+  }
+
+  HANDLE* operator&()
+  {
+    return &m_hPrinter;
+  }
+
+private:
+  HANDLE m_hPrinter;
+};
+
+
+// winspool.h header has AddMonitor macro, it conflicts with AddMonitor member
+// function in TaskbarPreview.cpp and TaskbarTabPreview.cpp. Beside, we only
+// need ClosePrinter here for Release function, so having its prototype is enough.
+extern "C" BOOL WINAPI ClosePrinter(HANDLE hPrinter);
+
+
+template<>
+class nsAutoRefTraits<nsHPRINTER>
+{
+public:
+  typedef nsHPRINTER RawRef;
+  static RawRef Void()
+  {
+    return nullptr;
+  }
+
+  static void Release(RawRef hPrinter)
+  {
+    ::ClosePrinter(hPrinter);
+  }
+};
+
+
 typedef nsAutoRef<HKEY> nsAutoRegKey;
+typedef nsAutoRef<HDC> nsAutoHDC;
+typedef nsAutoRef<HBRUSH> nsAutoBrush;
+typedef nsAutoRef<HRGN> nsAutoRegion;
+typedef nsAutoRef<HBITMAP> nsAutoBitmap;
 typedef nsAutoRef<SC_HANDLE> nsAutoServiceHandle;
 typedef nsAutoRef<HANDLE> nsAutoHandle;
 typedef nsAutoRef<HMODULE> nsModuleHandle;
+typedef nsAutoRef<DEVMODEW*> nsAutoDevMode;
+typedef nsAutoRef<nsHGLOBAL> nsAutoGlobalMem;
+typedef nsAutoRef<nsHPRINTER> nsAutoPrinter;
 
-namespace
+namespace {
+
+// Construct a path "<system32>\<aModule>". return false if the output buffer
+// is too small.
+// Note: If the system path cannot be found, or doesn't fit in the output buffer
+// with the module name, we will just ignore the system path and output the
+// module name alone;
+// this may mean using a normal search path wherever the output is used.
+bool inline
+ConstructSystem32Path(LPCWSTR aModule, WCHAR* aSystemPath, UINT aSize)
 {
-  bool
-  IsVistaOrLater()
-  {
-    OSVERSIONINFO info;
-    ZeroMemory(&info, sizeof(OSVERSIONINFO));
-    info.dwOSVersionInfoSize = sizeof(OSVERSIONINFO);
-    GetVersionEx(&info);
-    return info.dwMajorVersion >= 6;
+  MOZ_ASSERT(aSystemPath);
+
+  size_t fileLen = wcslen(aModule);
+  if (fileLen >= aSize) {
+    // The module name alone cannot even fit!
+    return false;
   }
 
-  bool
-  IsRunningInWindowsMetro()
-  {
-    static bool alreadyChecked = false;
-    static bool isMetro = false;
-    if (alreadyChecked) {
-      return isMetro;
-    }
+  size_t systemDirLen = GetSystemDirectoryW(aSystemPath, aSize);
 
-    HMODULE user32DLL = LoadLibraryW(L"user32.dll");
-    if (!user32DLL) {
-      return false;
-    }
-
-    typedef BOOL (WINAPI* IsImmersiveProcessFunc)(HANDLE process);
-    IsImmersiveProcessFunc IsImmersiveProcessPtr =
-      (IsImmersiveProcessFunc)GetProcAddress(user32DLL,
-                                              "IsImmersiveProcess");
-    FreeLibrary(user32DLL);
-    if (!IsImmersiveProcessPtr) {
-      // isMetro is already set to false.
-      alreadyChecked = true;
-      return false;
-    }
-
-    isMetro = IsImmersiveProcessPtr(GetCurrentProcess());
-    alreadyChecked = true;
-    return isMetro;
-  }
-
-  HMODULE
-  LoadLibrarySystem32(LPCWSTR module)
-  {
-    WCHAR systemPath[MAX_PATH + 1] = { L'\0' };
-
-    // If GetSystemPath fails we accept that we'll load the DLLs from the
-    // normal search path.
-    GetSystemDirectoryW(systemPath, MAX_PATH + 1);
-    size_t systemDirLen = wcslen(systemPath);
-
-    // Make the system directory path terminate with a slash
-    if (systemDirLen && systemPath[systemDirLen - 1] != L'\\') {
-      systemPath[systemDirLen] = L'\\';
-      ++systemDirLen;
-      // No need to re-NULL terminate
-    }
-
-    size_t fileLen = wcslen(module);
-    wcsncpy(systemPath + systemDirLen, module,
-            MAX_PATH - systemDirLen);
-    if (systemDirLen + fileLen <= MAX_PATH) {
-      systemPath[systemDirLen + fileLen] = L'\0';
+  if (systemDirLen) {
+    if (systemDirLen < aSize - fileLen) {
+      // Make the system directory path terminate with a slash.
+      if (aSystemPath[systemDirLen - 1] != L'\\') {
+        if (systemDirLen + 1 < aSize - fileLen) {
+            aSystemPath[systemDirLen] = L'\\';
+            ++systemDirLen;
+            // No need to re-nullptr terminate.
+        } else {
+          // Couldn't fit the system path with added slash.
+          systemDirLen = 0;
+        }
+      }
     } else {
-      systemPath[MAX_PATH] = L'\0';
+      // Couldn't fit the system path.
+      systemDirLen = 0;
     }
-    return LoadLibraryW(systemPath);
   }
+
+  MOZ_ASSERT(systemDirLen + fileLen < aSize);
+
+  wcsncpy(aSystemPath + systemDirLen, aModule, fileLen);
+  aSystemPath[systemDirLen + fileLen] = L'\0';
+  return true;
+}
+
+HMODULE inline
+LoadLibrarySystem32(LPCWSTR aModule)
+{
+  WCHAR systemPath[MAX_PATH + 1];
+  if (!ConstructSystem32Path(aModule, systemPath, MAX_PATH + 1)) {
+    return NULL;
+  }
+  return LoadLibraryW(systemPath);
+}
+
 }
 
 #endif

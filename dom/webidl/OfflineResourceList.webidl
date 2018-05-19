@@ -25,38 +25,38 @@ interface OfflineResourceList : EventTarget {
   /* The application cache group is now obsolete. */
   const unsigned short OBSOLETE = 5;
 
-  [Throws]
+  [Throws, UseCounter]
   readonly attribute unsigned short status;
 
   /**
    * Begin the application update process on the associated application cache.
    */
-  [Throws]
+  [Throws, UseCounter]
   void update();
 
   /**
    * Swap in the newest version of the application cache, or disassociate
    * from the cache if the cache group is obsolete.
    */
-  [Throws]
+  [Throws, UseCounter]
   void swapCache();
 
   /* Events */
-  [SetterThrows]
+  [UseCounter]
   attribute EventHandler onchecking;
-  [SetterThrows]
+  [UseCounter]
   attribute EventHandler onerror;
-  [SetterThrows]
+  [UseCounter]
   attribute EventHandler onnoupdate;
-  [SetterThrows]
+  [UseCounter]
   attribute EventHandler ondownloading;
-  [SetterThrows]
+  [UseCounter]
   attribute EventHandler onprogress;
-  [SetterThrows]
+  [UseCounter]
   attribute EventHandler onupdateready;
-  [SetterThrows]
+  [UseCounter]
   attribute EventHandler oncached;
-  [SetterThrows]
+  [UseCounter]
   attribute EventHandler onobsolete;
 };
 

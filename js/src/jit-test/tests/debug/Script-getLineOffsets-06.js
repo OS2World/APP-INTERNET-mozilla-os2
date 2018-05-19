@@ -1,6 +1,6 @@
 // getLineOffsets works with extended instructions, such as JSOP_GOTOX.
 
-var g = newGlobal('new-compartment');
+var g = newGlobal();
 g.line0 = null;
 var dbg = Debugger(g);
 var where;
@@ -10,7 +10,7 @@ dbg.onDebuggerStatement = function (frame) {
     var lineno = g.line0 + where;
     offs = s.getLineOffsets(lineno);
     for (var i = 0; i < offs.length; i++) {
-        assertEq(s.getOffsetLine(offs[i]), lineno);
+        assertEq(s.getOffsetLocation(offs[i]).lineNumber, lineno);
         s.setBreakpoint(offs[i], {hit: function (frame) { g.log += 'B'; }});
     }
     g.log += 'A';

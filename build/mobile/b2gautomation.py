@@ -2,18 +2,22 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this file,
 # You can obtain one at http://mozilla.org/MPL/2.0/.
 
+import datetime
 import mozcrash
 import threading
 import os
+import posixpath
 import Queue
 import re
 import shutil
+import signal
 import tempfile
 import time
 import traceback
+import zipfile
 
 from automation import Automation
-from devicemanager import NetworkTools
+from mozlog import get_default_logger
 from mozprocess import ProcessHandlerMixin
 
 
@@ -34,13 +38,12 @@ class B2GRemoteAutomation(Automation):
     _devicemanager = None
 
     def __init__(self, deviceManager, appName='', remoteLog=None,
-                 marionette=None, context_chrome=True):
+                 marionette=None):
         self._devicemanager = deviceManager
         self._appName = appName
         self._remoteProfile = None
         self._remoteLog = remoteLog
         self.marionette = marionette
-        self.context_chrome = context_chrome
         self._is_emulator = False
         self.test_script = None
         self.test_script_args = None
@@ -70,13 +73,84 @@ class B2GRemoteAutomation(Automation):
     def setRemoteLog(self, logfile):
         self._remoteLog = logfile
 
+    def getExtensionIDFromRDF(self, rdfSource):
+        """
+        Retrieves the extension id from an install.rdf file (or string).
+        """
+        from xml.dom.minidom import parse, parseString, Node
+
+        if isinstance(rdfSource, file):
+            document = parse(rdfSource)
+        else:
+            document = parseString(rdfSource)
+
+        # Find the <em:id> element. There can be multiple <em:id> tags
+        # within <em:targetApplication> tags, so we have to check this way.
+        for rdfChild in document.documentElement.childNodes:
+            if rdfChild.nodeType == Node.ELEMENT_NODE and rdfChild.tagName == "Description":
+                for descChild in rdfChild.childNodes:
+                    if descChild.nodeType == Node.ELEMENT_NODE and descChild.tagName == "em:id":
+                        return descChild.childNodes[0].data
+        return None
+
     def installExtension(self, extensionSource, profileDir, extensionID=None):
         # Bug 827504 - installing special-powers extension separately causes problems in B2G
         if extensionID != "special-powers@mozilla.org":
-            Automation.installExtension(self, extensionSource, profileDir, extensionID)
+            if not os.path.isdir(profileDir):
+              self.log.info("INFO | automation.py | Cannot install extension, invalid profileDir at: %s", profileDir)
+              return
+
+            installRDFFilename = "install.rdf"
+
+            extensionsRootDir = os.path.join(profileDir, "extensions", "staged")
+            if not os.path.isdir(extensionsRootDir):
+              os.makedirs(extensionsRootDir)
+
+            if os.path.isfile(extensionSource):
+              reader = zipfile.ZipFile(extensionSource, "r")
+
+              for filename in reader.namelist():
+                # Sanity check the zip file.
+                if os.path.isabs(filename):
+                  self.log.info("INFO | automation.py | Cannot install extension, bad files in xpi")
+                  return
+
+                # We may need to dig the extensionID out of the zip file...
+                if extensionID is None and filename == installRDFFilename:
+                  extensionID = self.getExtensionIDFromRDF(reader.read(filename))
+
+              # We must know the extensionID now.
+              if extensionID is None:
+                self.log.info("INFO | automation.py | Cannot install extension, missing extensionID")
+                return
+
+              # Make the extension directory.
+              extensionDir = os.path.join(extensionsRootDir, extensionID)
+              os.mkdir(extensionDir)
+
+              # Extract all files.
+              reader.extractall(extensionDir)
+
+            elif os.path.isdir(extensionSource):
+              if extensionID is None:
+                filename = os.path.join(extensionSource, installRDFFilename)
+                if os.path.isfile(filename):
+                  with open(filename, "r") as installRDF:
+                    extensionID = self.getExtensionIDFromRDF(installRDF)
+
+                if extensionID is None:
+                  self.log.info("INFO | automation.py | Cannot install extension, missing extensionID")
+                  return
+
+              # Copy extension tree into its own directory.
+              # "destination directory must not already exist".
+              shutil.copytree(extensionSource, os.path.join(extensionsRootDir, extensionID))
+
+            else:
+              self.log.info("INFO | automation.py | Cannot install extension, invalid extensionSource at: %s", extensionSource)
 
     # Set up what we need for the remote environment
-    def environment(self, env=None, xrePath=None, crashreporter=True):
+    def environment(self, env=None, xrePath=None, crashreporter=True, debugger=False):
         # Because we are running remote, we don't want to mimic the local env
         # so no copying of os.environ
         if env is None:
@@ -112,7 +186,11 @@ class B2GRemoteAutomation(Automation):
             local_dump_dir = tempfile.mkdtemp()
             self._devicemanager.getDirectory(remote_dump_dir, local_dump_dir)
             try:
-                crashed = mozcrash.check_for_crashes(local_dump_dir, symbolsPath, test_name=self.lastTestSeen)
+                logger = get_default_logger()
+                if logger is not None:
+                    crashed = mozcrash.log_crashes(logger, local_dump_dir, symbolsPath, test=self.lastTestSeen)
+                else:
+                    crashed = mozcrash.check_for_crashes(local_dump_dir, symbolsPath, test_name=self.lastTestSeen)
             except:
                 traceback.print_exc()
             finally:
@@ -129,37 +207,51 @@ class B2GRemoteAutomation(Automation):
 
         return app, args
 
-    def getLanIp(self):
-        nettools = NetworkTools()
-        return nettools.getLanIp()
-
     def waitForFinish(self, proc, utilityPath, timeout, maxTime, startTime,
-                      debuggerInfo, symbolsPath):
+                      debuggerInfo, symbolsPath, outputHandler=None):
         """ Wait for tests to finish (as evidenced by a signature string
             in logcat), or for a given amount of time to elapse with no
             output.
         """
         timeout = timeout or 120
-        responseDueBy = time.time() + timeout
         while True:
-            currentlog = proc.stdout
-            if currentlog:
-                responseDueBy = time.time() + timeout
-                print currentlog
+            lines = proc.getStdoutLines(timeout)
+            if lines:
+                currentlog = '\n'.join(lines)
+
+                if outputHandler:
+                    for line in lines:
+                        outputHandler(line)
+                else:
+                    print(currentlog)
+
                 # Match the test filepath from the last TEST-START line found in the new
                 # log content. These lines are in the form:
                 # ... INFO TEST-START | /filepath/we/wish/to/capture.html\n
                 testStartFilenames = re.findall(r"TEST-START \| ([^\s]*)", currentlog)
                 if testStartFilenames:
                     self.lastTestSeen = testStartFilenames[-1]
-                if hasattr(self, 'logFinish') and self.logFinish in currentlog:
+                if (outputHandler and outputHandler.suite_finished) or (
+                        hasattr(self, 'logFinish') and self.logFinish in currentlog):
                     return 0
             else:
-                if time.time() > responseDueBy:
-                    self.log.info("TEST-UNEXPECTED-FAIL | %s | application timed "
-                                  "out after %d seconds with no output",
-                                  self.lastTestSeen, int(timeout))
+                self.log.info("TEST-UNEXPECTED-FAIL | %s | application timed "
+                              "out after %d seconds with no output",
+                              self.lastTestSeen, int(timeout))
+                self._devicemanager.killProcess('/system/b2g/b2g', sig=signal.SIGABRT)
+
+                timeout = 10 # seconds
+                starttime = datetime.datetime.now()
+                while datetime.datetime.now() - starttime < datetime.timedelta(seconds=timeout):
+                    if not self._devicemanager.processExist('/system/b2g/b2g'):
+                        break
+                    time.sleep(1)
+                else:
+                    print "timed out after %d seconds waiting for b2g process to exit" % timeout
                     return 1
+
+                self.checkForCrashes(None, symbolsPath)
+                return 1
 
     def getDeviceStatus(self, serial=None):
         # Get the current status of the device.  If we know the device
@@ -186,7 +278,7 @@ class B2GRemoteAutomation(Automation):
         time.sleep(10)
         self._devicemanager._checkCmd(['shell', 'start', 'b2g'])
         if self._is_emulator:
-            self.marionette.emulator.wait_for_port()
+            self.marionette.emulator.wait_for_port(self.marionette.port)
 
     def rebootDevice(self):
         # find device's current status and serial number
@@ -236,6 +328,11 @@ class B2GRemoteAutomation(Automation):
         self._devicemanager._runCmd(['shell', 'stop', 'b2g'])
         time.sleep(5)
 
+        # For some reason user.js in the profile doesn't get picked up.
+        # Manually copy it over to prefs.js. See bug 1009730 for more details.
+        self._devicemanager.moveTree(posixpath.join(self._remoteProfile, 'user.js'),
+                                     posixpath.join(self._remoteProfile, 'prefs.js'))
+
         # relaunch b2g inside b2g instance
         instance = self.B2GInstance(self._devicemanager, env=env)
 
@@ -249,7 +346,7 @@ class B2GRemoteAutomation(Automation):
                                            'tcp:%s' % self.marionette.port])
 
         if self._is_emulator:
-            self.marionette.emulator.wait_for_port()
+            self.marionette.emulator.wait_for_port(self.marionette.port)
         else:
             time.sleep(5)
 
@@ -258,33 +355,33 @@ class B2GRemoteAutomation(Automation):
         if 'b2g' not in session:
             raise Exception("bad session value %s returned by start_session" % session)
 
-        if self._is_emulator:
-            # Disable offline status management (bug 777145), otherwise the network
-            # will be 'offline' when the mochitests start.  Presumably, the network
-            # won't be offline on a real device, so we only do this for emulators.
-            self.marionette.set_context(self.marionette.CONTEXT_CHROME)
+        with self.marionette.using_context(self.marionette.CONTEXT_CHROME):
             self.marionette.execute_script("""
+                let SECURITY_PREF = "security.turn_off_all_security_so_that_viruses_can_take_over_this_computer";
                 Components.utils.import("resource://gre/modules/Services.jsm");
-                Services.io.manageOfflineStatus = false;
-                Services.io.offline = false;
+                Services.prefs.setBoolPref(SECURITY_PREF, true);
+
+                if (!testUtils.hasOwnProperty("specialPowersObserver")) {
+                  let loader = Components.classes["@mozilla.org/moz/jssubscript-loader;1"]
+                    .getService(Components.interfaces.mozIJSSubScriptLoader);
+                  loader.loadSubScript("chrome://specialpowers/content/SpecialPowersObserver.jsm",
+                    testUtils);
+                  testUtils.specialPowersObserver = new testUtils.SpecialPowersObserver();
+                  testUtils.specialPowersObserver.init();
+                }
                 """)
 
-        if self.context_chrome:
-            self.marionette.set_context(self.marionette.CONTEXT_CHROME)
-        else:
-            self.marionette.set_context(self.marionette.CONTEXT_CONTENT)
-
-        # run the script that starts the tests
-        if self.test_script:
-            if os.path.isfile(self.test_script):
-                script = open(self.test_script, 'r')
-                self.marionette.execute_script(script.read(), script_args=self.test_script_args)
-                script.close()
-            elif isinstance(self.test_script, basestring):
-                self.marionette.execute_script(self.test_script, script_args=self.test_script_args)
-        else:
-            # assumes the tests are started on startup automatically
-            pass
+            # run the script that starts the tests
+            if self.test_script:
+                if os.path.isfile(self.test_script):
+                    script = open(self.test_script, 'r')
+                    self.marionette.execute_script(script.read(), script_args=self.test_script_args)
+                    script.close()
+                elif isinstance(self.test_script, basestring):
+                    self.marionette.execute_script(self.test_script, script_args=self.test_script_args)
+            else:
+                # assumes the tests are started on startup automatically
+                pass
 
         return instance
 
@@ -329,17 +426,24 @@ class B2GRemoteAutomation(Automation):
             # a dummy value to make the automation happy
             return 0
 
-        @property
-        def stdout(self):
+        def getStdoutLines(self, timeout):
             # Return any lines in the queue used by the
             # b2g process handler.
             lines = []
+            # get all of the lines that are currently available
             while True:
                 try:
                     lines.append(self.queue.get_nowait())
                 except Queue.Empty:
                     break
-            return '\n'.join(lines)
+
+            # wait 'timeout' for any additional lines
+            if not lines:
+                try:
+                    lines.append(self.queue.get(True, timeout))
+                except Queue.Empty:
+                    pass
+            return lines
 
         def wait(self, timeout=None):
             # this should never happen
@@ -349,25 +453,3 @@ class B2GRemoteAutomation(Automation):
             # this should never happen
             raise Exception("'kill' called on B2GInstance")
 
-
-class B2GDesktopAutomation(Automation):
-
-    def buildCommandLine(self, app, debuggerInfo, profileDir, testURL, extraArgs):
-        """ build the application command line """
-
-        cmd = os.path.abspath(app)
-        args = []
-
-        if debuggerInfo:
-            args.extend(debuggerInfo["args"])
-            args.append(cmd)
-            cmd = os.path.abspath(debuggerInfo["path"])
-
-        if self.IS_MAC:
-            args.append("-foreground")
-
-        profileDirectory = profileDir + "/"
-
-        args.extend(("-profile", profileDirectory))
-        args.extend(extraArgs)
-        return cmd, args

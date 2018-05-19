@@ -10,15 +10,14 @@
 #include <string>
 #include <stdio.h>
 
-#include "nsAutoJSValHolder.h"
 #include "nsCOMPtr.h"
 #include "nsDebug.h"
-#include "nsStringGlue.h"
+#include "nsString.h"
 #include "nsJSPrincipals.h"
 #include "nsContentUtils.h"
+#include "js/RootingAPI.h"
+#include "js/TypeDecls.h"
 
-struct JSContext;
-class JSObject;
 struct JSPrincipals;
 
 namespace mozilla {
@@ -30,8 +29,7 @@ public:
     static XPCShellEnvironment* CreateEnvironment();
     ~XPCShellEnvironment();
 
-    void ProcessFile(JSContext *cx, JS::Handle<JSObject*> obj,
-                     const char *filename, FILE *file, JSBool forceTTY);
+    void ProcessFile(JSContext *cx, const char *filename, FILE *file, bool forceTTY);
     bool EvaluateString(const nsString& aString,
                         nsString* aResult = nullptr);
 
@@ -40,13 +38,13 @@ public:
     }
 
     JSObject* GetGlobalObject() {
-        return mGlobalHolder.ToJSObject();
+        return mGlobalHolder;
     }
 
     void SetIsQuitting() {
-        mQuitting = JS_TRUE;
+        mQuitting = true;
     }
-    JSBool IsQuitting() {
+    bool IsQuitting() {
         return mQuitting;
     }
 
@@ -55,9 +53,9 @@ protected:
     bool Init();
 
 private:
-    nsAutoJSValHolder mGlobalHolder;
+    JS::PersistentRooted<JSObject *> mGlobalHolder;
 
-    JSBool mQuitting;
+    bool mQuitting;
 };
 
 } /* namespace ipc */

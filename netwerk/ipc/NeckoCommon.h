@@ -15,9 +15,10 @@
 
 namespace mozilla { namespace dom {
 class TabChild;
-}}
+} // namespace dom
+} // namespace mozilla
 
-#if defined(DEBUG) || defined(ENABLE_TESTS)
+#if defined(DEBUG)
 # define NECKO_ERRORS_ARE_FATAL_DEFAULT true
 #else
 # define NECKO_ERRORS_ARE_FATAL_DEFAULT false
@@ -89,13 +90,8 @@ IsNeckoChild()
   static bool amChild = false;
 
   if (!didCheck) {
-    // This allows independent necko-stacks (instead of single stack in chrome)
-    // to still be run.  
-    // TODO: Remove eventually when no longer supported (bug 571126)
-    const char * e = PR_GetEnv("NECKO_SEPARATE_STACKS");
-    if (!e) 
-      amChild = (XRE_GetProcessType() == GeckoProcessType_Content);
     didCheck = true;
+    amChild = (XRE_GetProcessType() == GeckoProcessType_Content);
   }
   return amChild;
 }
@@ -103,18 +99,12 @@ IsNeckoChild()
 namespace NeckoCommonInternal {
   extern bool gSecurityDisabled;
   extern bool gRegisteredBool;
-}
+} // namespace NeckoCommonInternal
 
 // This should always return true unless xpcshell tests are being used
 inline bool
 UsingNeckoIPCSecurity()
 {
-
-  if (!NeckoCommonInternal::gRegisteredBool) {
-    Preferences::AddBoolVarCache(&NeckoCommonInternal::gSecurityDisabled,
-                                 "network.disable.ipc.security");
-    NeckoCommonInternal::gRegisteredBool = true;
-  }
   return !NeckoCommonInternal::gSecurityDisabled;
 }
 
@@ -123,12 +113,6 @@ MissingRequiredTabChild(mozilla::dom::TabChild* tabChild,
                         const char* context)
 {
   if (UsingNeckoIPCSecurity()) {
-    // Bug 833935: during navigation away from page some loads may lack
-    // TabParent: we don't want to kill browser for that.  Doesn't happen in
-    // test harness, so fail in debug mode so we can catch new code that fails
-    // to pass security info.
-    MOZ_ASSERT(tabChild);
-
     if (!tabChild) {
       printf_stderr("WARNING: child tried to open %s IPDL channel w/o "
                     "security info\n", context);

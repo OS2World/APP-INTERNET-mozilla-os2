@@ -4,114 +4,13 @@
 
 #include "nsISupports.idl"
 
-/**
- * Information about networks that is exposed to network manager API consumers.
- */
-[scriptable, uuid(d70b9d95-87d5-4ce9-aff7-4323dac79b07)]
-interface nsINetworkInterface : nsISupports
-{
-  const long NETWORK_STATE_UNKNOWN = -1;
-  const long NETWORK_STATE_CONNECTING = 0;
-  const long NETWORK_STATE_CONNECTED = 1;
-  const long NETWORK_STATE_DISCONNECTING = 2;
-  const long NETWORK_STATE_DISCONNECTED = 3;
-
-  /**
-   * Current network state, one of the NETWORK_STATE_* constants.
-   *
-   * When this changes, network interface implementations notify the
-   * 'network-interface-state-changed' observer notification.
-   */
-  readonly attribute long state;
-
-  const long NETWORK_TYPE_WIFI        = 0;
-  const long NETWORK_TYPE_MOBILE      = 1;
-  const long NETWORK_TYPE_MOBILE_MMS  = 2;
-  const long NETWORK_TYPE_MOBILE_SUPL = 3;
-
-  /**
-   * Network type. One of the NETWORK_TYPE_* constants.
-   */
-  readonly attribute long type;
-
-  /**
-   * Name of the network interface. This identifier is unique.
-   */
-  readonly attribute DOMString name;
-
-  /**
-   * Indicates whether DHCP should be run when the interface connects.
-   */
-  readonly attribute boolean dhcp;
-
-  /**
-   * IP Address
-   */
-  readonly attribute DOMString ip;
-
-  /**
-   * Netmask
-   */
-  readonly attribute DOMString netmask;
-
-  /**
-   * Broadcast
-   */
-  readonly attribute DOMString broadcast;
-
-  /**
-   * Default gateway
-   */
-  readonly attribute DOMString gateway;
-
-  /**
-   * Primary DNS address
-   */
-  readonly attribute DOMString dns1;
-
-  /**
-   * Secondary DNS address
-   */
-  readonly attribute DOMString dns2;
-
-  /**
-   * The host name of the http proxy server.
-   */
-  readonly attribute DOMString httpProxyHost;
-
-  /*
-   * The port number of the http proxy server. 
-   */
-  readonly attribute long httpProxyPort;
-
-};
-
-[scriptable, function, uuid(91824160-fb25-11e1-a21f-0800200c9a66)]
-interface nsIWifiTetheringCallback : nsISupports
-{
-  /**
-   * Callback function used to report status to WifiManager.
-   *
-   * @param error
-   *        An error message if the operation wasn't successful,
-   *        or `null` if it was.
-   */
-  void wifiTetheringEnabledChange(in jsval error);
-};
-
-[scriptable, function, uuid(e079aa2a-ec0a-4bbd-b1a4-d81a9faae464)]
-interface nsINetworkStatsCallback : nsISupports
-{
-  void networkStatsAvailable(in boolean success,
-                             in unsigned long rxBytes,
-                             in unsigned long txBytes,
-                             in jsval date);
-};
+interface nsINetworkInfo;
+interface nsINetworkInterface;
 
 /**
  * Manage network interfaces.
  */
-[scriptable, uuid(f39a0fb6-2752-47d2-943e-a0cdd3e43494)]
+[scriptable, uuid(1ba9346b-53b5-4660-9dc6-58f0b258d0a6)]
 interface nsINetworkManager : nsISupports
 {
   /**
@@ -120,13 +19,26 @@ interface nsINetworkManager : nsISupports
    * Consumers will be notified with the 'network-interface-registered'
    * observer notification.
    *
-   * Throws if there's already an interface registered that has the same
-   * name.
+   * Throws if there's already an interface registered with the same network id.
    *
    * @param network
    *        Network interface to register.
    */
   void registerNetworkInterface(in nsINetworkInterface network);
+
+  /**
+   * Update the routes and DNSes according the state of the given network.
+   *
+   * Consumers will be notified with the 'network-connection-state-changed'
+   * observer notification.
+   *
+   * Throws an exception if the specified network interface object isn't
+   * registered.
+   *
+   * @param network
+   *        Network interface to update.
+   */
+  void updateNetworkInterface(in nsINetworkInterface network);
 
   /**
    * Unregister the given network interface from the network manager.
@@ -143,10 +55,21 @@ interface nsINetworkManager : nsISupports
   void unregisterNetworkInterface(in nsINetworkInterface network);
 
   /**
-   * Object containing all known network connections, keyed by their
-   * interface name.
+   * Object containing all known network information, keyed by their
+   * network id. Network id is composed of a sub-id + '-' + network
+   * type. For mobile network types, sub-id is 'ril' + service id; for
+   * non-mobile network types, sub-id is always 'device'.
    */
-  readonly attribute jsval networkInterfaces;
+  readonly attribute jsval allNetworkInfo;
+
+  /**
+   * Priority list of network types. An array of
+   * nsINetworkInterface::NETWORK_TYPE_* constants.
+   *
+   * The piror position of the type indicates the higher priority. The priority
+   * is used to determine route when there are multiple connected networks.
+   */
+  attribute jsval networkTypePriorityList;
 
   /**
    * The preferred network type. One of the
@@ -159,12 +82,13 @@ interface nsINetworkManager : nsISupports
   attribute long preferredNetworkType;
 
   /**
-   * The network interface handling all data traffic.
+   * The network information of the network interface handling all network
+   * traffic.
    *
    * When this changes, the 'network-active-changed' observer
    * notification is dispatched.
    */
-  readonly attribute nsINetworkInterface active;
+  readonly attribute nsINetworkInfo activeNetworkInfo;
 
   /**
    * Override the default behaviour for preferredNetworkType and route
@@ -180,32 +104,32 @@ interface nsINetworkManager : nsISupports
   long overrideActive(in nsINetworkInterface network);
 
   /**
-   * Enable or disable Wifi Tethering
+   * Add host route to the specified network into routing table.
    *
-   * @param enabled
-   *        Boolean that indicates whether tethering should be enabled (true) or disabled (false).
    * @param network
-   *        The Wifi network interface with at least name of network interface.
-   * @param config
-   *        The Wifi Tethering configuration from settings db.
-   * @param callback
-   *        Callback function used to report status to WifiManager.
+   *        The network information for the host to be routed to.
+   * @param host
+   *        The host to be added.
+   *        The host will be resolved in advance if it's not an ip-address.
+   *
+   * @return a Promise
+   *         resolved if added; rejected, otherwise.
    */
-  void setWifiTethering(in boolean enabled,
-                        in nsINetworkInterface networkInterface,
-                        in jsval config,
-                        in nsIWifiTetheringCallback callback);
+  jsval addHostRoute(in nsINetworkInfo network,
+                     in DOMString host);
 
   /**
-   * Retrieve network interface stats.
+   * Remove host route to the specified network from routing table.
    *
-   * @param networkName
-   *        Select the Network interface to request estats.
+   * @param network
+   *        The network information for the routing to be removed from.
+   * @param host
+   *        The host routed to the network.
+   *        The host will be resolved in advance if it's not an ip-address.
    *
-   * @param callback
-   *        Callback to notify result and provide stats, connectionType
-   *        and the date when stats are retrieved
+   * @return a Promise
+   *         resolved if removed; rejected, otherwise.
    */
-  void getNetworkInterfaceStats(in DOMString networkName, in nsINetworkStatsCallback callback);
-
+  jsval removeHostRoute(in nsINetworkInfo network,
+                        in DOMString host);
 };

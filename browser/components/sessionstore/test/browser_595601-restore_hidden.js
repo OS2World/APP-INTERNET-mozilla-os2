@@ -1,7 +1,7 @@
 /* Any copyright is dedicated to the Public Domain.
    http://creativecommons.org/publicdomain/zero/1.0/ */
 
-let state = {windows:[{tabs:[
+var state = {windows:[{tabs:[
   {entries:[{url:"http://example.com#1"}]},
   {entries:[{url:"http://example.com#2"}]},
   {entries:[{url:"http://example.com#3"}]},
@@ -14,6 +14,7 @@ let state = {windows:[{tabs:[
 
 function test() {
   waitForExplicitFinish();
+  requestLongerTimeout(2);
 
   registerCleanupFunction(function () {
     Services.prefs.clearUserPref("browser.sessionstore.restore_hidden_tabs");
@@ -54,15 +55,14 @@ function test_loadTabs(restoreHiddenTabs, callback) {
   });
 }
 
-let TabsProgressListener = {
+var TabsProgressListener = {
   init: function (win) {
     this.window = win;
-
-    this.window.gBrowser.addTabsProgressListener(this);
+    Services.obs.addObserver(this, "sessionstore-debug-tab-restored", false);
   },
 
   uninit: function () {
-    this.window.gBrowser.removeTabsProgressListener(this);
+    Services.obs.removeObserver(this, "sessionstore-debug-tab-restored");
 
     delete this.window;
     delete this.callback;
@@ -72,11 +72,12 @@ let TabsProgressListener = {
     this.callback = callback;
   },
 
-  onStateChange: function (aBrowser, aWebProgress, aRequest, aStateFlags, aStatus) {
-    if (this.callback && aBrowser.__SS_restoreState == TAB_STATE_RESTORING &&
-        aStateFlags & Ci.nsIWebProgressListener.STATE_STOP &&
-        aStateFlags & Ci.nsIWebProgressListener.STATE_IS_NETWORK &&
-        aStateFlags & Ci.nsIWebProgressListener.STATE_IS_WINDOW)
+  observe: function (browser) {
+    TabsProgressListener.onRestored(browser);
+  },
+
+  onRestored: function (browser) {
+    if (this.callback && browser.__SS_restoreState == TAB_STATE_RESTORING)
       this.callback.apply(null, [this.window].concat(this.countTabs()));
   },
 
@@ -100,7 +101,7 @@ function newWindowWithState(state, callback) {
   let opts = "chrome,all,dialog=no,height=800,width=800";
   let win = window.openDialog(getBrowserURL(), "_blank", opts);
 
-  registerCleanupFunction(function () win.close());
+  registerCleanupFunction(() => BrowserTestUtils.closeWindow(win));
 
   whenWindowLoaded(win, function onWindowLoaded(aWin) {
     TabsProgressListener.init(aWin);

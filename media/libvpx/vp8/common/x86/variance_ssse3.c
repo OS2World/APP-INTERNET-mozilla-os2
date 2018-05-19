@@ -8,20 +8,11 @@
  *  be found in the AUTHORS file in the root of the source tree.
  */
 
+#include "./vp8_rtcd.h"
 #include "vpx_config.h"
 #include "vp8/common/variance.h"
-#include "vp8/common/pragmas.h"
 #include "vpx_ports/mem.h"
 
-extern unsigned int vp8_get16x16var_sse2
-(
-    const unsigned char *src_ptr,
-    int source_stride,
-    const unsigned char *ref_ptr,
-    int recon_stride,
-    unsigned int *SSE,
-    int *Sum
-);
 extern void vp8_half_horiz_vert_variance16x_h_sse2
 (
     const unsigned char *ref_ptr,
@@ -79,8 +70,9 @@ unsigned int vp8_sub_pixel_variance16x16_ssse3
     int xsum0;
     unsigned int xxsum0;
 
-    // note we could avoid these if statements if the calling function
-    // just called the appropriate functions inside.
+    /* note we could avoid these if statements if the calling function
+     * just called the appropriate functions inside.
+     */
     if (xoffset == 4 && yoffset == 0)
     {
         vp8_half_horiz_variance16x_h_sse2(
@@ -112,7 +104,7 @@ unsigned int vp8_sub_pixel_variance16x16_ssse3
     }
 
     *sse = xxsum0;
-    return (xxsum0 - ((unsigned int)(xsum0 * xsum0) >> 8));
+    return (xxsum0 - (((unsigned int)xsum0 * xsum0) >> 8));
 }
 
 unsigned int vp8_sub_pixel_variance16x8_ssse3
@@ -161,5 +153,5 @@ unsigned int vp8_sub_pixel_variance16x8_ssse3
     }
 
     *sse = xxsum0;
-    return (xxsum0 - ((unsigned int)(xsum0 * xsum0) >> 7));
+    return (xxsum0 - (((unsigned int)xsum0 * xsum0) >> 7));
 }

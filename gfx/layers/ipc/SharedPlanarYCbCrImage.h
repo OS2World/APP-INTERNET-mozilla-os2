@@ -3,10 +3,14 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#include "ImageContainer.h"
-#include "mozilla/ipc/Shmem.h"
-#include "mozilla/ipc/SharedMemory.h"
-#include "mozilla/layers/ISurfaceAllocator.h"
+#include <stdint.h>                     // for uint8_t, uint32_t
+#include "ImageContainer.h"             // for PlanarYCbCrImage, etc
+#include "mozilla/Attributes.h"         // for override
+#include "mozilla/RefPtr.h"             // for RefPtr
+#include "mozilla/ipc/Shmem.h"          // for Shmem
+#include "nsCOMPtr.h"                   // for already_AddRefed
+#include "nsDebug.h"                    // for NS_WARNING
+#include "nsISupportsImpl.h"            // for MOZ_COUNT_CTOR
 
 #ifndef MOZILLA_LAYERS_SHAREDPLANARYCBCRIMAGE_H
 #define MOZILLA_LAYERS_SHAREDPLANARYCBCRIMAGE_H
@@ -15,74 +19,42 @@ namespace mozilla {
 namespace layers {
 
 class ImageClient;
+class TextureClient;
 
 class SharedPlanarYCbCrImage : public PlanarYCbCrImage
 {
 public:
-  SharedPlanarYCbCrImage(ISurfaceAllocator* aAllocator)
-  : PlanarYCbCrImage(nullptr)
-  , mSurfaceAllocator(aAllocator), mAllocated(false)
-  {
-    MOZ_COUNT_CTOR(SharedPlanarYCbCrImage);
-  }
+  explicit SharedPlanarYCbCrImage(ImageClient* aCompositable);
 
+protected:
   ~SharedPlanarYCbCrImage();
 
-  virtual SharedPlanarYCbCrImage* AsSharedPlanarYCbCrImage() MOZ_OVERRIDE
+public:
+  virtual TextureClient* GetTextureClient(KnowsCompositor* aForwarder) override;
+  virtual uint8_t* GetBuffer() override;
+
+  virtual already_AddRefed<gfx::SourceSurface> GetAsSourceSurface() override;
+  virtual bool CopyData(const PlanarYCbCrData& aData) override;
+  virtual bool AdoptData(const Data &aData) override;
+
+  virtual bool Allocate(PlanarYCbCrData& aData);
+  virtual uint8_t* AllocateAndGetNewBuffer(uint32_t aSize) override;
+
+  virtual bool IsValid() override;
+
+  virtual size_t SizeOfIncludingThis(MallocSizeOf aMallocSizeOf) const override
   {
-    return this;
+    return aMallocSizeOf(this) + SizeOfExcludingThis(aMallocSizeOf);
   }
 
-  virtual already_AddRefed<gfxASurface> GetAsSurface() MOZ_OVERRIDE
-  {
-    if (!mAllocated) {
-      NS_WARNING("Can't get as surface");
-      return nullptr;
-    }
-    return PlanarYCbCrImage::GetAsSurface();
-  }
-
-  virtual void SetData(const PlanarYCbCrImage::Data& aData) MOZ_OVERRIDE;
-  virtual void SetDataNoCopy(const Data &aData) MOZ_OVERRIDE;
-
-  virtual bool Allocate(PlanarYCbCrImage::Data& aData);
-  virtual uint8_t* AllocateBuffer(uint32_t aSize) MOZ_OVERRIDE;
-  // needs to be overriden because the parent class sets mBuffer which we
-  // do not want to happen.
-  uint8_t* AllocateAndGetNewBuffer(uint32_t aSize) MOZ_OVERRIDE;
-
-  virtual bool IsValid() MOZ_OVERRIDE {
-    return mAllocated;
-  }
-
-  /**
-   * Setup the Surface descriptor to contain this image's shmem, while keeping
-   * ownership of the shmem.
-   * if the operation succeeds, return true and AddRef this SharedPlanarYCbCrImage.
-   */
-  bool ToSurfaceDescriptor(SurfaceDescriptor& aResult);
-
-  /**
-   * Setup the Surface descriptor to contain this image's shmem, and loose
-   * ownership of the shmem.
-   * if the operation succeeds, return true (and does _not_ AddRef this
-   * SharedPlanarYCbCrImage).
-   */
-  bool DropToSurfaceDescriptor(SurfaceDescriptor& aResult);
-
-  /**
-   * Returns a SharedPlanarYCbCrImage* iff the descriptor was initialized with
-   * ToSurfaceDescriptor.
-   */
-  static SharedPlanarYCbCrImage* FromSurfaceDescriptor(const SurfaceDescriptor& aDesc);
+  virtual size_t SizeOfExcludingThis(MallocSizeOf aMallocSizeOf) const override;
 
 private:
-  ipc::Shmem mShmem;
-  ISurfaceAllocator* mSurfaceAllocator;
-  bool mAllocated;
+  RefPtr<TextureClient> mTextureClient;
+  RefPtr<ImageClient> mCompositable;
 };
 
-} // namespace
-} // namespace
+} // namespace layers
+} // namespace mozilla
 
 #endif

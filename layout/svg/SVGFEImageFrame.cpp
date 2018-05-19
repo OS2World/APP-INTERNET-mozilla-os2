@@ -4,6 +4,7 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 // Keep in (case-insensitive) order:
+#include "nsContainerFrame.h"
 #include "nsContentUtils.h"
 #include "nsFrame.h"
 #include "nsGkAtoms.h"
@@ -15,53 +16,58 @@
 using namespace mozilla;
 using namespace mozilla::dom;
 
-typedef nsFrame SVGFEImageFrameBase;
-
-class SVGFEImageFrame : public SVGFEImageFrameBase
+class SVGFEImageFrame : public nsFrame
 {
   friend nsIFrame*
   NS_NewSVGFEImageFrame(nsIPresShell* aPresShell, nsStyleContext* aContext);
 protected:
-  SVGFEImageFrame(nsStyleContext* aContext)
-    : SVGFEImageFrameBase(aContext)
+  explicit SVGFEImageFrame(nsStyleContext* aContext)
+    : nsFrame(aContext)
   {
-    AddStateBits(NS_FRAME_SVG_LAYOUT | NS_STATE_SVG_NONDISPLAY_CHILD);
+    AddStateBits(NS_FRAME_SVG_LAYOUT | NS_FRAME_IS_NONDISPLAY);
+
+    // This frame isn't actually displayed, but it contains an image and we want
+    // to use the nsImageLoadingContent machinery for managing images, which
+    // requires visibility tracking, so we enable visibility tracking and
+    // forcibly mark it visible below.
+    EnableVisibilityTracking();
   }
 
 public:
   NS_DECL_FRAMEARENA_HELPERS
 
-  virtual void Init(nsIContent* aContent,
-                    nsIFrame*   aParent,
-                    nsIFrame*   aPrevInFlow) MOZ_OVERRIDE;
-  virtual void DestroyFrom(nsIFrame* aDestructRoot);
+  virtual void Init(nsIContent*       aContent,
+                    nsContainerFrame* aParent,
+                    nsIFrame*         aPrevInFlow) override;
+  virtual void DestroyFrom(nsIFrame* aDestructRoot) override;
 
-  virtual bool IsFrameOfType(uint32_t aFlags) const
+  virtual bool IsFrameOfType(uint32_t aFlags) const override
   {
-    return SVGFEImageFrameBase::IsFrameOfType(aFlags & ~(nsIFrame::eSVG));
+    return nsFrame::IsFrameOfType(aFlags & ~(nsIFrame::eSVG));
   }
 
-#ifdef DEBUG
-  NS_IMETHOD GetFrameName(nsAString& aResult) const
+#ifdef DEBUG_FRAME_DUMP
+  virtual nsresult GetFrameName(nsAString& aResult) const override
   {
     return MakeFrameName(NS_LITERAL_STRING("SVGFEImage"), aResult);
   }
 #endif
-
-  virtual void DidSetStyleContext(nsStyleContext* aOldStyleContext);
 
   /**
    * Get the "type" of the frame
    *
    * @see nsGkAtoms::svgFEImageFrame
    */
-  virtual nsIAtom* GetType() const;
+  virtual nsIAtom* GetType() const override;
 
-  NS_IMETHOD AttributeChanged(int32_t  aNameSpaceID,
-                              nsIAtom* aAttribute,
-                              int32_t  aModType);
+  virtual nsresult AttributeChanged(int32_t  aNameSpaceID,
+                                    nsIAtom* aAttribute,
+                                    int32_t  aModType) override;
 
-  virtual bool UpdateOverflow() {
+  void OnVisibilityChange(Visibility aNewVisibility,
+                          Maybe<OnNonvisible> aNonvisibleAction = Nothing()) override;
+
+  virtual bool ComputeCustomOverflow(nsOverflowAreas& aOverflowAreas) override {
     // We don't maintain a visual overflow rect
     return false;
   }
@@ -76,44 +82,36 @@ NS_NewSVGFEImageFrame(nsIPresShell* aPresShell, nsStyleContext* aContext)
 NS_IMPL_FRAMEARENA_HELPERS(SVGFEImageFrame)
 
 /* virtual */ void
-SVGFEImageFrame::DidSetStyleContext(nsStyleContext* aOldStyleContext)
-{
-  SVGFEImageFrameBase::DidSetStyleContext(aOldStyleContext);
-  nsSVGEffects::InvalidateRenderingObservers(this);
-}
-
-/* virtual */ void
 SVGFEImageFrame::DestroyFrom(nsIFrame* aDestructRoot)
 {
-  nsCOMPtr<nsIImageLoadingContent> imageLoader =
-    do_QueryInterface(SVGFEImageFrameBase::mContent);
+  DecApproximateVisibleCount();
 
+  nsCOMPtr<nsIImageLoadingContent> imageLoader =
+    do_QueryInterface(nsFrame::mContent);
   if (imageLoader) {
     imageLoader->FrameDestroyed(this);
-    imageLoader->DecrementVisibleCount();
   }
 
-  SVGFEImageFrameBase::DestroyFrom(aDestructRoot);
+  nsFrame::DestroyFrom(aDestructRoot);
 }
 
 void
-SVGFEImageFrame::Init(nsIContent* aContent,
-                        nsIFrame* aParent,
-                        nsIFrame* aPrevInFlow)
+SVGFEImageFrame::Init(nsIContent*       aContent,
+                      nsContainerFrame* aParent,
+                      nsIFrame*         aPrevInFlow)
 {
-  NS_ASSERTION(aContent->IsSVG(nsGkAtoms::feImage),
+  NS_ASSERTION(aContent->IsSVGElement(nsGkAtoms::feImage),
                "Trying to construct an SVGFEImageFrame for a "
                "content element that doesn't support the right interfaces");
 
-  SVGFEImageFrameBase::Init(aContent, aParent, aPrevInFlow);
-  nsCOMPtr<nsIImageLoadingContent> imageLoader =
-    do_QueryInterface(SVGFEImageFrameBase::mContent);
+  nsFrame::Init(aContent, aParent, aPrevInFlow);
 
+  // We assume that feImage's are always visible.
+  IncApproximateVisibleCount();
+
+  nsCOMPtr<nsIImageLoadingContent> imageLoader =
+    do_QueryInterface(nsFrame::mContent);
   if (imageLoader) {
-    // We assume that feImage's are always visible.
-    // Increment the visible count before calling FrameCreated so that
-    // FrameCreated will actually track the image correctly.
-    imageLoader->IncrementVisibleCount();
     imageLoader->FrameCreated(this);
   }
 }
@@ -124,30 +122,47 @@ SVGFEImageFrame::GetType() const
   return nsGkAtoms::svgFEImageFrame;
 }
 
-NS_IMETHODIMP
+nsresult
 SVGFEImageFrame::AttributeChanged(int32_t  aNameSpaceID,
                                   nsIAtom* aAttribute,
                                   int32_t  aModType)
 {
   SVGFEImageElement *element = static_cast<SVGFEImageElement*>(mContent);
   if (element->AttributeAffectsRendering(aNameSpaceID, aAttribute)) {
-    nsSVGEffects::InvalidateRenderingObservers(this);
+    MOZ_ASSERT(GetParent()->GetType() == nsGkAtoms::svgFilterFrame,
+               "Observers observe the filter, so that's what we must invalidate");
+    nsSVGEffects::InvalidateDirectRenderingObservers(GetParent());
   }
-  if (aNameSpaceID == kNameSpaceID_XLink &&
+  if ((aNameSpaceID == kNameSpaceID_XLink ||
+       aNameSpaceID == kNameSpaceID_None) &&
       aAttribute == nsGkAtoms::href) {
-
-    // Prevent setting image.src by exiting early
-    if (nsContentUtils::IsImageSrcSetDisabled()) {
-      return NS_OK;
-    }
-
-    if (element->mStringAttributes[SVGFEImageElement::HREF].IsExplicitlySet()) {
+    bool hrefIsSet =
+      element->mStringAttributes[SVGFEImageElement::HREF].IsExplicitlySet() ||
+      element->mStringAttributes[SVGFEImageElement::XLINK_HREF]
+        .IsExplicitlySet();
+    if (hrefIsSet) {
       element->LoadSVGImage(true, true);
     } else {
       element->CancelImageRequests(true);
     }
   }
 
-  return SVGFEImageFrameBase::AttributeChanged(aNameSpaceID,
-                                                 aAttribute, aModType);
+  return nsFrame::AttributeChanged(aNameSpaceID, aAttribute, aModType);
+}
+
+void
+SVGFEImageFrame::OnVisibilityChange(Visibility aNewVisibility,
+                                    Maybe<OnNonvisible> aNonvisibleAction)
+{
+  nsCOMPtr<nsIImageLoadingContent> imageLoader =
+    do_QueryInterface(nsFrame::mContent);
+  if (!imageLoader) {
+    MOZ_ASSERT_UNREACHABLE("Should have an nsIImageLoadingContent");
+    nsFrame::OnVisibilityChange(aNewVisibility, aNonvisibleAction);
+    return;
+  }
+
+  imageLoader->OnVisibilityChange(aNewVisibility, aNonvisibleAction);
+
+  nsFrame::OnVisibilityChange(aNewVisibility, aNonvisibleAction);
 }

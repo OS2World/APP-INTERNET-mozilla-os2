@@ -1,5 +1,5 @@
 /* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=2 et sw=2 tw=80: */
+/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -9,12 +9,20 @@
 
 #include "mozilla/dom/quota/QuotaCommon.h"
 
-class nsIOfflineStorage;
+#include "mozilla/dom/ipc/IdType.h"
+
+#include "PersistenceType.h"
+
 class nsIRunnable;
+
+#define IDB_DIRECTORY_NAME "idb"
+#define ASMJSCACHE_DIRECTORY_NAME "asmjs"
+#define DOMCACHE_DIRECTORY_NAME "cache"
 
 BEGIN_QUOTA_NAMESPACE
 
-class UsageRunnable;
+class QuotaManager;
+class UsageInfo;
 
 // An abstract interface for quota manager clients.
 // Each storage API must provide an implementation of this interface in order
@@ -22,16 +30,18 @@ class UsageRunnable;
 class Client
 {
 public:
-  NS_IMETHOD_(nsrefcnt)
+  NS_IMETHOD_(MozExternalRefCountType)
   AddRef() = 0;
 
-  NS_IMETHOD_(nsrefcnt)
+  NS_IMETHOD_(MozExternalRefCountType)
   Release() = 0;
 
   enum Type {
     IDB = 0,
     //LS,
     //APPCACHE,
+    ASMJS,
+    DOMCACHE,
     TYPE_MAX
   };
 
@@ -43,7 +53,15 @@ public:
   {
     switch (aType) {
       case IDB:
-        aText.AssignLiteral("idb");
+        aText.AssignLiteral(IDB_DIRECTORY_NAME);
+        break;
+
+      case ASMJS:
+        aText.AssignLiteral(ASMJSCACHE_DIRECTORY_NAME);
+        break;
+
+      case DOMCACHE:
+        aText.AssignLiteral(DOMCACHE_DIRECTORY_NAME);
         break;
 
       case TYPE_MAX:
@@ -58,8 +76,14 @@ public:
   static nsresult
   TypeFromText(const nsAString& aText, Type& aType)
   {
-    if (aText.EqualsLiteral("idb")) {
+    if (aText.EqualsLiteral(IDB_DIRECTORY_NAME)) {
       aType = IDB;
+    }
+    else if (aText.EqualsLiteral(ASMJSCACHE_DIRECTORY_NAME)) {
+      aType = ASMJS;
+    }
+    else if (aText.EqualsLiteral(DOMCACHE_DIRECTORY_NAME)) {
+      aType = DOMCACHE;
     }
     else {
       return NS_ERROR_FAILURE;
@@ -70,37 +94,48 @@ public:
 
   // Methods which are called on the IO thred.
   virtual nsresult
-  InitOrigin(const nsACString& aOrigin, UsageRunnable* aUsageRunnable) = 0;
+  InitOrigin(PersistenceType aPersistenceType,
+             const nsACString& aGroup,
+             const nsACString& aOrigin,
+             UsageInfo* aUsageInfo) = 0;
 
   virtual nsresult
-  GetUsageForOrigin(const nsACString& aOrigin,
-                    UsageRunnable* aUsageRunnable) = 0;
+  GetUsageForOrigin(PersistenceType aPersistenceType,
+                    const nsACString& aGroup,
+                    const nsACString& aOrigin,
+                    UsageInfo* aUsageInfo) = 0;
 
   virtual void
-  OnOriginClearCompleted(const nsACString& aPattern) = 0;
+  OnOriginClearCompleted(PersistenceType aPersistenceType,
+                         const nsACString& aOrigin) = 0;
 
   virtual void
   ReleaseIOThreadObjects() = 0;
 
-  // Methods which are called on the main thred.
-  virtual bool
-  IsFileServiceUtilized() = 0;
-
-  virtual bool
-  IsTransactionServiceActivated() = 0;
+  // Methods which are called on the background thred.
+  virtual void
+  AbortOperations(const nsACString& aOrigin) = 0;
 
   virtual void
-  WaitForStoragesToComplete(nsTArray<nsIOfflineStorage*>& aStorages,
-                            nsIRunnable* aCallback) = 0;
+  AbortOperationsForProcess(ContentParentId aContentParentId) = 0;
 
   virtual void
-  AbortTransactionsForStorage(nsIOfflineStorage* aStorage) = 0;
-
-  virtual bool
-  HasTransactionsForStorage(nsIOfflineStorage* aStorage) = 0;
+  StartIdleMaintenance() = 0;
 
   virtual void
-  ShutdownTransactionService() = 0;
+  StopIdleMaintenance() = 0;
+
+  virtual void
+  ShutdownWorkThreads() = 0;
+
+  // Methods which are called on the main thread.
+  virtual void
+  DidInitialize(QuotaManager* aQuotaManager)
+  { }
+
+  virtual void
+  WillShutdown()
+  { }
 
 protected:
   virtual ~Client()

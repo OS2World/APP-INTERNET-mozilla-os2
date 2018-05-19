@@ -4,9 +4,9 @@
 
 this.EXPORTED_SYMBOLS = ["JPAKEClient", "SendCredentialsController"];
 
-const {classes: Cc, interfaces: Ci, results: Cr, utils: Cu} = Components;
+var {classes: Cc, interfaces: Ci, results: Cr, utils: Cu} = Components;
 
-Cu.import("resource://services-common/log4moz.js");
+Cu.import("resource://gre/modules/Log.jsm");
 Cu.import("resource://services-common/rest.js");
 Cu.import("resource://services-sync/constants.js");
 Cu.import("resource://services-sync/util.js");
@@ -114,8 +114,8 @@ const JPAKE_VERIFY_VALUE      = "0123456789ABCDEF";
 this.JPAKEClient = function JPAKEClient(controller) {
   this.controller = controller;
 
-  this._log = Log4Moz.repository.getLogger("Sync.JPAKEClient");
-  this._log.level = Log4Moz.Level[Svc.Prefs.get(
+  this._log = Log.repository.getLogger("Sync.JPAKEClient");
+  this._log.level = Log.Level[Svc.Prefs.get(
     "log.logger.service.jpakeclient", "Debug")];
 
   this._serverURL = Svc.Prefs.get("jpake.serverURL");
@@ -281,8 +281,7 @@ JPAKEClient.prototype = {
     let rng = Cc["@mozilla.org/security/random-generator;1"]
                 .createInstance(Ci.nsIRandomGenerator);
     let bytes = rng.generateRandomBytes(JPAKE_LENGTH_CLIENTID / 2);
-    this._clientID = [("0" + byte.toString(16)).slice(-2)
-                      for each (byte in bytes)].join("");
+    this._clientID = bytes.map(byte => ("0" + byte.toString(16)).slice(-2)).join("");
   },
 
   _createSecret: function _createSecret() {
@@ -291,8 +290,7 @@ JPAKEClient.prototype = {
     let rng = Cc["@mozilla.org/security/random-generator;1"]
                 .createInstance(Ci.nsIRandomGenerator);
     let bytes = rng.generateRandomBytes(JPAKE_LENGTH_SECRET);
-    return [key[Math.floor(byte * key.length / 256)]
-            for each (byte in bytes)].join("");
+    return bytes.map(byte => key[Math.floor(byte * key.length / 256)]).join("");
   },
 
   _newRequest: function _newRequest(uri) {
@@ -700,8 +698,8 @@ JPAKEClient.prototype = {
  */
 this.SendCredentialsController =
  function SendCredentialsController(jpakeclient, service) {
-  this._log = Log4Moz.repository.getLogger("Sync.SendCredentialsController");
-  this._log.level = Log4Moz.Level[Svc.Prefs.get("log.logger.service.main")];
+  this._log = Log.repository.getLogger("Sync.SendCredentialsController");
+  this._log.level = Log.Level[Svc.Prefs.get("log.logger.service.main")];
 
   this._log.trace("Loading.");
   this.jpakeclient = jpakeclient;

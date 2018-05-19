@@ -6,99 +6,271 @@
 #ifndef MOZILLA_GFX_TYPES_H_
 #define MOZILLA_GFX_TYPES_H_
 
-#include "mozilla/StandardInteger.h"
-#include "mozilla/NullPtr.h"
+#include "mozilla/EndianUtils.h"
 
 #include <stddef.h>
+#include <stdint.h>
 
 namespace mozilla {
 namespace gfx {
 
 typedef float Float;
 
-enum SurfaceType
-{
-  SURFACE_DATA, /* Data surface - bitmap in memory */
-  SURFACE_D2D1_BITMAP, /* Surface wrapping a ID2D1Bitmap */
-  SURFACE_D2D1_DRAWTARGET, /* Surface made from a D2D draw target */
-  SURFACE_CAIRO, /* Surface wrapping a cairo surface */
-  SURFACE_CAIRO_IMAGE, /* Data surface wrapping a cairo image surface */
-  SURFACE_COREGRAPHICS_IMAGE, /* Surface wrapping a CoreGraphics Image */
-  SURFACE_COREGRAPHICS_CGCONTEXT, /* Surface wrapping a CG context */
-  SURFACE_SKIA, /* Surface wrapping a Skia bitmap */
-  SURFACE_DUAL_DT, /* Snapshot of a dual drawtarget */
-  SURFACE_RECORDING /* Surface used for recording */
+enum class SurfaceType : int8_t {
+  DATA, /* Data surface - bitmap in memory */
+  D2D1_BITMAP, /* Surface wrapping a ID2D1Bitmap */
+  D2D1_DRAWTARGET, /* Surface made from a D2D draw target */
+  CAIRO, /* Surface wrapping a cairo surface */
+  CAIRO_IMAGE, /* Data surface wrapping a cairo image surface */
+  COREGRAPHICS_IMAGE, /* Surface wrapping a CoreGraphics Image */
+  COREGRAPHICS_CGCONTEXT, /* Surface wrapping a CG context */
+  SKIA, /* Surface wrapping a Skia bitmap */
+  DUAL_DT, /* Snapshot of a dual drawtarget */
+  D2D1_1_IMAGE, /* A D2D 1.1 ID2D1Image SourceSurface */
+  RECORDING, /* Surface used for recording */
+  TILED /* Surface from a tiled DrawTarget */
 };
 
-enum SurfaceFormat
-{
-  FORMAT_B8G8R8A8,
-  FORMAT_B8G8R8X8,
-  FORMAT_R8G8B8A8,
-  FORMAT_R8G8B8X8,
-  FORMAT_R5G6B5,
-  FORMAT_A8,
-  FORMAT_YUV,
-  FORMAT_UNKNOWN
+enum class SurfaceFormat : int8_t {
+  // The following values are named to reflect layout of colors in memory, from
+  // lowest byte to highest byte. The 32-bit value layout depends on machine
+  // endianness.
+  //               in-memory            32-bit LE value   32-bit BE value
+  B8G8R8A8,     // [BB, GG, RR, AA]     0xAARRGGBB        0xBBGGRRAA
+  B8G8R8X8,     // [BB, GG, RR, 00]     0x00RRGGBB        0xBBGGRR00
+  R8G8B8A8,     // [RR, GG, BB, AA]     0xAABBGGRR        0xRRGGBBAA
+  R8G8B8X8,     // [RR, GG, BB, 00]     0x00BBGGRR        0xRRGGBB00
+  A8R8G8B8,     // [AA, RR, GG, BB]     0xBBGGRRAA        0xAARRGGBB
+  X8R8G8B8,     // [00, RR, GG, BB]     0xBBGGRR00        0x00RRGGBB
+
+  R8G8B8,
+  B8G8R8,
+
+  // The _UINT16 suffix here indicates that the name reflects the layout when
+  // viewed as a uint16_t value. In memory these values are stored using native
+  // endianness.
+  R5G6B5_UINT16,                    // 0bRRRRRGGGGGGBBBBB
+
+  // This one is a single-byte, so endianness isn't an issue.
+  A8,
+
+  // These ones are their own special cases.
+  YUV,
+  NV12,
+  YUV422,
+  HSV,
+  Lab,
+  Depth,
+
+  // This represents the unknown format.
+  UNKNOWN,
+
+  // The following values are endian-independent synonyms. The _UINT32 suffix
+  // indicates that the name reflects the layout when viewed as a uint32_t
+  // value.
+#if MOZ_LITTLE_ENDIAN
+  A8R8G8B8_UINT32 = B8G8R8A8,       // 0xAARRGGBB
+  X8R8G8B8_UINT32 = B8G8R8X8        // 0x00RRGGBB
+#elif MOZ_BIG_ENDIAN
+  A8R8G8B8_UINT32 = A8R8G8B8,       // 0xAARRGGBB
+  X8R8G8B8_UINT32 = X8R8G8B8        // 0x00RRGGBB
+#else
+# error "bad endianness"
+#endif
 };
 
-enum BackendType
+inline bool IsOpaque(SurfaceFormat aFormat)
 {
-  BACKEND_NONE = 0,
-  BACKEND_DIRECT2D,
-  BACKEND_COREGRAPHICS,
-  BACKEND_COREGRAPHICS_ACCELERATED,
-  BACKEND_CAIRO,
-  BACKEND_SKIA,
-  BACKEND_RECORDING
+  switch (aFormat) {
+  case SurfaceFormat::B8G8R8X8:
+  case SurfaceFormat::R8G8B8X8:
+  case SurfaceFormat::R5G6B5_UINT16:
+  case SurfaceFormat::YUV:
+  case SurfaceFormat::NV12:
+  case SurfaceFormat::YUV422:
+    return true;
+  default:
+    return false;
+  }
+}
+
+enum class FilterType : int8_t {
+  BLEND = 0,
+  TRANSFORM,
+  MORPHOLOGY,
+  COLOR_MATRIX,
+  FLOOD,
+  TILE,
+  TABLE_TRANSFER,
+  DISCRETE_TRANSFER,
+  LINEAR_TRANSFER,
+  GAMMA_TRANSFER,
+  CONVOLVE_MATRIX,
+  DISPLACEMENT_MAP,
+  TURBULENCE,
+  ARITHMETIC_COMBINE,
+  COMPOSITE,
+  DIRECTIONAL_BLUR,
+  GAUSSIAN_BLUR,
+  POINT_DIFFUSE,
+  POINT_SPECULAR,
+  SPOT_DIFFUSE,
+  SPOT_SPECULAR,
+  DISTANT_DIFFUSE,
+  DISTANT_SPECULAR,
+  CROP,
+  PREMULTIPLY,
+  UNPREMULTIPLY
 };
 
-enum FontType
-{
-  FONT_DWRITE,
-  FONT_GDI,
-  FONT_MAC,
-  FONT_SKIA,
-  FONT_CAIRO,
-  FONT_COREGRAPHICS
+enum class DrawTargetType : int8_t {
+  SOFTWARE_RASTER = 0,
+  HARDWARE_RASTER,
+  VECTOR
 };
 
-enum NativeSurfaceType
-{
-  NATIVE_SURFACE_D3D10_TEXTURE,
-  NATIVE_SURFACE_CAIRO_SURFACE,
-  NATIVE_SURFACE_CGCONTEXT,
-  NATIVE_SURFACE_CGCONTEXT_ACCELERATED
+enum class BackendType : int8_t {
+  NONE = 0,
+  DIRECT2D, // Used for version independent D2D objects.
+  CAIRO,
+  SKIA,
+  RECORDING,
+  DIRECT2D1_1,
+
+  // Add new entries above this line.
+  BACKEND_LAST
 };
 
-enum NativeFontType
-{
-  NATIVE_FONT_DWRITE_FONT_FACE,
-  NATIVE_FONT_GDI_FONT_FACE,
-  NATIVE_FONT_MAC_FONT_FACE,
-  NATIVE_FONT_SKIA_FONT_FACE,
-  NATIVE_FONT_CAIRO_FONT_FACE
+enum class FontType : int8_t {
+  DWRITE,
+  GDI,
+  MAC,
+  SKIA,
+  CAIRO,
+  COREGRAPHICS,
+  FONTCONFIG
 };
 
-enum FontStyle
-{
-  FONT_STYLE_NORMAL,
-  FONT_STYLE_ITALIC,
-  FONT_STYLE_BOLD,
-  FONT_STYLE_BOLD_ITALIC
+enum class NativeSurfaceType : int8_t {
+  D3D10_TEXTURE,
+  CAIRO_CONTEXT,
+  CGCONTEXT,
+  CGCONTEXT_ACCELERATED,
+  OPENGL_TEXTURE
 };
 
-enum CompositionOp { OP_OVER, OP_ADD, OP_ATOP, OP_OUT, OP_IN, OP_SOURCE, OP_DEST_IN, OP_DEST_OUT, OP_DEST_OVER, OP_DEST_ATOP, OP_XOR, 
-  OP_MULTIPLY, OP_SCREEN, OP_OVERLAY, OP_DARKEN, OP_LIGHTEN, OP_COLOR_DODGE, OP_COLOR_BURN, OP_HARD_LIGHT, OP_SOFT_LIGHT,  OP_DIFFERENCE, OP_EXCLUSION, OP_HUE, OP_SATURATION, OP_COLOR, OP_LUMINOSITY, OP_COUNT };
-enum ExtendMode { EXTEND_CLAMP, EXTEND_REPEAT, EXTEND_REFLECT };
-enum FillRule { FILL_WINDING, FILL_EVEN_ODD };
-enum AntialiasMode { AA_NONE, AA_GRAY, AA_SUBPIXEL, AA_DEFAULT };
-enum Snapping { SNAP_NONE, SNAP_ALIGNED };
-enum Filter { FILTER_LINEAR, FILTER_POINT };
-enum PatternType { PATTERN_COLOR, PATTERN_SURFACE, PATTERN_LINEAR_GRADIENT, PATTERN_RADIAL_GRADIENT };
-enum JoinStyle { JOIN_BEVEL, JOIN_ROUND, JOIN_MITER, JOIN_MITER_OR_BEVEL };
-enum CapStyle { CAP_BUTT, CAP_ROUND, CAP_SQUARE };
-enum SamplingBounds { SAMPLING_UNBOUNDED, SAMPLING_BOUNDED };
+enum class NativeFontType : int8_t {
+  DWRITE_FONT_FACE,
+  GDI_FONT_FACE,
+  MAC_FONT_FACE,
+  SKIA_FONT_FACE,
+  CAIRO_FONT_FACE
+};
+
+enum class FontStyle : int8_t {
+  NORMAL,
+  ITALIC,
+  BOLD,
+  BOLD_ITALIC
+};
+
+enum class FontHinting : int8_t {
+  NONE,
+  LIGHT,
+  NORMAL,
+  FULL
+};
+
+enum class CompositionOp : int8_t {
+  OP_OVER,
+  OP_ADD,
+  OP_ATOP,
+  OP_OUT,
+  OP_IN,
+  OP_SOURCE,
+  OP_DEST_IN,
+  OP_DEST_OUT,
+  OP_DEST_OVER,
+  OP_DEST_ATOP,
+  OP_XOR,
+  OP_MULTIPLY,
+  OP_SCREEN,
+  OP_OVERLAY,
+  OP_DARKEN,
+  OP_LIGHTEN,
+  OP_COLOR_DODGE,
+  OP_COLOR_BURN,
+  OP_HARD_LIGHT,
+  OP_SOFT_LIGHT,
+  OP_DIFFERENCE,
+  OP_EXCLUSION,
+  OP_HUE,
+  OP_SATURATION,
+  OP_COLOR,
+  OP_LUMINOSITY,
+  OP_COUNT
+};
+
+enum class Axis : int8_t {
+  X_AXIS,
+  Y_AXIS,
+  BOTH
+};
+
+enum class ExtendMode : int8_t {
+  CLAMP,    // Do not repeat
+  REPEAT,   // Repeat in both axis
+  REPEAT_X, // Only X axis
+  REPEAT_Y, // Only Y axis
+  REFLECT   // Mirror the image
+};
+
+enum class FillRule : int8_t {
+  FILL_WINDING,
+  FILL_EVEN_ODD
+};
+
+enum class AntialiasMode : int8_t {
+  NONE,
+  GRAY,
+  SUBPIXEL,
+  DEFAULT
+};
+
+// See https://en.wikipedia.org/wiki/Texture_filtering
+enum class SamplingFilter : int8_t {
+  GOOD,
+  LINEAR,
+  POINT,
+  SENTINEL  // one past the last valid value
+};
+
+enum class PatternType : int8_t {
+  COLOR,
+  SURFACE,
+  LINEAR_GRADIENT,
+  RADIAL_GRADIENT
+};
+
+enum class JoinStyle : int8_t {
+  BEVEL,
+  ROUND,
+  MITER, //!< Mitered if within the miter limit, else, if the backed supports
+         //!< it (D2D), the miter is clamped. If the backend does not support
+         //!< miter clamping the behavior is as for MITER_OR_BEVEL.
+  MITER_OR_BEVEL //!< Mitered if within the miter limit, else beveled.
+};
+
+enum class CapStyle : int8_t {
+  BUTT,
+  ROUND,
+  SQUARE
+};
+
+enum class SamplingBounds : int8_t {
+  UNBOUNDED,
+  BOUNDED
+};
 
 /* Color is stored in non-premultiplied form */
 struct Color
@@ -124,10 +296,38 @@ public:
     return newColor;
   }
 
+  // The "Unusual" prefix is to avoid unintentionally using this function when
+  // FromABGR(), which is much more common, is needed.
+  static Color UnusualFromARGB(uint32_t aColor)
+  {
+    Color newColor(((aColor >> 16) & 0xff) * (1.0f / 255.0f),
+                   ((aColor >> 8) & 0xff) * (1.0f / 255.0f),
+                   ((aColor >> 0) & 0xff) * (1.0f / 255.0f),
+                   ((aColor >> 24) & 0xff) * (1.0f / 255.0f));
+
+    return newColor;
+  }
+
   uint32_t ToABGR() const
   {
     return uint32_t(r * 255.0f) | uint32_t(g * 255.0f) << 8 |
            uint32_t(b * 255.0f) << 16 | uint32_t(a * 255.0f) << 24;
+  }
+
+  // The "Unusual" prefix is to avoid unintentionally using this function when
+  // ToABGR(), which is much more common, is needed.
+  uint32_t UnusualToARGB() const
+  {
+    return uint32_t(b * 255.0f) | uint32_t(g * 255.0f) << 8 |
+           uint32_t(r * 255.0f) << 16 | uint32_t(a * 255.0f) << 24;
+  }
+
+  bool operator==(const Color& aColor) const {
+    return r == aColor.r && g == aColor.g && b == aColor.b && a == aColor.a;
+  }
+
+  bool operator!=(const Color& aColor) const {
+    return !(*this == aColor);
   }
 
   Float r, g, b, a;
@@ -143,8 +343,18 @@ struct GradientStop
   Color color;
 };
 
-}
-}
+enum class JobStatus {
+    Complete,
+    Wait,
+    Yield,
+    Error
+};
+
+} // namespace gfx
+} // namespace mozilla
+
+// XXX: temporary
+typedef mozilla::gfx::SurfaceFormat gfxImageFormat;
 
 #if defined(XP_WIN) && defined(MOZ_GFX)
 #ifdef GFX2D_INTERNAL
@@ -156,17 +366,42 @@ struct GradientStop
 #define GFX2D_API
 #endif
 
-// Side constants for use in various places
 namespace mozilla {
-  namespace css {
-    enum Side {eSideTop, eSideRight, eSideBottom, eSideLeft};
-  }
-}
 
-// XXX - These don't really belong here. But for now this is where they go.
-#define NS_SIDE_TOP     mozilla::css::eSideTop
-#define NS_SIDE_RIGHT   mozilla::css::eSideRight
-#define NS_SIDE_BOTTOM  mozilla::css::eSideBottom
-#define NS_SIDE_LEFT    mozilla::css::eSideLeft
+// We can't use MOZ_BEGIN_ENUM_CLASS here because that prevents the enum
+// values from being used for indexing. Wrapping the enum in a struct does at
+// least gives us name scoping.
+struct RectCorner {
+  enum {
+    // This order is important since Rect::AtCorner, AppendRoundedRectToPath
+    // and other code depends on it!
+    TopLeft = 0,
+    TopRight = 1,
+    BottomRight = 2,
+    BottomLeft = 3,
+    Count = 4
+  };
+};
+
+// Side constants for use in various places.
+enum Side { eSideTop, eSideRight, eSideBottom, eSideLeft };
+
+enum SideBits {
+  eSideBitsNone   = 0,
+  eSideBitsTop    = 1 << eSideTop,
+  eSideBitsRight  = 1 << eSideRight,
+  eSideBitsBottom = 1 << eSideBottom,
+  eSideBitsLeft   = 1 << eSideLeft,
+  eSideBitsTopBottom = eSideBitsTop  | eSideBitsBottom,
+  eSideBitsLeftRight = eSideBitsLeft | eSideBitsRight,
+  eSideBitsAll = eSideBitsTopBottom | eSideBitsLeftRight
+};
+
+} // namespace mozilla
+
+#define NS_SIDE_TOP    mozilla::eSideTop
+#define NS_SIDE_RIGHT  mozilla::eSideRight
+#define NS_SIDE_BOTTOM mozilla::eSideBottom
+#define NS_SIDE_LEFT   mozilla::eSideLeft
 
 #endif /* MOZILLA_GFX_TYPES_H_ */

@@ -65,8 +65,9 @@ function test() {
   };
   let remember_count = 1;
 
-  function countByTitle(aClosedWindowList, aTitle)
-    aClosedWindowList.filter(function(aData) aData.title == aTitle).length;
+  function countByTitle(aClosedWindowList, aTitle) {
+    return aClosedWindowList.filter(aData => aData.title == aTitle).length;
+  }
 
   function testForError(aFunction) {
     try {
@@ -80,8 +81,7 @@ function test() {
 
   // open a window and add the above closed window list
   let newWin = openDialog(location, "_blank", "chrome,all,dialog=no");
-  newWin.addEventListener("load", function(aEvent) {
-    this.removeEventListener("load", arguments.callee, false);
+  promiseWindowLoaded(newWin).then(() => {
     gPrefService.setIntPref("browser.sessionstore.max_windows_undo",
                             test_state._closedWindows.length);
     ss.setWindowState(newWin, JSON.stringify(test_state), true);
@@ -96,9 +96,9 @@ function test() {
        "Everything is set up.");
 
     // all of the following calls with illegal arguments should throw NS_ERROR_ILLEGAL_VALUE
-    ok(testForError(function() ss.forgetClosedWindow(-1)),
+    ok(testForError(() => ss.forgetClosedWindow(-1)),
        "Invalid window for forgetClosedWindow throws");
-    ok(testForError(function() ss.forgetClosedWindow(test_state._closedWindows.length + 1)),
+    ok(testForError(() => ss.forgetClosedWindow(test_state._closedWindows.length + 1)),
        "Invalid window for forgetClosedWindow throws");
 
     // Remove third window, then first window
@@ -114,8 +114,7 @@ function test() {
        "... and windows not specifically forgetten weren't.");
 
     // clean up
-    newWin.close();
     gPrefService.clearUserPref("browser.sessionstore.max_windows_undo");
-    finish();
-  }, false);
+    BrowserTestUtils.closeWindow(newWin).then(finish);
+  });
 }

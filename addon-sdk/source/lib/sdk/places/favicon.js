@@ -5,7 +5,11 @@
 "use strict";
 
 module.metadata = {
-  "stability": "unstable"
+  "stability": "unstable",
+  "engines": {
+    "Firefox": "*",
+    "SeaMonkey": "*"
+  }
 };
 
 const { Cc, Ci, Cu } = require("chrome");

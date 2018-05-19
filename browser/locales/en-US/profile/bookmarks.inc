@@ -4,7 +4,7 @@
 #filter emptyLines
 
 # LOCALIZATION NOTE: The 'en-US' strings in the URLs will be replaced with
-# your locale code, and link to your translated pages as soon as they're 
+# your locale code, and link to your translated pages as soon as they're
 # live.
 
 #define bookmarks_title Bookmarks
@@ -36,5 +36,37 @@
 # LOCALIZATION NOTE (firefox_about):
 # link title for https://www.mozilla.org/en-US/about/
 #define firefox_about About Us
+
+# LOCALIZATION NOTE (nightly_heading):
+# Firefox Nightly links folder name
+#define nightly_heading Firefox Nightly Resources
+
+# LOCALIZATION NOTE (nightly_blog):
+# Nightly builds only, link title for https://blog.nightly.mozilla.org/
+#define nightly_blog Firefox Nightly blog
+
+# LOCALIZATION NOTE (bugzilla):
+# Nightly builds only, link title for https://bugzilla.mozilla.org/
+#define bugzilla Mozilla Bug Tracker
+
+# LOCALIZATION NOTE (mdn):
+# Nightly builds only, link title for https://developer.mozilla.org/
+#define mdn Mozilla Developer Network
+
+# LOCALIZATION NOTE (nightly_tester_tools):
+# Nightly builds only, link title for https://addons.mozilla.org/en-US/firefox/addon/nightly-tester-tools/
+#define nightly_tester_tools Nightly Tester Tools
+
+# LOCALIZATION NOTE (crashes):
+# Nightly builds only, link title for about:crashes
+#define crashes All your crashes
+
+# LOCALIZATION NOTE (irc):
+# Nightly builds only, link title for ircs://irc.mozilla.org/nightly
+#define irc Discuss Nightly on IRC
+
+# LOCALIZATION NOTE (planet):
+# Nightly builds only, link title for https://planet.mozilla.org/
+#define planet Planet Mozilla
 
 #unfilter emptyLines

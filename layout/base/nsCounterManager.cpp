@@ -1,5 +1,4 @@
-/* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 4 -*- */
-// vim:cindent:ai:sw=4:ts=4:et:
+/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -7,10 +6,15 @@
 /* implementation of CSS counters (for numbering things) */
 
 #include "nsCounterManager.h"
+
+#include "mozilla/Likely.h"
+#include "mozilla/WritingModes.h"
 #include "nsBulletFrame.h" // legacy location for list style type to text code
 #include "nsContentUtils.h"
+#include "nsIContent.h"
 #include "nsTArray.h"
-#include "mozilla/Likely.h"
+
+using namespace mozilla;
 
 bool
 nsCounterUseNode::InitTextFrame(nsGenConList* aList,
@@ -35,8 +39,28 @@ nsCounterUseNode::InitTextFrame(nsGenConList* aList,
       return true;
     }
   }
-  
+
   return false;
+}
+
+CounterStyle*
+nsCounterUseNode::GetCounterStyle()
+{
+    if (!mCounterStyle) {
+        const nsCSSValue& style = mCounterFunction->Item(mAllCounters ? 2 : 1);
+        CounterStyleManager* manager = mPresContext->CounterStyleManager();
+        if (style.GetUnit() == eCSSUnit_Ident) {
+            nsString ident;
+            style.GetStringValue(ident);
+            mCounterStyle = manager->BuildCounterStyle(ident);
+        } else if (style.GetUnit() == eCSSUnit_Symbols) {
+            mCounterStyle = new AnonymousCounterStyle(style.GetArrayValue());
+        } else {
+            NS_NOTREACHED("Unknown counter style");
+            mCounterStyle = CounterStyleManager::GetDecimalStyle();
+        }
+    }
+    return mCounterStyle;
 }
 
 // assign the correct |mValueAfter| value to a node that has been inserted
@@ -69,22 +93,26 @@ nsCounterUseNode::GetText(nsString& aResult)
 {
     aResult.Truncate();
 
-    nsAutoTArray<nsCounterNode*, 8> stack;
+    AutoTArray<nsCounterNode*, 8> stack;
     stack.AppendElement(static_cast<nsCounterNode*>(this));
 
     if (mAllCounters && mScopeStart)
         for (nsCounterNode *n = mScopeStart; n->mScopePrev; n = n->mScopeStart)
             stack.AppendElement(n->mScopePrev);
 
-    const nsCSSValue& styleItem = mCounterStyle->Item(mAllCounters ? 2 : 1);
-    int32_t style = styleItem.GetIntValue();
-    const PRUnichar* separator;
+    const char16_t* separator;
     if (mAllCounters)
-        separator = mCounterStyle->Item(1).GetStringBufferValue();
+        separator = mCounterFunction->Item(1).GetStringBufferValue();
 
+    CounterStyle* style = GetCounterStyle();
+    WritingMode wm = mPseudoFrame ?
+        mPseudoFrame->GetWritingMode() : WritingMode();
     for (uint32_t i = stack.Length() - 1;; --i) {
         nsCounterNode *n = stack[i];
-        nsBulletFrame::AppendCounterText(style, n->mValueAfter, aResult);
+        nsAutoString text;
+        bool isTextRTL;
+        style->GetCounterText(n->mValueAfter, wm, text, isTextRTL);
+        aResult.Append(text);
         if (i == 0)
             break;
         NS_ASSERTION(mAllCounters, "yikes, separator is uninitialized");
@@ -155,33 +183,29 @@ nsCounterList::SetScope(nsCounterNode *aNode)
 void
 nsCounterList::RecalcAll()
 {
-    mDirty = false;
+  mDirty = false;
 
-    nsCounterNode *node = First();
-    if (!node)
-        return;
+  for (nsCounterNode* node = First(); node; node = Next(node)) {
+    SetScope(node);
+    node->Calc(this);
 
-    do {
-        SetScope(node);
-        node->Calc(this);
-
-        if (node->mType == nsCounterNode::USE) {
-            nsCounterUseNode *useNode = node->UseNode();
-            // Null-check mText, since if the frame constructor isn't
-            // batching, we could end up here while the node is being
-            // constructed.
-            if (useNode->mText) {
-                nsAutoString text;
-                useNode->GetText(text);
-                useNode->mText->SetData(text);
-            }
-        }
-    } while ((node = Next(node)) != First());
+    if (node->mType == nsCounterNode::USE) {
+      nsCounterUseNode *useNode = node->UseNode();
+      // Null-check mText, since if the frame constructor isn't
+      // batching, we could end up here while the node is being
+      // constructed.
+      if (useNode->mText) {
+        nsAutoString text;
+        useNode->GetText(text);
+        useNode->mText->SetData(text);
+      }
+    }
+  }
 }
 
 nsCounterManager::nsCounterManager()
+    : mNames()
 {
-    mNames.Init(16);
 }
 
 bool
@@ -197,44 +221,39 @@ nsCounterManager::AddCounterResetsAndIncrements(nsIFrame *aFrame)
     int32_t i, i_end;
     bool dirty = false;
     for (i = 0, i_end = styleContent->CounterResetCount(); i != i_end; ++i)
-        dirty |= AddResetOrIncrement(aFrame, i,
-                                     styleContent->GetCounterResetAt(i),
-                                     nsCounterChangeNode::RESET);
+      dirty |= AddResetOrIncrement(aFrame, i, styleContent->CounterResetAt(i),
+                                   nsCounterChangeNode::RESET);
     for (i = 0, i_end = styleContent->CounterIncrementCount(); i != i_end; ++i)
-        dirty |= AddResetOrIncrement(aFrame, i,
-                                     styleContent->GetCounterIncrementAt(i),
-                                     nsCounterChangeNode::INCREMENT);
+      dirty |=
+        AddResetOrIncrement(aFrame, i, styleContent->CounterIncrementAt(i),
+                            nsCounterChangeNode::INCREMENT);
     return dirty;
 }
 
 bool
-nsCounterManager::AddResetOrIncrement(nsIFrame *aFrame, int32_t aIndex,
-                                      const nsStyleCounterData *aCounterData,
+nsCounterManager::AddResetOrIncrement(nsIFrame* aFrame, int32_t aIndex,
+                                      const nsStyleCounterData& aCounterData,
                                       nsCounterNode::Type aType)
 {
-    nsCounterChangeNode *node =
-        new nsCounterChangeNode(aFrame, aType, aCounterData->mValue, aIndex);
+  nsCounterChangeNode* node =
+    new nsCounterChangeNode(aFrame, aType, aCounterData.mValue, aIndex);
 
-    nsCounterList *counterList = CounterListFor(aCounterData->mCounter);
-    if (!counterList) {
-        NS_NOTREACHED("CounterListFor failed (should only happen on OOM)");
-        return false;
-    }
+  nsCounterList* counterList = CounterListFor(aCounterData.mCounter);
 
-    counterList->Insert(node);
-    if (!counterList->IsLast(node)) {
-        // Tell the caller it's responsible for recalculating the entire
-        // list.
-        counterList->SetDirty();
-        return true;
-    }
+  counterList->Insert(node);
+  if (!counterList->IsLast(node)) {
+    // Tell the caller it's responsible for recalculating the entire
+    // list.
+    counterList->SetDirty();
+    return true;
+  }
 
-    // Don't call Calc() if the list is already dirty -- it'll be recalculated
-    // anyway, and trying to calculate with a dirty list doesn't work.
-    if (MOZ_LIKELY(!counterList->IsDirty())) {
-        node->Calc(counterList);
-    }
-    return false;
+  // Don't call Calc() if the list is already dirty -- it'll be recalculated
+  // anyway, and trying to calculate with a dirty list doesn't work.
+  if (MOZ_LIKELY(!counterList->IsDirty())) {
+    node->Calc(counterList);
+  }
+  return false;
 }
 
 nsCounterList*
@@ -250,82 +269,78 @@ nsCounterManager::CounterListFor(const nsSubstring& aCounterName)
     return counterList;
 }
 
-static PLDHashOperator
-RecalcDirtyLists(const nsAString& aKey, nsCounterList* aList, void* aClosure)
-{
-    if (aList->IsDirty())
-        aList->RecalcAll();
-    return PL_DHASH_NEXT;
-}
-
 void
 nsCounterManager::RecalcAll()
 {
-    mNames.EnumerateRead(RecalcDirtyLists, nullptr);
+    for (auto iter = mNames.Iter(); !iter.Done(); iter.Next()) {
+        nsCounterList* list = iter.UserData();
+        if (list->IsDirty()) {
+            list->RecalcAll();
+        }
+    }
 }
 
-struct DestroyNodesData {
-    DestroyNodesData(nsIFrame *aFrame)
-        : mFrame(aFrame)
-        , mDestroyedAny(false)
-    {
-    }
-
-    nsIFrame *mFrame;
-    bool mDestroyedAny;
-};
-
-static PLDHashOperator
-DestroyNodesInList(const nsAString& aKey, nsCounterList* aList, void* aClosure)
+void
+nsCounterManager::SetAllCounterStylesDirty()
 {
-    DestroyNodesData *data = static_cast<DestroyNodesData*>(aClosure);
-    if (aList->DestroyNodesFor(data->mFrame)) {
-        data->mDestroyedAny = true;
-        aList->SetDirty();
+  for (auto iter = mNames.Iter(); !iter.Done(); iter.Next()) {
+    nsCounterList* list = iter.UserData();
+    bool changed = false;
+
+    for (nsCounterNode* node = list->First(); node; node = list->Next(node)) {
+      if (node->mType == nsCounterNode::USE) {
+        node->UseNode()->SetCounterStyleDirty();
+        changed = true;
+      }
     }
-    return PL_DHASH_NEXT;
+
+    if (changed) {
+      list->SetDirty();
+    }
+  }
 }
 
 bool
 nsCounterManager::DestroyNodesFor(nsIFrame *aFrame)
 {
-    DestroyNodesData data(aFrame);
-    mNames.EnumerateRead(DestroyNodesInList, &data);
-    return data.mDestroyedAny;
+  bool destroyedAny = false;
+  for (auto iter = mNames.Iter(); !iter.Done(); iter.Next()) {
+    nsCounterList* list = iter.UserData();
+    if (list->DestroyNodesFor(aFrame)) {
+      destroyedAny = true;
+      list->SetDirty();
+    }
+  }
+  return destroyedAny;
 }
 
 #ifdef DEBUG
-static PLDHashOperator
-DumpList(const nsAString& aKey, nsCounterList* aList, void* aClosure)
-{
-    printf("Counter named \"%s\":\n", NS_ConvertUTF16toUTF8(aKey).get());
-    nsCounterNode *node = aList->First();
-
-    if (node) {
-        int32_t i = 0;
-        do {
-            const char *types[] = { "RESET", "INCREMENT", "USE" };
-            printf("  Node #%d @%p frame=%p index=%d type=%s valAfter=%d\n"
-                   "       scope-start=%p scope-prev=%p",
-                   i++, (void*)node, (void*)node->mPseudoFrame,
-                   node->mContentIndex, types[node->mType], node->mValueAfter,
-                   (void*)node->mScopeStart, (void*)node->mScopePrev);
-            if (node->mType == nsCounterNode::USE) {
-                nsAutoString text;
-                node->UseNode()->GetText(text);
-                printf(" text=%s", NS_ConvertUTF16toUTF8(text).get());
-            }
-            printf("\n");
-        } while ((node = aList->Next(node)) != aList->First());
-    }
-    return PL_DHASH_NEXT;
-}
-
 void
 nsCounterManager::Dump()
 {
-    printf("\n\nCounter Manager Lists:\n");
-    mNames.EnumerateRead(DumpList, nullptr);
-    printf("\n\n");
+  printf("\n\nCounter Manager Lists:\n");
+  for (auto iter = mNames.Iter(); !iter.Done(); iter.Next()) {
+    printf("Counter named \"%s\":\n",
+           NS_ConvertUTF16toUTF8(iter.Key()).get());
+
+    nsCounterList* list = iter.UserData();
+    int32_t i = 0;
+    for (nsCounterNode* node = list->First(); node; node = list->Next(node)) {
+      const char* types[] = { "RESET", "INCREMENT", "USE" };
+      printf("  Node #%d @%p frame=%p index=%d type=%s valAfter=%d\n"
+             "       scope-start=%p scope-prev=%p",
+             i++, (void*)node, (void*)node->mPseudoFrame,
+             node->mContentIndex, types[node->mType],
+             node->mValueAfter, (void*)node->mScopeStart,
+             (void*)node->mScopePrev);
+      if (node->mType == nsCounterNode::USE) {
+        nsAutoString text;
+        node->UseNode()->GetText(text);
+        printf(" text=%s", NS_ConvertUTF16toUTF8(text).get());
+      }
+      printf("\n");
+    }
+  }
+  printf("\n\n");
 }
 #endif

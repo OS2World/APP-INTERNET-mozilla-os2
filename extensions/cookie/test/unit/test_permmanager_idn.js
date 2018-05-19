@@ -2,14 +2,15 @@
    http://creativecommons.org/publicdomain/zero/1.0/ */
 
 function getPrincipalFromDomain(aDomain) {
-  return Cc["@mozilla.org/scriptsecuritymanager;1"]
-           .getService(Ci.nsIScriptSecurityManager)
-           .getNoAppCodebasePrincipal(NetUtil.newURI("http://" + aDomain));
+  let ssm = Cc["@mozilla.org/scriptsecuritymanager;1"]
+              .getService(Ci.nsIScriptSecurityManager);
+  let uri = NetUtil.newURI("http://" + aDomain);
+  return ssm.createCodebasePrincipal(uri, {});
 }
 
 function run_test() {
   let profile = do_get_profile();
-  let pm = Services.permissions;
+  let pm = Services.perms;
   let perm = 'test-idn';
 
   // We create three principal linked to IDN.

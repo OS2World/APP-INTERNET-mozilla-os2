@@ -65,8 +65,8 @@ struct ParamTraits<mozilla::plugins::NPRemoteEvent>
                 aMsg->WriteUnsignedChar(aParam.event.data.focus.hasFocus);
                 break;
             case NPCocoaEventDrawRect:
-                // We don't write out the context pointer, it would always be NULL
-                // and is just filled in as such on the read.
+                // We don't write out the context pointer, it would always be
+                // nullptr and is just filled in as such on the read.
                 aMsg->WriteDouble(aParam.event.data.draw.x);
                 aMsg->WriteDouble(aParam.event.data.draw.y);
                 aMsg->WriteDouble(aParam.event.data.draw.width);
@@ -82,7 +82,7 @@ struct ParamTraits<mozilla::plugins::NPRemoteEvent>
         aMsg->WriteDouble(aParam.contentsScaleFactor);
     }
 
-    static bool Read(const Message* aMsg, void** aIter, paramType* aResult)
+    static bool Read(const Message* aMsg, PickleIterator* aIter, paramType* aResult)
     {
         int type = 0;
         if (!aMsg->ReadInt(aIter, &type)) {
@@ -153,7 +153,7 @@ struct ParamTraits<mozilla::plugins::NPRemoteEvent>
                 }
                 break;
             case NPCocoaEventDrawRect:
-                aResult->event.data.draw.context = NULL;
+                aResult->event.data.draw.context = nullptr;
                 if (!aMsg->ReadDouble(aIter, &aResult->event.data.draw.x)) {
                     return false;
                 }

@@ -5,7 +5,7 @@ Cu.import("resource://services-sync/engines/tabs.js");
 Cu.import("resource://services-sync/service.js");
 Cu.import("resource://services-sync/util.js");
 
-let clientsEngine = Service.clientsEngine;
+var clientsEngine = Service.clientsEngine;
 
 function fakeSvcWinMediator() {
   // actions on windows are captured in logs
@@ -15,9 +15,11 @@ function fakeSvcWinMediator() {
     getEnumerator: function() {
       return {
         cnt: 2,
-        hasMoreElements: function() this.cnt-- > 0,
+        hasMoreElements: function() {
+          return this.cnt-- > 0;
+        },
         getNext: function() {
-          let elt = {addTopics: [], remTopics: []};
+          let elt = {addTopics: [], remTopics: [], numAPL: 0, numRPL: 0};
           logs.push(elt);
           return {
             addEventListener: function(topic) {
@@ -25,22 +27,18 @@ function fakeSvcWinMediator() {
             },
             removeEventListener: function(topic) {
               elt.remTopics.push(topic);
-            }
+            },
+            gBrowser: {
+              addProgressListener() {
+                elt.numAPL++;
+              },
+              removeProgressListener() {
+                elt.numRPL++;
+              },
+            },
           };
         }
       };
-    }
-  };
-  return logs;
-}
-
-function fakeSvcSession() {
-  // actions on Session are captured in logs
-  let logs = [];
-  delete Svc.Session;
-  Svc.Session = {
-    setTabValue: function(target, prop, value) {
-      logs.push({target: target, prop: prop, value: value});
     }
   };
   return logs;
@@ -63,7 +61,7 @@ function run_test() {
   logs = fakeSvcWinMediator();
   Svc.Obs.notify("weave:engine:start-tracking");
   do_check_eq(logs.length, 2);
-  for each (let log in logs) {
+  for (let log of logs) {
     do_check_eq(log.addTopics.length, 5);
     do_check_true(log.addTopics.indexOf("pageshow") >= 0);
     do_check_true(log.addTopics.indexOf("TabOpen") >= 0);
@@ -71,13 +69,15 @@ function run_test() {
     do_check_true(log.addTopics.indexOf("TabSelect") >= 0);
     do_check_true(log.addTopics.indexOf("unload") >= 0);
     do_check_eq(log.remTopics.length, 0);
+    do_check_eq(log.numAPL, 1, "Added 1 progress listener");
+    do_check_eq(log.numRPL, 0, "Didn't remove a progress listener");
   }
 
   _("Test listeners are unregistered on windows");
   logs = fakeSvcWinMediator();
   Svc.Obs.notify("weave:engine:stop-tracking");
   do_check_eq(logs.length, 2);
-  for each (let log in logs) {
+  for (let log of logs) {
     do_check_eq(log.addTopics.length, 0);
     do_check_eq(log.remTopics.length, 5);
     do_check_true(log.remTopics.indexOf("pageshow") >= 0);
@@ -85,12 +85,12 @@ function run_test() {
     do_check_true(log.remTopics.indexOf("TabClose") >= 0);
     do_check_true(log.remTopics.indexOf("TabSelect") >= 0);
     do_check_true(log.remTopics.indexOf("unload") >= 0);
+    do_check_eq(log.numAPL, 0, "Didn't add a progress listener");
+    do_check_eq(log.numRPL, 1, "Removed 1 progress listener");
   }
 
   _("Test tab listener");
-  logs = fakeSvcSession();
-  let idx = 0;
-  for each (let evttype in ["TabOpen", "TabClose", "TabSelect"]) {
+  for (let evttype of ["TabOpen", "TabClose", "TabSelect"]) {
     // Pretend we just synced.
     tracker.clearChangedIDs();
     do_check_false(tracker.modified);
@@ -100,11 +100,6 @@ function run_test() {
     do_check_true(tracker.modified);
     do_check_true(Utils.deepEquals(Object.keys(engine.getChangedIDs()),
                                    [clientsEngine.localID]));
-    do_check_eq(logs.length, idx+1);
-    do_check_eq(logs[idx].target, evttype);
-    do_check_eq(logs[idx].prop, "weaveLastUsed");
-    do_check_true(typeof logs[idx].value == "number");
-    idx++;
   }
 
   // Pretend we just synced.
@@ -114,5 +109,19 @@ function run_test() {
   tracker.onTab({type: "pageshow", originalTarget: "pageshow"});
   do_check_true(Utils.deepEquals(Object.keys(engine.getChangedIDs()),
                                  [clientsEngine.localID]));
-  do_check_eq(logs.length, idx); // test that setTabValue isn't called
+
+  // Pretend we just synced and saw some progress listeners.
+  tracker.clearChangedIDs();
+  do_check_false(tracker.modified);
+  tracker.onLocationChange({ isTopLevel: false }, undefined, undefined, 0);
+  do_check_false(tracker.modified, "non-toplevel request didn't flag as modified");
+
+  tracker.onLocationChange({ isTopLevel: true }, undefined, undefined,
+                           Ci.nsIWebProgressListener.LOCATION_CHANGE_SAME_DOCUMENT);
+  do_check_false(tracker.modified, "location change within the same document request didn't flag as modified");
+
+  tracker.onLocationChange({ isTopLevel: true }, undefined, undefined, 0);
+  do_check_true(tracker.modified, "location change for a new top-level document flagged as modified");
+  do_check_true(Utils.deepEquals(Object.keys(engine.getChangedIDs()),
+                                 [clientsEngine.localID]));
 }

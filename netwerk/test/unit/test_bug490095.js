@@ -3,17 +3,12 @@
 // heuristic query freshness as defined in RFC 2616 section 13.9
 //
 
-const Cc = Components.classes;
-const Ci = Components.interfaces;
-const Cu = Components.utils;
-const Cr = Components.results;
-
 Cu.import("resource://testing-common/httpd.js");
+Cu.import("resource://gre/modules/NetUtil.jsm");
 
 var httpserver = new HttpServer();
 var index = 0;
 var tests = [
-    // RFC 2616 section 13.9 2nd paragraph - query-url should be validated
     {url: "/freshness?a", server: "0", expected: "0"},
     {url: "/freshness?a", server: "1", expected: "1"},
 
@@ -24,8 +19,6 @@ var tests = [
     // Finally, check that request is validated with no flags set
     {url: "/freshness?a", server: "99", expected: "99"},
     
-    
-    // RFC 2616 section 13.9 2nd paragraph - query-url should be validated
     {url: "/freshness?b", server: "0", expected: "0"},
     {url: "/freshness?b", server: "1", expected: "1"},
 
@@ -47,9 +40,10 @@ function logit(i, data) {
 }
 
 function setupChannel(suffix, value) {
-    var ios = Components.classes["@mozilla.org/network/io-service;1"].
-                         getService(Ci.nsIIOService);
-    var chan = ios.newChannel("http://localhost:4444" + suffix, "", null);
+    var chan = NetUtil.newChannel({
+        uri: "http://localhost:" + httpserver.identity.primaryPort + suffix,
+        loadUsingSystemPrincipal: true
+    });
     var httpChan = chan.QueryInterface(Components.interfaces.nsIHttpChannel);
     httpChan.requestMethod = "GET";
     httpChan.setRequestHeader("x-request", value, false);
@@ -60,7 +54,7 @@ function triggerNextTest() {
     var test = tests[index];
     var channel = setupChannel(test.url, test.server);
     if (test.flags) channel.loadFlags = test.flags;
-    channel.asyncOpen(new ChannelListener(checkValueAndTrigger, null), null);
+    channel.asyncOpen2(new ChannelListener(checkValueAndTrigger, null));
 }
 
 function checkValueAndTrigger(request, data, ctx) {
@@ -79,7 +73,7 @@ function checkValueAndTrigger(request, data, ctx) {
 
 function run_test() {
     httpserver.registerPathHandler("/freshness", handler);
-    httpserver.start(4444);
+    httpserver.start(-1);
 
     // clear cache
     evict_cache_entries();
@@ -93,6 +87,7 @@ function handler(metadata, response) {
     var body = metadata.getHeader("x-request");
     response.setHeader("Content-Type", "text/plain", false);
     response.setHeader("Date", getDateString(0), false);
+    response.setHeader("Cache-Control", "max-age=0", false);
     
     var header = tests[index].responseheader;
     if (header == null) {

@@ -13,6 +13,7 @@
 #include "nsCacheEntry.h"
 #include "nsThreadUtils.h"
 #include "nsICacheListener.h"
+#include "nsIMemoryReporter.h"
 
 #include "prthread.h"
 #include "nsIObserver.h"
@@ -37,7 +38,7 @@ class mozIStorageService;
  * nsNotifyDoomListener
  *****************************************************************************/
 
-class nsNotifyDoomListener : public nsRunnable {
+class nsNotifyDoomListener : public mozilla::Runnable {
 public:
     nsNotifyDoomListener(nsICacheListener *listener,
                          nsresult status)
@@ -45,7 +46,7 @@ public:
         , mStatus(status)
     {}
 
-    NS_IMETHOD Run()
+    NS_IMETHOD Run() override
     {
         mListener->OnCacheEntryDoomed(mStatus);
         NS_RELEASE(mListener);
@@ -61,15 +62,18 @@ private:
  *  nsCacheService
  ******************************************************************************/
 
-class nsCacheService : public nsICacheServiceInternal
+class nsCacheService final : public nsICacheServiceInternal,
+                             public nsIMemoryReporter
 {
+    virtual ~nsCacheService();
+
 public:
-    NS_DECL_ISUPPORTS
+    NS_DECL_THREADSAFE_ISUPPORTS
     NS_DECL_NSICACHESERVICE
     NS_DECL_NSICACHESERVICEINTERNAL
+    NS_DECL_NSIMEMORYREPORTER
 
     nsCacheService();
-    virtual ~nsCacheService();
 
     // Define a Create method to be used with a factory:
     static nsresult
@@ -124,6 +128,10 @@ public:
 
     static bool      GetClearingEntries();
 
+    static void      GetCacheBaseDirectoty(nsIFile ** result);
+    static void      GetDiskCacheDirectory(nsIFile ** result);
+    static void      GetAppCacheDirectory(nsIFile ** result);
+
     /**
      * Methods called by any cache classes
      */
@@ -174,7 +182,7 @@ public:
     /**
      * Methods called by nsCacheProfilePrefObserver
      */
-    static void      OnProfileShutdown(bool cleanse);
+    static void      OnProfileShutdown();
     static void      OnProfileChanged();
 
     static void      SetDiskCacheEnabled(bool    enabled);
@@ -221,6 +229,14 @@ public:
 
     typedef bool (*DoomCheckFn)(nsCacheEntry* entry);
 
+    // Accessors to the disabled functionality
+    nsresult CreateSessionInternal(const char *          clientID,
+                                   nsCacheStoragePolicy  storagePolicy,
+                                   bool                  streamBased,
+                                   nsICacheSession     **result);
+    nsresult VisitEntriesInternal(nsICacheVisitor *visitor);
+    nsresult EvictEntriesInternal(nsCacheStoragePolicy storagePolicy);
+
 private:
     friend class nsCacheServiceAutoLock;
     friend class nsOfflineCacheDevice;
@@ -238,6 +254,7 @@ private:
      * Internal Methods
      */
 
+    static void      Lock();
     static void      Lock(::mozilla::Telemetry::ID mainThreadLockerID);
     static void      Unlock();
     void             LockAcquired();
@@ -292,25 +309,9 @@ private:
     void             ClearDoomList(void);
     void             DoomActiveEntries(DoomCheckFn check);
     void             CloseAllStreams();
+    void             FireClearNetworkCacheStoredAnywhereNotification();
 
-    static
-    PLDHashOperator  GetActiveEntries(PLDHashTable *    table,
-                                      PLDHashEntryHdr * hdr,
-                                      uint32_t          number,
-                                      void *            arg);
-    static
-    PLDHashOperator  RemoveActiveEntry(PLDHashTable *    table,
-                                       PLDHashEntryHdr * hdr,
-                                       uint32_t          number,
-                                       void *            arg);
-
-    static
-    PLDHashOperator  ShutdownCustomCacheDeviceEnum(const nsAString& aProfileDir,
-                                                   nsRefPtr<nsOfflineCacheDevice>& aDevice,
-                                                   void* aUserArg);
-#if defined(PR_LOGGING)
     void LogCacheStatistics();
-#endif
 
     nsresult         SetDiskSmartSize_Locked();
 
@@ -326,6 +327,7 @@ private:
 
     mozilla::Mutex                  mLock;
     mozilla::CondVar                mCondVar;
+    bool                            mNotified;
 
     mozilla::Mutex                  mTimeStampLock;
     mozilla::TimeStamp              mLockAcquiredTimeStamp;
@@ -376,7 +378,10 @@ private:
 // execution scope.
 class nsCacheServiceAutoLock {
 public:
-    nsCacheServiceAutoLock(mozilla::Telemetry::ID mainThreadLockerID) {
+    nsCacheServiceAutoLock() {
+        nsCacheService::Lock();
+    }
+    explicit nsCacheServiceAutoLock(mozilla::Telemetry::ID mainThreadLockerID) {
         nsCacheService::Lock(mainThreadLockerID);
     }
     ~nsCacheServiceAutoLock() {

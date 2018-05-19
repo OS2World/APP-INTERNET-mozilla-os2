@@ -1,5 +1,5 @@
 // This code is evaluated in a sandbox courtesy of toSource();
-let sandboxCode = (function() {
+var sandboxCode = (function() {
   let req = new XMLHttpRequest();
   req.open("GET", "http://mochi.test:8888/browser/dom/tests/browser/", true);
   req.onreadystatechange = function() {
@@ -34,6 +34,7 @@ function test() {
     let workerWindow = frame.contentWindow;
     workerWindow.addEventListener("message", function(evt) {
       is(evt.data.result, "ok", "check the sandbox code was happy");
+      frame.remove();
       finish();
     }, true);
     let sandbox = new Cu.Sandbox(workerWindow);

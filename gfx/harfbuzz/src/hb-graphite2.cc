@@ -30,12 +30,9 @@
 #define hb_graphite2_shaper_font_data_t gr_font
 #include "hb-shaper-impl-private.hh"
 
-#include <graphite2/Font.h>
-#include <graphite2/Segment.h>
-
 #include "hb-graphite2.h"
 
-#include "hb-ot-tag.h"
+#include <graphite2/Segment.h>
 
 
 HB_SHAPER_DATA_ENSURE_DECLARE(graphite2, face)
@@ -110,7 +107,7 @@ _hb_graphite2_shaper_face_data_create (hb_face_t *face)
 
   hb_graphite2_shaper_face_data_t *data = (hb_graphite2_shaper_face_data_t *) calloc (1, sizeof (hb_graphite2_shaper_face_data_t));
   if (unlikely (!data))
-    hb_blob_destroy (silf_blob);
+    return NULL;
 
   data->face = face;
   data->grface = gr_make_face (data, &hb_graphite2_get_table, gr_face_preloadAll);
@@ -141,6 +138,9 @@ _hb_graphite2_shaper_face_data_destroy (hb_graphite2_shaper_face_data_t *data)
   free (data);
 }
 
+/*
+ * Since: 0.9.10
+ */
 gr_face *
 hb_graphite2_face_get_gr_face (hb_face_t *face)
 {
@@ -175,6 +175,9 @@ _hb_graphite2_shaper_font_data_destroy (hb_graphite2_shaper_font_data_t *data)
   gr_font_destroy (data);
 }
 
+/*
+ * Since: 0.9.10
+ */
 gr_font *
 hb_graphite2_font_get_gr_font (hb_font_t *font)
 {
@@ -192,7 +195,9 @@ struct hb_graphite2_shaper_shape_plan_data_t {};
 hb_graphite2_shaper_shape_plan_data_t *
 _hb_graphite2_shaper_shape_plan_data_create (hb_shape_plan_t    *shape_plan HB_UNUSED,
 					     const hb_feature_t *user_features HB_UNUSED,
-					     unsigned int        num_user_features HB_UNUSED)
+					     unsigned int        num_user_features HB_UNUSED,
+					     const int          *coords HB_UNUSED,
+					     unsigned int        num_coords HB_UNUSED)
 {
   return (hb_graphite2_shaper_shape_plan_data_t *) HB_SHAPER_DATA_SUCCEEDED;
 }
@@ -212,6 +217,8 @@ struct hb_graphite2_cluster_t {
   unsigned int num_chars;
   unsigned int base_glyph;
   unsigned int num_glyphs;
+  unsigned int cluster;
+  float advance;
 };
 
 hb_bool_t
@@ -230,12 +237,11 @@ _hb_graphite2_shape (hb_shape_plan_t    *shape_plan,
   int lang_len = lang_end ? lang_end - lang : -1;
   gr_feature_val *feats = gr_face_featureval_for_lang (grface, lang ? hb_tag_from_string (lang, lang_len) : 0);
 
-  while (num_features--)
+  for (unsigned int i = 0; i < num_features; i++)
   {
-    const gr_feature_ref *fref = gr_face_find_fref (grface, features->tag);
+    const gr_feature_ref *fref = gr_face_find_fref (grface, features[i].tag);
     if (fref)
-      gr_fref_set_feature_value (fref, features->value, feats);
-    features++;
+      gr_fref_set_feature_value (fref, features[i].value, feats);
   }
 
   gr_segment *seg = NULL;
@@ -244,17 +250,14 @@ _hb_graphite2_shape (hb_shape_plan_t    *shape_plan,
   float curradvx = 0., curradvy = 0.;
 
   unsigned int scratch_size;
-  char *scratch = (char *) buffer->get_scratch_buffer (&scratch_size);
+  hb_buffer_t::scratch_buffer_t *scratch = buffer->get_scratch_buffer (&scratch_size);
 
-#define ALLOCATE_ARRAY(Type, name, len) \
-  Type *name = (Type *) scratch; \
-  scratch += (len) * sizeof ((name)[0]); \
-  scratch_size -= (len) * sizeof ((name)[0]);
-
-  ALLOCATE_ARRAY (uint32_t, chars, buffer->len);
+  uint32_t *chars = (uint32_t *) scratch;
 
   for (unsigned int i = 0; i < buffer->len; ++i)
     chars[i] = buffer->info[i].codepoint;
+
+  /* TODO ensure_native_direction. */
 
   hb_tag_t script_tag[2];
   hb_ot_tags_from_script (hb_buffer_get_script (buffer), &script_tag[0], &script_tag[1]);
@@ -274,28 +277,48 @@ _hb_graphite2_shape (hb_shape_plan_t    *shape_plan,
   if (unlikely (!glyph_count)) {
     if (feats) gr_featureval_destroy (feats);
     gr_seg_destroy (seg);
-    return false;
+    buffer->len = 0;
+    return true;
   }
 
-  scratch = (char *) buffer->get_scratch_buffer (&scratch_size);
-  while ((sizeof (hb_graphite2_cluster_t) * buffer->len +
-	  sizeof (hb_codepoint_t) * glyph_count) > scratch_size)
+  buffer->ensure (glyph_count);
+  scratch = buffer->get_scratch_buffer (&scratch_size);
+  while ((DIV_CEIL (sizeof (hb_graphite2_cluster_t) * buffer->len, sizeof (*scratch)) +
+	  DIV_CEIL (sizeof (hb_codepoint_t) * glyph_count, sizeof (*scratch))) > scratch_size)
   {
-    buffer->ensure (buffer->allocated * 2);
-    if (unlikely (buffer->in_error)) {
+    if (unlikely (!buffer->ensure (buffer->allocated * 2)))
+    {
       if (feats) gr_featureval_destroy (feats);
       gr_seg_destroy (seg);
       return false;
     }
-    scratch = (char *) buffer->get_scratch_buffer (&scratch_size);
+    scratch = buffer->get_scratch_buffer (&scratch_size);
+  }
+
+#define ALLOCATE_ARRAY(Type, name, len) \
+  Type *name = (Type *) scratch; \
+  { \
+    unsigned int _consumed = DIV_CEIL ((len) * sizeof (Type), sizeof (*scratch)); \
+    assert (_consumed <= scratch_size); \
+    scratch += _consumed; \
+    scratch_size -= _consumed; \
   }
 
   ALLOCATE_ARRAY (hb_graphite2_cluster_t, clusters, buffer->len);
   ALLOCATE_ARRAY (hb_codepoint_t, gids, glyph_count);
 
+#undef ALLOCATE_ARRAY
+
   memset (clusters, 0, sizeof (clusters[0]) * buffer->len);
 
   hb_codepoint_t *pg = gids;
+  clusters[0].cluster = buffer->info[0].cluster;
+  float curradv = HB_DIRECTION_IS_BACKWARD(buffer->props.direction) ? gr_slot_origin_X(gr_seg_first_slot(seg)) : 0.;
+  if (HB_DIRECTION_IS_BACKWARD(buffer->props.direction))
+  {
+    curradv = gr_slot_origin_X(gr_seg_first_slot(seg));
+    clusters[0].advance = gr_seg_advance_X(seg) - curradv;
+  }
   for (is = gr_seg_first_slot (seg), ic = 0; is; is = gr_slot_next_in_segment (is), ic++)
   {
     unsigned int before = gr_slot_before (is);
@@ -306,6 +329,7 @@ _hb_graphite2_shape (hb_shape_plan_t    *shape_plan,
     {
       clusters[ci-1].num_chars += clusters[ci].num_chars;
       clusters[ci-1].num_glyphs += clusters[ci].num_glyphs;
+      clusters[ci-1].advance += clusters[ci].advance;
       ci--;
     }
 
@@ -313,55 +337,88 @@ _hb_graphite2_shape (hb_shape_plan_t    *shape_plan,
     {
       hb_graphite2_cluster_t *c = clusters + ci + 1;
       c->base_char = clusters[ci].base_char + clusters[ci].num_chars;
+      c->cluster = buffer->info[c->base_char].cluster;
       c->num_chars = before - c->base_char;
       c->base_glyph = ic;
       c->num_glyphs = 0;
-      ci++;
+      if (HB_DIRECTION_IS_BACKWARD(buffer->props.direction))
+      {
+        ci++;
+        clusters[ci].advance = curradv - gr_slot_origin_X(is);
+      } else {
+        clusters[ci].advance = gr_slot_origin_X(is) - curradv;
+        ci++;
+      }
+      curradv = gr_slot_origin_X(is);
     }
     clusters[ci].num_glyphs++;
 
     if (clusters[ci].base_char + clusters[ci].num_chars < after + 1)
 	clusters[ci].num_chars = after + 1 - clusters[ci].base_char;
   }
+
+  if (!HB_DIRECTION_IS_BACKWARD(buffer->props.direction))
+    clusters[ci].advance = gr_seg_advance_X(seg) - curradv;
   ci++;
 
-  //buffer->clear_output ();
   for (unsigned int i = 0; i < ci; ++i)
   {
     for (unsigned int j = 0; j < clusters[i].num_glyphs; ++j)
     {
       hb_glyph_info_t *info = &buffer->info[clusters[i].base_glyph + j];
       info->codepoint = gids[clusters[i].base_glyph + j];
-      info->cluster = gr_cinfo_base(gr_seg_cinfo(seg, clusters[i].base_char));
+      info->cluster = clusters[i].cluster;
+      info->var1.i32 = clusters[i].advance;     // all glyphs in the cluster get the same advance
     }
   }
   buffer->len = glyph_count;
-  //buffer->swap_buffers ();
 
-  if (HB_DIRECTION_IS_BACKWARD(buffer->props.direction))
-    curradvx = gr_seg_advance_X(seg);
-
-  hb_glyph_position_t *pPos;
-  for (pPos = hb_buffer_get_glyph_positions (buffer, NULL), is = gr_seg_first_slot (seg);
-       is; pPos++, is = gr_slot_next_in_segment (is))
+  float yscale = font->y_scale / font->x_scale;
+  /* Positioning. */
+  if (!HB_DIRECTION_IS_BACKWARD(buffer->props.direction))
   {
-    pPos->x_offset = gr_slot_origin_X (is) - curradvx;
-    pPos->y_offset = gr_slot_origin_Y (is) - curradvy;
-    pPos->x_advance = gr_slot_advance_X (is, grface, grfont);
-    pPos->y_advance = gr_slot_advance_Y (is, grface, grfont);
-    if (HB_DIRECTION_IS_BACKWARD (buffer->props.direction))
-      curradvx -= pPos->x_advance;
-    pPos->x_offset = gr_slot_origin_X (is) - curradvx;
-    if (!HB_DIRECTION_IS_BACKWARD (buffer->props.direction))
-      curradvx += pPos->x_advance;
-    pPos->y_offset = gr_slot_origin_Y (is) - curradvy;
-    curradvy += pPos->y_advance;
-  }
-  if (!HB_DIRECTION_IS_BACKWARD (buffer->props.direction))
-    pPos[-1].x_advance += gr_seg_advance_X(seg) - curradvx;
+    int currclus = -1;
+    const hb_glyph_info_t *info = buffer->info;
+    hb_glyph_position_t *pPos = hb_buffer_get_glyph_positions (buffer, NULL);
+    curradvx = 0;
+    for (is = gr_seg_first_slot (seg); is; pPos++, ++info, is = gr_slot_next_in_segment (is))
+    {
+      pPos->x_offset = gr_slot_origin_X (is) - curradvx;
+      pPos->y_offset = gr_slot_origin_Y (is) * yscale - curradvy;
+      if (info->cluster != currclus) {
+        pPos->x_advance = info->var1.i32;
+        curradvx += pPos->x_advance;
+        currclus = info->cluster;
+      } else
+        pPos->x_advance = 0.;
 
-  if (HB_DIRECTION_IS_BACKWARD (buffer->props.direction))
+      pPos->y_advance = gr_slot_advance_Y (is, grface, grfont) * yscale;
+      curradvy += pPos->y_advance;
+    }
+  }
+  else
+  {
+    int currclus = -1;
+    const hb_glyph_info_t *info = buffer->info;
+    hb_glyph_position_t *pPos = hb_buffer_get_glyph_positions (buffer, NULL);
+    curradvx = gr_seg_advance_X(seg);
+    for (is = gr_seg_first_slot (seg); is; pPos++, info++, is = gr_slot_next_in_segment (is))
+    {
+      if (info->cluster != currclus)
+      {
+        pPos->x_advance = info->var1.i32;
+        if (currclus != -1) curradvx -= info[-1].var1.i32;
+        currclus = info->cluster;
+      } else
+      pPos->x_advance = 0.;
+
+      pPos->y_advance = gr_slot_advance_Y (is, grface, grfont) * yscale;
+      curradvy -= pPos->y_advance;
+      pPos->x_offset = gr_slot_origin_X (is) - curradvx + pPos->x_advance;
+      pPos->y_offset = gr_slot_origin_Y (is) * yscale - curradvy;
+    }
     hb_buffer_reverse_clusters (buffer);
+  }
 
   if (feats) gr_featureval_destroy (feats);
   gr_seg_destroy (seg);

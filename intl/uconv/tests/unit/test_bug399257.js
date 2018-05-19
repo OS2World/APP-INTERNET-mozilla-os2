@@ -6,30 +6,56 @@ const expectedString = "Hello\nWorld";
 
 function run_test() {
     var failures = false;
-    var ccManager = Cc["@mozilla.org/charset-converter-manager;1"]
-        .getService(Ci.nsICharsetConverterManager);
     var encodingConverter = CreateScriptableConverter();
 
-    var charsetList = ccManager.getDecoderList();
-    var counter = 0;
-    while (charsetList.hasMore()) {
-	++counter;
-	var charset = charsetList.getNext();
+    var encoders = [
+        "Big5",
+        "Big5-HKSCS",
+        "EUC-JP",
+        "EUC-KR",
+        "gb18030",
+        "gbk",
+        "IBM866",
+        "ISO-2022-JP",
+        "ISO-8859-1",
+        "ISO-8859-2",
+        "ISO-8859-3",
+        "ISO-8859-4",
+        "ISO-8859-5",
+        "ISO-8859-6",
+        "ISO-8859-7",
+        "ISO-8859-8",
+        "ISO-8859-8-I",
+        "ISO-8859-10",
+        "ISO-8859-13",
+        "ISO-8859-14",
+        "ISO-8859-15",
+        "ISO-8859-16",
+        "KOI8-R",
+        "KOI8-U",
+        "Shift_JIS",
+        "windows-1250",
+        "windows-1251",
+        "windows-1252",
+        "windows-1253",
+        "windows-1254",
+        "windows-1255",
+        "windows-1256",
+        "windows-1257",
+        "windows-1258",
+        "windows-874",
+        "macintosh",
+        "x-mac-cyrillic",
+        "x-user-defined",
+        "UTF-8"
+    ];
 
-	// exclude known non-ASCII compatible charsets
-	if (charset.substr(0, "UTF-16".length) == "UTF-16" ||
-	    charset == "x-imap4-modified-utf7") {
-	    dump("skipping " + counter + " " + charset + "\n");
-	    continue;
-	}
+    var counter = 0;
+    while (counter < encoders.length) {
+	var charset = encoders[counter++];
         dump("testing " + counter + " " + charset + "\n");
 
-        try {
-            encodingConverter.charset = charset;
-        } catch(e) {
-            dump("Warning: couldn't set encoder charset to " + charset + "\n");
-            continue;
-        }
+        encodingConverter.charset = charset;
         var codepageString = encodingConverter.ConvertFromUnicode(inString) +
             encodingConverter.Finish();
 	if (codepageString != expectedString) {

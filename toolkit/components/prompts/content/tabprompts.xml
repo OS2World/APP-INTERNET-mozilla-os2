@@ -56,6 +56,8 @@
                             <spacer/>
                             <checkbox anonid="checkbox"/>
                         </row>
+
+                        <xbl:children includes="row"/>
                     </rows>
                 </grid>
                 <xbl:children/>
@@ -112,17 +114,16 @@
             this.ui.button2.addEventListener("command", this.onButtonClick.bind(this, 2), false);
             this.ui.button3.addEventListener("command", this.onButtonClick.bind(this, 3), false);
             // Anonymous wrapper used here because |Dialog| doesn't exist until init() is called!
-            this.ui.checkbox.addEventListener("command", function() { self.Dialog.onCheckbox(); } , false);
+            this.ui.checkbox.addEventListener("command", function() { self.Dialog.onCheckbox(); }, false);
             this.isLive = false;
         ]]>
         </constructor>
         <destructor>
         <![CDATA[
             if (this.isLive) {
-                this.Dialog.abortPrompt();
-                this.shutdownPrompt();
+                this.abortPrompt();
             }
-        ]]>  
+        ]]>
         </destructor>
 
         <field name="ui"/>
@@ -156,7 +157,10 @@
                 window.addEventListener("resize", this, false);
                 window.addEventListener("unload", this, false);
                 linkedTab.addEventListener("TabClose", this, false);
-                this.args.domWindow.addEventListener("pagehide", this, false);
+                // Note:
+                // nsPrompter.js or in e10s mode browser-parent.js call abortPrompt,
+                // when the domWindow, for which the prompt was created, generates
+                // a "pagehide" event.
 
                 let tmp = {};
                 Components.utils.import("resource://gre/modules/CommonDialog.jsm", tmp);
@@ -165,10 +169,8 @@
 
                 // Display the tabprompt title that shows the prompt origin when
                 // the prompt origin is not the same as that of the top window.
-                let topPrincipal = this.args.domWindow.top.document.nodePrincipal;
-                let promptPrincipal = this.args.domWindow.document.nodePrincipal;
-                if (!topPrincipal.equals(promptPrincipal))
-                  this.ui.infoTitle.removeAttribute("hidden");
+                if (!args.showAlertOrigin)
+                    this.ui.infoTitle.removeAttribute("hidden");
 
                 // TODO: should unhide buttonSpacer on Windows when there are 4 buttons.
                 //       Better yet, just drop support for 4-button dialogs. (bug 609510)
@@ -186,11 +188,20 @@
                     window.removeEventListener("resize", this, false);
                     window.removeEventListener("unload", this, false);
                     this.linkedTab.removeEventListener("TabClose", this, false);
-                    this.args.domWindow.removeEventListener("pagehide", this, false);
-                } catch(e) { }
+                } catch (e) { }
                 this.isLive = false;
                 // invoke callback
                 this.onCloseCallback();
+            ]]>
+            </body>
+        </method>
+
+        <method name="abortPrompt">
+            <body>
+            <![CDATA[
+                // Called from other code when the page changes.
+                this.Dialog.abortPrompt();
+                this.shutdownPrompt();
             ]]>
             </body>
         </method>
@@ -205,9 +216,7 @@
                     break;
                   case "unload":
                   case "TabClose":
-                  case "pagehide":
-                    this.Dialog.abortPrompt();
-                    this.shutdownPrompt();
+                    this.abortPrompt();
                     break;
                 }
             ]]>
@@ -261,8 +270,21 @@
             <parameter name="buttonNum"/>
             <body>
             <![CDATA[
-                this.Dialog["onButton" + buttonNum]();
-                this.shutdownPrompt();
+                // We want to do all the work her asynchronously off a Gecko
+                // runnable, because of situations like the one described in
+                // https://bugzilla.mozilla.org/show_bug.cgi?id=1167575#c35 : we
+                // get here off processing of an OS event and will also process
+                // one more Gecko runnable before we break out of the event loop
+                // spin whoever posted the prompt is doing.  If we do all our
+                // work sync, we will exit modal state _before_ processing that
+                // runnable, and if exiting moral state posts a runnable we will
+                // incorrectly process that runnable before leaving our event
+                // loop spin.
+                Services.tm.mainThread.dispatch(() => {
+                    this.Dialog["onButton" + buttonNum]();
+                    this.shutdownPrompt();
+                  },
+                  Ci.nsIThread.DISPATCH_NORMAL);
             ]]>
             </body>
         </method>
@@ -278,7 +300,6 @@
                 event.stopPropagation();
                 if (action == "default") {
                     let bnum = this.args.defaultButtonNum || 0;
-                    let button = this.ui["button" + bnum];
                     this.onButtonClick(bnum);
                 } else { // action == "cancel"
                     this.onButtonClick(1); // Cancel button
@@ -290,8 +311,6 @@
 
     <handlers>
         <!-- Based on dialog.xml handlers -->
-        <handler event="keypress" keycode="VK_ENTER"
-                 group="system" action="this.onKeyAction('default', event);"/>
         <handler event="keypress" keycode="VK_RETURN"
                  group="system" action="this.onKeyAction('default', event);"/>
         <handler event="keypress" keycode="VK_ESCAPE"
@@ -304,19 +323,21 @@
             let bnum = this.args.defaultButtonNum || 0;
             let defaultButton = this.ui["button" + bnum];
 
-#ifdef XP_MACOSX
-            // On OS X, the default button always stays marked as such (until
-            // the entire prompt blurs).
-            defaultButton.setAttribute("default", true);
-#else
-            // On other platforms, the default button is only marked as such
-            // when no other button has focus. XUL buttons on not-OSX will
-            // react to pressing enter as a command, so you can't trigger the
-            // default without tabbing to it or something that isn't a button.
-            let focusedDefault = (event.originalTarget == defaultButton);
-            let someButtonFocused = event.originalTarget instanceof Ci.nsIDOMXULButtonElement;
-            defaultButton.setAttribute("default", focusedDefault || !someButtonFocused);
-#endif
+            let { AppConstants } =
+                Components.utils.import("resource://gre/modules/AppConstants.jsm", {});
+            if (AppConstants.platform == "macosx") {
+              // On OS X, the default button always stays marked as such (until
+              // the entire prompt blurs).
+              defaultButton.setAttribute("default", true);
+            } else {
+              // On other platforms, the default button is only marked as such
+              // when no other button has focus. XUL buttons on not-OSX will
+              // react to pressing enter as a command, so you can't trigger the
+              // default without tabbing to it or something that isn't a button.
+              let focusedDefault = (event.originalTarget == defaultButton);
+              let someButtonFocused = event.originalTarget instanceof Ci.nsIDOMXULButtonElement;
+              defaultButton.setAttribute("default", focusedDefault || !someButtonFocused);
+            }
         </handler>
         <handler event="blur">
             // If focus shifted to somewhere else in the browser, don't make

@@ -1,7 +1,9 @@
+// Copyright (C) 2016 and later: Unicode, Inc. and others.
+// License & terms of use: http://www.unicode.org/copyright.html
 /*
 *******************************************************************************
 *
-*   Copyright (C) 2009-2012, International Business Machines
+*   Copyright (C) 2009-2013, International Business Machines
 *   Corporation and others.  All Rights Reserved.
 *
 *******************************************************************************
@@ -83,7 +85,6 @@ public:
      */
     ~Normalizer2();
 
-#ifndef U_HIDE_DRAFT_API
     /**
      * Returns a Normalizer2 instance for Unicode NFC normalization.
      * Same as getInstance(NULL, "nfc", UNORM2_COMPOSE, errorCode).
@@ -93,7 +94,7 @@ public:
      *                  immediately. Check for U_FAILURE() on output or use with
      *                  function chaining. (See User Guide for details.)
      * @return the requested Normalizer2, if successful
-     * @draft ICU 49
+     * @stable ICU 49
      */
     static const Normalizer2 *
     getNFCInstance(UErrorCode &errorCode);
@@ -107,7 +108,7 @@ public:
      *                  immediately. Check for U_FAILURE() on output or use with
      *                  function chaining. (See User Guide for details.)
      * @return the requested Normalizer2, if successful
-     * @draft ICU 49
+     * @stable ICU 49
      */
     static const Normalizer2 *
     getNFDInstance(UErrorCode &errorCode);
@@ -121,7 +122,7 @@ public:
      *                  immediately. Check for U_FAILURE() on output or use with
      *                  function chaining. (See User Guide for details.)
      * @return the requested Normalizer2, if successful
-     * @draft ICU 49
+     * @stable ICU 49
      */
     static const Normalizer2 *
     getNFKCInstance(UErrorCode &errorCode);
@@ -135,7 +136,7 @@ public:
      *                  immediately. Check for U_FAILURE() on output or use with
      *                  function chaining. (See User Guide for details.)
      * @return the requested Normalizer2, if successful
-     * @draft ICU 49
+     * @stable ICU 49
      */
     static const Normalizer2 *
     getNFKDInstance(UErrorCode &errorCode);
@@ -149,11 +150,10 @@ public:
      *                  immediately. Check for U_FAILURE() on output or use with
      *                  function chaining. (See User Guide for details.)
      * @return the requested Normalizer2, if successful
-     * @draft ICU 49
+     * @stable ICU 49
      */
     static const Normalizer2 *
     getNFKCCasefoldInstance(UErrorCode &errorCode);
-#endif  /* U_HIDE_DRAFT_API */
 
     /**
      * Returns a Normalizer2 instance which uses the specified data file
@@ -290,7 +290,7 @@ public:
      * @param decomposition String object which will be set to c's
      *                      raw decomposition mapping, if there is one.
      * @return TRUE if c has a decomposition, otherwise FALSE
-     * @draft ICU 49
+     * @stable ICU 49
      */
     virtual UBool
     getRawDecomposition(UChar32 c, UnicodeString &decomposition) const;
@@ -308,7 +308,7 @@ public:
      * @param a A (normalization starter) code point.
      * @param b Another code point.
      * @return The non-negative composite code point if there is one; otherwise a negative value.
-     * @draft ICU 49
+     * @stable ICU 49
      */
     virtual UChar32
     composePair(UChar32 a, UChar32 b) const;
@@ -319,7 +319,7 @@ public:
      * but all standard implementations return the Unicode Canonical_Combining_Class value.
      * @param c code point
      * @return c's combining class
-     * @draft ICU 49
+     * @stable ICU 49
      */
     virtual uint8_t
     getCombiningClass(UChar32 c) const;
@@ -429,10 +429,6 @@ public:
      * @stable ICU 4.4
      */
     virtual UBool isInert(UChar32 c) const = 0;
-
-private:
-    // No ICU "poor man's RTTI" for this class nor its subclasses.
-    virtual UClassID getDynamicClassID() const;
 };
 
 /**
@@ -544,7 +540,7 @@ public:
      * @param decomposition String object which will be set to c's
      *                      raw decomposition mapping, if there is one.
      * @return TRUE if c has a decomposition, otherwise FALSE
-     * @draft ICU 49
+     * @stable ICU 49
      */
     virtual UBool
     getRawDecomposition(UChar32 c, UnicodeString &decomposition) const;
@@ -557,7 +553,7 @@ public:
      * @param a A (normalization starter) code point.
      * @param b Another code point.
      * @return The non-negative composite code point if there is one; otherwise a negative value.
-     * @draft ICU 49
+     * @stable ICU 49
      */
     virtual UChar32
     composePair(UChar32 a, UChar32 b) const;
@@ -568,7 +564,7 @@ public:
      * but all standard implementations return the Unicode Canonical_Combining_Class value.
      * @param c code point
      * @return c's combining class
-     * @draft ICU 49
+     * @stable ICU 49
      */
     virtual uint8_t
     getCombiningClass(UChar32 c) const;

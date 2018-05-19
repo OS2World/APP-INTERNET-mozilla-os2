@@ -1,6 +1,6 @@
 // getLineOffsets works with instructions reachable only by breaking out of a loop or switch.
 
-var g = newGlobal('new-compartment');
+var g = newGlobal();
 g.line0 = null;
 var dbg = Debugger(g);
 var where;
@@ -9,7 +9,7 @@ dbg.onDebuggerStatement = function (frame) {
     var lineno = g.line0 + where;
     var offs = s.getLineOffsets(lineno);
     for (var i = 0; i < offs.length; i++) {
-        assertEq(s.getOffsetLine(offs[i]), lineno);
+        assertEq(s.getOffsetLocation(offs[i]).lineNumber, lineno);
         s.setBreakpoint(offs[i], {hit: function () { g.log += 'B'; }});
     }
     g.log += 'A';

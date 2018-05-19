@@ -21,19 +21,16 @@
 #include "nsIFileStreams.h"
 #include "nsIStreamListener.h"
 #include "nsIFile.h"
-#include "nsNetUtil.h"
 #include "nsAutoLock.h"
-#include "prlog.h"
+#include "mozilla/Logging.h"
 
 ////////////////////////////////////////////////////////////////////////////////
 
-#if defined(PR_LOGGING)
 //
 // set NSPR_LOG_MODULES=Test:5
 //
 static PRLogModuleInfo *gTestLog = nullptr;
-#endif
-#define LOG(args) PR_LOG(gTestLog, PR_LOG_DEBUG, args)
+#define LOG(args) MOZ_LOG(gTestLog, mozilla::LogLevel::Debug, args)
 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -45,7 +42,7 @@ class MyHandler : public nsIOutputStreamCallback
                 , public nsIInputStreamCallback
 {
 public:
-    NS_DECL_ISUPPORTS
+    NS_DECL_THREADSAFE_ISUPPORTS
 
     MyHandler(const char *path,
               nsIAsyncInputStream *in,
@@ -54,9 +51,9 @@ public:
         , mOutput(out)
         , mWriteOffset(0)
         {
-            mBuf.Assign(NS_LITERAL_CSTRING("GET "));
+            mBuf.AssignLiteral("GET ");
             mBuf.Append(path);
-            mBuf.Append(NS_LITERAL_CSTRING(" HTTP/1.0\r\n\r\n"));
+            mBuf.AppendLiteral(" HTTP/1.0\r\n\r\n");
         }
     virtual ~MyHandler() {}
 
@@ -115,9 +112,9 @@ private:
     uint32_t  mWriteOffset;
 };
 
-NS_IMPL_THREADSAFE_ISUPPORTS2(MyHandler,
-                              nsIOutputStreamCallback,
-                              nsIInputStreamCallback)
+NS_IMPL_ISUPPORTS(MyHandler,
+                  nsIOutputStreamCallback,
+                  nsIInputStreamCallback)
 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -223,9 +220,7 @@ main(int argc, char* argv[])
         if (registrar)
             registrar->AutoRegister(nullptr);
 
-#if defined(PR_LOGGING)
         gTestLog = PR_NewLogModule("Test");
-#endif
 
         // Make sure the DNS service is initialized on the main thread
         nsCOMPtr<nsIDNSService> dns =

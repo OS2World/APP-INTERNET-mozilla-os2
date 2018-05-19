@@ -40,9 +40,9 @@ static void copy_and_extend_plane
 
     for (i = 0; i < h; i++)
     {
-        vpx_memset(dest_ptr1, src_ptr1[0], el);
-        vpx_memcpy(dest_ptr1 + el, src_ptr1, w);
-        vpx_memset(dest_ptr2, src_ptr2[0], er);
+        memset(dest_ptr1, src_ptr1[0], el);
+        memcpy(dest_ptr1 + el, src_ptr1, w);
+        memset(dest_ptr2, src_ptr2[0], er);
         src_ptr1  += sp;
         src_ptr2  += sp;
         dest_ptr1 += dp;
@@ -60,13 +60,13 @@ static void copy_and_extend_plane
 
     for (i = 0; i < et; i++)
     {
-        vpx_memcpy(dest_ptr1, src_ptr1, linesize);
+        memcpy(dest_ptr1, src_ptr1, linesize);
         dest_ptr1 += dp;
     }
 
     for (i = 0; i < eb; i++)
     {
-        vpx_memcpy(dest_ptr2, src_ptr2, linesize);
+        memcpy(dest_ptr2, src_ptr2, linesize);
         dest_ptr2 += dp;
     }
 }
@@ -116,7 +116,7 @@ void vp8_copy_and_extend_frame_with_rect(YV12_BUFFER_CONFIG *src,
     int src_uv_offset = ((srcy * src->uv_stride) >> 1) + (srcx >> 1);
     int dst_uv_offset = ((srcy * dst->uv_stride) >> 1) + (srcx >> 1);
 
-    // If the side is not touching the bounder then don't extend.
+    /* If the side is not touching the bounder then don't extend. */
     if (srcy)
       et = 0;
     if (srcx)
@@ -157,7 +157,10 @@ void vp8_copy_and_extend_frame_with_rect(YV12_BUFFER_CONFIG *src,
 
 
 /* note the extension is only for the last row, for intra prediction purpose */
-void vp8_extend_mb_row(YV12_BUFFER_CONFIG *ybf, unsigned char *YPtr, unsigned char *UPtr, unsigned char *VPtr)
+void vp8_extend_mb_row(YV12_BUFFER_CONFIG *ybf,
+                       unsigned char *YPtr,
+                       unsigned char *UPtr,
+                       unsigned char *VPtr)
 {
     int i;
 

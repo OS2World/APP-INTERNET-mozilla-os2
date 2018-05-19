@@ -6,23 +6,21 @@
 
 #ifndef jsbool_h
 #define jsbool_h
+
 /*
  * JS boolean interface.
  */
 
-#include "jsapi.h"
-
-extern JSObject *
-js_InitBooleanClass(JSContext *cx, js::HandleObject obj);
-
-extern JSString *
-js_BooleanToString(JSContext *cx, JSBool b);
+#include "NamespaceImports.h"
 
 namespace js {
 
-inline bool
-BooleanGetPrimitiveValue(HandleObject obj, JSContext *cx);
+extern JSObject*
+InitBooleanClass(JSContext* cx, js::HandleObject obj);
 
-} /* namespace js */
+extern JSString*
+BooleanToString(js::ExclusiveContext* cx, bool b);
+
+} // namespace js
 
 #endif /* jsbool_h */

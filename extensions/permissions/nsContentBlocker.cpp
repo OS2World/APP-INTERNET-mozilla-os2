@@ -13,6 +13,8 @@
 #include "nsString.h"
 #include "nsContentPolicyUtils.h"
 #include "nsIObjectLoadingContent.h"
+#include "mozilla/ArrayUtils.h"
+#include "nsContentUtils.h"
 
 // Possible behavior pref values
 // Those map to the nsIPermissionManager values where possible
@@ -21,7 +23,8 @@
 #define BEHAVIOR_NOFOREIGN 3
 
 // From nsIContentPolicy
-static const char *kTypeString[] = {"other",
+static const char *kTypeString[] = {
+                                    "other",
                                     "script",
                                     "image",
                                     "stylesheet",
@@ -36,16 +39,35 @@ static const char *kTypeString[] = {"other",
                                     "dtd",
                                     "font",
                                     "media",
-                                    "websocket"
-                                    "csp_report"};
+                                    "websocket",
+                                    "csp_report",
+                                    "xslt",
+                                    "beacon",
+                                    "fetch",
+                                    "image",
+                                    "manifest",
+                                    "", // TYPE_INTERNAL_SCRIPT
+                                    "", // TYPE_INTERNAL_WORKER
+                                    "", // TYPE_INTERNAL_SHARED_WORKER
+                                    "", // TYPE_INTERNAL_EMBED
+                                    "", // TYPE_INTERNAL_OBJECT
+                                    "", // TYPE_INTERNAL_FRAME
+                                    "", // TYPE_INTERNAL_IFRAME
+                                    "", // TYPE_INTERNAL_AUDIO
+                                    "", // TYPE_INTERNAL_VIDEO
+                                    "", // TYPE_INTERNAL_TRACK
+                                    "", // TYPE_INTERNAL_XMLHTTPREQUEST
+                                    "", // TYPE_INTERNAL_EVENTSOURCE
+                                    "", // TYPE_INTERNAL_SERVICE_WORKER
+};
 
-#define NUMBER_OF_TYPES NS_ARRAY_LENGTH(kTypeString)
+#define NUMBER_OF_TYPES MOZ_ARRAY_LENGTH(kTypeString)
 uint8_t nsContentBlocker::mBehaviorPref[NUMBER_OF_TYPES];
 
-NS_IMPL_ISUPPORTS3(nsContentBlocker, 
-                   nsIContentPolicy,
-                   nsIObserver,
-                   nsSupportsWeakReference)
+NS_IMPL_ISUPPORTS(nsContentBlocker, 
+                  nsIContentPolicy,
+                  nsIObserver,
+                  nsISupportsWeakReference)
 
 nsContentBlocker::nsContentBlocker()
 {
@@ -113,7 +135,8 @@ nsContentBlocker::PrefChanged(nsIPrefBranch *aPrefBranch,
 #define PREF_CHANGED(_P) (!aPref || !strcmp(aPref, _P))
 
   for(uint32_t i = 0; i < NUMBER_OF_TYPES; ++i) {
-    if (PREF_CHANGED(kTypeString[i]) &&
+    if (*kTypeString[i] &&
+        PREF_CHANGED(kTypeString[i]) &&
         NS_SUCCEEDED(aPrefBranch->GetIntPref(kTypeString[i], &val)))
       mBehaviorPref[i] = LIMIT(val, 1, 3, 1);
   }
@@ -131,6 +154,9 @@ nsContentBlocker::ShouldLoad(uint32_t          aContentType,
                              nsIPrincipal     *aRequestPrincipal,
                              int16_t          *aDecision)
 {
+  MOZ_ASSERT(aContentType == nsContentUtils::InternalContentPolicyTypeToExternal(aContentType),
+             "We should only see external content policy types here.");
+
   *aDecision = nsIContentPolicy::ACCEPT;
   nsresult rv;
 
@@ -182,19 +208,18 @@ nsContentBlocker::ShouldProcess(uint32_t          aContentType,
                                 nsIPrincipal     *aRequestPrincipal,
                                 int16_t          *aDecision)
 {
+  MOZ_ASSERT(aContentType == nsContentUtils::InternalContentPolicyTypeToExternal(aContentType),
+             "We should only see external content policy types here.");
+
   // For loads where aRequestingContext is chrome, we should just
   // accept.  Those are most likely toplevel loads in windows, and
   // chrome generally knows what it's doing anyway.
   nsCOMPtr<nsIDocShellTreeItem> item =
     do_QueryInterface(NS_CP_GetDocShellFromContext(aRequestingContext));
 
-  if (item) {
-    int32_t type;
-    item->GetItemType(&type);
-    if (type == nsIDocShellTreeItem::typeChrome) {
-      *aDecision = nsIContentPolicy::ACCEPT;
-      return NS_OK;
-    }
+  if (item && item->ItemType() == nsIDocShellTreeItem::typeChrome) {
+    *aDecision = nsIContentPolicy::ACCEPT;
+    return NS_OK;
   }
 
   // For objects, we only check policy in shouldProcess, as the final type isn't
@@ -235,6 +260,13 @@ nsContentBlocker::TestPermission(nsIURI *aCurrentURI,
                                  bool *aFromPrefs)
 {
   *aFromPrefs = false;
+
+  if (!*kTypeString[aContentType - 1]) {
+    // Disallow internal content policy types, they should not be used here.
+    *aPermission = false;
+    return NS_OK;
+  }
+
   // This default will also get used if there is an unknown value in the
   // permission list, or if the permission manager returns unknown values.
   *aPermission = true;
@@ -334,7 +366,7 @@ nsContentBlocker::TestPermission(nsIURI *aCurrentURI,
 NS_IMETHODIMP
 nsContentBlocker::Observe(nsISupports     *aSubject,
                           const char      *aTopic,
-                          const PRUnichar *aData)
+                          const char16_t *aData)
 {
   NS_ASSERTION(!strcmp(NS_PREFBRANCH_PREFCHANGE_TOPIC_ID, aTopic),
                "unexpected topic - we only deal with pref changes!");

@@ -12,6 +12,7 @@
 #define WEBRTC_SYSTEM_WRAPPERS_INTERFACE_FILE_WRAPPER_H_
 
 #include <stddef.h>
+#include <stdio.h>
 
 #include "webrtc/common_types.h"
 #include "webrtc/typedefs.h"
@@ -37,6 +38,14 @@ class FileWrapper : public InStream, public OutStream {
                        bool loop = false,
                        bool text = false) = 0;
 
+  // Initializes the wrapper from an existing handle. |read_only| must match in
+  // the mode the file was opened in. If |manage_file| is true, the wrapper
+  // takes ownership of |handle| and closes it in CloseFile().
+  virtual int OpenFromFileHandle(FILE* handle,
+                                 bool manage_file,
+                                 bool read_only,
+                                 bool loop = false) = 0;
+
   virtual int CloseFile() = 0;
 
   // Limits the file size to |bytes|. Writing will fail after the cap
@@ -57,22 +66,13 @@ class FileWrapper : public InStream, public OutStream {
   // specifiers. Returns the number of characters written or -1 on error.
   virtual int WriteText(const char* format, ...) = 0;
 
-  // Inherited from Instream.
-  // Reads |length| bytes from file to |buf|. Returns the number of bytes read
-  // or -1 on error.
-  virtual int Read(void* buf, int length) = 0;
-
-  // Inherited from OutStream.
-  // Writes |length| bytes from |buf| to file. The actual writing may happen
-  // some time later. Call Flush() to force a write.
-  virtual bool Write(const void* buf, int length) = 0;
-
   // Inherited from both Instream and OutStream.
   // Rewinds the file to the start. Only available when OpenFile() has been
   // called with |loop| == true or |readOnly| == true.
-  virtual int Rewind() = 0;
+  // virtual int Rewind() = 0;
+  int Rewind() override;
 };
 
-} // namespace webrtc
+}  // namespace webrtc
 
 #endif  // WEBRTC_SYSTEM_WRAPPERS_INTERFACE_FILE_WRAPPER_H_

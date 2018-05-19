@@ -1,4 +1,4 @@
-/* -*- Mode: javascript; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
+/* -*- indent-tabs-mode: nil; js-indent-level: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -28,13 +28,13 @@ function test() {
   // cleanup function registration
   registerCleanupFunction(function () {
     Services.prefs.clearUserPref("browser.download.lastDir");
-    [dir1, dir2, dir3].forEach(function(dir) dir.remove(true));
+    [dir1, dir2, dir3].forEach(dir => dir.remove(true));
     MockFilePicker.cleanup();
     validateFileName = validateFileNameToRestore;
   });
 
   // Overwrite validateFileName to validate everything
-  validateFileName = function(foo) foo;
+  validateFileName = foo => foo;
 
   let params = {
     fileInfo: new FileInfo("test.txt", "test.txt", "test", "txt", "http://mozilla.org/test.txt"),
@@ -50,8 +50,6 @@ function test() {
     whenNewWindowLoaded({private: aPrivate}, function(win) {
       let gDownloadLastDir = new DownloadLastDir(win);
       aCallback(win, gDownloadLastDir);
-      gDownloadLastDir.cleanupPrivateFile();
-      win.close();
     });
   }
 
@@ -66,7 +64,7 @@ function test() {
 
     MockFilePicker.returnFiles = [aFile];
     MockFilePicker.displayDirectory = null;
-    aWin.getTargetFile(params, function() {
+    aWin.promiseTargetFile(params).then(function() {
       // File picker should start with expected display dir.
       is(MockFilePicker.displayDirectory.path, aDisplayDir.path,
          "File picker should start with browser.download.lastDir");
@@ -77,8 +75,10 @@ function test() {
       is(gDownloadLastDir.file.path, aGlobalLastDir.path,
          "gDownloadLastDir should be the expected global last dir");
 
+      gDownloadLastDir.cleanupPrivateFile();
+      aWin.close();
       aCallback();
-    });
+    }).then(null, function() { ok(false); });
   }
 
   testOnWindow(false, function(win, downloadDir) {

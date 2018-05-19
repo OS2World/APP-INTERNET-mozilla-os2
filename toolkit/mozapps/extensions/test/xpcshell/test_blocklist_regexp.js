@@ -3,15 +3,21 @@
  */
 
 // Checks that blocklist entries using RegExp work as expected. This only covers
-// behavior specific to RegExp entries - general behavior is already tested 
+// behavior specific to RegExp entries - general behavior is already tested
 // in test_blocklistchange.js.
 
-const {classes: Cc, interfaces: Ci, utils: Cu, results: Cr} = Components;
+var {classes: Cc, interfaces: Ci, utils: Cu, results: Cr} = Components;
 
 const URI_EXTENSION_BLOCKLIST_DIALOG = "chrome://mozapps/content/extensions/blocklist.xul";
 
 Cu.import("resource://testing-common/httpd.js");
-var testserver;
+Cu.import("resource://testing-common/MockRegistrar.jsm");
+var testserver = new HttpServer();
+testserver.start(-1);
+gPort = testserver.identity.primaryPort;
+
+// register static files with server and interpolate port numbers in them
+mapFile("/data/test_blocklist_regexp_1.xml", testserver);
 
 const profileDir = gProfD.clone();
 profileDir.append("extensions");
@@ -19,18 +25,18 @@ profileDir.append("extensions");
 // Don't need the full interface, attempts to call other methods will just
 // throw which is just fine
 var WindowWatcher = {
-  openWindow: function(parent, url, name, features, arguments) {
+  openWindow: function(parent, url, name, features, args) {
     // Should be called to list the newly blocklisted items
     do_check_eq(url, URI_EXTENSION_BLOCKLIST_DIALOG);
 
     // Simulate auto-disabling any softblocks
-    var list = arguments.wrappedJSObject.list;
+    var list = args.wrappedJSObject.list;
     list.forEach(function(aItem) {
       if (!aItem.blocked)
         aItem.disable = true;
     });
 
-    //run the code after the blocklist is closed
+    // run the code after the blocklist is closed
     Services.obs.notifyObservers(null, "addon-blocklist-closed", null);
 
   },
@@ -44,19 +50,7 @@ var WindowWatcher = {
   }
 };
 
-var WindowWatcherFactory = {
-  createInstance: function createInstance(outer, iid) {
-    if (outer != null)
-      throw Cr.NS_ERROR_NO_AGGREGATION;
-    return WindowWatcher.QueryInterface(iid);
-  }
-};
-
-var registrar = Components.manager.QueryInterface(Ci.nsIComponentRegistrar);
-registrar.registerFactory(Components.ID("{1dfeb90a-2193-45d5-9cb8-864928b2af55}"),
-                          "Fake Window Watcher",
-                          "@mozilla.org/embedcomp/window-watcher;1",
-                          WindowWatcherFactory);
+MockRegistrar.register("@mozilla.org/embedcomp/window-watcher;1", WindowWatcher);
 
 
 function load_blocklist(aFile, aCallback) {
@@ -66,9 +60,16 @@ function load_blocklist(aFile, aCallback) {
     do_execute_soon(aCallback);
   }, "blocklist-updated", false);
 
-  Services.prefs.setCharPref("extensions.blocklist.url", "http://localhost:4444/data/" + aFile);
+  Services.prefs.setCharPref("extensions.blocklist.url", "http://localhost:" +
+                             gPort + "/data/" + aFile);
   var blocklist = Cc["@mozilla.org/extensions/blocklist;1"].
                   getService(Ci.nsITimerCallback);
+  // if we're not using the blocklist.xml for certificate blocklist state,
+  // ensure that kinto update is enabled
+  if (!Services.prefs.getBoolPref("security.onecrl.via.amo")) {
+    ok(Services.prefs.getBoolPref("services.blocklist.update_enabled", false),
+                                  "Kinto update should be enabled");
+  }
   blocklist.notify(null);
 }
 
@@ -79,10 +80,6 @@ function end_test() {
 
 
 function run_test() {
-  testserver = new HttpServer();
-  testserver.registerDirectory("/data/", do_get_file("data"));
-  testserver.start(4444);
-
   do_test_pending();
 
   createAppInfo("xpcshell@tests.mozilla.org", "XPCShell", "1", "1");

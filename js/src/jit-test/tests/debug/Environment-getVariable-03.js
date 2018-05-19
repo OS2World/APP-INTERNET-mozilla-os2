@@ -1,6 +1,6 @@
 // getVariable sees bindings in let-block scopes.
 
-var g = newGlobal('new-compartment');
+var g = newGlobal();
 var dbg = Debugger(g);
 var log = '';
 dbg.onDebuggerStatement = function (frame) {
@@ -17,6 +17,5 @@ g.eval("function f() {\n" +
        "        }\n" +
        "}\n");
 g.f();
-g.eval("let (x = 'c') { debugger; }");
 g.eval("{ let x = 'd'; debugger; }");
-assertEq(log, 'a0bcd');
+assertEq(log, 'a0bd');

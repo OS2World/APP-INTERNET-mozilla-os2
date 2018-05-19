@@ -31,10 +31,10 @@ nsUserInfo::~nsUserInfo()
 {
 }
 
-NS_IMPL_ISUPPORTS1(nsUserInfo,nsIUserInfo)
+NS_IMPL_ISUPPORTS(nsUserInfo,nsIUserInfo)
 
 NS_IMETHODIMP
-nsUserInfo::GetFullname(PRUnichar **aFullname)
+nsUserInfo::GetFullname(char16_t **aFullname)
 {
     struct passwd *pw = nullptr;
 
@@ -92,7 +92,7 @@ nsUserInfo::GetUsername(char * *aUsername)
     printf("username = %s\n", pw->pw_name);
 #endif
 
-    *aUsername = nsCRT::strdup(pw->pw_name);
+    *aUsername = strdup(pw->pw_name);
 
     return NS_OK;
 }
@@ -105,30 +105,27 @@ nsUserInfo::GetDomain(char * *aDomain)
     struct utsname buf;
     char *domainname = nullptr;
 
-    // is this portable?  that is a POSIX compliant call, but I need to check
-    if (uname(&buf)) { 
+    if (uname(&buf) < 0) { 
         return rv;
     }
 
-#if defined(HAVE_UNAME_DOMAINNAME_FIELD)
+#if defined(__linux__)
     domainname = buf.domainname;
-#elif defined(HAVE_UNAME_US_DOMAINNAME_FIELD)
-    domainname = buf.__domainname;
 #endif
 
     if (domainname && domainname[0]) {   
-        *aDomain = nsCRT::strdup(domainname);
+        *aDomain = strdup(domainname);
         rv = NS_OK;
     }
     else {
         // try to get the hostname from the nodename
         // on machines that use DHCP, domainname may not be set
         // but the nodename might.
-        if (buf.nodename && buf.nodename[0]) {
+        if (buf.nodename[0]) {
             // if the nodename is foo.bar.org, use bar.org as the domain
             char *pos = strchr(buf.nodename,'.');
             if (pos) {
-                *aDomain = nsCRT::strdup(pos+1);
+                *aDomain = strdup(pos+1);
                 rv = NS_OK;
             }
         }

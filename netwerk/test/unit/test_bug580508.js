@@ -1,9 +1,6 @@
-const Cc = Components.classes;
-const Ci = Components.interfaces;
-
-let ioService = Cc["@mozilla.org/network/io-service;1"]
+var ioService = Cc["@mozilla.org/network/io-service;1"]
                 .getService(Ci.nsIIOService);
-let resProt = ioService.getProtocolHandler("resource")
+var resProt = ioService.getProtocolHandler("resource")
               .QueryInterface(Ci.nsIResProtocolHandler);
 
 function run_test() {

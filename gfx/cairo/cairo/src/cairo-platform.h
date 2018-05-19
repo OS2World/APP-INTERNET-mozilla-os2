@@ -1,6 +1,6 @@
 /* cairo - a vector graphics library with display and print output
  *
- * Copyright Å¬Å© 2005 Mozilla Foundation
+ * Copyright ¬© 2005 Mozilla Foundation
  *
  * This library is free software; you can redistribute it and/or
  * modify it either under the terms of the GNU Lesser General Public
@@ -65,7 +65,5 @@
 #define WORDS_BIGENDIAN
 #define FLOAT_WORDS_BIGENDIAN
 #endif
-
-#define CAIRO_NO_MUTEX 1
 
 #endif /* CAIRO_PLATFORM_H */

@@ -8,6 +8,8 @@
 <!ENTITY muteButton.unmuteLabel "Unmute">
 <!ENTITY fullscreenButton.enterfullscreenlabel "Full Screen">
 <!ENTITY fullscreenButton.exitfullscreenlabel "Exit Full Screen">
+<!ENTITY castingButton.castingLabel "Cast to Screen">
+<!ENTITY closedCaption.off "Off">
 
 <!ENTITY stats.media "Media">
 <!ENTITY stats.size "Size">
@@ -17,8 +19,6 @@
 <!ENTITY stats.activityEnded "Ended">
 <!ENTITY stats.activitySeeking "(seeking)">
 <!ENTITY stats.volume "Volume">
-<!ENTITY stats.channels "Channels">
-<!ENTITY stats.sampleRate "Sample Rate">
 <!ENTITY stats.framesParsed "Frames parsed">
 <!ENTITY stats.framesDecoded "Frames decoded">
 <!ENTITY stats.framesPresented "Frames presented">
@@ -26,7 +26,7 @@
 
 <!ENTITY error.aborted "Video loading stopped.">
 <!ENTITY error.network "Video playback aborted due to a network error.">
-<!ENTITY error.decode "Video can't be played because the file is corrupt.">
+<!ENTITY error.decode "Video can’t be played because the file is corrupt.">
 <!ENTITY error.srcNotSupported "Video format or MIME type is not supported.">
 <!ENTITY error.noSource2 "No video with supported format and MIME type found.">
 <!ENTITY error.generic "Video playback aborted due to an unknown error.">

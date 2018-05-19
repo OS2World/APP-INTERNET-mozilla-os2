@@ -6,7 +6,7 @@ Cu.import("resource://gre/modules/Services.jsm");
 Cu.import("resource://gre/modules/NetUtil.jsm");
 Cu.import("resource://gre/modules/PlacesUtils.jsm");
 
-Cu.import("resource://services-common/log4moz.js");
+Cu.import("resource://gre/modules/Log.jsm");
 Cu.import("resource://services-sync/engines.js");
 Cu.import("resource://services-sync/engines/bookmarks.js");
 Cu.import("resource://services-sync/record.js");
@@ -45,7 +45,7 @@ function run_test() {
   store.wipe();
 
   initTestLogging("Trace");
-  Log4Moz.repository.getLogger("Sync.Engine.Bookmarks").level = Log4Moz.Level.Trace;
+  Log.repository.getLogger("Sync.Engine.Bookmarks").level = Log.Level.Trace;
 
   _("Create a microsummarized bookmark.");
   let id = newMicrosummary(TEST_URL, TEST_TITLE);
@@ -85,12 +85,12 @@ function run_test() {
   do_check_eq(PlacesUtils.bookmarks.getKeywordForBookmark(id), null);
 
   do_check_throws(
-    function () PlacesUtils.annotations.getItemAnnotation(id, GENERATORURI_ANNO),
+    () => PlacesUtils.annotations.getItemAnnotation(id, GENERATORURI_ANNO),
     Cr.NS_ERROR_NOT_AVAILABLE
   );
 
   do_check_throws(
-    function () PlacesUtils.annotations.getItemAnnotation(id, STATICTITLE_ANNO),
+    () => PlacesUtils.annotations.getItemAnnotation(id, STATICTITLE_ANNO),
     Cr.NS_ERROR_NOT_AVAILABLE
   );
 

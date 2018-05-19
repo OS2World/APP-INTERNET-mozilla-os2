@@ -7,13 +7,18 @@
  * http://www.whatwg.org/specs/web-apps/current-work/#texttracklist
  */
 
-[Pref="media.webvtt.enabled"]
 interface TextTrackList : EventTarget {
   readonly attribute unsigned long length;
   getter TextTrack (unsigned long index);
+  TextTrack? getTrackById(DOMString id);
 
-           [SetterThrows]
+           attribute EventHandler onchange;
            attribute EventHandler onaddtrack;
-           [SetterThrows]
            attribute EventHandler onremovetrack;
+};
+
+// Mozilla extensions
+partial interface TextTrackList {
+  [ChromeOnly]
+  readonly attribute HTMLMediaElement? mediaElement;
 };

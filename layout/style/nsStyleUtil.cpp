@@ -7,10 +7,14 @@
 #include "nsStyleConsts.h"
 
 #include "nsIContent.h"
-#include "nsReadableUtils.h"
 #include "nsCSSProps.h"
 #include "nsRuleNode.h"
+#include "nsROCSSPrimitiveValue.h"
+#include "nsStyleStruct.h"
+#include "nsIContentPolicy.h"
 #include "nsIContentSecurityPolicy.h"
+#include "nsIURI.h"
+#include "nsPrintfCString.h"
 
 using namespace mozilla;
 
@@ -33,7 +37,7 @@ bool nsStyleUtil::DashMatchCompare(const nsAString& aAttributeValue,
     nsAString::const_iterator iter;
     if (selectorLen != attributeLen &&
         *aAttributeValue.BeginReading(iter).advance(selectorLen) !=
-            PRUnichar('-')) {
+            char16_t('-')) {
       // to match, the aAttributeValue must have a dash after the end of
       // the aSelectorValue's text (unless the aSelectorValue and the
       // aAttributeValue have the same text)
@@ -46,27 +50,57 @@ bool nsStyleUtil::DashMatchCompare(const nsAString& aAttributeValue,
   return result;
 }
 
+bool
+nsStyleUtil::ValueIncludes(const nsSubstring& aValueList,
+                           const nsSubstring& aValue,
+                           const nsStringComparator& aComparator)
+{
+  const char16_t *p = aValueList.BeginReading(),
+              *p_end = aValueList.EndReading();
+
+  while (p < p_end) {
+    // skip leading space
+    while (p != p_end && nsContentUtils::IsHTMLWhitespace(*p))
+      ++p;
+
+    const char16_t *val_start = p;
+
+    // look for space or end
+    while (p != p_end && !nsContentUtils::IsHTMLWhitespace(*p))
+      ++p;
+
+    const char16_t *val_end = p;
+
+    if (val_start < val_end &&
+        aValue.Equals(Substring(val_start, val_end), aComparator))
+      return true;
+
+    ++p; // we know the next character is not whitespace
+  }
+  return false;
+}
+
 void nsStyleUtil::AppendEscapedCSSString(const nsAString& aString,
                                          nsAString& aReturn,
-                                         PRUnichar quoteChar)
+                                         char16_t quoteChar)
 {
   NS_PRECONDITION(quoteChar == '\'' || quoteChar == '"',
                   "CSS strings must be quoted with ' or \"");
   aReturn.Append(quoteChar);
 
-  const PRUnichar* in = aString.BeginReading();
-  const PRUnichar* const end = aString.EndReading();
+  const char16_t* in = aString.BeginReading();
+  const char16_t* const end = aString.EndReading();
   for (; in != end; in++) {
     if (*in < 0x20 || (*in >= 0x7F && *in < 0xA0)) {
       // Escape U+0000 through U+001F and U+007F through U+009F numerically.
-      aReturn.AppendPrintf("\\%hX ", *in);
+      aReturn.AppendPrintf("\\%hx ", *in);
     } else {
       if (*in == '"' || *in == '\'' || *in == '\\') {
         // Escape backslash and quote characters symbolically.
         // It's not technically necessary to escape the quote
         // character that isn't being used to delimit the string,
         // but we do it anyway because that makes testing simpler.
-        aReturn.Append(PRUnichar('\\'));
+        aReturn.Append(char16_t('\\'));
       }
       aReturn.Append(*in);
     }
@@ -79,48 +113,51 @@ void nsStyleUtil::AppendEscapedCSSString(const nsAString& aString,
 nsStyleUtil::AppendEscapedCSSIdent(const nsAString& aIdent, nsAString& aReturn)
 {
   // The relevant parts of the CSS grammar are:
-  //   ident    [-]?{nmstart}{nmchar}*
+  //   ident    ([-]?{nmstart}|[-][-]){nmchar}*
   //   nmstart  [_a-z]|{nonascii}|{escape}
   //   nmchar   [_a-z0-9-]|{nonascii}|{escape}
   //   nonascii [^\0-\177]
   //   escape   {unicode}|\\[^\n\r\f0-9a-f]
   //   unicode  \\[0-9a-f]{1,6}(\r\n|[ \n\r\t\f])?
-  // from http://www.w3.org/TR/CSS21/syndata.html#tokenization
+  // from http://www.w3.org/TR/CSS21/syndata.html#tokenization but
+  // modified for idents by
+  // http://dev.w3.org/csswg/cssom/#serialize-an-identifier and
+  // http://dev.w3.org/csswg/css-syntax/#would-start-an-identifier
 
-  const PRUnichar* in = aIdent.BeginReading();
-  const PRUnichar* const end = aIdent.EndReading();
+  const char16_t* in = aIdent.BeginReading();
+  const char16_t* const end = aIdent.EndReading();
 
   if (in == end)
     return;
 
   // A leading dash does not need to be escaped as long as it is not the
   // *only* character in the identifier.
-  if (in + 1 != end && *in == '-') {
-    aReturn.Append(PRUnichar('-'));
+  if (*in == '-') {
+    if (in + 1 == end) {
+      aReturn.Append(char16_t('\\'));
+      aReturn.Append(char16_t('-'));
+      return;
+    }
+
+    aReturn.Append(char16_t('-'));
     ++in;
   }
 
   // Escape a digit at the start (including after a dash),
   // numerically.  If we didn't escape it numerically, it would get
   // interpreted as a numeric escape for the wrong character.
-  // A second dash immediately after a leading dash must also be
-  // escaped, but this may be done symbolically.
-  if (in != end && (*in == '-' ||
-                    ('0' <= *in && *in <= '9'))) {
-    if (*in == '-') {
-      aReturn.Append(PRUnichar('\\'));
-      aReturn.Append(PRUnichar('-'));
-    } else {
-      aReturn.AppendPrintf("\\%hX ", *in);
-    }
+  if (in != end && ('0' <= *in && *in <= '9')) {
+    aReturn.AppendPrintf("\\%hx ", *in);
     ++in;
   }
 
   for (; in != end; ++in) {
-    PRUnichar ch = *in;
-    if (ch < 0x20 || (0x7F <= ch && ch < 0xA0)) {
+    char16_t ch = *in;
+    if (ch == 0x00) {
+      aReturn.Append(char16_t(0xFFFD));
+    } else if (ch < 0x20 || (0x7F <= ch && ch < 0xA0)) {
       // Escape U+0000 through U+001F and U+007F through U+009F numerically.
-      aReturn.AppendPrintf("\\%hX ", *in);
+      aReturn.AppendPrintf("\\%hx ", *in);
     } else {
       // Escape ASCII non-identifier printables as a backslash plus
       // the character.
@@ -129,15 +166,69 @@ nsStyleUtil::AppendEscapedCSSIdent(const nsAString& aIdent, nsAString& aReturn)
           (ch < '0' || '9' < ch) &&
           (ch < 'A' || 'Z' < ch) &&
           (ch < 'a' || 'z' < ch)) {
-        aReturn.Append(PRUnichar('\\'));
+        aReturn.Append(char16_t('\\'));
       }
       aReturn.Append(ch);
     }
   }
 }
 
+// unquoted family names must be a sequence of idents
+// so escape any parts that require escaping
+static void
+AppendUnquotedFamilyName(const nsAString& aFamilyName, nsAString& aResult)
+{
+  const char16_t *p, *p_end;
+  aFamilyName.BeginReading(p);
+  aFamilyName.EndReading(p_end);
+
+   bool moreThanOne = false;
+   while (p < p_end) {
+     const char16_t* identStart = p;
+     while (++p != p_end && *p != ' ')
+       /* nothing */ ;
+
+     nsDependentSubstring ident(identStart, p);
+     if (!ident.IsEmpty()) {
+       if (moreThanOne) {
+         aResult.Append(' ');
+       }
+       nsStyleUtil::AppendEscapedCSSIdent(ident, aResult);
+       moreThanOne = true;
+     }
+
+     ++p;
+  }
+}
+
 /* static */ void
-nsStyleUtil::AppendBitmaskCSSValue(nsCSSProperty aProperty,
+nsStyleUtil::AppendEscapedCSSFontFamilyList(
+  const mozilla::FontFamilyList& aFamilyList,
+  nsAString& aResult)
+{
+  const nsTArray<FontFamilyName>& fontlist = aFamilyList.GetFontlist();
+  size_t i, len = fontlist.Length();
+  for (i = 0; i < len; i++) {
+    if (i != 0) {
+      aResult.Append(',');
+    }
+    const FontFamilyName& name = fontlist[i];
+    switch (name.mType) {
+      case eFamily_named:
+        AppendUnquotedFamilyName(name.mName, aResult);
+        break;
+      case eFamily_named_quoted:
+        AppendEscapedCSSString(name.mName, aResult);
+        break;
+      default:
+        name.AppendToString(aResult);
+    }
+  }
+}
+
+
+/* static */ void
+nsStyleUtil::AppendBitmaskCSSValue(nsCSSPropertyID aProperty,
                                    int32_t aMaskedValue,
                                    int32_t aFirstMask,
                                    int32_t aLastMask,
@@ -149,18 +240,36 @@ nsStyleUtil::AppendBitmaskCSSValue(nsCSSProperty aProperty,
                          aResult);
       aMaskedValue &= ~mask;
       if (aMaskedValue) { // more left
-        aResult.Append(PRUnichar(' '));
+        aResult.Append(char16_t(' '));
       }
     }
   }
-  NS_ABORT_IF_FALSE(aMaskedValue == 0, "unexpected bit remaining in bitfield");
+  MOZ_ASSERT(aMaskedValue == 0, "unexpected bit remaining in bitfield");
+}
+
+/* static */ void
+nsStyleUtil::AppendAngleValue(const nsStyleCoord& aAngle, nsAString& aResult)
+{
+  MOZ_ASSERT(aAngle.IsAngleValue(), "Should have angle value");
+
+  // Append number.
+  AppendCSSNumber(aAngle.GetAngleValue(), aResult);
+
+  // Append unit.
+  switch (aAngle.GetUnit()) {
+    case eStyleUnit_Degree: aResult.AppendLiteral("deg");  break;
+    case eStyleUnit_Grad:   aResult.AppendLiteral("grad"); break;
+    case eStyleUnit_Radian: aResult.AppendLiteral("rad");  break;
+    case eStyleUnit_Turn:   aResult.AppendLiteral("turn"); break;
+    default: NS_NOTREACHED("unrecognized angle unit");
+  }
 }
 
 /* static */ void
 nsStyleUtil::AppendPaintOrderValue(uint8_t aValue,
                                    nsAString& aResult)
 {
-  MOZ_STATIC_ASSERT
+  static_assert
     (NS_STYLE_PAINT_ORDER_BITWIDTH * NS_STYLE_PAINT_ORDER_LAST_VALUE <= 8,
      "SVGStyleStruct::mPaintOrder and local variables not big enough");
 
@@ -170,8 +279,8 @@ nsStyleUtil::AppendPaintOrderValue(uint8_t aValue,
   }
 
   // Append the minimal value necessary for the given paint order.
-  MOZ_STATIC_ASSERT(NS_STYLE_PAINT_ORDER_LAST_VALUE == 3,
-                    "paint-order values added; check serialization");
+  static_assert(NS_STYLE_PAINT_ORDER_LAST_VALUE == 3,
+                "paint-order values added; check serialization");
 
   // The following relies on the default order being the order of the
   // constant values.
@@ -194,7 +303,7 @@ nsStyleUtil::AppendPaintOrderValue(uint8_t aValue,
 
   for (uint32_t position = 0; position <= lastPositionToSerialize; position++) {
     if (position > 0) {
-      aResult.AppendLiteral(" ");
+      aResult.Append(' ');
     }
     uint8_t component = aValue & MASK;
     switch (component) {
@@ -244,7 +353,7 @@ nsStyleUtil::AppendFontFeatureSettings(const nsTArray<gfxFontFeature>& aFeatures
       // 0 ==> off
       aResult.AppendLiteral(" off");
     } else if (feat.mValue > 1) {
-      aResult.AppendLiteral(" ");
+      aResult.Append(' ');
       aResult.AppendInt(feat.mValue);
     }
     // else, omit value if 1, implied by default
@@ -298,14 +407,14 @@ nsStyleUtil::SerializeFunctionalAlternates(
       feature = v.alternate;
       if (!funcName.IsEmpty() && !funcParams.IsEmpty()) {
         if (!aResult.IsEmpty()) {
-          aResult.Append(PRUnichar(' '));
+          aResult.Append(char16_t(' '));
         }
 
         // append the previous functional value
         aResult.Append(funcName);
-        aResult.Append(PRUnichar('('));
+        aResult.Append(char16_t('('));
         aResult.Append(funcParams);
-        aResult.Append(PRUnichar(')'));
+        aResult.Append(char16_t(')'));
       }
 
       // function name
@@ -317,7 +426,7 @@ nsStyleUtil::SerializeFunctionalAlternates(
       AppendEscapedCSSIdent(v.value, funcParams);
     } else {
       if (!funcParams.IsEmpty()) {
-        funcParams.Append(NS_LITERAL_STRING(", "));
+        funcParams.AppendLiteral(", ");
       }
       AppendEscapedCSSIdent(v.value, funcParams);
     }
@@ -326,13 +435,13 @@ nsStyleUtil::SerializeFunctionalAlternates(
     // append the previous functional value
   if (!funcName.IsEmpty() && !funcParams.IsEmpty()) {
     if (!aResult.IsEmpty()) {
-      aResult.Append(PRUnichar(' '));
+      aResult.Append(char16_t(' '));
     }
 
     aResult.Append(funcName);
-    aResult.Append(PRUnichar('('));
+    aResult.Append(char16_t('('));
     aResult.Append(funcParams);
-    aResult.Append(PRUnichar(')'));
+    aResult.Append(char16_t(')'));
   }
 }
 
@@ -362,6 +471,7 @@ nsStyleUtil::ComputeFunctionalAlternates(const nsCSSValueList* aList,
                                  nsCSSProps::kFontVariantAlternatesFuncsKTable,
                                  alternate)) {
       NS_NOTREACHED("keyword not a font-variant-alternates value");
+      continue;
     }
     v.alternate = alternate;
 
@@ -378,6 +488,164 @@ nsStyleUtil::ComputeFunctionalAlternates(const nsCSSValueList* aList,
       value.GetStringValue(v.value);
       aAlternateValues.AppendElement(v);
     }
+  }
+}
+
+static void
+AppendSerializedUnicodePoint(uint32_t aCode, nsACString& aBuf)
+{
+  aBuf.Append(nsPrintfCString("%0X", aCode));
+}
+
+// A unicode-range: descriptor is represented as an array of integers,
+// to be interpreted as a sequence of pairs: min max min max ...
+// It is in source order.  (Possibly it should be sorted and overlaps
+// consolidated, but right now we don't do that.)
+/* static */ void
+nsStyleUtil::AppendUnicodeRange(const nsCSSValue& aValue, nsAString& aResult)
+{
+  NS_PRECONDITION(aValue.GetUnit() == eCSSUnit_Null ||
+                  aValue.GetUnit() == eCSSUnit_Array,
+                  "improper value unit for unicode-range:");
+  aResult.Truncate();
+  if (aValue.GetUnit() != eCSSUnit_Array)
+    return;
+
+  nsCSSValue::Array const & sources = *aValue.GetArrayValue();
+  nsAutoCString buf;
+
+  MOZ_ASSERT(sources.Count() % 2 == 0,
+             "odd number of entries in a unicode-range: array");
+
+  for (uint32_t i = 0; i < sources.Count(); i += 2) {
+    uint32_t min = sources[i].GetIntValue();
+    uint32_t max = sources[i+1].GetIntValue();
+
+    // We don't try to replicate the U+XX?? notation.
+    buf.AppendLiteral("U+");
+    AppendSerializedUnicodePoint(min, buf);
+
+    if (min != max) {
+      buf.Append('-');
+      AppendSerializedUnicodePoint(max, buf);
+    }
+    buf.AppendLiteral(", ");
+  }
+  buf.Truncate(buf.Length() - 2); // remove the last comma-space
+  CopyASCIItoUTF16(buf, aResult);
+}
+
+/* static */ void
+nsStyleUtil::AppendSerializedFontSrc(const nsCSSValue& aValue,
+                                     nsAString& aResult)
+{
+  // A src: descriptor is represented as an array value; each entry in
+  // the array can be eCSSUnit_URL, eCSSUnit_Local_Font, or
+  // eCSSUnit_Font_Format.  Blocks of eCSSUnit_Font_Format may appear
+  // only after one of the first two.  (css3-fonts only contemplates
+  // annotating URLs with formats, but we handle the general case.)
+
+  NS_PRECONDITION(aValue.GetUnit() == eCSSUnit_Array,
+                  "improper value unit for src:");
+
+  const nsCSSValue::Array& sources = *aValue.GetArrayValue();
+  size_t i = 0;
+
+  while (i < sources.Count()) {
+    nsAutoString formats;
+
+    if (sources[i].GetUnit() == eCSSUnit_URL) {
+      aResult.AppendLiteral("url(");
+      nsDependentString url(sources[i].GetOriginalURLValue());
+      nsStyleUtil::AppendEscapedCSSString(url, aResult);
+      aResult.Append(')');
+    } else if (sources[i].GetUnit() == eCSSUnit_Local_Font) {
+      aResult.AppendLiteral("local(");
+      nsDependentString local(sources[i].GetStringBufferValue());
+      nsStyleUtil::AppendEscapedCSSString(local, aResult);
+      aResult.Append(')');
+    } else {
+      NS_NOTREACHED("entry in src: descriptor with improper unit");
+      i++;
+      continue;
+    }
+
+    i++;
+    formats.Truncate();
+    while (i < sources.Count() &&
+           sources[i].GetUnit() == eCSSUnit_Font_Format) {
+      formats.Append('"');
+      formats.Append(sources[i].GetStringBufferValue());
+      formats.AppendLiteral("\", ");
+      i++;
+    }
+    if (formats.Length() > 0) {
+      formats.Truncate(formats.Length() - 2); // remove the last comma
+      aResult.AppendLiteral(" format(");
+      aResult.Append(formats);
+      aResult.Append(')');
+    }
+    aResult.AppendLiteral(", ");
+  }
+  aResult.Truncate(aResult.Length() - 2); // remove the last comma-space
+}
+
+/* static */ void
+nsStyleUtil::AppendStepsTimingFunction(nsTimingFunction::Type aType,
+                                       uint32_t aSteps,
+                                       nsAString& aResult)
+{
+  MOZ_ASSERT(aType == nsTimingFunction::Type::StepStart ||
+             aType == nsTimingFunction::Type::StepEnd);
+
+  aResult.AppendLiteral("steps(");
+  aResult.AppendInt(aSteps);
+  if (aType == nsTimingFunction::Type::StepStart) {
+    aResult.AppendLiteral(", start)");
+  } else {
+    aResult.AppendLiteral(")");
+  }
+}
+
+/* static */ void
+nsStyleUtil::AppendCubicBezierTimingFunction(float aX1, float aY1,
+                                             float aX2, float aY2,
+                                             nsAString& aResult)
+{
+  // set the value from the cubic-bezier control points
+  // (We could try to regenerate the keywords if we want.)
+  aResult.AppendLiteral("cubic-bezier(");
+  aResult.AppendFloat(aX1);
+  aResult.AppendLiteral(", ");
+  aResult.AppendFloat(aY1);
+  aResult.AppendLiteral(", ");
+  aResult.AppendFloat(aX2);
+  aResult.AppendLiteral(", ");
+  aResult.AppendFloat(aY2);
+  aResult.Append(')');
+}
+
+/* static */ void
+nsStyleUtil::AppendCubicBezierKeywordTimingFunction(
+    nsTimingFunction::Type aType,
+    nsAString& aResult)
+{
+  switch (aType) {
+    case nsTimingFunction::Type::Ease:
+    case nsTimingFunction::Type::Linear:
+    case nsTimingFunction::Type::EaseIn:
+    case nsTimingFunction::Type::EaseOut:
+    case nsTimingFunction::Type::EaseInOut: {
+      nsCSSKeyword keyword = nsCSSProps::ValueToKeywordEnum(
+          static_cast<int32_t>(aType),
+          nsCSSProps::kTransitionTimingFunctionKTable);
+      AppendASCIItoUTF16(nsCSSKeywords::GetStringValue(keyword),
+                         aResult);
+      break;
+    }
+    default:
+      MOZ_ASSERT_UNREACHABLE("unexpected aType");
+      break;
   }
 }
 
@@ -415,8 +683,59 @@ nsStyleUtil::IsSignificantChild(nsIContent* aChild, bool aTextIsSignificant,
           !aChild->TextIsOnlyWhitespace());
 }
 
+// For a replaced element whose concrete object size is no larger than the
+// element's content-box, this method checks whether the given
+// "object-position" coordinate might cause overflow in its dimension.
+static bool
+ObjectPositionCoordMightCauseOverflow(const Position::Coord& aCoord)
+{
+  // Any nonzero length in "object-position" can push us to overflow
+  // (particularly if our concrete object size is exactly the same size as the
+  // replaced element's content-box).
+  if (aCoord.mLength != 0) {
+    return true;
+  }
+
+  // Percentages are interpreted as a fraction of the extra space. So,
+  // percentages in the 0-100% range are safe, but values outside of that
+  // range could cause overflow.
+  if (aCoord.mHasPercent &&
+      (aCoord.mPercent < 0.0f || aCoord.mPercent > 1.0f)) {
+    return true;
+  }
+  return false;
+}
+
+
 /* static */ bool
-nsStyleUtil::CSPAllowsInlineStyle(nsIPrincipal* aPrincipal,
+nsStyleUtil::ObjectPropsMightCauseOverflow(const nsStylePosition* aStylePos)
+{
+  auto objectFit = aStylePos->mObjectFit;
+
+  // "object-fit: cover" & "object-fit: none" can give us a render rect that's
+  // larger than our container element's content-box.
+  if (objectFit == NS_STYLE_OBJECT_FIT_COVER ||
+      objectFit == NS_STYLE_OBJECT_FIT_NONE) {
+    return true;
+  }
+  // (All other object-fit values produce a concrete object size that's no larger
+  // than the constraint region.)
+
+  // Check each of our "object-position" coords to see if it could cause
+  // overflow in its dimension:
+  const Position& objectPosistion = aStylePos->mObjectPosition;
+  if (ObjectPositionCoordMightCauseOverflow(objectPosistion.mXPosition) ||
+      ObjectPositionCoordMightCauseOverflow(objectPosistion.mYPosition)) {
+    return true;
+  }
+
+  return false;
+}
+
+
+/* static */ bool
+nsStyleUtil::CSPAllowsInlineStyle(nsIContent* aContent,
+                                  nsIPrincipal* aPrincipal,
                                   nsIURI* aSourceURI,
                                   uint32_t aLineNumber,
                                   const nsSubstring& aStyleText,
@@ -428,6 +747,10 @@ nsStyleUtil::CSPAllowsInlineStyle(nsIPrincipal* aPrincipal,
     *aRv = NS_OK;
   }
 
+  MOZ_ASSERT(!aContent || aContent->NodeInfo()->NameAtom() == nsGkAtoms::style,
+      "aContent passed to CSPAllowsInlineStyle "
+      "for an element that is not <style>");
+
   nsCOMPtr<nsIContentSecurityPolicy> csp;
   rv = aPrincipal->GetCsp(getter_AddRefs(csp));
 
@@ -437,39 +760,24 @@ nsStyleUtil::CSPAllowsInlineStyle(nsIPrincipal* aPrincipal,
     return false;
   }
 
-  if (csp) {
-    bool inlineOK = true;
-    bool reportViolation = false;
-    rv = csp->GetAllowsInlineStyle(&reportViolation, &inlineOK);
-    if (NS_FAILED(rv)) {
-      if (aRv)
-        *aRv = rv;
-      return false;
-    }
-
-    if (reportViolation) {
-      // Inline styles are not allowed by CSP, so report the violation
-      nsAutoCString asciiSpec;
-      aSourceURI->GetAsciiSpec(asciiSpec);
-      nsAutoString styleText(aStyleText);
-
-      // cap the length of the style sample at 40 chars.
-      if (styleText.Length() > 40) {
-        styleText.Truncate(40);
-        styleText.Append(NS_LITERAL_STRING("..."));
-      }
-
-      csp->LogViolationDetails(nsIContentSecurityPolicy::VIOLATION_TYPE_INLINE_STYLE,
-                              NS_ConvertUTF8toUTF16(asciiSpec),
-                              aStyleText,
-                              aLineNumber);
-    }
-
-    if (!inlineOK) {
-        // The inline style should be blocked.
-        return false;
-    }
+  if (!csp) {
+    // No CSP --> the style is allowed
+    return true;
   }
-  // No CSP or a CSP that allows inline styles.
-  return true;
+
+  // query the nonce
+  nsAutoString nonce;
+  if (aContent) {
+    aContent->GetAttr(kNameSpaceID_None, nsGkAtoms::nonce, nonce);
+  }
+
+  bool allowInlineStyle = true;
+  rv = csp->GetAllowsInline(nsIContentPolicy::TYPE_STYLESHEET,
+                            nonce,
+                            false, // aParserCreated only applies to scripts
+                            aStyleText, aLineNumber,
+                            &allowInlineStyle);
+  NS_ENSURE_SUCCESS(rv, false);
+
+  return allowInlineStyle;
 }

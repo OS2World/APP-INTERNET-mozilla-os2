@@ -259,9 +259,9 @@ static struct matrix
 adaption_matrix(struct CIE_XYZ source_illumination, struct CIE_XYZ target_illumination)
 {
 	struct matrix lam_rigg = {{ // Bradford matrix
-	                         {  0.8951,  0.2664, -0.1614 },
-	                         { -0.7502,  1.7135,  0.0367 },
-	                         {  0.0389, -0.0685,  1.0296 }
+	                         {  0.8951f,  0.2664f, -0.1614f },
+	                         { -0.7502f,  1.7135f,  0.0367f },
+	                         {  0.0389f, -0.0685f,  1.0296f }
 	                         }};
 	return compute_chromatic_adaption(source_illumination, target_illumination, lam_rigg);
 }
@@ -304,6 +304,14 @@ qcms_bool set_rgb_colorants(qcms_profile *profile, qcms_CIE_xyY white_point, qcm
 	profile->blueColorant.Z = double_to_s15Fixed16Number(colorants.m[2][2]);
 
 	return true;
+}
+
+qcms_bool get_rgb_colorants(struct matrix *colorants, qcms_CIE_xyY white_point, qcms_CIE_xyYTRIPLE primaries)
+{
+	*colorants = build_RGB_to_XYZ_transfer_matrix(white_point, primaries);
+	*colorants = adapt_matrix_to_D50(*colorants, white_point);
+
+	return (colorants->invalid ? true : false);
 }
 
 #if 0
@@ -915,11 +923,16 @@ void precache_release(struct precache_output *p)
 	}
 }
 
-#ifdef HAS_POSIX_MEMALIGN
+#ifdef HAVE_POSIX_MEMALIGN
 static qcms_transform *transform_alloc(void)
 {
 	qcms_transform *t;
-	if (!posix_memalign(&t, 16, sizeof(*t))) {
+
+	void *allocated_memory;
+	if (!posix_memalign(&allocated_memory, 16, sizeof(qcms_transform))) {
+		/* Doing a memset to initialise all bits to 'zero'*/
+		memset(allocated_memory, 0, sizeof(qcms_transform));
+		t = allocated_memory;
 		return t;
 	} else {
 		return NULL;
@@ -1207,7 +1220,7 @@ qcms_transform* qcms_transform_create(
 	if (out_type != QCMS_DATA_RGB_8 &&
                 out_type != QCMS_DATA_RGBA_8) {
             assert(0 && "output type");
-	    transform_free(transform);
+	    qcms_transform_release(transform);
             return NULL;
         }
 
@@ -1230,7 +1243,7 @@ qcms_transform* qcms_transform_create(
 		qcms_transform *result = qcms_transform_precacheLUT_float(transform, in, out, 33, in_type);
 		if (!result) {
             		assert(0 && "precacheLUT failed");
-			transform_free(transform);
+			qcms_transform_release(transform);
 			return NULL;
 		}
 		return result;
@@ -1260,7 +1273,7 @@ qcms_transform* qcms_transform_create(
 		if (in_type != QCMS_DATA_RGB_8 &&
                     in_type != QCMS_DATA_RGBA_8){
                 	assert(0 && "input type");
-			transform_free(transform);
+			qcms_transform_release(transform);
                 	return NULL;
             	}
 		if (precache) {
@@ -1283,7 +1296,7 @@ qcms_transform* qcms_transform_create(
 #endif
 		    } else
 #endif
-#if (defined(__POWERPC__) || defined(__powerpc__))
+#if (defined(__POWERPC__) || defined(__powerpc__) && !defined(__NO_FPRS__))
 		    if (have_altivec()) {
 			    if (in_type == QCMS_DATA_RGB_8)
 				    transform->transform_fn = qcms_transform_data_rgb_out_lut_altivec;
@@ -1324,6 +1337,16 @@ qcms_transform* qcms_transform_create(
 		}
 		result = matrix_multiply(out_matrix, in_matrix);
 
+		/* check for NaN values in the matrix and bail if we find any */
+		for (unsigned i = 0 ; i < 3 ; ++i) {
+			for (unsigned j = 0 ; j < 3 ; ++j) {
+				if (result.m[i][j] != result.m[i][j]) {
+					qcms_transform_release(transform);
+					return NULL;
+				}
+			}
+		}
+
 		/* store the results in column major mode
 		 * this makes doing the multiplication with sse easier */
 		transform->matrix[0][0] = result.m[0][0];
@@ -1340,7 +1363,7 @@ qcms_transform* qcms_transform_create(
 		if (in_type != QCMS_DATA_GRAY_8 &&
 				in_type != QCMS_DATA_GRAYA_8){
 			assert(0 && "input type");
-			transform_free(transform);
+			qcms_transform_release(transform);
 			return NULL;
 		}
 
@@ -1365,13 +1388,13 @@ qcms_transform* qcms_transform_create(
 		}
 	} else {
 		assert(0 && "unexpected colorspace");
-		transform_free(transform);
+		qcms_transform_release(transform);
 		return NULL;
 	}
 	return transform;
 }
 
-#if defined(__GNUC__) && !defined(__x86_64__) && !defined(__amd64__)
+#if defined(__GNUC__) && defined(__i386__)
 /* we need this to avoid crashes when gcc assumes the stack is 128bit aligned */
 __attribute__((__force_align_arg_pointer__))
 #endif

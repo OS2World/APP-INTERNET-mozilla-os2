@@ -4,6 +4,8 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+#ifndef nsMediaSniffer_h
+#define nsMediaSniffer_h
 
 #include "nsIModule.h"
 #include "nsIFactory.h"
@@ -20,23 +22,26 @@
 
 #define NS_MEDIA_SNIFFER_CONTRACTID "@mozilla.org/media/sniffer;1"
 
-class nsMediaSniffer MOZ_FINAL : public nsIContentSniffer
+#define PATTERN_ENTRY(mask, pattern, contentType) \
+    {(const uint8_t*)mask, (const uint8_t*)pattern, sizeof(mask) - 1, contentType}
+
+struct nsMediaSnifferEntry {
+  const uint8_t* mMask;
+  const uint8_t* mPattern;
+  const uint32_t mLength;
+  const char* mContentType;
+};
+
+class nsMediaSniffer final : public nsIContentSniffer
 {
   public:
     NS_DECL_ISUPPORTS
     NS_DECL_NSICONTENTSNIFFER
-  protected:
+
+  private:
     ~nsMediaSniffer() {}
-
-#define PATTERN_ENTRY(mask, pattern, contentType) \
-    {(const uint8_t*)mask, (const uint8_t*)pattern, sizeof(mask) - 1, contentType}
-
-  struct nsMediaSnifferEntry {
-    const uint8_t* mMask;
-    const uint8_t* mPattern;
-    const uint32_t mLength;
-    const char* mContentType;
-  };
 
   static nsMediaSnifferEntry sSnifferEntries[];
 };
+
+#endif

@@ -22,11 +22,13 @@
 #ifndef WEBRTC_VIDEO_ENGINE_INCLUDE_VIE_RTP_RTCP_H_
 #define WEBRTC_VIDEO_ENGINE_INCLUDE_VIE_RTP_RTCP_H_
 
-#include "common_types.h"
+#include "webrtc/common_types.h"
+#include "webrtc/modules/rtp_rtcp/interface/rtp_rtcp_defines.h"
 
 namespace webrtc {
 
 class VideoEngine;
+struct ReceiveBandwidthEstimatorStats;
 
 // This enumerator sets the RTCP mode.
 enum ViERTCPMode {
@@ -48,11 +50,6 @@ enum StreamType {
   kViEStreamTypeRtx = 1  // Retransmission media stream
 };
 
-enum BandwidthEstimationMode {
-  kViEMultiStreamEstimation,
-  kViESingleStreamEstimation
-};
-
 // This class declares an abstract interface for a user defined observer. It is
 // up to the VideoEngine user to implement a derived class which implements the
 // observer class. The observer is registered using RegisterRTPObserver() and
@@ -72,24 +69,7 @@ class WEBRTC_DLLEXPORT ViERTPObserver {
   virtual ~ViERTPObserver() {}
 };
 
-// This class declares an abstract interface for a user defined observer. It is
-// up to the VideoEngine user to implement a derived class which implements the
-// observer class. The observer is registered using RegisterRTCPObserver() and
-// deregistered using DeregisterRTCPObserver().
-
-class WEBRTC_DLLEXPORT ViERTCPObserver {
- public:
-  // This method is called if a application-defined RTCP packet has been
-  // received.
-  virtual void OnApplicationDataReceived(
-      const int video_channel,
-      const unsigned char sub_type,
-      const unsigned int name,
-      const char* data,
-      const unsigned short data_length_in_bytes) = 0;
- protected:
-  virtual ~ViERTCPObserver() {}
-};
+struct SenderInfo;
 
 class WEBRTC_DLLEXPORT ViERTP_RTCP {
  public:
@@ -133,10 +113,34 @@ class WEBRTC_DLLEXPORT ViERTP_RTCP {
   virtual int GetRemoteCSRCs(const int video_channel,
                              unsigned int CSRCs[kRtpCsrcSize]) const = 0;
 
+  // This function gets the RID value (if any) for the incoming RTP stream
+  // for the specified channel.
+  virtual int GetRemoteRID(const int video_channel,
+                           char rid[256]) const = 0;
+
+  // This sets a specific payload type for the RTX stream. Note that this
+  // doesn't enable RTX, SetLocalSSRC must still be called to enable RTX.
+  virtual int SetRtxSendPayloadType(const int video_channel,
+                                    const uint8_t payload_type) = 0;
+
+  virtual int SetRtxReceivePayloadType(const int video_channel,
+                                       const uint8_t payload_type) = 0;
+
   // This function enables manual initialization of the sequence number. The
   // start sequence number is normally a random number.
   virtual int SetStartSequenceNumber(const int video_channel,
                                      unsigned short sequence_number) = 0;
+
+  // TODO(pbos): Remove default implementation once this has been implemented
+  // in libjingle.
+  virtual void SetRtpStateForSsrc(int video_channel,
+                                  uint32_t ssrc,
+                                  const RtpState& rtp_state) {}
+  // TODO(pbos): Remove default implementation once this has been implemented
+  // in libjingle.
+  virtual RtpState GetRtpStateForSsrc(int video_channel, uint32_t ssrc) {
+    return RtpState();
+  }
 
   // This function sets the RTCP status for the specified channel.
   // Default mode is kRtcpCompound_RFC4585.
@@ -152,16 +156,28 @@ class WEBRTC_DLLEXPORT ViERTP_RTCP {
   virtual int SetRTCPCName(const int video_channel,
                            const char rtcp_cname[KMaxRTCPCNameLength]) = 0;
 
-  // This function gets the RTCP canonical name (CNAME) for the RTCP reports
-  // sent the specified channel.
+  // TODO(holmer): Remove this API once it has been removed from
+  // fakewebrtcvideoengine.h.
   virtual int GetRTCPCName(const int video_channel,
-                           char rtcp_cname[KMaxRTCPCNameLength]) const = 0;
+                           char rtcp_cname[KMaxRTCPCNameLength]) const {
+    return -1;
+  }
 
   // This function gets the RTCP canonical name (CNAME) for the RTCP reports
   // received on the specified channel.
   virtual int GetRemoteRTCPCName(
       const int video_channel,
       char rtcp_cname[KMaxRTCPCNameLength]) const = 0;
+
+  virtual int GetRemoteRTCPReceiverInfo(const int video_channel,
+                                        uint32_t& NTPHigh,
+                                        uint32_t& NTPLow,
+                                        uint32_t& receivedPacketCount,
+                                        uint64_t& receivedOctetCount,
+                                        uint32_t* jitter,
+                                        uint16_t* fractionLost,
+                                        uint32_t* cumulativeLost,
+                                        int32_t* rttMs) const = 0;
 
   // This function sends an RTCP APP packet on a specific channel.
   virtual int SendApplicationDefinedRTCPPacket(
@@ -199,6 +215,16 @@ class WEBRTC_DLLEXPORT ViERTP_RTCP {
                                      const unsigned char payload_typeRED,
                                      const unsigned char payload_typeFEC) = 0;
 
+  // Sets send side support for delayed video buffering (actual delay will
+  // be exhibited on the receiver side).
+  // Target delay should be set to zero for real-time mode.
+  virtual int SetSenderBufferingMode(int video_channel,
+                                     int target_delay_ms) = 0;
+  // Sets receive side support for delayed video buffering. Target delay should
+  // be set to zero for real-time mode.
+  virtual int SetReceiverBufferingMode(int video_channel,
+                                       int target_delay_ms) = 0;
+
   // This function enables RTCP key frame requests.
   virtual int SetKeyFrameRequestMethod(
     const int video_channel, const ViEKeyFrameRequestMethod method) = 0;
@@ -214,10 +240,6 @@ class WEBRTC_DLLEXPORT ViERTP_RTCP {
                             bool sender,
                             bool receiver) = 0;
 
-  // Sets the bandwidth estimation mode. This can only be changed before
-  // adding a channel.
-  virtual int SetBandwidthEstimationMode(BandwidthEstimationMode mode) = 0;
-
   // Enables RTP timestamp extension offset described in RFC 5450. This call
   // must be done before ViECodec::SetSendCodec is called.
   virtual int SetSendTimestampOffsetStatus(int video_channel,
@@ -228,39 +250,171 @@ class WEBRTC_DLLEXPORT ViERTP_RTCP {
                                               bool enable,
                                               int id) = 0;
 
+  // Enables RTP absolute send time header extension. This call must be done
+  // before ViECodec::SetSendCodec is called.
+  virtual int SetSendAbsoluteSendTimeStatus(int video_channel,
+                                            bool enable,
+                                            int id) = 0;
+
+  // When enabled for a channel, *all* channels on the same transport will be
+  // expected to include the absolute send time header extension.
+  virtual int SetReceiveAbsoluteSendTimeStatus(int video_channel,
+                                               bool enable,
+                                               int id) = 0;
+
+  virtual int SetSendVideoRotationStatus(int video_channel,
+                                         bool enable,
+                                         int id) = 0;
+
+  virtual int SetReceiveVideoRotationStatus(int video_channel,
+                                            bool enable,
+                                            int id) = 0;
+
+  virtual int SetSendRIDStatus(int video_channel,
+                               bool enable,
+                               int id,
+                               const char *rid) = 0;
+
+  virtual int SetReceiveRIDStatus(int video_channel,
+                                  bool enable,
+                                  int id) = 0;
+
+  // Enables/disables RTCP Receiver Reference Time Report Block extension/
+  // DLRR Report Block extension (RFC 3611).
+  virtual int SetRtcpXrRrtrStatus(int video_channel, bool enable) = 0;
+
   // Enables transmission smoothening, i.e. packets belonging to the same frame
   // will be sent over a longer period of time instead of sending them
   // back-to-back.
-  // NOTE: This is still experimental functionality.
-  // TODO(mflodman) Remove this note when BUG=818 is closed.
   virtual int SetTransmissionSmoothingStatus(int video_channel,
                                              bool enable) = 0;
 
+  // Sets a minimal bitrate which will be padded to when the encoder doesn't
+  // produce enough bitrate.
+  // TODO(pbos): Remove default implementation when libjingle's
+  // FakeWebRtcVideoEngine is updated.
+  virtual int SetMinTransmitBitrate(int video_channel,
+                                    int min_transmit_bitrate_kbps) {
+    return -1;
+  };
+
+  // Set a constant amount to deduct from received bitrate estimates before
+  // using it to allocate capacity among outgoing video streams.
+  virtual int SetReservedTransmitBitrate(
+      int video_channel, unsigned int reserved_transmit_bitrate_bps) {
+    return 0;
+  }
+
   // This function returns our locally created statistics of the received RTP
   // stream.
-  virtual int GetReceivedRTCPStatistics(
-      const int video_channel,
-      unsigned short& fraction_lost,
-      unsigned int& cumulative_lost,
-      unsigned int& extended_max,
-      unsigned int& jitter,
-      int& rtt_ms) const = 0;
+  virtual int GetReceiveChannelRtcpStatistics(const int video_channel,
+                                              RtcpStatistics& basic_stats,
+                                              int64_t& rtt_ms) const = 0;
 
-  // This function returns statistics reported by the remote client in a RTCP
-  // packet.
+  // This function returns statistics reported by the remote client in RTCP
+  // report blocks. If several streams are reported, the statistics will be
+  // aggregated.
+  // If statistics are aggregated, extended_max_sequence_number is not reported,
+  // and will always be set to 0.
+  virtual int GetSendChannelRtcpStatistics(const int video_channel,
+                                           RtcpStatistics& basic_stats,
+                                           int64_t& rtt_ms) const = 0;
+
+  // TODO(sprang): Temporary hacks to prevent libjingle build from failing,
+  // remove when libjingle has been lifted to support webrtc issue 2589
+  virtual int GetReceivedRTCPStatistics(const int video_channel,
+                                        unsigned short& fraction_lost,
+                                        unsigned int& cumulative_lost,
+                                        unsigned int& extended_max,
+                                        unsigned int& jitter,
+                                        int64_t& rtt_ms) const {
+    RtcpStatistics stats;
+    int ret_code = GetReceiveChannelRtcpStatistics(video_channel,
+                                             stats,
+                                             rtt_ms);
+    fraction_lost = stats.fraction_lost;
+    cumulative_lost = stats.cumulative_lost;
+    extended_max = stats.extended_max_sequence_number;
+    jitter = stats.jitter;
+    return ret_code;
+  }
   virtual int GetSentRTCPStatistics(const int video_channel,
                                     unsigned short& fraction_lost,
                                     unsigned int& cumulative_lost,
                                     unsigned int& extended_max,
                                     unsigned int& jitter,
-                                    int& rtt_ms) const = 0;
+                                    int64_t& rtt_ms) const {
+    RtcpStatistics stats;
+    int ret_code = GetSendChannelRtcpStatistics(video_channel,
+                                                stats,
+                                                rtt_ms);
+    fraction_lost = stats.fraction_lost;
+    cumulative_lost = stats.cumulative_lost;
+    extended_max = stats.extended_max_sequence_number;
+    jitter = stats.jitter;
+    return ret_code;
+  }
+
+
+  virtual int RegisterSendChannelRtcpStatisticsCallback(
+      int video_channel, RtcpStatisticsCallback* callback) = 0;
+
+  virtual int DeregisterSendChannelRtcpStatisticsCallback(
+      int video_channel, RtcpStatisticsCallback* callback) = 0;
+
+  virtual int RegisterReceiveChannelRtcpStatisticsCallback(
+      int video_channel, RtcpStatisticsCallback* callback) = 0;
+
+  virtual int DeregisterReceiveChannelRtcpStatisticsCallback(
+      int video_channel, RtcpStatisticsCallback* callback) = 0;
 
   // The function gets statistics from the sent and received RTP streams.
+  virtual int GetRtpStatistics(const int video_channel,
+                               StreamDataCounters& sent,
+                               StreamDataCounters& received) const = 0;
+
+  // TODO(sprang): Temporary hacks to prevent libjingle build from failing,
+  // remove when libjingle has been lifted to support webrtc issue 2589
   virtual int GetRTPStatistics(const int video_channel,
-                               unsigned int& bytes_sent,
-                               unsigned int& packets_sent,
-                               unsigned int& bytes_received,
-                               unsigned int& packets_received) const = 0;
+                       size_t& bytes_sent,
+                       unsigned int& packets_sent,
+                       size_t& bytes_received,
+                       unsigned int& packets_received) const {
+    StreamDataCounters sent;
+    StreamDataCounters received;
+    int ret_code = GetRtpStatistics(video_channel, sent, received);
+    bytes_sent = sent.transmitted.payload_bytes;
+    packets_sent = sent.transmitted.packets;
+    bytes_received = received.transmitted.payload_bytes;
+    packets_received = received.transmitted.packets;
+    return ret_code;
+  }
+
+  virtual int RegisterSendChannelRtpStatisticsCallback(
+      int video_channel, StreamDataCountersCallback* callback) = 0;
+
+  virtual int DeregisterSendChannelRtpStatisticsCallback(
+      int video_channel, StreamDataCountersCallback* callback) = 0;
+
+  virtual int RegisterReceiveChannelRtpStatisticsCallback(
+      int video_channel, StreamDataCountersCallback* callback) = 0;
+
+  virtual int DeregisterReceiveChannelRtpStatisticsCallback(
+      int video_channel, StreamDataCountersCallback* callback) = 0;
+
+
+  // Gets RTCP packet type statistics from a sent/received stream.
+  virtual int GetSendRtcpPacketTypeCounter(
+      int video_channel,
+      RtcpPacketTypeCounter* packet_counter) const = 0;
+
+  virtual int GetReceiveRtcpPacketTypeCounter(
+      int video_channel,
+      RtcpPacketTypeCounter* packet_counter) const = 0;
+
+  // Gets the sender info part of the last received RTCP Sender Report (SR)
+  virtual int GetRemoteRTCPSenderInfo(const int video_channel,
+                                      SenderInfo* sender_info) const = 0;
 
   // The function gets bandwidth usage statistics from the sent RTP streams in
   // bits/s.
@@ -270,6 +424,15 @@ class WEBRTC_DLLEXPORT ViERTP_RTCP {
                                 unsigned int& fec_bitrate_sent,
                                 unsigned int& nackBitrateSent) const = 0;
 
+  // (De)Register an observer, called whenever the send bitrate is updated
+  virtual int RegisterSendBitrateObserver(
+      int video_channel,
+      BitrateStatisticsObserver* observer) = 0;
+
+  virtual int DeregisterSendBitrateObserver(
+      int video_channel,
+      BitrateStatisticsObserver* observer) = 0;
+
   // This function gets the send-side estimated bandwidth available for video,
   // including overhead, in bits/s.
   virtual int GetEstimatedSendBandwidth(
@@ -277,21 +440,18 @@ class WEBRTC_DLLEXPORT ViERTP_RTCP {
       unsigned int* estimated_bandwidth) const = 0;
 
   // This function gets the receive-side estimated bandwidth available for
-  // video, including overhead, in bits/s.
-  // Returns -1 when no valid estimate is available.
+  // video, including overhead, in bits/s. |estimated_bandwidth| is 0 if there
+  // is no valid estimate.
   virtual int GetEstimatedReceiveBandwidth(
       const int video_channel,
       unsigned int* estimated_bandwidth) const = 0;
 
-  // This function sets various options for the bandwidth estimator
-  // code.  The options are applied to new channels only.  For a given
-  // channel, the options that are active at the time when the channel
-  // is created are immutable for that channel.  See
-  // http://tools.ietf.org/html/draft-alvestrand-rtcweb-congestion-02
-  // (or later, updated documentation) and common_types.h to get a
-  // feel for what the options do.
-  virtual int SetOverUseDetectorOptions(
-      const OverUseDetectorOptions& options) const = 0;
+  // This function gets the PacedSender queuing delay for the last sent frame.
+  // TODO(jiayl): remove the default impl when libjingle is updated.
+  virtual int GetPacerQueuingDelayMs(
+      const int video_channel, int64_t* delay_ms) const {
+    return -1;
+  }
 
   // This function enables capturing of RTP packets to a binary file on a
   // specific channel and for a given direction. The file can later be
@@ -313,15 +473,21 @@ class WEBRTC_DLLEXPORT ViERTP_RTCP {
   // Removes a registered instance of ViERTPObserver.
   virtual int DeregisterRTPObserver(const int video_channel) = 0;
 
-  // Registers an instance of a user implementation of the ViERTCPObserver.
-  virtual int RegisterRTCPObserver(const int video_channel,
-                                   ViERTCPObserver& observer) = 0;
+  // Registers and instance of a user implementation of ViEFrameCountObserver
+  virtual int RegisterSendFrameCountObserver(
+      int video_channel, FrameCountObserver* observer) = 0;
 
-  // Removes a registered instance of ViERTCPObserver.
-  virtual int DeregisterRTCPObserver(const int video_channel) = 0;
+  // Removes a registered instance of a ViEFrameCountObserver
+  virtual int DeregisterSendFrameCountObserver(
+      int video_channel, FrameCountObserver* observer) = 0;
+
+  // Called when RTCP packet type counters might have been changed. User has to
+  // filter on SSRCs to determine whether it's status sent or received.
+  virtual int RegisterRtcpPacketTypeCounterObserver(
+      int video_channel,
+      RtcpPacketTypeCounterObserver* observer) = 0;
 
  protected:
-  ViERTP_RTCP() {}
   virtual ~ViERTP_RTCP() {}
 };
 

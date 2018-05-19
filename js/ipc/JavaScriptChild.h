@@ -8,87 +8,43 @@
 #ifndef mozilla_jsipc_JavaScriptChild_h_
 #define mozilla_jsipc_JavaScriptChild_h_
 
-#include "JavaScriptShared.h"
+#include "JavaScriptBase.h"
 #include "mozilla/jsipc/PJavaScriptChild.h"
 
 namespace mozilla {
 namespace jsipc {
 
-class JavaScriptChild
-  : public PJavaScriptChild,
-    public JavaScriptShared
+class JavaScriptChild : public JavaScriptBase<PJavaScriptChild>
 {
   public:
-    JavaScriptChild(JSRuntime *rt);
-    ~JavaScriptChild();
+    JavaScriptChild() : strongReferenceObjIdMinimum_(0) {}
+    virtual ~JavaScriptChild();
 
     bool init();
-    void trace(JSTracer *trc);
+    void trace(JSTracer* trc);
+    void updateWeakPointers();
 
-    bool RecvDropObject(const ObjectId &objId);
+    void drop(JSObject* obj);
 
-    bool AnswerHas(const ObjectId &objId, const nsString &id,
-                       ReturnStatus *rs, bool *bp);
-    bool AnswerHasOwn(const ObjectId &objId, const nsString &id,
-                          ReturnStatus *rs, bool *bp);
-    bool AnswerGet(const ObjectId &objId, const ObjectId &receiverId,
-                       const nsString &id,
-                       ReturnStatus *rs, JSVariant *result);
-    bool AnswerSet(const ObjectId &objId, const ObjectId &receiverId,
-                       const nsString &id, const bool &strict,
-                       const JSVariant &value,
-                       ReturnStatus *rs, JSVariant *result);
-    bool AnswerCall(const ObjectId &objId,
-                        const nsTArray<JSParam> &argv,
-                        ReturnStatus *rs,
-                        JSVariant *result,
-                        nsTArray<JSParam> *outparams);
-
-    bool AnswerInstanceOf(const ObjectId &objId,
-                          const JSIID &iid,
-                          ReturnStatus *rs,
-                          bool *instanceof);
-    bool AnswerGetPropertyDescriptor(const ObjectId &objId,
-                                     const nsString &id,
-                                     const uint32_t &flags,
-                                     ReturnStatus *rs,
-                                     PPropertyDescriptor *out);
-    bool AnswerGetOwnPropertyDescriptor(const ObjectId &objId,
-                                        const nsString &id,
-                                        const uint32_t &flags,
-                                        ReturnStatus *rs,
-                                        PPropertyDescriptor *out);
-    bool AnswerGetOwnPropertyNames(const ObjectId &objId,
-                                   ReturnStatus *rs,
-                                   nsTArray<nsString> *names);
-    bool AnswerKeys(const ObjectId &objId,
-                    ReturnStatus *rs,
-                    nsTArray<nsString> *names);
-    bool AnswerObjectClassIs(const ObjectId &objId,
-                             const uint32_t &classValue,
-                             bool *result);
-    bool AnswerClassName(const ObjectId &objId,
-                             nsString *result);
-    bool AnswerIsExtensible(const ObjectId &objId,
-                            bool *result);
-    bool AnswerPreventExtensions(const ObjectId &objId,
-                                 ReturnStatus *rs);
+    bool allowMessage(JSContext* cx) override { return true; }
 
   protected:
-    JSObject *unwrap(JSContext *cx, ObjectId id);
+    virtual bool isParent() override { return false; }
+    virtual JSObject* scopeForTargetObjects() override;
+
+    bool RecvDropTemporaryStrongReferences(const uint64_t& upToObjId) override;
 
   private:
-    bool makeId(JSContext *cx, JSObject *obj, ObjectId *idp);
-    bool fail(JSContext *cx, ReturnStatus *rs);
-    bool ok(ReturnStatus *rs);
+    bool fail(JSContext* cx, ReturnStatus* rs);
+    bool ok(ReturnStatus* rs);
 
-  private:
-    ObjectId lastId_;
-    JSRuntime *rt_;
-    ObjectIdCache ids_;
+    // JavaScriptChild will keep strong references to JS objects that are
+    // referenced by the parent only if their ID is >=
+    // strongReferenceObjIdMinimum_.
+    uint64_t strongReferenceObjIdMinimum_;
 };
 
-} // mozilla
-} // jsipc
+} // namespace jsipc
+} // namespace mozilla
 
 #endif

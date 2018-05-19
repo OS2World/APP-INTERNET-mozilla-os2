@@ -1,5 +1,5 @@
 /* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 4 -*-
- * vim: set ts=8 sts=4 et sw=4 tw=99:
+* vim: set ts=8 sts=4 et sw=4 tw=99:
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -8,399 +8,405 @@
 #define jsgcinlines_h
 
 #include "jsgc.h"
-#include "jscntxt.h"
-#include "jscompartment.h"
-#include "jslock.h"
 
-#include "js/RootingAPI.h"
-#include "js/TemplateLib.h"
-#include "vm/Shape.h"
-#include "vm/ForkJoin.h"
+#include "mozilla/DebugOnly.h"
+#include "mozilla/Maybe.h"
+
+#include "gc/GCTrace.h"
+#include "gc/Zone.h"
 
 namespace js {
-
-class Shape;
-
-/*
- * This auto class should be used around any code that might cause a mark bit to
- * be set on an object in a dead zone. See AutoMaybeTouchDeadZones
- * for more details.
- */
-struct AutoMarkInDeadZone
-{
-    AutoMarkInDeadZone(JS::Zone *zone)
-      : zone(zone),
-        scheduled(zone->scheduledForDestruction)
-    {
-        if (zone->rt->gcManipulatingDeadZones && zone->scheduledForDestruction) {
-            zone->rt->gcObjectsMarkedInDeadZones++;
-            zone->scheduledForDestruction = false;
-        }
-    }
-
-    ~AutoMarkInDeadZone() {
-        zone->scheduledForDestruction = scheduled;
-    }
-
-  private:
-    JS::Zone *zone;
-    bool scheduled;
-};
-
-inline Allocator *const
-ThreadSafeContext::allocator()
-{
-    JS_ASSERT_IF(isJSContext(), &asJSContext()->zone()->allocator == allocator_);
-    return allocator_;
-}
-
 namespace gc {
 
-/* Capacity for slotsToThingKind */
-const size_t SLOTS_TO_THING_KIND_LIMIT = 17;
+inline void
+MakeAccessibleAfterMovingGC(void* anyp) {}
 
-extern const AllocKind slotsToThingKind[];
-
-/* Get the best kind to use when making an object with the given slot count. */
-static inline AllocKind
-GetGCObjectKind(size_t numSlots)
-{
-    if (numSlots >= SLOTS_TO_THING_KIND_LIMIT)
-        return FINALIZE_OBJECT16;
-    return slotsToThingKind[numSlots];
+inline void
+MakeAccessibleAfterMovingGC(JSObject* obj) {
+    if (obj->isNative())
+        obj->as<NativeObject>().updateShapeAfterMovingGC();
 }
 
 static inline AllocKind
-GetGCObjectKind(Class *clasp)
+GetGCObjectKind(const Class* clasp)
 {
     if (clasp == FunctionClassPtr)
-        return JSFunction::FinalizeKind;
+        return AllocKind::FUNCTION;
     uint32_t nslots = JSCLASS_RESERVED_SLOTS(clasp);
     if (clasp->flags & JSCLASS_HAS_PRIVATE)
         nslots++;
     return GetGCObjectKind(nslots);
 }
 
-/* As for GetGCObjectKind, but for dense array allocation. */
-static inline AllocKind
-GetGCArrayKind(size_t numSlots)
+inline void
+GCRuntime::poke()
 {
-    /*
-     * Dense arrays can use their fixed slots to hold their elements array
-     * (less two Values worth of ObjectElements header), but if more than the
-     * maximum number of fixed slots is needed then the fixed slots will be
-     * unused.
-     */
-    JS_STATIC_ASSERT(ObjectElements::VALUES_PER_HEADER == 2);
-    if (numSlots > JSObject::NELEMENTS_LIMIT || numSlots + 2 >= SLOTS_TO_THING_KIND_LIMIT)
-        return FINALIZE_OBJECT2;
-    return slotsToThingKind[numSlots + 2];
-}
-
-static inline AllocKind
-GetGCObjectFixedSlotsKind(size_t numFixedSlots)
-{
-    JS_ASSERT(numFixedSlots < SLOTS_TO_THING_KIND_LIMIT);
-    return slotsToThingKind[numFixedSlots];
-}
-
-static inline AllocKind
-GetBackgroundAllocKind(AllocKind kind)
-{
-    JS_ASSERT(!IsBackgroundFinalized(kind));
-    JS_ASSERT(kind <= FINALIZE_OBJECT_LAST);
-    return (AllocKind) (kind + 1);
-}
-
-/*
- * Try to get the next larger size for an object, keeping BACKGROUND
- * consistent.
- */
-static inline bool
-TryIncrementAllocKind(AllocKind *kindp)
-{
-    size_t next = size_t(*kindp) + 2;
-    if (next >= size_t(FINALIZE_OBJECT_LIMIT))
-        return false;
-    *kindp = AllocKind(next);
-    return true;
-}
-
-/* Get the number of fixed slots and initial capacity associated with a kind. */
-static inline size_t
-GetGCKindSlots(AllocKind thingKind)
-{
-    /* Using a switch in hopes that thingKind will usually be a compile-time constant. */
-    switch (thingKind) {
-      case FINALIZE_OBJECT0:
-      case FINALIZE_OBJECT0_BACKGROUND:
-        return 0;
-      case FINALIZE_OBJECT2:
-      case FINALIZE_OBJECT2_BACKGROUND:
-        return 2;
-      case FINALIZE_OBJECT4:
-      case FINALIZE_OBJECT4_BACKGROUND:
-        return 4;
-      case FINALIZE_OBJECT8:
-      case FINALIZE_OBJECT8_BACKGROUND:
-        return 8;
-      case FINALIZE_OBJECT12:
-      case FINALIZE_OBJECT12_BACKGROUND:
-        return 12;
-      case FINALIZE_OBJECT16:
-      case FINALIZE_OBJECT16_BACKGROUND:
-        return 16;
-      default:
-        JS_NOT_REACHED("Bad object finalize kind");
-        return 0;
-    }
-}
-
-static inline size_t
-GetGCKindSlots(AllocKind thingKind, Class *clasp)
-{
-    size_t nslots = GetGCKindSlots(thingKind);
-
-    /* An object's private data uses the space taken by its last fixed slot. */
-    if (clasp->flags & JSCLASS_HAS_PRIVATE) {
-        JS_ASSERT(nslots > 0);
-        nslots--;
-    }
-
-    /*
-     * Functions have a larger finalize kind than FINALIZE_OBJECT to reserve
-     * space for the extra fields in JSFunction, but have no fixed slots.
-     */
-    if (clasp == FunctionClassPtr)
-        nslots = 0;
-
-    return nslots;
-}
-
-#ifdef JSGC_GENERATIONAL
-inline bool
-ShouldNurseryAllocate(const Nursery &nursery, AllocKind kind, InitialHeap heap)
-{
-    return nursery.isEnabled() && IsNurseryAllocable(kind) && heap != TenuredHeap;
-}
-#endif
-
-inline bool
-IsInsideNursery(JSRuntime *rt, const void *thing)
-{
-#ifdef JSGC_GENERATIONAL
-    return rt->gcNursery.isInside(thing);
-#endif
-    return false;
-}
-
-inline JSGCTraceKind
-GetGCThingTraceKind(const void *thing)
-{
-    JS_ASSERT(thing);
-    const Cell *cell = static_cast<const Cell *>(thing);
-#ifdef JSGC_GENERATIONAL
-    if (IsInsideNursery(cell->runtime(), cell))
-        return JSTRACE_OBJECT;
-#endif
-    return MapAllocToTraceKind(cell->tenuredGetAllocKind());
-}
-
-static inline void
-GCPoke(JSRuntime *rt)
-{
-    rt->gcPoke = true;
+    poked = true;
 
 #ifdef JS_GC_ZEAL
     /* Schedule a GC to happen "soon" after a GC poke. */
-    if (rt->gcZeal() == js::gc::ZealPokeValue)
-        rt->gcNextScheduled = 1;
+    if (hasZealMode(ZealMode::Poke))
+        nextScheduled = 1;
 #endif
 }
 
 class ArenaIter
 {
-    ArenaHeader *aheader;
-    ArenaHeader *remainingHeader;
+    Arena* arena;
+    Arena* unsweptArena;
+    Arena* sweptArena;
+    mozilla::DebugOnly<bool> initialized;
 
   public:
-    ArenaIter() {
-        init();
-    }
+    ArenaIter()
+      : arena(nullptr), unsweptArena(nullptr), sweptArena(nullptr), initialized(false) {}
 
-    ArenaIter(JS::Zone *zone, AllocKind kind) {
-        init(zone, kind);
-    }
+    ArenaIter(JS::Zone* zone, AllocKind kind) : initialized(false) { init(zone, kind); }
 
-    void init() {
-        aheader = NULL;
-        remainingHeader = NULL;
-    }
-
-    void init(ArenaHeader *aheaderArg) {
-        aheader = aheaderArg;
-        remainingHeader = NULL;
-    }
-
-    void init(JS::Zone *zone, AllocKind kind) {
-        aheader = zone->allocator.arenas.getFirstArena(kind);
-        remainingHeader = zone->allocator.arenas.getFirstArenaToSweep(kind);
-        if (!aheader) {
-            aheader = remainingHeader;
-            remainingHeader = NULL;
+    void init(JS::Zone* zone, AllocKind kind) {
+        MOZ_ASSERT(!initialized);
+        MOZ_ASSERT(zone);
+        initialized = true;
+        arena = zone->arenas.getFirstArena(kind);
+        unsweptArena = zone->arenas.getFirstArenaToSweep(kind);
+        sweptArena = zone->arenas.getFirstSweptArena(kind);
+        if (!unsweptArena) {
+            unsweptArena = sweptArena;
+            sweptArena = nullptr;
+        }
+        if (!arena) {
+            arena = unsweptArena;
+            unsweptArena = sweptArena;
+            sweptArena = nullptr;
         }
     }
 
-    bool done() {
-        return !aheader;
+    bool done() const {
+        MOZ_ASSERT(initialized);
+        return !arena;
     }
 
-    ArenaHeader *get() {
-        return aheader;
+    Arena* get() const {
+        MOZ_ASSERT(!done());
+        return arena;
     }
 
     void next() {
-        aheader = aheader->next;
-        if (!aheader) {
-            aheader = remainingHeader;
-            remainingHeader = NULL;
+        MOZ_ASSERT(!done());
+        arena = arena->next;
+        if (!arena) {
+            arena = unsweptArena;
+            unsweptArena = sweptArena;
+            sweptArena = nullptr;
         }
     }
 };
 
-class CellIterImpl
+enum CellIterNeedsBarrier : uint8_t
+{
+    CellIterDoesntNeedBarrier = 0,
+    CellIterMayNeedBarrier = 1
+};
+
+class ArenaCellIterImpl
 {
     size_t firstThingOffset;
     size_t thingSize;
-    ArenaIter aiter;
-    FreeSpan firstSpan;
-    const FreeSpan *span;
-    uintptr_t thing;
-    Cell *cell;
+    Arena* arenaAddr;
+    FreeSpan span;
+    uint_fast16_t thing;
+    JS::TraceKind traceKind;
+    bool needsBarrier;
+    mozilla::DebugOnly<bool> initialized;
 
-  protected:
-    CellIterImpl() {
-    }
-
-    void initSpan(JS::Zone *zone, AllocKind kind) {
-        JS_ASSERT(zone->allocator.arenas.isSynchronizedFreeList(kind));
-        firstThingOffset = Arena::firstThingOffset(kind);
-        thingSize = Arena::thingSize(kind);
-        firstSpan.initAsEmpty();
-        span = &firstSpan;
-        thing = span->first;
-    }
-
-    void init(ArenaHeader *singleAheader) {
-        initSpan(singleAheader->zone, singleAheader->getAllocKind());
-        aiter.init(singleAheader);
-        next();
-        aiter.init();
-    }
-
-    void init(JS::Zone *zone, AllocKind kind) {
-        initSpan(zone, kind);
-        aiter.init(zone, kind);
-        next();
+    // Upon entry, |thing| points to any thing (free or used) and finds the
+    // first used thing, which may be |thing|.
+    void moveForwardIfFree() {
+        MOZ_ASSERT(!done());
+        MOZ_ASSERT(thing);
+        // Note: if |span| is empty, this test will fail, which is what we want
+        // -- |span| being empty means that we're past the end of the last free
+        // thing, all the remaining things in the arena are used, and we'll
+        // never need to move forward.
+        if (thing == span.first) {
+            thing = span.last + thingSize;
+            span = *span.nextSpan(arenaAddr);
+        }
     }
 
   public:
+    ArenaCellIterImpl()
+      : firstThingOffset(0),
+        thingSize(0),
+        arenaAddr(nullptr),
+        thing(0),
+        traceKind(JS::TraceKind::Null),
+        needsBarrier(false),
+        initialized(false)
+    {}
+
+    explicit ArenaCellIterImpl(Arena* arena, CellIterNeedsBarrier mayNeedBarrier)
+      : initialized(false)
+    {
+        init(arena, mayNeedBarrier);
+    }
+
+    void init(Arena* arena, CellIterNeedsBarrier mayNeedBarrier) {
+        MOZ_ASSERT(!initialized);
+        MOZ_ASSERT(arena);
+        MOZ_ASSERT_IF(!mayNeedBarrier,
+                      CurrentThreadIsPerformingGC() || CurrentThreadIsGCSweeping());
+        initialized = true;
+        AllocKind kind = arena->getAllocKind();
+        firstThingOffset = Arena::firstThingOffset(kind);
+        thingSize = Arena::thingSize(kind);
+        traceKind = MapAllocToTraceKind(kind);
+        needsBarrier = mayNeedBarrier && !arena->zone->runtimeFromMainThread()->isHeapCollecting();
+        reset(arena);
+    }
+
+    // Use this to move from an Arena of a particular kind to another Arena of
+    // the same kind.
+    void reset(Arena* arena) {
+        MOZ_ASSERT(initialized);
+        MOZ_ASSERT(arena);
+        arenaAddr = arena;
+        span = *arena->getFirstFreeSpan();
+        thing = firstThingOffset;
+        moveForwardIfFree();
+    }
+
     bool done() const {
-        return !cell;
+        MOZ_ASSERT(initialized);
+        MOZ_ASSERT(thing <= ArenaSize);
+        return thing == ArenaSize;
     }
 
-    template<typename T> T *get() const {
-        JS_ASSERT(!done());
-        return static_cast<T *>(cell);
-    }
+    TenuredCell* getCell() const {
+        MOZ_ASSERT(!done());
+        TenuredCell* cell = reinterpret_cast<TenuredCell*>(uintptr_t(arenaAddr) + thing);
 
-    Cell *getCell() const {
-        JS_ASSERT(!done());
+        // This can result in a a new reference being created to an object that
+        // an ongoing incremental GC may find to be unreachable, so we may need
+        // a barrier here.
+        if (needsBarrier)
+            ExposeGCThingToActiveJS(JS::GCCellPtr(cell, traceKind));
+
         return cell;
     }
 
+    template<typename T> T* get() const {
+        MOZ_ASSERT(!done());
+        MOZ_ASSERT(JS::MapTypeToTraceKind<T>::kind == traceKind);
+        return static_cast<T*>(getCell());
+    }
+
     void next() {
-        for (;;) {
-            if (thing != span->first)
-                break;
-            if (JS_LIKELY(span->hasNext())) {
-                thing = span->last + thingSize;
-                span = span->nextSpan();
-                break;
-            }
-            if (aiter.done()) {
-                cell = NULL;
-                return;
-            }
-            ArenaHeader *aheader = aiter.get();
-            firstSpan = aheader->getFirstFreeSpan();
-            span = &firstSpan;
-            thing = aheader->arenaAddress() | firstThingOffset;
-            aiter.next();
-        }
-        cell = reinterpret_cast<Cell *>(thing);
+        MOZ_ASSERT(!done());
         thing += thingSize;
+        if (thing < ArenaSize)
+            moveForwardIfFree();
     }
 };
 
-class CellIterUnderGC : public CellIterImpl
+template<>
+JSObject*
+ArenaCellIterImpl::get<JSObject>() const;
+
+class ArenaCellIter : public ArenaCellIterImpl
 {
   public:
-    CellIterUnderGC(JS::Zone *zone, AllocKind kind) {
-        JS_ASSERT(zone->rt->isHeapBusy());
-        init(zone, kind);
-    }
-
-    CellIterUnderGC(ArenaHeader *aheader) {
-        JS_ASSERT(aheader->zone->rt->isHeapBusy());
-        init(aheader);
-    }
-};
-
-class CellIter : public CellIterImpl
-{
-    ArenaLists *lists;
-    AllocKind kind;
-#ifdef DEBUG
-    size_t *counter;
-#endif
-  public:
-    CellIter(JS::Zone *zone, AllocKind kind)
-      : lists(&zone->allocator.arenas),
-        kind(kind)
+    explicit ArenaCellIter(Arena* arena)
+      : ArenaCellIterImpl(arena, CellIterMayNeedBarrier)
     {
-        /*
-         * We have a single-threaded runtime, so there's no need to protect
-         * against other threads iterating or allocating. However, we do have
-         * background finalization; we have to wait for this to finish if it's
-         * currently active.
-         */
-        if (IsBackgroundFinalized(kind) &&
-            zone->allocator.arenas.needBackgroundFinalizeWait(kind))
-        {
-            gc::FinishBackgroundFinalize(zone->rt);
+        MOZ_ASSERT(arena->zone->runtimeFromMainThread()->isHeapTracing());
+    }
+};
+
+class ArenaCellIterUnderGC : public ArenaCellIterImpl
+{
+  public:
+    explicit ArenaCellIterUnderGC(Arena* arena)
+      : ArenaCellIterImpl(arena, CellIterDoesntNeedBarrier)
+    {
+        MOZ_ASSERT(CurrentThreadIsPerformingGC());
+    }
+};
+
+class ArenaCellIterUnderFinalize : public ArenaCellIterImpl
+{
+  public:
+    explicit ArenaCellIterUnderFinalize(Arena* arena)
+      : ArenaCellIterImpl(arena, CellIterDoesntNeedBarrier)
+    {
+        MOZ_ASSERT(CurrentThreadIsGCSweeping());
+    }
+};
+
+template <typename T>
+class ZoneCellIter;
+
+template <>
+class ZoneCellIter<TenuredCell> {
+    ArenaIter arenaIter;
+    ArenaCellIterImpl cellIter;
+    mozilla::Maybe<JS::AutoAssertNoGC> nogc;
+
+  protected:
+    // For use when a subclass wants to insert some setup before init().
+    ZoneCellIter() {}
+
+    void init(JS::Zone* zone, AllocKind kind) {
+        MOZ_ASSERT_IF(IsNurseryAllocable(kind),
+                      zone->runtimeFromAnyThread()->gc.nursery.isEmpty());
+        initForTenuredIteration(zone, kind);
+    }
+
+    void initForTenuredIteration(JS::Zone* zone, AllocKind kind) {
+        JSRuntime* rt = zone->runtimeFromAnyThread();
+
+        // If called from outside a GC, ensure that the heap is in a state
+        // that allows us to iterate.
+        if (!rt->isHeapBusy()) {
+            // Assert that no GCs can occur while a ZoneCellIter is live.
+            nogc.emplace(rt);
         }
-        if (lists->isSynchronizedFreeList(kind)) {
-            lists = NULL;
-        } else {
-            JS_ASSERT(!zone->rt->isHeapBusy());
-            lists->copyFreeListToArena(kind);
+
+        // We have a single-threaded runtime, so there's no need to protect
+        // against other threads iterating or allocating. However, we do have
+        // background finalization; we may have to wait for this to finish if
+        // it's currently active.
+        if (IsBackgroundFinalized(kind) && zone->arenas.needBackgroundFinalizeWait(kind))
+            rt->gc.waitBackgroundSweepEnd();
+        arenaIter.init(zone, kind);
+        if (!arenaIter.done())
+            cellIter.init(arenaIter.get(), CellIterMayNeedBarrier);
+    }
+
+  public:
+    ZoneCellIter(JS::Zone* zone, AllocKind kind) {
+        // If we are iterating a nursery-allocated kind then we need to
+        // evict first so that we can see all things.
+        if (IsNurseryAllocable(kind)) {
+            JSRuntime* rt = zone->runtimeFromMainThread();
+            rt->gc.evictNursery();
         }
-#ifdef DEBUG
-        counter = &zone->rt->noGCOrAllocationCheck;
-        ++*counter;
-#endif
+
         init(zone, kind);
     }
 
-    ~CellIter() {
-#ifdef DEBUG
-        JS_ASSERT(*counter > 0);
-        --*counter;
-#endif
-        if (lists)
-            lists->clearFreeListInArena(kind);
+    ZoneCellIter(JS::Zone* zone, AllocKind kind, const js::gc::AutoAssertEmptyNursery&) {
+        // No need to evict the nursery. (This constructor is known statically
+        // to not GC.)
+        init(zone, kind);
     }
+
+    bool done() const {
+        return arenaIter.done();
+    }
+
+    template<typename T>
+    T* get() const {
+        MOZ_ASSERT(!done());
+        return cellIter.get<T>();
+    }
+
+    TenuredCell* getCell() const {
+        MOZ_ASSERT(!done());
+        return cellIter.getCell();
+    }
+
+    void next() {
+        MOZ_ASSERT(!done());
+        cellIter.next();
+        if (cellIter.done()) {
+            MOZ_ASSERT(!arenaIter.done());
+            arenaIter.next();
+            if (!arenaIter.done())
+                cellIter.reset(arenaIter.get());
+        }
+    }
+};
+
+// Iterator over the cells in a Zone, where the GC type (JSString, JSObject) is
+// known, for a single AllocKind. Example usages:
+//
+//   for (auto obj = zone->cellIter<JSObject>(AllocKind::OBJECT0); !obj.done(); obj.next())
+//       ...
+//
+//   for (auto script = zone->cellIter<JSScript>(); !script.done(); script.next())
+//       f(script->code());
+//
+// As this code demonstrates, you can use 'script' as if it were a JSScript*.
+// Its actual type is ZoneCellIter<JSScript>, but for most purposes it will
+// autoconvert to JSScript*.
+//
+// Note that in the JSScript case, ZoneCellIter is able to infer the AllocKind
+// from the type 'JSScript', whereas in the JSObject case, the kind must be
+// given (because there are multiple AllocKinds for objects).
+//
+// Also, the static rooting hazard analysis knows that the JSScript case will
+// not GC during construction. The JSObject case needs to GC, or more precisely
+// to empty the nursery and clear out the store buffer, so that it can see all
+// objects to iterate over (the nursery is not iterable) and remove the
+// possibility of having pointers from the store buffer to data hanging off
+// stuff we're iterating over that we are going to delete. (The latter should
+// not be a problem, since such instances should be using RelocatablePtr do
+// remove themselves from the store buffer on deletion, but currently for
+// subtle reasons that isn't good enough.)
+//
+// If the iterator is used within a GC, then there is no need to evict the
+// nursery (again). You may select a variant that will skip the eviction either
+// by specializing on a GCType that is never allocated in the nursery, or
+// explicitly by passing in a trailing AutoAssertEmptyNursery argument.
+//
+template <typename GCType>
+class ZoneCellIter : public ZoneCellIter<TenuredCell> {
+  public:
+    // Non-nursery allocated (equivalent to having an entry in
+    // MapTypeToFinalizeKind). The template declaration here is to discard this
+    // constructor overload if MapTypeToFinalizeKind<GCType>::kind does not
+    // exist. Note that there will be no remaining overloads that will work,
+    // which makes sense given that you haven't specified which of the
+    // AllocKinds to use for GCType.
+    //
+    // If we later add a nursery allocable GCType with a single AllocKind, we
+    // will want to add an overload of this constructor that does the right
+    // thing (ie, it empties the nursery before iterating.)
+    explicit ZoneCellIter(JS::Zone* zone) : ZoneCellIter<TenuredCell>() {
+        init(zone, MapTypeToFinalizeKind<GCType>::kind);
+    }
+
+    // Non-nursery allocated, nursery is known to be empty: same behavior as above.
+    ZoneCellIter(JS::Zone* zone, const js::gc::AutoAssertEmptyNursery&) : ZoneCellIter(zone) {
+    }
+
+    // Arbitrary kind, which will be assumed to be nursery allocable (and
+    // therefore the nursery will be emptied before iterating.)
+    ZoneCellIter(JS::Zone* zone, AllocKind kind) : ZoneCellIter<TenuredCell>(zone, kind) {
+    }
+
+    // Arbitrary kind, which will be assumed to be nursery allocable, but the
+    // nursery is known to be empty already: same behavior as non-nursery types.
+    ZoneCellIter(JS::Zone* zone, AllocKind kind, const js::gc::AutoAssertEmptyNursery& empty)
+      : ZoneCellIter<TenuredCell>(zone, kind, empty)
+    {
+    }
+
+    GCType* get() const { return ZoneCellIter<TenuredCell>::get<GCType>(); }
+    operator GCType*() const { return get(); }
+    GCType* operator ->() const { return get(); }
+};
+
+class GrayObjectIter : public ZoneCellIter<TenuredCell> {
+  public:
+    explicit GrayObjectIter(JS::Zone* zone, AllocKind kind) : ZoneCellIter<TenuredCell>() {
+        initForTenuredIteration(zone, kind);
+    }
+
+    JSObject* get() const { return ZoneCellIter<TenuredCell>::get<JSObject>(); }
+    operator JSObject*() const { return get(); }
+    JSObject* operator ->() const { return get(); }
 };
 
 class GCZonesIter
@@ -409,7 +415,8 @@ class GCZonesIter
     ZonesIter zone;
 
   public:
-    GCZonesIter(JSRuntime *rt) : zone(rt) {
+    explicit GCZonesIter(JSRuntime* rt, ZoneSelector selector = WithAtoms) : zone(rt, selector) {
+        MOZ_ASSERT(CurrentThreadCanAccessRuntime(rt) && rt->isHeapBusy());
         if (!zone->isCollecting())
             next();
     }
@@ -417,19 +424,19 @@ class GCZonesIter
     bool done() const { return zone.done(); }
 
     void next() {
-        JS_ASSERT(!done());
+        MOZ_ASSERT(!done());
         do {
             zone.next();
-        } while (!zone.done() && !zone->isCollecting());
+        } while (!zone.done() && !zone->isCollectingFromAnyThread());
     }
 
-    JS::Zone *get() const {
-        JS_ASSERT(!done());
+    JS::Zone* get() const {
+        MOZ_ASSERT(!done());
         return zone;
     }
 
-    operator JS::Zone *() const { return get(); }
-    JS::Zone *operator->() const { return get(); }
+    operator JS::Zone*() const { return get(); }
+    JS::Zone* operator->() const { return get(); }
 };
 
 typedef CompartmentsIterT<GCZonesIter> GCCompartmentsIter;
@@ -437,181 +444,47 @@ typedef CompartmentsIterT<GCZonesIter> GCCompartmentsIter;
 /* Iterates over all zones in the current zone group. */
 class GCZoneGroupIter {
   private:
-    JS::Zone *current;
+    JS::Zone* current;
 
   public:
-    GCZoneGroupIter(JSRuntime *rt) {
-        JS_ASSERT(rt->isHeapBusy());
-        current = rt->gcCurrentZoneGroup;
+    explicit GCZoneGroupIter(JSRuntime* rt) {
+        MOZ_ASSERT(CurrentThreadIsPerformingGC());
+        current = rt->gc.getCurrentZoneGroup();
     }
 
     bool done() const { return !current; }
 
     void next() {
-        JS_ASSERT(!done());
+        MOZ_ASSERT(!done());
         current = current->nextNodeInGroup();
     }
 
-    JS::Zone *get() const {
-        JS_ASSERT(!done());
+    JS::Zone* get() const {
+        MOZ_ASSERT(!done());
         return current;
     }
 
-    operator JS::Zone *() const { return get(); }
-    JS::Zone *operator->() const { return get(); }
+    operator JS::Zone*() const { return get(); }
+    JS::Zone* operator->() const { return get(); }
 };
 
 typedef CompartmentsIterT<GCZoneGroupIter> GCCompartmentGroupIter;
 
-#ifdef JSGC_GENERATIONAL
-/*
- * Attempt to allocate a new GC thing out of the nursery. If there is not enough
- * room in the nursery or there is an OOM, this method will return NULL.
- */
-template <typename T, AllowGC allowGC>
-inline T *
-TryNewNurseryGCThing(ThreadSafeContext *tcx, size_t thingSize)
+inline void
+RelocationOverlay::forwardTo(Cell* cell)
 {
-    /* TODO: Integrate PJS with generational GC. */
-    JSContext *cx = tcx->asJSContext();
-
-    JS_ASSERT(!IsAtomsCompartment(cx->compartment()));
-    JSRuntime *rt = cx->runtime();
-    Nursery &nursery = rt->gcNursery;
-    T *t = static_cast<T *>(nursery.allocate(thingSize));
-    if (t)
-        return t;
-    if (allowGC && !rt->mainThread.suppressGC) {
-        MinorGC(rt, JS::gcreason::OUT_OF_NURSERY);
-
-        /* Exceeding gcMaxBytes while tenuring can disable the Nursery. */
-        if (nursery.isEnabled()) {
-            t = static_cast<T *>(nursery.allocate(thingSize));
-            JS_ASSERT(t);
-            return t;
-        }
-    }
-    return NULL;
-}
-#endif /* JSGC_GENERATIONAL */
-
-/*
- * Allocates a new GC thing. After a successful allocation the caller must
- * fully initialize the thing before calling any function that can potentially
- * trigger GC. This will ensure that GC tracing never sees junk values stored
- * in the partially initialized thing.
- */
-template <typename T, AllowGC allowGC>
-inline T *
-NewGCThing(js::ThreadSafeContext *tcx, AllocKind kind, size_t thingSize, InitialHeap heap)
-{
-    JS_ASSERT(thingSize == js::gc::Arena::thingSize(kind));
-
-    if (tcx->isJSContext()) {
-        JSContext *cx = tcx->asJSContext();
-        JS_ASSERT_IF(cx->compartment() == cx->runtime()->atomsCompartment,
-                     kind == FINALIZE_STRING ||
-                     kind == FINALIZE_SHORT_STRING ||
-                     kind == FINALIZE_IONCODE);
-        JS_ASSERT(!cx->runtime()->isHeapBusy());
-        JS_ASSERT(!cx->runtime()->noGCOrAllocationCheck);
-
-        /* For testing out of memory conditions */
-        JS_OOM_POSSIBLY_FAIL_REPORT(cx);
-
-#ifdef JS_GC_ZEAL
-        if (cx->runtime()->needZealousGC() && allowGC)
-            js::gc::RunDebugGC(cx);
-#endif
-
-        if (allowGC)
-            MaybeCheckStackRoots(cx);
-    }
-
-#if defined(JSGC_GENERATIONAL)
-    if (tcx->hasNursery() && ShouldNurseryAllocate(tcx->nursery(), kind, heap)) {
-        T *t = TryNewNurseryGCThing<T, allowGC>(tcx, thingSize);
-        if (t)
-            return t;
-    }
-#endif
-
-    T *t = static_cast<T *>(tcx->allocator()->arenas.allocateFromFreeList(kind, thingSize));
-    if (!t)
-        t = static_cast<T *>(js::gc::ArenaLists::refillFreeList<allowGC>(tcx, kind));
-
-#ifdef DEBUG
-    if (tcx->isJSContext()) {
-        Zone *zone = tcx->asJSContext()->zone();
-        JS_ASSERT_IF(t && zone->wasGCStarted() && (zone->isGCMarking() || zone->isGCSweeping()),
-                     t->arenaHeader()->allocatedDuringIncremental);
-    }
-#endif
-
-    return t;
+    MOZ_ASSERT(!isForwarded());
+    // The location of magic_ is important because it must never be valid to see
+    // the value Relocated there in a GC thing that has not been moved.
+    static_assert(offsetof(RelocationOverlay, magic_) == offsetof(JSObject, group_) &&
+                  offsetof(RelocationOverlay, magic_) == offsetof(js::Shape, base_) &&
+                  offsetof(RelocationOverlay, magic_) == offsetof(JSString, d.u1.flags),
+                  "RelocationOverlay::magic_ is in the wrong location");
+    magic_ = Relocated;
+    newLocation_ = cell;
 }
 
 } /* namespace gc */
 } /* namespace js */
-
-template <js::AllowGC allowGC>
-inline JSObject *
-js_NewGCObject(js::ThreadSafeContext *tcx, js::gc::AllocKind kind, js::gc::InitialHeap heap)
-{
-    JS_ASSERT(kind >= js::gc::FINALIZE_OBJECT0 && kind <= js::gc::FINALIZE_OBJECT_LAST);
-    return js::gc::NewGCThing<JSObject, allowGC>(tcx, kind, js::gc::Arena::thingSize(kind), heap);
-}
-
-template <js::AllowGC allowGC>
-inline JSString *
-js_NewGCString(js::ThreadSafeContext *tcx)
-{
-    return js::gc::NewGCThing<JSString, allowGC>(tcx, js::gc::FINALIZE_STRING,
-                                                 sizeof(JSString), js::gc::TenuredHeap);
-}
-
-template <js::AllowGC allowGC>
-inline JSShortString *
-js_NewGCShortString(js::ThreadSafeContext *tcx)
-{
-    return js::gc::NewGCThing<JSShortString, allowGC>(tcx, js::gc::FINALIZE_SHORT_STRING,
-                                                      sizeof(JSShortString), js::gc::TenuredHeap);
-}
-
-inline JSExternalString *
-js_NewGCExternalString(js::ThreadSafeContext *tcx)
-{
-    return js::gc::NewGCThing<JSExternalString, js::CanGC>(tcx, js::gc::FINALIZE_EXTERNAL_STRING,
-                                                           sizeof(JSExternalString), js::gc::TenuredHeap);
-}
-
-inline JSScript *
-js_NewGCScript(js::ThreadSafeContext *tcx)
-{
-    return js::gc::NewGCThing<JSScript, js::CanGC>(tcx, js::gc::FINALIZE_SCRIPT,
-                                                   sizeof(JSScript), js::gc::TenuredHeap);
-}
-
-inline js::LazyScript *
-js_NewGCLazyScript(js::ThreadSafeContext *tcx)
-{
-    return js::gc::NewGCThing<js::LazyScript, js::CanGC>(tcx, js::gc::FINALIZE_LAZY_SCRIPT,
-                                                         sizeof(js::LazyScript), js::gc::TenuredHeap);
-}
-
-inline js::Shape *
-js_NewGCShape(js::ThreadSafeContext *tcx)
-{
-    return js::gc::NewGCThing<js::Shape, js::CanGC>(tcx, js::gc::FINALIZE_SHAPE,
-                                                    sizeof(js::Shape), js::gc::TenuredHeap);
-}
-
-template <js::AllowGC allowGC>
-inline js::BaseShape *
-js_NewGCBaseShape(js::ThreadSafeContext *tcx)
-{
-    return js::gc::NewGCThing<js::BaseShape, allowGC>(tcx, js::gc::FINALIZE_BASE_SHAPE,
-                                                      sizeof(js::BaseShape), js::gc::TenuredHeap);
-}
 
 #endif /* jsgcinlines_h */

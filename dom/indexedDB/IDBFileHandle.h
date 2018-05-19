@@ -1,61 +1,149 @@
 /* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=2 et sw=2 tw=80: */
+/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef mozilla_dom_indexeddb_idbfilehandle_h__
-#define mozilla_dom_indexeddb_idbfilehandle_h__
+#ifndef mozilla_dom_idbfilehandle_h__
+#define mozilla_dom_idbfilehandle_h__
 
-#include "IndexedDatabase.h"
+#include "IDBFileRequest.h"
+#include "js/TypeDecls.h"
+#include "mozilla/Attributes.h"
+#include "mozilla/dom/FileHandleBase.h"
+#include "mozilla/DOMEventTargetHelper.h"
+#include "nsCycleCollectionParticipant.h"
+#include "nsIRunnable.h"
+#include "nsWeakReference.h"
 
-#include "nsIIDBFileHandle.h"
+class nsPIDOMWindowInner;
 
-#include "mozilla/dom/file/FileHandle.h"
-#include "mozilla/dom/indexedDB/FileInfo.h"
+namespace mozilla {
+namespace dom {
 
-BEGIN_INDEXEDDB_NAMESPACE
+struct IDBFileMetadataParameters;
+class IDBFileRequest;
+class IDBMutableFile;
 
-class IDBFileHandle : public mozilla::dom::file::FileHandle,
-                      public nsIIDBFileHandle
+class IDBFileHandle final
+  : public DOMEventTargetHelper
+  , public nsIRunnable
+  , public FileHandleBase
+  , public nsSupportsWeakReference
 {
+  RefPtr<IDBMutableFile> mMutableFile;
+
 public:
-  NS_DECL_ISUPPORTS_INHERITED
-  NS_DECL_NSIIDBFILEHANDLE
-
-  NS_IMETHOD_(int64_t)
-  GetFileId()
-  {
-    return mFileInfo->Id();
-  }
-
-  NS_IMETHOD_(FileInfo*)
-  GetFileInfo()
-  {
-    return mFileInfo;
-  }
-
   static already_AddRefed<IDBFileHandle>
-  Create(IDBDatabase* aDatabase, const nsAString& aName,
-         const nsAString& aType, already_AddRefed<FileInfo> aFileInfo);
+  Create(IDBMutableFile* aMutableFile,
+         FileMode aMode);
 
-  virtual already_AddRefed<nsISupports>
-  CreateStream(nsIFile* aFile, bool aReadOnly);
+  // WebIDL
+  nsPIDOMWindowInner*
+  GetParentObject() const
+  {
+    AssertIsOnOwningThread();
+    return GetOwner();
+  }
 
-  virtual already_AddRefed<nsIDOMFile>
-  CreateFileObject(mozilla::dom::file::LockedFile* aLockedFile,
-                   uint32_t aFileSize);
+  IDBMutableFile*
+  GetMutableFile() const
+  {
+    AssertIsOnOwningThread();
+    return mMutableFile;
+  }
+
+  IDBMutableFile*
+  GetFileHandle() const
+  {
+    AssertIsOnOwningThread();
+    return GetMutableFile();
+  }
+
+  already_AddRefed<IDBFileRequest>
+  GetMetadata(const IDBFileMetadataParameters& aParameters, ErrorResult& aRv);
+
+  already_AddRefed<IDBFileRequest>
+  ReadAsArrayBuffer(uint64_t aSize, ErrorResult& aRv)
+  {
+    AssertIsOnOwningThread();
+    return Read(aSize, false, NullString(), aRv).downcast<IDBFileRequest>();
+  }
+
+  already_AddRefed<IDBFileRequest>
+  ReadAsText(uint64_t aSize, const nsAString& aEncoding, ErrorResult& aRv)
+  {
+    AssertIsOnOwningThread();
+    return Read(aSize, true, aEncoding, aRv).downcast<IDBFileRequest>();
+  }
+
+  already_AddRefed<IDBFileRequest>
+  Write(const StringOrArrayBufferOrArrayBufferViewOrBlob& aValue,
+        ErrorResult& aRv)
+  {
+    AssertIsOnOwningThread();
+    return WriteOrAppend(aValue, false, aRv).downcast<IDBFileRequest>();
+  }
+
+  already_AddRefed<IDBFileRequest>
+  Append(const StringOrArrayBufferOrArrayBufferViewOrBlob& aValue,
+         ErrorResult& aRv)
+  {
+    AssertIsOnOwningThread();
+    return WriteOrAppend(aValue, true, aRv).downcast<IDBFileRequest>();
+  }
+
+  already_AddRefed<IDBFileRequest>
+  Truncate(const Optional<uint64_t>& aSize, ErrorResult& aRv)
+  {
+    AssertIsOnOwningThread();
+    return FileHandleBase::Truncate(aSize, aRv).downcast<IDBFileRequest>();
+  }
+
+  already_AddRefed<IDBFileRequest>
+  Flush(ErrorResult& aRv)
+  {
+    AssertIsOnOwningThread();
+    return FileHandleBase::Flush(aRv).downcast<IDBFileRequest>();
+  }
+
+  IMPL_EVENT_HANDLER(complete)
+  IMPL_EVENT_HANDLER(abort)
+  IMPL_EVENT_HANDLER(error)
+
+  NS_DECL_ISUPPORTS_INHERITED
+  NS_DECL_NSIRUNNABLE
+  NS_DECL_CYCLE_COLLECTION_CLASS_INHERITED(IDBFileHandle, DOMEventTargetHelper)
+
+  // nsIDOMEventTarget
+  virtual nsresult
+  PreHandleEvent(EventChainPreVisitor& aVisitor) override;
+
+  // WrapperCache
+  virtual JSObject*
+  WrapObject(JSContext* aCx, JS::Handle<JSObject*> aGivenProto) override;
+
+  // FileHandleBase
+  virtual MutableFileBase*
+  MutableFile() const override;
+
+  virtual void
+  HandleCompleteOrAbort(bool aAborted) override;
 
 private:
-  IDBFileHandle()
-  { }
+  IDBFileHandle(FileMode aMode,
+                IDBMutableFile* aMutableFile);
+  ~IDBFileHandle();
 
-  ~IDBFileHandle()
-  { }
+  // FileHandleBase
+  virtual bool
+  CheckWindow() override;
 
-  nsRefPtr<FileInfo> mFileInfo;
+  virtual already_AddRefed<FileRequestBase>
+  GenerateFileRequest() override;
 };
 
-END_INDEXEDDB_NAMESPACE
+} // namespace dom
+} // namespace mozilla
 
-#endif // mozilla_dom_indexeddb_idbfilehandle_h__
+#endif // mozilla_dom_idbfilehandle_h__

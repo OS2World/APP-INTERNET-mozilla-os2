@@ -6,14 +6,13 @@
  * this document.
  */
 
-#ifndef nsHtml5NamedCharactersAccel_h_
-#define nsHtml5NamedCharactersAccel_h_
+#ifndef nsHtml5NamedCharactersAccel_h
+#define nsHtml5NamedCharactersAccel_h
 
-#include "prtypes.h"
 #include "jArray.h"
 #include "nscore.h"
 #include "nsDebug.h"
-#include "prlog.h"
+#include "mozilla/Logging.h"
 #include "nsMemory.h"
 
 class nsHtml5NamedCharactersAccel
@@ -22,4 +21,4 @@ class nsHtml5NamedCharactersAccel
     static const int32_t* const HILO_ACCEL[];
 };
 
-#endif // nsHtml5NamedCharactersAccel_h_
+#endif // nsHtml5NamedCharactersAccel_h

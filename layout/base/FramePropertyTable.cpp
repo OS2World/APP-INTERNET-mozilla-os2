@@ -4,13 +4,14 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "FramePropertyTable.h"
-#include "prlog.h"
+
+#include "mozilla/MemoryReporting.h"
 
 namespace mozilla {
 
 void
-FramePropertyTable::Set(nsIFrame* aFrame, const FramePropertyDescriptor* aProperty,
-                        void* aValue)
+FramePropertyTable::SetInternal(
+  const nsIFrame* aFrame, UntypedDescriptor aProperty, void* aValue)
 {
   NS_ASSERTION(aFrame, "Null frame?");
   NS_ASSERTION(aProperty, "Null property?");
@@ -38,8 +39,8 @@ FramePropertyTable::Set(nsIFrame* aFrame, const FramePropertyDescriptor* aProper
     // We need to expand the single current entry to an array
     PropertyValue current = entry->mProp;
     entry->mProp.mProperty = nullptr;
-    MOZ_STATIC_ASSERT(sizeof(nsTArray<PropertyValue>) <= sizeof(void *),
-                      "Property array must fit entirely within entry->mProp.mValue");
+    static_assert(sizeof(nsTArray<PropertyValue>) <= sizeof(void *),
+                  "Property array must fit entirely within entry->mProp.mValue");
     new (&entry->mProp.mValue) nsTArray<PropertyValue>(4);
     entry->mProp.ToArray()->AppendElement(current);
   }
@@ -58,9 +59,8 @@ FramePropertyTable::Set(nsIFrame* aFrame, const FramePropertyDescriptor* aProper
 }
 
 void*
-FramePropertyTable::Get(const nsIFrame* aFrame,
-                        const FramePropertyDescriptor* aProperty,
-                        bool* aFoundResult)
+FramePropertyTable::GetInternal(
+  const nsIFrame* aFrame, UntypedDescriptor aProperty, bool* aFoundResult)
 {
   NS_ASSERTION(aFrame, "Null frame?");
   NS_ASSERTION(aProperty, "Null property?");
@@ -70,7 +70,7 @@ FramePropertyTable::Get(const nsIFrame* aFrame,
   }
 
   if (mLastFrame != aFrame) {
-    mLastFrame = const_cast<nsIFrame*>(aFrame);
+    mLastFrame = aFrame;
     mLastEntry = mEntries.GetEntry(mLastFrame);
   }
   Entry* entry = mLastEntry;
@@ -102,8 +102,8 @@ FramePropertyTable::Get(const nsIFrame* aFrame,
 }
 
 void*
-FramePropertyTable::Remove(nsIFrame* aFrame, const FramePropertyDescriptor* aProperty,
-                           bool* aFoundResult)
+FramePropertyTable::RemoveInternal(
+  const nsIFrame* aFrame, UntypedDescriptor aProperty, bool* aFoundResult)
 {
   NS_ASSERTION(aFrame, "Null frame?");
   NS_ASSERTION(aProperty, "Null property?");
@@ -123,7 +123,10 @@ FramePropertyTable::Remove(nsIFrame* aFrame, const FramePropertyDescriptor* aPro
   if (entry->mProp.mProperty == aProperty) {
     // There's only one entry and it's the one we want
     void* value = entry->mProp.mValue;
-    mEntries.RawRemoveEntry(entry);
+
+    // Here it's ok to use RemoveEntry() -- which may resize mEntries --
+    // because we null mLastEntry at the same time.
+    mEntries.RemoveEntry(entry);
     mLastEntry = nullptr;
     if (aFoundResult) {
       *aFoundResult = true;
@@ -163,13 +166,14 @@ FramePropertyTable::Remove(nsIFrame* aFrame, const FramePropertyDescriptor* aPro
 }
 
 void
-FramePropertyTable::Delete(nsIFrame* aFrame, const FramePropertyDescriptor* aProperty)
+FramePropertyTable::DeleteInternal(
+  const nsIFrame* aFrame, UntypedDescriptor aProperty)
 {
   NS_ASSERTION(aFrame, "Null frame?");
   NS_ASSERTION(aProperty, "Null property?");
 
   bool found;
-  void* v = Remove(aFrame, aProperty, &found);
+  void* v = RemoveInternal(aFrame, aProperty, &found);
   if (found) {
     PropertyValue pv(aProperty, v);
     pv.DestroyValueFor(aFrame);
@@ -192,7 +196,7 @@ FramePropertyTable::DeleteAllForEntry(Entry* aEntry)
 }
 
 void
-FramePropertyTable::DeleteAllFor(nsIFrame* aFrame)
+FramePropertyTable::DeleteAllFor(const nsIFrame* aFrame)
 {
   NS_ASSERTION(aFrame, "Null frame?");
 
@@ -208,14 +212,10 @@ FramePropertyTable::DeleteAllFor(nsIFrame* aFrame)
   }
 
   DeleteAllForEntry(entry);
-  mEntries.RawRemoveEntry(entry);
-}
 
-/* static */ PLDHashOperator
-FramePropertyTable::DeleteEnumerator(Entry* aEntry, void* aArg)
-{
-  DeleteAllForEntry(aEntry);
-  return PL_DHASH_REMOVE;
+  // mLastEntry points into mEntries, so we use RawRemoveEntry() which will not
+  // resize mEntries.
+  mEntries.RawRemoveEntry(entry);
 }
 
 void
@@ -224,21 +224,16 @@ FramePropertyTable::DeleteAll()
   mLastFrame = nullptr;
   mLastEntry = nullptr;
 
-  mEntries.EnumerateEntries(DeleteEnumerator, nullptr);
+  for (auto iter = mEntries.Iter(); !iter.Done(); iter.Next()) {
+    DeleteAllForEntry(iter.Get());
+  }
+  mEntries.Clear();
 }
 
 size_t
-FramePropertyTable::SizeOfExcludingThis(nsMallocSizeOfFun aMallocSizeOf) const
+FramePropertyTable::SizeOfExcludingThis(mozilla::MallocSizeOf aMallocSizeOf) const
 {
-  return mEntries.SizeOfExcludingThis(SizeOfPropertyTableEntryExcludingThis,
-                                      aMallocSizeOf);
+  return mEntries.SizeOfExcludingThis(aMallocSizeOf);
 }
 
-/* static */ size_t
-FramePropertyTable::SizeOfPropertyTableEntryExcludingThis(Entry* aEntry,
-                      nsMallocSizeOfFun aMallocSizeOf, void *)
-{
-  return aEntry->mProp.SizeOfExcludingThis(aMallocSizeOf);
-}
-
-}
+} // namespace mozilla

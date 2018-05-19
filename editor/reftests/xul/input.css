@@ -3,28 +3,29 @@
 
 #mac html|input, #mac html|textarea {
   margin: 4px;
-  padding: 0;
+  padding: 0 1px;
 }
 
 #win html|input, #win html|textarea {
   margin: 2px 4px;
-  padding: 2px 2px 3px;
-  -moz-padding-start: 4px;
+  padding: 2px 3px 3px;
+  padding-inline-start: 5px;
 }
 
 #win html|input:-moz-system-metric(windows-default-theme) {
-  padding: 1px 1px 2px;
-  -moz-padding-start: 3px;
+  padding: 1px 2px 2px;
+  padding-inline-start: 4px;
 }
 
 #linux html|input, #linux html|textarea {
   margin: 2px 4px;
-  padding: 2px 4px 3px;
+  padding: 2px 5px 3px;
 }
 
 textbox[multiline="true"], html|textarea {
   border: none !important;
   -moz-appearance: none !important;
+  background-color: white !important;
   border-top-right-radius: 0;
   border-bottom-left-radius: 0;
 }
@@ -34,7 +35,7 @@ html|input, html|textarea {
 }
 
 html|input.ac {
-  padding:  0 3px !important;
+  padding: 0 4px !important;
 }
 
 html|input.empty {
@@ -50,7 +51,7 @@ html|input.num {
 }
 
 #mac html|input.num {
-  -moz-margin-end: 8px;
+  margin-inline-end: 8px;
 }
 
 #win html|input.num {
@@ -58,12 +59,12 @@ html|input.num {
 }
 
 #linux html|input.num {
-  -moz-margin-end: 3px;
-  padding: 3px;
+  margin-inline-end: 3px;
+  padding: 3px 4px;
 }
 
 html|div.plainfield {
-  -moz-margin-start: 1px;
   color: -moz-fieldtext;
+  white-space: pre;
 }
 

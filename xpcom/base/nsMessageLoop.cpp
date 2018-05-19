@@ -1,4 +1,5 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
+/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
+/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -27,19 +28,21 @@ namespace {
  * Run().  Tread lightly.
  */
 class MessageLoopIdleTask
-  : public Task
+  : public Runnable
   , public SupportsWeakPtr<MessageLoopIdleTask>
 {
 public:
+  MOZ_DECLARE_WEAKREFERENCE_TYPENAME(MessageLoopIdleTask)
   MessageLoopIdleTask(nsIRunnable* aTask, uint32_t aEnsureRunsAfterMS);
-  virtual ~MessageLoopIdleTask() {}
-  virtual void Run();
+  NS_IMETHOD Run() override;
 
 private:
   nsresult Init(uint32_t aEnsureRunsAfterMS);
 
   nsCOMPtr<nsIRunnable> mTask;
   nsCOMPtr<nsITimer> mTimer;
+
+  virtual ~MessageLoopIdleTask() {}
 };
 
 /**
@@ -56,14 +59,15 @@ class MessageLoopTimerCallback
   : public nsITimerCallback
 {
 public:
-  MessageLoopTimerCallback(MessageLoopIdleTask* aTask);
-  virtual ~MessageLoopTimerCallback() {};
+  explicit MessageLoopTimerCallback(MessageLoopIdleTask* aTask);
 
   NS_DECL_ISUPPORTS
   NS_DECL_NSITIMERCALLBACK
 
 private:
   WeakPtr<MessageLoopIdleTask> mTask;
+
+  virtual ~MessageLoopTimerCallback() {}
 };
 
 MessageLoopIdleTask::MessageLoopIdleTask(nsIRunnable* aTask,
@@ -87,16 +91,18 @@ nsresult
 MessageLoopIdleTask::Init(uint32_t aEnsureRunsAfterMS)
 {
   mTimer = do_CreateInstance("@mozilla.org/timer;1");
-  NS_ENSURE_STATE(mTimer);
+  if (NS_WARN_IF(!mTimer)) {
+    return NS_ERROR_UNEXPECTED;
+  }
 
-  nsRefPtr<MessageLoopTimerCallback> callback =
+  RefPtr<MessageLoopTimerCallback> callback =
     new MessageLoopTimerCallback(this);
 
   return mTimer->InitWithCallback(callback, aEnsureRunsAfterMS,
                                   nsITimer::TYPE_ONE_SHOT);
 }
 
-/* virtual */ void
+NS_IMETHODIMP
 MessageLoopIdleTask::Run()
 {
   // Null out our pointers because if Run() was called by the timer, this
@@ -112,11 +118,14 @@ MessageLoopIdleTask::Run()
     mTask->Run();
     mTask = nullptr;
   }
+
+  return NS_OK;
 }
 
 MessageLoopTimerCallback::MessageLoopTimerCallback(MessageLoopIdleTask* aTask)
-  : mTask(aTask->asWeakPtr())
-{}
+  : mTask(aTask)
+{
+}
 
 NS_IMETHODIMP
 MessageLoopTimerCallback::Notify(nsITimer* aTimer)
@@ -124,7 +133,7 @@ MessageLoopTimerCallback::Notify(nsITimer* aTimer)
   // We don't expect to hit the case when the timer fires but mTask has been
   // deleted, because mTask should cancel the timer before the mTask is
   // deleted.  But you never know...
-  NS_WARN_IF_FALSE(mTask, "This timer shouldn't have fired.");
+  NS_WARNING_ASSERTION(mTask, "This timer shouldn't have fired.");
 
   if (mTask) {
     mTask->Run();
@@ -132,19 +141,21 @@ MessageLoopTimerCallback::Notify(nsITimer* aTimer)
   return NS_OK;
 }
 
-NS_IMPL_ISUPPORTS1(MessageLoopTimerCallback, nsITimerCallback)
+NS_IMPL_ISUPPORTS(MessageLoopTimerCallback, nsITimerCallback)
 
-} // anonymous namespace
+} // namespace
 
-NS_IMPL_ISUPPORTS1(nsMessageLoop, nsIMessageLoop)
+NS_IMPL_ISUPPORTS(nsMessageLoop, nsIMessageLoop)
 
 NS_IMETHODIMP
 nsMessageLoop::PostIdleTask(nsIRunnable* aTask, uint32_t aEnsureRunsAfterMS)
 {
   // The message loop owns MessageLoopIdleTask and deletes it after calling
   // Run().  Be careful...
-  MessageLoop::current()->PostIdleTask(FROM_HERE,
-    new MessageLoopIdleTask(aTask, aEnsureRunsAfterMS));
+  RefPtr<MessageLoopIdleTask> idle =
+    new MessageLoopIdleTask(aTask, aEnsureRunsAfterMS);
+  MessageLoop::current()->PostIdleTask(idle.forget());
+
   return NS_OK;
 }
 
@@ -153,7 +164,9 @@ nsMessageLoopConstructor(nsISupports* aOuter,
                          const nsIID& aIID,
                          void** aInstancePtr)
 {
-  NS_ENSURE_FALSE(aOuter, NS_ERROR_NO_AGGREGATION);
+  if (NS_WARN_IF(aOuter)) {
+    return NS_ERROR_NO_AGGREGATION;
+  }
   nsISupports* messageLoop = new nsMessageLoop();
   return messageLoop->QueryInterface(aIID, aInstancePtr);
 }

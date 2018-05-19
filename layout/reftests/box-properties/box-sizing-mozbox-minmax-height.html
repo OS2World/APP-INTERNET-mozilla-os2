@@ -17,20 +17,12 @@ hbox {
   padding-bottom:4px;
   height:auto;
   box-sizing:border-box;
-  -moz-box-sizing:border-box;
   background:lime;
 }
 
 .cb {
   box-sizing:content-box;
-  -moz-box-sizing:content-box;
   background:pink;
-}
-
-.pb {
-  box-sizing:padding-box;
-  -moz-box-sizing:padding-box;
-  background:cyan;
 }
 
     </style>
@@ -45,11 +37,6 @@ hbox {
 <div><hbox class="cb" style="height:20px;">content-box 20px</hbox></div>
 <div><hbox class="cb" style="min-height:50px;">content-box 50px</hbox></div>
 <div><hbox class="cb" style="max-height:20px;">content-box 20px</hbox></div>
-
-
-<div><hbox class="pb" style="height:20px;">padding-box 20px</hbox></div>
-<div><hbox class="pb" style="min-height:50px;">padding-box 50px</hbox></div>
-<div><hbox class="pb" style="max-height:20px;">padding-box 20px</hbox></div>
 
 
 </body>

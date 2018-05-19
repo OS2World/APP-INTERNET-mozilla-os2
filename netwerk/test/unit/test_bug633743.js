@@ -1,9 +1,5 @@
-const Cc = Components.classes;
-const Ci = Components.interfaces;
-const Cu = Components.utils;
-const Cr = Components.results;
-
 Cu.import("resource://testing-common/httpd.js");
+Cu.import("resource://gre/modules/NetUtil.jsm");
 
 const VALUE_HDR_NAME = "X-HTTP-VALUE-HEADER";
 const VARY_HDR_NAME = "X-HTTP-VARY-HEADER";
@@ -12,9 +8,10 @@ const CACHECTRL_HDR_NAME = "X-CACHE-CONTROL-HEADER";
 var httpserver = null;
 
 function make_channel(flags, vary, value) {
-  var ios = Cc["@mozilla.org/network/io-service;1"].
-    getService(Ci.nsIIOService);
-  var chan = ios.newChannel("http://localhost:4444/bug633743", null, null);
+  var chan = NetUtil.newChannel({
+    uri: "http://localhost:" + httpserver.identity.primaryPort + "/bug633743",
+    loadUsingSystemPrincipal: true
+  }).QueryInterface(Components.interfaces.nsIHttpChannel);
   return chan.QueryInterface(Ci.nsIHttpChannel);
 }
 
@@ -61,7 +58,7 @@ Test.prototype = {
     if (this._cacheHdr)
         channel.setRequestHeader(CACHECTRL_HDR_NAME, this._cacheHdr, false);
 
-    channel.asyncOpen(this, null);
+    channel.asyncOpen2(this);
   }
 };
 
@@ -182,7 +179,7 @@ function run_test() {
 
   httpserver = new HttpServer();
   httpserver.registerPathHandler("/bug633743", handler);
-  httpserver.start(4444);
+  httpserver.start(-1);
 
   run_next_test();
   do_test_pending();

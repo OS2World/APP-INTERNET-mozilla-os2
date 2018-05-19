@@ -10,16 +10,34 @@
  * liability, trademark and document use rules apply.
  */
 
-interface MediaStream {
-    // readonly attribute DOMString    id;
+// These dictionaries need to be in a separate file from their
+// MediaTrackConstraints* counterparts due to a webidl compiler limitation.
+
+dictionary MediaStreamConstraints {
+    (boolean or MediaTrackConstraints) audio = false;
+    (boolean or MediaTrackConstraints) video = false;
+    boolean picture = false; // Mozilla legacy
+    boolean fake;       // For testing purpose. Generates frames of solid
+                        // colors if video is enabled, and sound of 1Khz sine
+                        // wave if audio is enabled.
+    DOMString? peerIdentity = null;
+};
+
+[Exposed=Window,
+ Constructor,
+ Constructor (MediaStream stream),
+ Constructor (sequence<MediaStreamTrack> tracks)]
+interface MediaStream : EventTarget {
+    readonly    attribute DOMString    id;
     sequence<AudioStreamTrack> getAudioTracks ();
     sequence<VideoStreamTrack> getVideoTracks ();
-    // MediaStreamTrack           getTrackById (DOMString trackId);
-    // void                       addTrack (MediaStreamTrack track);
-    // void                       removeTrack (MediaStreamTrack track);
-    //         attribute boolean      ended;
-    //         attribute EventHandler onended;
-    //         attribute EventHandler onaddtrack;
-    //         attribute EventHandler onremovetrack;
-	readonly attribute double currentTime;
+    sequence<MediaStreamTrack> getTracks ();
+    MediaStreamTrack?          getTrackById (DOMString trackId);
+    void                       addTrack (MediaStreamTrack track);
+    void                       removeTrack (MediaStreamTrack track);
+    MediaStream                clone ();
+    readonly    attribute boolean      active;
+                attribute EventHandler onaddtrack;
+    //             attribute EventHandler onremovetrack;
+    readonly attribute double currentTime;
 };

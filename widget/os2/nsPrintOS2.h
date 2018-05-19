@@ -8,6 +8,14 @@
 #ifndef nsPrintOS2_h___
 #define nsPrintOS2_h___
 
+#define INCL_BASE
+#define INCL_PM
+// too pity the above two don't include this one (looks like a bug):
+#define INCL_SPLDOSPRINT
+#include <os2.h>
+
+#include "nsStringGlue.h"
+
 //---------------------------------------------------------------------------
 
 typedef enum
@@ -74,7 +82,7 @@ public:
   char*      GetDriverName(ULONG printerNdx);
   BOOL       ShowProperties(ULONG printerNdx);
   nsAString* GetPrinterTitle(ULONG printerNdx);
-  int32_t    GetPrinterIndex(const PRUnichar* aPrinterName);
+  int32_t    GetPrinterIndex(const char16_t* aPrinterName);
 
 private:
   ULONG      mQueueCount;

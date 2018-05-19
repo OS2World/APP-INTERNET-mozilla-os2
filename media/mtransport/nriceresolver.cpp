@@ -93,7 +93,7 @@ nsresult NrIceResolver::Init() {
   MOZ_ASSERT(NS_SUCCEEDED(rv));
   dns_ = do_GetService(NS_DNSSERVICE_CONTRACTID, &rv);
   if (NS_FAILED(rv)) {
-    MOZ_MTLOG(PR_LOG_ERROR, "Could not acquire DNS service");
+    MOZ_MTLOG(ML_ERROR, "Could not acquire DNS service");
   }
   return rv;
 }
@@ -104,7 +104,7 @@ nr_resolver *NrIceResolver::AllocateResolver() {
   int r = nr_resolver_create_int((void *)this, vtbl_, &resolver);
   MOZ_ASSERT(!r);
   if(r) {
-    MOZ_MTLOG(PR_LOG_ERROR, "nr_resolver_create_int failed");
+    MOZ_MTLOG(ML_ERROR, "nr_resolver_create_int failed");
     return nullptr;
   }
   // We must be available to allocators until they all call DestroyResolver,
@@ -149,18 +149,36 @@ int NrIceResolver::resolve(nr_resolver_resource *resource,
   int _status;
   MOZ_ASSERT(allocated_resolvers_ > 0);
   ASSERT_ON_THREAD(sts_thread_);
-  nsCOMPtr<PendingResolution> pr;
+  RefPtr<PendingResolution> pr;
+  uint32_t resolve_flags = 0;
 
-  if (resource->transport_protocol != IPPROTO_UDP) {
-    MOZ_MTLOG(PR_LOG_ERROR, "Only UDP is supported.");
+  if (resource->transport_protocol != IPPROTO_UDP &&
+      resource->transport_protocol != IPPROTO_TCP) {
+    MOZ_MTLOG(ML_ERROR, "Only UDP and TCP are supported.");
     ABORT(R_NOT_FOUND);
   }
-  pr = new PendingResolution(sts_thread_, resource->port? resource->port : 3478,
+  pr = new PendingResolution(sts_thread_,
+                             resource->port? resource->port : 3478,
+                             resource->transport_protocol ?
+                             resource->transport_protocol :
+                             IPPROTO_UDP,
                              cb, cb_arg);
+
+  switch(resource->address_family) {
+    case AF_INET:
+      resolve_flags |= nsIDNSService::RESOLVE_DISABLE_IPV6;
+      break;
+    case AF_INET6:
+      resolve_flags |= nsIDNSService::RESOLVE_DISABLE_IPV4;
+      break;
+    default:
+      ABORT(R_BAD_ARGS);
+  }
+
   if (NS_FAILED(dns_->AsyncResolve(nsAutoCString(resource->domain_name),
-                                   nsIDNSService::RESOLVE_DISABLE_IPV6, pr,
+                                   resolve_flags, pr,
                                    sts_thread_, getter_AddRefs(pr->request_)))) {
-    MOZ_MTLOG(PR_LOG_ERROR, "AsyncResolve failed.");
+    MOZ_MTLOG(ML_ERROR, "AsyncResolve failed.");
     ABORT(R_NOT_FOUND);
   }
   // Because the C API offers no "finished" method to release the handle we
@@ -169,7 +187,7 @@ int NrIceResolver::resolve(nr_resolver_resource *resource,
   // Instead, we return an addref'ed reference to PendingResolution itself,
   // which in turn holds the request and coordinates between cancel and
   // OnLookupComplete to release it only once.
-  *handle = pr.forget().get();
+  pr.forget(handle);
 
   _status=0;
 abort:
@@ -181,18 +199,20 @@ nsresult NrIceResolver::PendingResolution::OnLookupComplete(
   ASSERT_ON_THREAD(thread_);
   // First check if we've been canceled. This is single-threaded on the STS
   // thread, but cancel() cannot guarantee this event isn't on the queue.
-  if (!canceled_) {
+  if (request_) {
     nr_transport_addr *cb_addr = nullptr;
     nr_transport_addr ta;
     // TODO(jib@mozilla.com): Revisit when we do TURN.
     if (NS_SUCCEEDED(status)) {
       net::NetAddr na;
       if (NS_SUCCEEDED(record->GetNextAddr(port_, &na))) {
-        MOZ_ALWAYS_TRUE (nr_netaddr_to_transport_addr(&na, &ta) == 0);
+        MOZ_ALWAYS_TRUE (nr_netaddr_to_transport_addr(&na, &ta,
+                                                      transport_) == 0);
         cb_addr = &ta;
       }
     }
     cb_(cb_arg_, cb_addr);
+    request_ = nullptr;
     Release();
   }
   return NS_OK;
@@ -207,10 +227,10 @@ int NrIceResolver::cancel(void *obj, void *handle) {
 
 int NrIceResolver::PendingResolution::cancel() {
   request_->Cancel (NS_ERROR_ABORT);
-  canceled_ = true; // in case OnLookupComplete is already on event queue.
+  request_ = nullptr;
   Release();
   return 0;
 }
 
-NS_IMPL_THREADSAFE_ISUPPORTS1(NrIceResolver::PendingResolution, nsIDNSListener);
+NS_IMPL_ISUPPORTS(NrIceResolver::PendingResolution, nsIDNSListener);
 }  // End of namespace mozilla

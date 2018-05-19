@@ -12,13 +12,23 @@
 #define WEBRTC_MODULES_AUDIO_PROCESSING_INCLUDE_AUDIO_PROCESSING_H_
 
 #include <stddef.h>  // size_t
+#include <stdio.h>  // FILE
+#include <vector>
 
-#include "webrtc/modules/interface/module.h"
+#include "webrtc/base/platform_file.h"
+#include "webrtc/common.h"
+#include "webrtc/modules/audio_processing/beamformer/array_util.h"
 #include "webrtc/typedefs.h"
+
+struct AecCore;
 
 namespace webrtc {
 
 class AudioFrame;
+
+template<typename T>
+class Beamformer;
+
 class EchoCancellation;
 class EchoControlMobile;
 class GainControl;
@@ -26,6 +36,91 @@ class HighPassFilter;
 class LevelEstimator;
 class NoiseSuppression;
 class VoiceDetection;
+
+struct ExtendedFilter {
+  ExtendedFilter() : enabled(false) {}
+  explicit ExtendedFilter(bool enabled) : enabled(enabled) {}
+  bool enabled;
+};
+
+struct DelayAgnostic {
+  DelayAgnostic() : enabled(false) {}
+  explicit DelayAgnostic(bool enabled) : enabled(enabled) {}
+  bool enabled;
+};
+
+// Use to enable the delay correction feature. This now engages an extended
+// filter mode in the AEC, along with robustness measures around the reported
+// system delays. It comes with a significant increase in AEC complexity, but is
+// much more robust to unreliable reported delays.
+//
+// Detailed changes to the algorithm:
+// - The filter length is changed from 48 to 128 ms. This comes with tuning of
+//   several parameters: i) filter adaptation stepsize and error threshold;
+//   ii) non-linear processing smoothing and overdrive.
+// - Option to ignore the reported delays on platforms which we deem
+//   sufficiently unreliable. See WEBRTC_UNTRUSTED_DELAY in echo_cancellation.c.
+// - Faster startup times by removing the excessive "startup phase" processing
+//   of reported delays.
+// - Much more conservative adjustments to the far-end read pointer. We smooth
+//   the delay difference more heavily, and back off from the difference more.
+//   Adjustments force a readaptation of the filter, so they should be avoided
+//   except when really necessary.
+struct DelayCorrection {
+  DelayCorrection() : enabled(false) {}
+  explicit DelayCorrection(bool enabled) : enabled(enabled) {}
+  bool enabled;
+};
+
+// Use to disable the reported system delays. By disabling the reported system
+// delays the echo cancellation algorithm assumes the process and reverse
+// streams to be aligned. This configuration only applies to EchoCancellation
+// and not EchoControlMobile and is set with AudioProcessing::SetExtraOptions().
+// Note that by disabling reported system delays the EchoCancellation may
+// regress in performance.
+struct ReportedDelay {
+  ReportedDelay() : enabled(true) {}
+  explicit ReportedDelay(bool enabled) : enabled(enabled) {}
+  bool enabled;
+};
+
+// Must be provided through AudioProcessing::Create(Confg&). It will have no
+// impact if used with AudioProcessing::SetExtraOptions().
+struct ExperimentalAgc {
+  ExperimentalAgc() : enabled(true) {}
+  explicit ExperimentalAgc(bool enabled) : enabled(enabled) {}
+  bool enabled;
+};
+
+// Use to enable experimental noise suppression. It can be set in the
+// constructor or using AudioProcessing::SetExtraOptions().
+struct ExperimentalNs {
+  ExperimentalNs() : enabled(false) {}
+  explicit ExperimentalNs(bool enabled) : enabled(enabled) {}
+  bool enabled;
+};
+
+// Use to enable beamforming. Must be provided through the constructor. It will
+// have no impact if used with AudioProcessing::SetExtraOptions().
+struct Beamforming {
+  Beamforming() : enabled(false) {}
+  Beamforming(bool enabled, const std::vector<Point>& array_geometry)
+      : enabled(enabled),
+        array_geometry(array_geometry) {}
+  const bool enabled;
+  const std::vector<Point> array_geometry;
+};
+
+// Use to enable 48kHz support in audio processing. Must be provided through the
+// constructor. It will have no impact if used with
+// AudioProcessing::SetExtraOptions().
+struct AudioProcessing48kHzSupport {
+  AudioProcessing48kHzSupport() : enabled(false) {}
+  explicit AudioProcessing48kHzSupport(bool enabled) : enabled(enabled) {}
+  bool enabled;
+};
+
+static const int kAudioProcMaxNativeSampleRateHz = 32000;
 
 // The Audio Processing Module (APM) provides a collection of voice processing
 // components designed for real-time communications software.
@@ -56,16 +151,12 @@ class VoiceDetection;
 //   2. Parameter getters are never called concurrently with the corresponding
 //      setter.
 //
-// APM accepts only 16-bit linear PCM audio data in frames of 10 ms. Multiple
-// channels should be interleaved.
+// APM accepts only linear PCM audio data in chunks of 10 ms. The int16
+// interfaces use interleaved data, while the float interfaces use deinterleaved
+// data.
 //
 // Usage example, omitting error checking:
 // AudioProcessing* apm = AudioProcessing::Create(0);
-// apm->set_sample_rate_hz(32000); // Super-wideband processing.
-//
-// // Mono capture and stereo render.
-// apm->set_num_channels(1, 1);
-// apm->set_num_reverse_channels(2);
 //
 // apm->high_pass_filter()->Enable(true);
 //
@@ -102,50 +193,85 @@ class VoiceDetection;
 // apm->Initialize();
 //
 // // Close the application...
-// AudioProcessing::Destroy(apm);
-// apm = NULL;
+// delete apm;
 //
-class AudioProcessing : public Module {
+class AudioProcessing {
  public:
-  // Creates a APM instance, with identifier |id|. Use one instance for every
-  // primary audio stream requiring processing. On the client-side, this would
-  // typically be one instance for the near-end stream, and additional instances
-  // for each far-end stream which requires processing. On the server-side,
-  // this would typically be one instance for every incoming stream.
-  static AudioProcessing* Create(int id);
-  virtual ~AudioProcessing() {}
+  enum ChannelLayout {
+    kMono,
+    // Left, right.
+    kStereo,
+    // Mono, keyboard mic.
+    kMonoAndKeyboard,
+    // Left, right, keyboard mic.
+    kStereoAndKeyboard
+  };
 
-  // TODO(andrew): remove this method. We now allow users to delete instances
-  // directly, useful for scoped_ptr.
-  // Destroys a |apm| instance.
-  static void Destroy(AudioProcessing* apm);
+  // Creates an APM instance. Use one instance for every primary audio stream
+  // requiring processing. On the client-side, this would typically be one
+  // instance for the near-end stream, and additional instances for each far-end
+  // stream which requires processing. On the server-side, this would typically
+  // be one instance for every incoming stream.
+  static AudioProcessing* Create();
+  // Allows passing in an optional configuration at create-time.
+  static AudioProcessing* Create(const Config& config);
+  // Only for testing.
+  static AudioProcessing* Create(const Config& config,
+                                 Beamformer<float>* beamformer);
+  virtual ~AudioProcessing() {}
 
   // Initializes internal states, while retaining all user settings. This
   // should be called before beginning to process a new audio stream. However,
   // it is not necessary to call before processing the first stream after
   // creation.
   //
-  // set_sample_rate_hz(), set_num_channels() and set_num_reverse_channels()
-  // will trigger a full initialization if the settings are changed from their
-  // existing values. Otherwise they are no-ops.
+  // It is also not necessary to call if the audio parameters (sample
+  // rate and number of channels) have changed. Passing updated parameters
+  // directly to |ProcessStream()| and |AnalyzeReverseStream()| is permissible.
+  // If the parameters are known at init-time though, they may be provided.
   virtual int Initialize() = 0;
 
-  // Sets the sample |rate| in Hz for both the primary and reverse audio
-  // streams. 8000, 16000 or 32000 Hz are permitted.
+  // The int16 interfaces require:
+  //   - only |NativeRate|s be used
+  //   - that the input, output and reverse rates must match
+  //   - that |output_layout| matches |input_layout|
+  //
+  // The float interfaces accept arbitrary rates and support differing input
+  // and output layouts, but the output may only remove channels, not add.
+  virtual int Initialize(int input_sample_rate_hz,
+                         int output_sample_rate_hz,
+                         int reverse_sample_rate_hz,
+                         ChannelLayout input_layout,
+                         ChannelLayout output_layout,
+                         ChannelLayout reverse_layout) = 0;
+
+  // Pass down additional options which don't have explicit setters. This
+  // ensures the options are applied immediately.
+  virtual void SetExtraOptions(const Config& config) = 0;
+
+  // DEPRECATED.
+  // TODO(ajm): Remove after Chromium has upgraded to using Initialize().
   virtual int set_sample_rate_hz(int rate) = 0;
+  // TODO(ajm): Remove after voice engine no longer requires it to resample
+  // the reverse stream to the forward rate.
+  virtual int input_sample_rate_hz() const = 0;
+  // TODO(ajm): Remove after Chromium no longer depends on it.
   virtual int sample_rate_hz() const = 0;
 
-  // Sets the number of channels for the primary audio stream. Input frames must
-  // contain a number of channels given by |input_channels|, while output frames
-  // will be returned with number of channels given by |output_channels|.
-  virtual int set_num_channels(int input_channels, int output_channels) = 0;
+  // TODO(ajm): Only intended for internal use. Make private and friend the
+  // necessary classes?
+  virtual int proc_sample_rate_hz() const = 0;
+  virtual int proc_split_sample_rate_hz() const = 0;
   virtual int num_input_channels() const = 0;
   virtual int num_output_channels() const = 0;
-
-  // Sets the number of channels for the reverse audio stream. Input frames must
-  // contain a number of channels given by |channels|.
-  virtual int set_num_reverse_channels(int channels) = 0;
   virtual int num_reverse_channels() const = 0;
+
+  // Set to true when the output of AudioProcessing will be muted or in some
+  // other way not used. Ideally, the captured audio would still be processed,
+  // but some components may change behavior based on this information.
+  // Default false.
+  virtual void set_output_will_be_muted(bool muted) = 0;
+  virtual bool output_will_be_muted() const = 0;
 
   // Processes a 10 ms |frame| of the primary audio stream. On the client-side,
   // this is the near-end (or captured) audio.
@@ -155,9 +281,24 @@ class AudioProcessing : public Module {
   // with the stream_ tag which is needed should be called after processing.
   //
   // The |sample_rate_hz_|, |num_channels_|, and |samples_per_channel_|
-  // members of |frame| must be valid, and correspond to settings supplied
-  // to APM.
+  // members of |frame| must be valid. If changed from the previous call to this
+  // method, it will trigger an initialization.
   virtual int ProcessStream(AudioFrame* frame) = 0;
+
+  // Accepts deinterleaved float audio with the range [-1, 1]. Each element
+  // of |src| points to a channel buffer, arranged according to
+  // |input_layout|. At output, the channels will be arranged according to
+  // |output_layout| at |output_sample_rate_hz| in |dest|.
+  //
+  // The output layout may only remove channels, not add. |src| and |dest|
+  // may use the same memory, if desired.
+  virtual int ProcessStream(const float* const* src,
+                            int samples_per_channel,
+                            int input_sample_rate_hz,
+                            ChannelLayout input_layout,
+                            int output_sample_rate_hz,
+                            ChannelLayout output_layout,
+                            float* const* dest) = 0;
 
   // Analyzes a 10 ms |frame| of the reverse direction audio stream. The frame
   // will not be modified. On the client-side, this is the far-end (or to be
@@ -170,10 +311,18 @@ class AudioProcessing : public Module {
   // chances are you don't need to use it.
   //
   // The |sample_rate_hz_|, |num_channels_|, and |samples_per_channel_|
-  // members of |frame| must be valid.
+  // members of |frame| must be valid. |sample_rate_hz_| must correspond to
+  // |input_sample_rate_hz()|
   //
   // TODO(ajm): add const to input; requires an implementation fix.
   virtual int AnalyzeReverseStream(AudioFrame* frame) = 0;
+
+  // Accepts deinterleaved float audio with the range [-1, 1]. Each element
+  // of |data| points to a channel buffer, arranged according to |layout|.
+  virtual int AnalyzeReverseStream(const float* const* data,
+                                   int samples_per_channel,
+                                   int sample_rate_hz,
+                                   ChannelLayout layout) = 0;
 
   // This must be called if and only if echo processing is enabled.
   //
@@ -190,6 +339,12 @@ class AudioProcessing : public Module {
   //     ProcessStream().
   virtual int set_stream_delay_ms(int delay) = 0;
   virtual int stream_delay_ms() const = 0;
+  virtual bool was_stream_delay_set() const = 0;
+
+  // Call to signal that a key press occurred (true) or did not occur (false)
+  // with this chunk of audio.
+  virtual void set_stream_key_pressed(bool key_pressed) = 0;
+  virtual bool stream_key_pressed() const = 0;
 
   // Sets a delay |offset| in ms to add to the values passed in through
   // set_stream_delay_ms(). May be positive or negative.
@@ -205,6 +360,17 @@ class AudioProcessing : public Module {
   // An already existing file will be overwritten without warning.
   static const size_t kMaxFilenameSize = 1024;
   virtual int StartDebugRecording(const char filename[kMaxFilenameSize]) = 0;
+
+  // Same as above but uses an existing file handle. Takes ownership
+  // of |handle| and closes it at StopDebugRecording().
+  virtual int StartDebugRecording(FILE* handle) = 0;
+
+  // Same as above but uses an existing PlatformFile handle. Takes ownership
+  // of |handle| and closes it at StopDebugRecording().
+  // TODO(xians): Make this interface pure virtual.
+  virtual int StartDebugRecordingForPlatformFile(rtc::PlatformFile handle) {
+      return -1;
+  }
 
   // Stops recording debugging information, and closes the file. Recording
   // cannot be resumed in the same file (without overwriting it).
@@ -250,9 +416,14 @@ class AudioProcessing : public Module {
     kBadStreamParameterWarning = -13
   };
 
-  // Inherited from Module.
-  virtual WebRtc_Word32 TimeUntilNextProcess() { return -1; }
-  virtual WebRtc_Word32 Process() { return -1; }
+  enum NativeRate {
+    kSampleRate8kHz = 8000,
+    kSampleRate16kHz = 16000,
+    kSampleRate32kHz = 32000,
+    kSampleRate48kHz = 48000
+  };
+
+  static const int kChunkSizeMs = 10;
 };
 
 // The acoustic echo cancellation (AEC) component provides better performance
@@ -273,20 +444,14 @@ class EchoCancellation {
   // render and capture devices are used, particularly with webcams.
   //
   // This enables a compensation mechanism, and requires that
-  // |set_device_sample_rate_hz()| and |set_stream_drift_samples()| be called.
+  // set_stream_drift_samples() be called.
   virtual int enable_drift_compensation(bool enable) = 0;
   virtual bool is_drift_compensation_enabled() const = 0;
 
-  // Provides the sampling rate of the audio devices. It is assumed the render
-  // and capture devices use the same nominal sample rate. Required if and only
-  // if drift compensation is enabled.
-  virtual int set_device_sample_rate_hz(int rate) = 0;
-  virtual int device_sample_rate_hz() const = 0;
-
   // Sets the difference between the number of samples rendered and captured by
   // the audio devices since the last call to |ProcessStream()|. Must be called
-  // if and only if drift compensation is enabled, prior to |ProcessStream()|.
-  virtual int set_stream_drift_samples(int drift) = 0;
+  // if drift compensation is enabled, prior to |ProcessStream()|.
+  virtual void set_stream_drift_samples(int drift) = 0;
   virtual int stream_drift_samples() const = 0;
 
   enum SuppressionLevel {
@@ -338,9 +503,23 @@ class EchoCancellation {
   virtual bool is_delay_logging_enabled() const = 0;
 
   // The delay metrics consists of the delay |median| and the delay standard
-  // deviation |std|. The values are averaged over the time period since the
-  // last call to |GetDelayMetrics()|.
+  // deviation |std|. It also consists of the fraction of delay estimates
+  // |fraction_poor_delays| that can make the echo cancellation perform poorly.
+  // The values are aggregated until the first call to |GetDelayMetrics()| and
+  // afterwards aggregated and updated every second.
+  // Note that if there are several clients pulling metrics from
+  // |GetDelayMetrics()| during a session the first call from any of them will
+  // change to one second aggregation window for all.
+  // TODO(bjornv): Deprecated, remove.
   virtual int GetDelayMetrics(int* median, int* std) = 0;
+  virtual int GetDelayMetrics(int* median, int* std,
+                              float* fraction_poor_delays) = 0;
+
+  // Returns a pointer to the low level AEC component.  In case of multiple
+  // channels, the pointer to the first one is returned.  A NULL pointer is
+  // returned when the AEC component is disabled or has not been initialized
+  // successfully.
+  virtual struct AecCore* aec_core() const = 0;
 
  protected:
   virtual ~EchoCancellation() {}
@@ -516,8 +695,7 @@ class LevelEstimator {
   // frames since the last call to RMS(). The returned value is positive but
   // should be interpreted as negative. It is constrained to [0, 127].
   //
-  // The computation follows:
-  // http://tools.ietf.org/html/draft-ietf-avtext-client-to-mixer-audio-level-05
+  // The computation follows: https://tools.ietf.org/html/rfc6465
   // with the intent that it can provide the RTP audio level indication.
   //
   // Frames passed to ProcessStream() with an |_energy| of zero are considered

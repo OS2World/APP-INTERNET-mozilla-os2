@@ -1,4 +1,4 @@
-/* -*- Mode: Java; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*-
+/* -*- indent-tabs-mode: nil; js-indent-level: 2 -*-
  * vim: sw=2 ts=8 et :
  */
 /* This Source Code Form is subject to the terms of the Mozilla Public
@@ -12,9 +12,10 @@ const Cr = Components.results;
 
 Cu.import("resource://gre/modules/XPCOMUtils.jsm");
 Cu.import("resource://gre/modules/Services.jsm");
+Cu.import("resource://gre/modules/AppConstants.jsm");
 
 const VERBOSE = 1;
-let log =
+var log =
   VERBOSE ?
   function log_dump(msg) { dump("UpdatePrompt: "+ msg +"\n"); } :
   function log_noop(msg) { };
@@ -45,6 +46,24 @@ XPCOMUtils.defineLazyServiceGetter(Services, "settings",
                                    "@mozilla.org/settingsService;1",
                                    "nsISettingsService");
 
+XPCOMUtils.defineLazyServiceGetter(Services, 'env',
+                                   '@mozilla.org/process/environment;1',
+                                   'nsIEnvironment');
+
+function useSettings() {
+  // When we're running in the real phone, then we can use settings.
+  // But when we're running as part of xpcshell, there is no settings database
+  // and trying to use settings in this scenario causes lots of weird
+  // assertions at shutdown time.
+  if (typeof useSettings.result === "undefined") {
+    useSettings.result = !Services.env.get("XPCSHELL_TEST_PROFILE_DIR");
+  }
+  return useSettings.result;
+}
+
+XPCOMUtils.defineLazyModuleGetter(this, "SystemAppProxy",
+                                  "resource://gre/modules/SystemAppProxy.jsm");
+
 function UpdateCheckListener(updatePrompt) {
   this._updatePrompt = updatePrompt;
 }
@@ -65,12 +84,22 @@ UpdateCheckListener.prototype = {
 
     if (updateCount == 0) {
       this._updatePrompt.setUpdateStatus("no-updates");
+
+      if (this._updatePrompt._systemUpdateListener) {
+        this._updatePrompt._systemUpdateListener.onError("no-updates");
+      }
+
       return;
     }
 
     let update = Services.aus.selectUpdate(updates, updateCount);
     if (!update) {
       this._updatePrompt.setUpdateStatus("already-latest-version");
+
+      if (this._updatePrompt._systemUpdateListener) {
+        this._updatePrompt._systemUpdateListener.onError("already-latest-version");
+      }
+
       return;
     }
 
@@ -83,14 +112,22 @@ UpdateCheckListener.prototype = {
     // require all 32 bits.
     let errorCode = update.errorCode >>> 0;
     let isNSError = (errorCode >>> 31) == 1;
+    let errorMsg = "check-error-";
 
     if (errorCode == NETWORK_ERROR_OFFLINE) {
-      this._updatePrompt.setUpdateStatus("retry-when-online");
+      errorMsg = "retry-when-online";
+      this._updatePrompt.setUpdateStatus(errorMsg);
     } else if (isNSError) {
-      this._updatePrompt.setUpdateStatus("check-error-" + errorCode);
+      errorMsg = "check-error-" + errorCode;
+      this._updatePrompt.setUpdateStatus(errorMsg);
     } else if (errorCode > HTTP_ERROR_OFFSET) {
       let httpErrorCode = errorCode - HTTP_ERROR_OFFSET;
-      this._updatePrompt.setUpdateStatus("check-error-http-" + httpErrorCode);
+      errorMsg = "check-error-http-" + httpErrorCode;
+      this._updatePrompt.setUpdateStatus(errorMsg);
+    }
+
+    if (this._updatePrompt._systemUpdateListener) {
+      this._updatePrompt._systemUpdateListener.onError(errorMsg);
     }
 
     Services.aus.QueryInterface(Ci.nsIUpdateCheckListener);
@@ -101,7 +138,6 @@ UpdateCheckListener.prototype = {
 function UpdatePrompt() {
   this.wrappedJSObject = this;
   this._updateCheckListener = new UpdateCheckListener(this);
-  Services.obs.addObserver(this, "update-check-start", false);
 }
 
 UpdatePrompt.prototype = {
@@ -110,14 +146,95 @@ UpdatePrompt.prototype = {
                                          Ci.nsIUpdateCheckListener,
                                          Ci.nsIRequestObserver,
                                          Ci.nsIProgressEventSink,
-                                         Ci.nsIObserver]),
+                                         Ci.nsIObserver,
+                                         Ci.nsISystemUpdateProvider]),
   _xpcom_factory: XPCOMUtils.generateSingletonFactory(UpdatePrompt),
 
   _update: null,
   _applyPromptTimer: null,
   _waitingForIdle: false,
   _updateCheckListner: null,
-  _pendingEvents: [],
+  _systemUpdateListener: null,
+  _availableParameters: {
+    "deviceinfo.last_updated": null,
+    "gecko.updateStatus": null,
+    "app.update.channel": null,
+    "app.update.interval": null,
+    "app.update.url": null,
+  },
+  _pendingUpdateAvailablePackageInfo: null,
+  _isPendingUpdateReady: false,
+  _updateErrorQueue: [ ],
+  _receivedUpdatePromptReady: false,
+
+  // nsISystemUpdateProvider
+  checkForUpdate: function() {
+    this.forceUpdateCheck();
+  },
+
+  startDownload: function() {
+    this.downloadUpdate(this._update);
+  },
+
+  stopDownload: function() {
+    this.handleDownloadCancel();
+  },
+
+  applyUpdate: function() {
+    this.handleApplyPromptResult({result: "restart"});
+  },
+
+  setParameter: function(aName, aValue) {
+    if (!this._availableParameters.hasOwnProperty(aName)) {
+      return false;
+    }
+
+    this._availableParameters[aName] = aValue;
+
+    switch (aName) {
+      case "app.update.channel":
+      case "app.update.url":
+        Services.prefs.setCharPref(aName, aValue);
+        break;
+      case "app.update.interval":
+        Services.prefs.setIntPref(aName, parseInt(aValue, 10));
+        break;
+    }
+
+    return true;
+  },
+
+  getParameter: function(aName) {
+    if (!this._availableParameters.hasOwnProperty(aName)) {
+      return null;
+    }
+
+    return this._availableParameters[aName];
+  },
+
+  setListener: function(aListener) {
+    this._systemUpdateListener = aListener;
+
+    // If an update is available or ready, trigger the event right away at this point.
+    if (this._pendingUpdateAvailablePackageInfo) {
+      this._systemUpdateListener.onUpdateAvailable(this._pendingUpdateAvailablePackageInfo.type,
+                                             this._pendingUpdateAvailablePackageInfo.version,
+                                             this._pendingUpdateAvailablePackageInfo.description,
+                                             this._pendingUpdateAvailablePackageInfo.buildDate,
+                                             this._pendingUpdateAvailablePackageInfo.size);
+      // Set null when the listener is attached.
+      this._pendingUpdateAvailablePackageInfo = null;
+    }
+
+    if (this._isPendingUpdateReady) {
+      this._systemUpdateListener.onUpdateReady();
+      this._isPendingUpdateReady = false;
+    }
+  },
+
+  unsetListener: function(aListener) {
+    this._systemUpdateListener = null;
+  },
 
   get applyPromptTimeout() {
     return Services.prefs.getIntPref(PREF_APPLY_PROMPT_TIMEOUT);
@@ -127,14 +244,8 @@ UpdatePrompt.prototype = {
     return Services.prefs.getIntPref(PREF_APPLY_IDLE_TIMEOUT);
   },
 
-  handleContentStart: function UP_handleContentStart(shell) {
-    let content = shell.contentBrowser.contentWindow;
-    content.addEventListener("mozContentEvent", this);
-
-    for (let i = 0; i < this._pendingEvents.length; i++) {
-      shell.sendChromeEvent(this._pendingEvents[i]);
-    }
-    this._pendingEvents.length = 0;
+  handleContentStart: function UP_handleContentStart() {
+    SystemAppProxy.addEventListener("mozContentEvent", this);
   },
 
   // nsIUpdatePrompt
@@ -145,6 +256,37 @@ UpdatePrompt.prototype = {
   checkForUpdates: function UP_checkForUpdates() { },
 
   showUpdateAvailable: function UP_showUpdateAvailable(aUpdate) {
+    let packageInfo = {};
+    packageInfo.version = aUpdate.displayVersion;
+    packageInfo.description = aUpdate.statusText;
+    packageInfo.buildDate = aUpdate.buildID;
+
+    let patch = aUpdate.selectedPatch;
+    if (!patch && aUpdate.patchCount > 0) {
+      // For now we just check the first patch to get size information if a
+      // patch hasn't been selected yet.
+      patch = aUpdate.getPatchAt(0);
+    }
+
+    if (patch) {
+      packageInfo.size = patch.size;
+      packageInfo.type = patch.type;
+    } else {
+      log("Warning: no patches available in update");
+    }
+
+    this._pendingUpdateAvailablePackageInfo = packageInfo;
+
+    if (this._systemUpdateListener) {
+      this._systemUpdateListener.onUpdateAvailable(packageInfo.type,
+                                             packageInfo.version,
+                                             packageInfo.description,
+                                             packageInfo.buildDate,
+                                             packageInfo.size);
+      // Set null since the event is fired.
+      this._pendingUpdateAvailablePackageInfo = null;
+    }
+
     if (!this.sendUpdateEvent("update-available", aUpdate)) {
 
       log("Unable to prompt for available update, forcing download");
@@ -153,6 +295,12 @@ UpdatePrompt.prototype = {
   },
 
   showUpdateDownloaded: function UP_showUpdateDownloaded(aUpdate, aBackground) {
+    if (this._systemUpdateListener) {
+      this._systemUpdateListener.onUpdateReady();
+    } else {
+      this._isPendingUpdateReady = true;
+    }
+
     // The update has been downloaded and staged. We send the update-downloaded
     // event right away. After the user has been idle for a while, we send the
     // update-prompt-restart event, increasing the chances that we can apply the
@@ -173,17 +321,43 @@ UpdatePrompt.prototype = {
     this.waitForIdle();
   },
 
+  storeUpdateError: function UP_storeUpdateError(aUpdate) {
+    log("Storing update error for later use");
+    this._updateErrorQueue.push(aUpdate);
+  },
+
+  sendStoredUpdateError: function UP_sendStoredUpdateError() {
+    log("Sending stored update error");
+    this._updateErrorQueue.forEach(aUpdate => {
+      this.sendUpdateEvent("update-error", aUpdate);
+    });
+    this._updateErrorQueue = [ ];
+  },
+
   showUpdateError: function UP_showUpdateError(aUpdate) {
     log("Update error, state: " + aUpdate.state + ", errorCode: " +
         aUpdate.errorCode);
-    this.sendUpdateEvent("update-error", aUpdate);
+    if (this._systemUpdateListener) {
+      this._systemUpdateListener.onError("update-error: " + aUpdate.errorCode + " " + aUpdate.statusText);
+    }
+
+    if (!this._receivedUpdatePromptReady) {
+      this.storeUpdateError(aUpdate);
+    } else {
+      this.sendUpdateEvent("update-error", aUpdate);
+    }
+
     this.setUpdateStatus(aUpdate.statusText);
   },
 
   showUpdateHistory: function UP_showUpdateHistory(aParent) { },
   showUpdateInstalled: function UP_showUpdateInstalled() {
-    let lock = Services.settings.createLock();
-    lock.set("deviceinfo.last_updated", Date.now(), null, null);
+    this.setParameter("deviceinfo.last_updated", Date.now());
+
+    if (useSettings()) {
+      let lock = Services.settings.createLock();
+      lock.set("deviceinfo.last_updated", Date.now(), null, null);
+    }
   },
 
   // Custom functions
@@ -199,22 +373,55 @@ UpdatePrompt.prototype = {
   },
 
   setUpdateStatus: function UP_setUpdateStatus(aStatus) {
-    log("Setting gecko.updateStatus: " + aStatus);
+     this.setParameter("gecko.updateStatus", aStatus);
 
-    let lock = Services.settings.createLock();
-    lock.set("gecko.updateStatus", aStatus, null);
+     if (useSettings()) {
+       log("Setting gecko.updateStatus: " + aStatus);
+
+       let lock = Services.settings.createLock();
+       lock.set("gecko.updateStatus", aStatus, null);
+     }
   },
 
   showApplyPrompt: function UP_showApplyPrompt(aUpdate) {
+    // Notify update package is ready to apply
+    if (this._systemUpdateListener) {
+      this._systemUpdateListener.onUpdateReady();
+    } else {
+      // Set the flag to true and fire the onUpdateReady event when the listener is attached.
+      this._isPendingUpdateReady = true;
+    }
+
     if (!this.sendUpdateEvent("update-prompt-apply", aUpdate)) {
       log("Unable to prompt, forcing restart");
       this.restartProcess();
       return;
     }
 
-    // Schedule a fallback timeout in case the UI is unable to respond or show
-    // a prompt for some reason.
-    this._applyPromptTimer = this.createTimer(this.applyPromptTimeout);
+    if (AppConstants.MOZ_B2G_RIL) {
+      let window = Services.wm.getMostRecentWindow("navigator:browser");
+      let pinReq = window.navigator.mozIccManager.getCardLock("pin");
+      pinReq.onsuccess = function(e) {
+        if (e.target.result.enabled) {
+          // The SIM is pin locked. Don't use a fallback timer. This means that
+          // the user has to press Install to apply the update. If we use the
+          // timer, and the timer reboots the phone, then the phone will be
+          // unusable until the SIM is unlocked.
+          log("SIM is pin locked. Not starting fallback timer.");
+        } else {
+          // This means that no pin lock is enabled, so we go ahead and start
+          // the fallback timer.
+          this._applyPromptTimer = this.createTimer(this.applyPromptTimeout);
+        }
+      }.bind(this);
+      pinReq.onerror = function(e) {
+        this._applyPromptTimer = this.createTimer(this.applyPromptTimeout);
+      }.bind(this);
+    } else {
+      // Schedule a fallback timeout in case the UI is unable to respond or show
+      // a prompt for some reason.
+      this._applyPromptTimer = this.createTimer(this.applyPromptTimeout);
+    }
   },
 
   _copyProperties: ["appVersion", "buildID", "detailsURL", "displayVersion",
@@ -223,7 +430,7 @@ UpdatePrompt.prototype = {
 
   sendUpdateEvent: function UP_sendUpdateEvent(aType, aUpdate) {
     let detail = {};
-    for each (let property in this._copyProperties) {
+    for (let property of this._copyProperties) {
       detail[property] = aUpdate[property];
     }
 
@@ -249,15 +456,12 @@ UpdatePrompt.prototype = {
     let detail = aDetail || {};
     detail.type = aType;
 
-    let browser = Services.wm.getMostRecentWindow("navigator:browser");
-    if (!browser) {
-      this._pendingEvents.push(detail);
+    let sent = SystemAppProxy.dispatchEvent(detail);
+    if (!sent) {
       log("Warning: Couldn't send update event " + aType +
           ": no content browser. Will send again when content becomes available.");
       return false;
     }
-
-    browser.shell.sendChromeEvent(detail);
     return true;
   },
 
@@ -278,6 +482,9 @@ UpdatePrompt.prototype = {
     }
 
     switch (aDetail.result) {
+      // Battery not okay, do not wait for idle to re-prompt
+      case "low-battery":
+        break;
       case "wait":
         // Wait until the user is idle before prompting to apply the update
         this.waitForIdle();
@@ -331,59 +538,47 @@ UpdatePrompt.prototype = {
       this.restartProcess();
       return;
     }
-
-    let osApplyToDir;
+ 
     try {
-      this._update.QueryInterface(Ci.nsIWritablePropertyBag);
-      osApplyToDir = this._update.getProperty("osApplyToDir");
-    } catch (e) {}
-
-    if (!osApplyToDir) {
-      log("Error: Update has no osApplyToDir");
-      return;
+      Services.aus.applyOsUpdate(this._update);
     }
-
-    let updateFile = Cc["@mozilla.org/file/local;1"].createInstance(Ci.nsIFile);
-    updateFile.initWithPath(osApplyToDir + "/update.zip");
-    if (!updateFile.exists()) {
-      log("Error: FOTA update not found at " + updateFile.path);
-      return;
+    catch (e) {
+      this._update.errorCode = Cr.NS_ERROR_FAILURE;
+      this.showUpdateError(this._update);
     }
-
-    this.finishOSUpdate(updateFile.path);
   },
 
   restartProcess: function UP_restartProcess() {
     log("Update downloaded, restarting to apply it");
 
-#ifndef MOZ_WIDGET_GONK
-    let appStartup = Cc["@mozilla.org/toolkit/app-startup;1"]
-                     .getService(Ci.nsIAppStartup);
-    appStartup.quit(appStartup.eForceQuit | appStartup.eRestart);
-#else
-    // NB: on Gonk, we rely on the system process manager to restart us.
-    let pmService = Cc["@mozilla.org/power/powermanagerservice;1"]
-                    .getService(Ci.nsIPowerManagerService);
-    pmService.restart();
-#endif
-  },
-
-  finishOSUpdate: function UP_finishOSUpdate(aOsUpdatePath) {
-    log("Rebooting into recovery to apply FOTA update: " + aOsUpdatePath);
-
-    try {
-      let recoveryService = Cc["@mozilla.org/recovery-service;1"]
-                            .getService(Ci.nsIRecoveryService);
-      recoveryService.installFotaUpdate(aOsUpdatePath);
-    } catch(e) {
-      log("Error: Couldn't reboot into recovery to apply FOTA update " +
-          aOsUpdatePath);
-      aUpdate = Services.um.activeUpdate;
-      if (aUpdate) {
-        aUpdate.errorCode = Cr.NS_ERROR_FAILURE;
-        aUpdate.statusText = "fota-reboot-failed";
-        this.showUpdateError(aUpdate);
+    let callbackAfterSet = function() {
+      if (AppConstants.platform !== "gonk") {
+        let appStartup = Cc["@mozilla.org/toolkit/app-startup;1"]
+                         .getService(Ci.nsIAppStartup);
+        appStartup.quit(appStartup.eForceQuit | appStartup.eRestart);
+      } else {
+        // NB: on Gonk, we rely on the system process manager to restart us.
+        let pmService = Cc["@mozilla.org/power/powermanagerservice;1"]
+                        .getService(Ci.nsIPowerManagerService);
+        pmService.restart();
       }
+    }
+
+    if (useSettings()) {
+      // Save current os version in deviceinfo.previous_os
+      let lock = Services.settings.createLock({
+        handle: callbackAfterSet,
+        handleAbort: function(error) {
+          log("Abort callback when trying to set previous_os: " + error);
+          callbackAfterSet();
+        }
+      });
+      lock.get("deviceinfo.os", {
+        handle: function(name, value) {
+          log("Set previous_os to: " + value);
+          lock.set("deviceinfo.previous_os", value, null, null);
+        }
+      });
     }
   },
 
@@ -425,61 +620,10 @@ UpdatePrompt.prototype = {
       case "update-prompt-apply-result":
         this.handleApplyPromptResult(detail);
         break;
-    }
-  },
-
-  appsUpdated: function UP_appsUpdated(aApps) {
-    log("appsUpdated: " + aApps.length + " apps to update");
-    let lock = Services.settings.createLock();
-    lock.set("apps.updateStatus", "check-complete", null);
-    this.sendChromeEvent("apps-update-check", { apps: aApps });
-    this._checkingApps = false;
-  },
-
-  // Trigger apps update check and wait for all to be done before
-  // notifying gaia.
-  onUpdateCheckStart: function UP_onUpdateCheckStart() {
-    log("onUpdateCheckStart (" + this._checkingApps + ")");
-    // Don't start twice.
-    if (this._checkingApps) {
-      return;
-    }
-
-    this._checkingApps = true;
-
-    let self = this;
-
-    let window = Services.wm.getMostRecentWindow("navigator:browser");
-    let all = window.navigator.mozApps.mgmt.getAll();
-
-    all.onsuccess = function() {
-      let appsCount = this.result.length;
-      let appsChecked = 0;
-      let appsToUpdate = [];
-      this.result.forEach(function updateApp(aApp) {
-        let update = aApp.checkForUpdate();
-        update.onsuccess = function() {
-          if (aApp.downloadAvailable) {
-            appsToUpdate.push(aApp.manifestURL);
-          }
-
-          appsChecked += 1;
-          if (appsChecked == appsCount) {
-            self.appsUpdated(appsToUpdate);
-          }
-        }
-        update.onerror = function() {
-          appsChecked += 1;
-          if (appsChecked == appsCount) {
-            self.appsUpdated(appsToUpdate);
-          }
-        }
-      });
-    }
-
-    all.onerror = function() {
-      // Could not get the app list, just notify to update nothing.
-      self.appsUpdated([]);
+      case "update-prompt-ready":
+        this._receivedUpdatePromptReady = true;
+        this.sendStoredUpdateError();
+        break;
     }
   },
 
@@ -495,9 +639,6 @@ UpdatePrompt.prototype = {
         Services.idle.removeIdleObserver(this, this.applyIdleTimeout / 1000);
         Services.obs.removeObserver(this, "quit-application");
         break;
-      case "update-check-start":
-        this.onUpdateCheckStart();
-        break;
     }
   },
 
@@ -509,6 +650,14 @@ UpdatePrompt.prototype = {
       this._applyPromptTimer = null;
       this.finishUpdate();
       this._update = null;
+      return;
+    }
+    if (aTimer == this._watchdogTimer) {
+      log("Download watchdog fired");
+      this._watchdogTimer = null;
+      this._autoRestartDownload = true;
+      Services.aus.pauseDownload();
+      return;
     }
   },
 
@@ -523,26 +672,29 @@ UpdatePrompt.prototype = {
   _startedSent: false,
 
   _watchdogTimer: null,
-  _watchdogTimeout: 0,
 
   _autoRestartDownload: false,
   _autoRestartCount: 0,
 
-  watchdogTimerFired: function UP_watchdogTimerFired() {
-    log("Download watchdog fired");
-    this._autoRestartDownload = true;
-    Services.aus.pauseDownload();
-  },
-
   startWatchdogTimer: function UP_startWatchdogTimer() {
+    let watchdogTimeout = 120000;  // 120 seconds
+    try {
+      watchdogTimeout = Services.prefs.getIntPref(PREF_DOWNLOAD_WATCHDOG_TIMEOUT);
+    } catch (e) {
+      // This means that the preference doesn't exist. watchdogTimeout will
+      // retain its default assigned above.
+    }
+    if (watchdogTimeout <= 0) {
+      // 0 implies don't bother using the watchdog timer at all.
+      this._watchdogTimer = null;
+      return;
+    }
     if (this._watchdogTimer) {
       this._watchdogTimer.cancel();
     } else {
       this._watchdogTimer = Cc["@mozilla.org/timer;1"].createInstance(Ci.nsITimer);
-      this._watchdogTimeout = Services.prefs.getIntPref(PREF_DOWNLOAD_WATCHDOG_TIMEOUT);
     }
-    this._watchdogTimer.initWithCallback(this.watchdogTimerFired.bind(this),
-                                         this._watchdogTimeout,
+    this._watchdogTimer.initWithCallback(this, watchdogTimeout,
                                          Ci.nsITimer.TYPE_ONE_SHOT);
   },
 
@@ -600,6 +752,10 @@ UpdatePrompt.prototype = {
 
   onProgress: function UP_onProgress(aRequest, aContext, aProgress,
                                      aProgressMax) {
+    if (this._systemUpdateListener) {
+      this._systemUpdateListener.onProgress(aProgress, aProgressMax);
+    }
+
     if (aProgress == aProgressMax) {
       // The update.mar validation done by onStopRequest may take
       // a while before the onStopRequest callback is made, so stop

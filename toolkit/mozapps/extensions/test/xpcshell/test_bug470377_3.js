@@ -13,31 +13,31 @@ function run_test() {
   var dest = gProfD.clone();
   dest.append("extensions");
   dest.append("bug470377_1@tests.mozilla.org");
-  dest.create(Components.interfaces.nsIFile.DIRECTORY_TYPE, 0755);
+  dest.create(Components.interfaces.nsIFile.DIRECTORY_TYPE, 0o755);
   var source = do_get_file("data/test_bug470377/install_1.rdf");
   source.copyTo(dest, "install.rdf");
   dest = gProfD.clone();
   dest.append("extensions");
   dest.append("bug470377_2@tests.mozilla.org");
-  dest.create(Components.interfaces.nsIFile.DIRECTORY_TYPE, 0755);
+  dest.create(Components.interfaces.nsIFile.DIRECTORY_TYPE, 0o755);
   source = do_get_file("data/test_bug470377/install_2.rdf");
   source.copyTo(dest, "install.rdf");
   dest = gProfD.clone();
   dest.append("extensions");
   dest.append("bug470377_3@tests.mozilla.org");
-  dest.create(Components.interfaces.nsIFile.DIRECTORY_TYPE, 0755);
+  dest.create(Components.interfaces.nsIFile.DIRECTORY_TYPE, 0o755);
   source = do_get_file("data/test_bug470377/install_3.rdf");
   source.copyTo(dest, "install.rdf");
   dest = gProfD.clone();
   dest.append("extensions");
   dest.append("bug470377_4@tests.mozilla.org");
-  dest.create(Components.interfaces.nsIFile.DIRECTORY_TYPE, 0755);
+  dest.create(Components.interfaces.nsIFile.DIRECTORY_TYPE, 0o755);
   source = do_get_file("data/test_bug470377/install_4.rdf");
   source.copyTo(dest, "install.rdf");
   dest = gProfD.clone();
   dest.append("extensions");
   dest.append("bug470377_5@tests.mozilla.org");
-  dest.create(Components.interfaces.nsIFile.DIRECTORY_TYPE, 0755);
+  dest.create(Components.interfaces.nsIFile.DIRECTORY_TYPE, 0o755);
   source = do_get_file("data/test_bug470377/install_5.rdf");
   source.copyTo(dest, "install.rdf");
 
@@ -64,7 +64,7 @@ function run_test_1() {
     do_check_neq(a5, null);
     do_check_true(a5.isActive);
 
-    run_test_2();
+    do_execute_soon(run_test_2);
   });
 }
 
@@ -90,6 +90,6 @@ function run_test_2() {
     do_check_neq(a5, null);
     do_check_true(a5.isActive);
 
-    do_test_finished();
+    do_execute_soon(do_test_finished);
   });
 }

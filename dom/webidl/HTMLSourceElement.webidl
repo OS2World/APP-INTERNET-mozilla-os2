@@ -16,6 +16,13 @@ interface HTMLSourceElement : HTMLElement {
            attribute DOMString src;
            [SetterThrows]
            attribute DOMString type;
+};
+
+partial interface HTMLSourceElement {
+           [SetterThrows]
+           attribute DOMString srcset;
+           [SetterThrows]
+           attribute DOMString sizes;
            [SetterThrows]
            attribute DOMString media;
 };

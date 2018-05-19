@@ -77,13 +77,13 @@ enum {
 class nsDecodeAppleFile : public nsIOutputStream
 {
 public:
-  NS_DECL_ISUPPORTS
+  NS_DECL_THREADSAFE_ISUPPORTS
   NS_DECL_NSIOUTPUTSTREAM
   
   nsDecodeAppleFile();
   virtual ~nsDecodeAppleFile();
   
-  nsresult Initialize(nsIOutputStream *output, nsIFile *file);
+  MOZ_MUST_USE nsresult Initialize(nsIOutputStream *output, nsIFile *file);
   
 private:
   #define MAX_BUFFERSIZE    1024

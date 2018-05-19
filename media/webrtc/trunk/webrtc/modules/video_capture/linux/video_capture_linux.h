@@ -11,25 +11,25 @@
 #ifndef WEBRTC_MODULES_VIDEO_CAPTURE_MAIN_SOURCE_LINUX_VIDEO_CAPTURE_LINUX_H_
 #define WEBRTC_MODULES_VIDEO_CAPTURE_MAIN_SOURCE_LINUX_VIDEO_CAPTURE_LINUX_H_
 
-#include "common_types.h"
-#include "../video_capture_impl.h"
+#include "webrtc/common_types.h"
+#include "webrtc/modules/video_capture/video_capture_impl.h"
+#include "webrtc/system_wrappers/interface/thread_wrapper.h"
 
 namespace webrtc
 {
 class CriticalSectionWrapper;
-class ThreadWrapper;
 namespace videocapturemodule
 {
 class VideoCaptureModuleV4L2: public VideoCaptureImpl
 {
 public:
-    VideoCaptureModuleV4L2(WebRtc_Word32 id);
+    VideoCaptureModuleV4L2(int32_t id);
     virtual ~VideoCaptureModuleV4L2();
-    virtual WebRtc_Word32 Init(const char* deviceUniqueId);
-    virtual WebRtc_Word32 StartCapture(const VideoCaptureCapability& capability);
-    virtual WebRtc_Word32 StopCapture();
+    virtual int32_t Init(const char* deviceUniqueId);
+    virtual int32_t StartCapture(const VideoCaptureCapability& capability);
+    virtual int32_t StopCapture();
     virtual bool CaptureStarted();
-    virtual WebRtc_Word32 CaptureSettings(VideoCaptureCapability& settings);
+    virtual int32_t CaptureSettings(VideoCaptureCapability& settings);
 
 private:
     enum {kNoOfV4L2Bufffers=4};
@@ -39,16 +39,16 @@ private:
     bool AllocateVideoBuffers();
     bool DeAllocateVideoBuffers();
 
-    ThreadWrapper* _captureThread;
+    rtc::scoped_ptr<ThreadWrapper> _captureThread;
     CriticalSectionWrapper* _captureCritSect;
 
-    WebRtc_Word32 _deviceId;
-    WebRtc_Word32 _deviceFd;
+    int32_t _deviceId;
+    int32_t _deviceFd;
 
-    WebRtc_Word32 _buffersAllocatedByDevice;
-    WebRtc_Word32 _currentWidth;
-    WebRtc_Word32 _currentHeight;
-    WebRtc_Word32 _currentFrameRate;
+    int32_t _buffersAllocatedByDevice;
+    int32_t _currentWidth;
+    int32_t _currentHeight;
+    int32_t _currentFrameRate;
     bool _captureStarted;
     RawVideoType _captureVideoType;
     struct Buffer
@@ -58,7 +58,7 @@ private:
     };
     Buffer *_pool;
 };
-} // namespace videocapturemodule
-} // namespace webrtc
+}  // namespace videocapturemodule
+}  // namespace webrtc
 
 #endif // WEBRTC_MODULES_VIDEO_CAPTURE_MAIN_SOURCE_LINUX_VIDEO_CAPTURE_LINUX_H_

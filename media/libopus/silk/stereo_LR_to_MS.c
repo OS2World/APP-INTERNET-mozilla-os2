@@ -1,9 +1,5 @@
 /***********************************************************************
-Copyright (c) 2006-2012 IETF Trust and Skype Limited. All rights reserved.
-
-This file is extracted from RFC6716. Please see that RFC for additional
-information.
-
+Copyright (c) 2006-2011, Skype Limited. All rights reserved.
 Redistribution and use in source and binary forms, with or without
 modification, are permitted provided that the following conditions
 are met:
@@ -16,7 +12,7 @@ documentation and/or other materials provided with the distribution.
 names of specific contributors, may be used to endorse or promote
 products derived from this software without specific prior written
 permission.
-THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS “AS IS”
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
 AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
 IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
 ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE
@@ -34,6 +30,7 @@ POSSIBILITY OF SUCH DAMAGE.
 #endif
 
 #include "main.h"
+#include "stack_alloc.h"
 
 /* Convert Left/Right stereo signal to adaptive Mid/Side representation */
 void silk_stereo_LR_to_MS(
@@ -53,11 +50,15 @@ void silk_stereo_LR_to_MS(
     opus_int   n, is10msFrame, denom_Q16, delta0_Q13, delta1_Q13;
     opus_int32 sum, diff, smooth_coef_Q16, pred_Q13[ 2 ], pred0_Q13, pred1_Q13;
     opus_int32 LP_ratio_Q14, HP_ratio_Q14, frac_Q16, frac_3_Q16, min_mid_rate_bps, width_Q14, w_Q24, deltaw_Q24;
-    opus_int16 side[ MAX_FRAME_LENGTH + 2 ];
-    opus_int16 LP_mid[  MAX_FRAME_LENGTH ], HP_mid[  MAX_FRAME_LENGTH ];
-    opus_int16 LP_side[ MAX_FRAME_LENGTH ], HP_side[ MAX_FRAME_LENGTH ];
+    VARDECL( opus_int16, side );
+    VARDECL( opus_int16, LP_mid );
+    VARDECL( opus_int16, HP_mid );
+    VARDECL( opus_int16, LP_side );
+    VARDECL( opus_int16, HP_side );
     opus_int16 *mid = &x1[ -2 ];
+    SAVE_STACK;
 
+    ALLOC( side, frame_length + 2, opus_int16 );
     /* Convert to basic mid/side signals */
     for( n = 0; n < frame_length + 2; n++ ) {
         sum  = x1[ n - 2 ] + (opus_int32)x2[ n - 2 ];
@@ -73,15 +74,19 @@ void silk_stereo_LR_to_MS(
     silk_memcpy( state->sSide, &side[ frame_length ], 2 * sizeof( opus_int16 ) );
 
     /* LP and HP filter mid signal */
+    ALLOC( LP_mid, frame_length, opus_int16 );
+    ALLOC( HP_mid, frame_length, opus_int16 );
     for( n = 0; n < frame_length; n++ ) {
-        sum = silk_RSHIFT_ROUND( silk_ADD_LSHIFT( mid[ n ] + mid[ n + 2 ], mid[ n + 1 ], 1 ), 2 );
+        sum = silk_RSHIFT_ROUND( silk_ADD_LSHIFT( mid[ n ] + (opus_int32)mid[ n + 2 ], mid[ n + 1 ], 1 ), 2 );
         LP_mid[ n ] = sum;
         HP_mid[ n ] = mid[ n + 1 ] - sum;
     }
 
     /* LP and HP filter side signal */
+    ALLOC( LP_side, frame_length, opus_int16 );
+    ALLOC( HP_side, frame_length, opus_int16 );
     for( n = 0; n < frame_length; n++ ) {
-        sum = silk_RSHIFT_ROUND( silk_ADD_LSHIFT( side[ n ] + side[ n + 2 ], side[ n + 1 ], 1 ), 2 );
+        sum = silk_RSHIFT_ROUND( silk_ADD_LSHIFT( side[ n ] + (opus_int32)side[ n + 2 ], side[ n + 1 ], 1 ), 2 );
         LP_side[ n ] = sum;
         HP_side[ n ] = side[ n + 1 ] - sum;
     }
@@ -194,7 +199,7 @@ void silk_stereo_LR_to_MS(
     pred0_Q13  = -state->pred_prev_Q13[ 0 ];
     pred1_Q13  = -state->pred_prev_Q13[ 1 ];
     w_Q24      =  silk_LSHIFT( state->width_prev_Q14, 10 );
-    denom_Q16  = silk_DIV32_16( 1 << 16, STEREO_INTERP_LEN_MS * fs_kHz );
+    denom_Q16  = silk_DIV32_16( (opus_int32)1 << 16, STEREO_INTERP_LEN_MS * fs_kHz );
     delta0_Q13 = -silk_RSHIFT_ROUND( silk_SMULBB( pred_Q13[ 0 ] - state->pred_prev_Q13[ 0 ], denom_Q16 ), 16 );
     delta1_Q13 = -silk_RSHIFT_ROUND( silk_SMULBB( pred_Q13[ 1 ] - state->pred_prev_Q13[ 1 ], denom_Q16 ), 16 );
     deltaw_Q24 =  silk_LSHIFT( silk_SMULWB( width_Q14 - state->width_prev_Q14, denom_Q16 ), 10 );
@@ -202,7 +207,7 @@ void silk_stereo_LR_to_MS(
         pred0_Q13 += delta0_Q13;
         pred1_Q13 += delta1_Q13;
         w_Q24   += deltaw_Q24;
-        sum = silk_LSHIFT( silk_ADD_LSHIFT( mid[ n ] + mid[ n + 2 ], mid[ n + 1 ], 1 ), 9 );    /* Q11 */
+        sum = silk_LSHIFT( silk_ADD_LSHIFT( mid[ n ] + (opus_int32)mid[ n + 2 ], mid[ n + 1 ], 1 ), 9 );    /* Q11 */
         sum = silk_SMLAWB( silk_SMULWB( w_Q24, side[ n + 1 ] ), sum, pred0_Q13 );               /* Q8  */
         sum = silk_SMLAWB( sum, silk_LSHIFT( (opus_int32)mid[ n + 1 ], 11 ), pred1_Q13 );       /* Q8  */
         x2[ n - 1 ] = (opus_int16)silk_SAT16( silk_RSHIFT_ROUND( sum, 8 ) );
@@ -212,7 +217,7 @@ void silk_stereo_LR_to_MS(
     pred1_Q13 = -pred_Q13[ 1 ];
     w_Q24     =  silk_LSHIFT( width_Q14, 10 );
     for( n = STEREO_INTERP_LEN_MS * fs_kHz; n < frame_length; n++ ) {
-        sum = silk_LSHIFT( silk_ADD_LSHIFT( mid[ n ] + mid[ n + 2 ], mid[ n + 1 ], 1 ), 9 );    /* Q11 */
+        sum = silk_LSHIFT( silk_ADD_LSHIFT( mid[ n ] + (opus_int32)mid[ n + 2 ], mid[ n + 1 ], 1 ), 9 );    /* Q11 */
         sum = silk_SMLAWB( silk_SMULWB( w_Q24, side[ n + 1 ] ), sum, pred0_Q13 );               /* Q8  */
         sum = silk_SMLAWB( sum, silk_LSHIFT( (opus_int32)mid[ n + 1 ], 11 ), pred1_Q13 );       /* Q8  */
         x2[ n - 1 ] = (opus_int16)silk_SAT16( silk_RSHIFT_ROUND( sum, 8 ) );
@@ -220,4 +225,5 @@ void silk_stereo_LR_to_MS(
     state->pred_prev_Q13[ 0 ] = (opus_int16)pred_Q13[ 0 ];
     state->pred_prev_Q13[ 1 ] = (opus_int16)pred_Q13[ 1 ];
     state->width_prev_Q14     = (opus_int16)width_Q14;
+    RESTORE_STACK;
 }

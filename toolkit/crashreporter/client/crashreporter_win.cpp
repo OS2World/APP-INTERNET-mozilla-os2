@@ -7,11 +7,10 @@
 #undef WIN32_LEAN_AND_MEAN
 #endif
 
-#define NOMINMAX
-
 #include "crashreporter.h"
 
 #include <windows.h>
+#include <versionhelpers.h>
 #include <commctrl.h>
 #include <richedit.h>
 #include <shellapi.h>
@@ -23,7 +22,6 @@
 #include "resource.h"
 #include "client/windows/sender/crash_report_sender.h"
 #include "common/windows/string_utils-inl.h"
-#include "mozilla/NullPtr.h"
 
 #define CRASH_REPORTER_VALUE L"Enabled"
 #define SUBMIT_REPORT_VALUE  L"SubmitCrashReport"
@@ -33,7 +31,14 @@
 #define EMAIL_VALUE          L"Email"
 #define MAX_EMAIL_LENGTH     1024
 
+#define SENDURL_ORIGINAL L"https://crash-reports.mozilla.com/submit"
+#define SENDURL_XPSP2 L"https://crash-reports-xpsp2.mozilla.com/submit"
+
 #define WM_UPLOADCOMPLETE WM_APP
+
+// Thanks, Windows.h :(
+#undef min
+#undef max
 
 using std::string;
 using std::wstring;
@@ -48,8 +53,8 @@ using namespace CrashReporter;
 
 typedef struct {
   HWND hDlg;
-  wstring dumpFile;
   map<wstring,wstring> queryParameters;
+  map<wstring,wstring> files;
   wstring sendURL;
 
   wstring serverResponse;
@@ -121,8 +126,9 @@ static bool GetBoolValue(HKEY hRegKey, LPCTSTR valueName, DWORD* value)
 {
   DWORD type, dataSize;
   dataSize = sizeof(DWORD);
-  if (RegQueryValueEx(hRegKey, valueName, NULL, &type, (LPBYTE)value, &dataSize) == ERROR_SUCCESS
-    && type == REG_DWORD)
+  if (RegQueryValueEx(hRegKey, valueName, nullptr,
+                      &type, (LPBYTE)value, &dataSize) == ERROR_SUCCESS &&
+      type == REG_DWORD)
     return true;
 
   return false;
@@ -202,8 +208,9 @@ static bool GetStringValue(HKEY hRegKey, LPCTSTR valueName, wstring& value)
   DWORD type, dataSize;
   wchar_t buf[2048];
   dataSize = sizeof(buf);
-  if (RegQueryValueEx(hRegKey, valueName, NULL, &type, (LPBYTE)buf, &dataSize) == ERROR_SUCCESS
-      && type == REG_SZ) {
+  if (RegQueryValueEx(hRegKey, valueName, nullptr,
+                     &type, (LPBYTE)buf, &dataSize) == ERROR_SUCCESS &&
+      type == REG_SZ) {
     value = buf;
     return true;
   }
@@ -265,8 +272,8 @@ static string FormatLastError()
                    0,
                    (LPWSTR)&s,
                    0,
-                   NULL) != 0) {
-    message += WideToUTF8(s, NULL);
+                   nullptr) != 0) {
+    message += WideToUTF8(s, nullptr);
     LocalFree(s);
     // strip off any trailing newlines
     string::size_type n = message.find_last_not_of("\r\n");
@@ -321,7 +328,7 @@ static void GetThemeSizes(HWND hwnd)
   }
   HDC hdc = GetDC(hwnd);
   SIZE s;
-  getThemePartSize(buttonTheme, hdc, BP_CHECKBOX, 0, NULL, TS_DRAW, &s);
+  getThemePartSize(buttonTheme, hdc, BP_CHECKBOX, 0, nullptr, TS_DRAW, &s);
   gCheckboxPadding = s.cx;
   closeTheme(buttonTheme);
   FreeLibrary(themeDLL);
@@ -331,7 +338,7 @@ static void GetThemeSizes(HWND hwnd)
 static void GetRelativeRect(HWND hwnd, HWND hwndParent, RECT* r)
 {
   GetWindowRect(hwnd, r);
-  MapWindowPoints(NULL, hwndParent, (POINT*)r, 2);
+  MapWindowPoints(nullptr, hwndParent, (POINT*)r, 2);
 }
 
 static void SetDlgItemVisible(HWND hwndDlg, UINT item, bool visible)
@@ -393,7 +400,7 @@ static DWORD WINAPI SendThreadProc(LPVOID param)
     google_breakpad::CrashReportSender sender(L"");
     finishedOk = (sender.SendCrashReport(td->sendURL,
                                          td->queryParameters,
-                                         td->dumpFile,
+                                         td->files,
                                          &td->serverResponse)
                   == google_breakpad::RESULT_SUCCEEDED);
     if (finishedOk) {
@@ -497,11 +504,12 @@ static void MaybeSendReport(HWND hwndDlg)
   // play entire AVI, and loop
   Animate_Play(GetDlgItem(hwndDlg, IDC_THROBBER), 0, -1, -1);
   SetDlgItemVisible(hwndDlg, IDC_THROBBER, true);
-  gThreadHandle = NULL;
+  gThreadHandle = nullptr;
   gSendData.hDlg = hwndDlg;
   gSendData.queryParameters = gQueryParameters;
 
-  gThreadHandle = CreateThread(NULL, 0, SendThreadProc, &gSendData, 0, NULL);
+  gThreadHandle = CreateThread(nullptr, 0, SendThreadProc, &gSendData, 0,
+                               nullptr);
 }
 
 static void RestartApplication()
@@ -521,8 +529,8 @@ static void RestartApplication()
   si.wShowWindow = SW_SHOWNORMAL;
   ZeroMemory(&pi, sizeof(pi));
 
-  if (CreateProcess(NULL, (LPWSTR)cmdLine.c_str(), NULL, NULL, FALSE, 0,
-                    NULL, NULL, &si, &pi)) {
+  if (CreateProcess(nullptr, (LPWSTR)cmdLine.c_str(), nullptr, nullptr, FALSE,
+                    0, nullptr, nullptr, &si, &pi)) {
     CloseHandle(pi.hProcess);
     CloseHandle(pi.hThread);
   }
@@ -593,7 +601,7 @@ static BOOL CALLBACK ViewReportDialogProc(HWND hwndDlg, UINT message,
     SetWindowText(hwndDlg, Str(ST_VIEWREPORTTITLE).c_str());    
     SetDlgItemText(hwndDlg, IDOK, Str(ST_OK).c_str());
     SendDlgItemMessage(hwndDlg, IDC_VIEWREPORTTEXT,
-                       EM_SETTARGETDEVICE, (WPARAM)NULL, 0);
+                       EM_SETTARGETDEVICE, (WPARAM)nullptr, 0);
     ShowReportInfo(hwndDlg);
     SetFocus(GetDlgItem(hwndDlg, IDOK));
     return FALSE;
@@ -614,7 +622,8 @@ static inline int BytesInUTF8(wchar_t* str)
 {
   // Just count size of buffer for UTF-8, minus one
   // (we don't need to count the null terminator)
-  return WideCharToMultiByte(CP_UTF8, 0, str, -1, NULL, 0, NULL, NULL) - 1;
+  return WideCharToMultiByte(CP_UTF8, 0, str, -1,
+                             nullptr, 0, nullptr, nullptr) - 1;
 }
 
 // Calculate the length of the text in this edit control (in bytes,
@@ -648,9 +657,9 @@ static int NewTextLength(HWND hwndEdit, wchar_t* insert)
 static LRESULT CALLBACK EditSubclassProc(HWND hwnd, UINT uMsg, WPARAM wParam,
                                          LPARAM lParam)
 {
-  static WNDPROC super = NULL;
+  static WNDPROC super = nullptr;
 
-  if (super == NULL)
+  if (super == nullptr)
     super = (WNDPROC)GetWindowLongPtr(hwnd, GWLP_USERDATA);
 
   switch (uMsg) {
@@ -840,11 +849,11 @@ static INT_PTR DialogBoxParamMaybeRTL(UINT idd, HWND hwndParent,
   if (gRTLlayout) {
     // We need to toggle the WS_EX_LAYOUTRTL style flag on the dialog
     // template.
-    HRSRC hDialogRC = FindResource(NULL, MAKEINTRESOURCE(idd),
+    HRSRC hDialogRC = FindResource(nullptr, MAKEINTRESOURCE(idd),
                                    RT_DIALOG);
-    HGLOBAL  hDlgTemplate = LoadResource(NULL, hDialogRC);
+    HGLOBAL  hDlgTemplate = LoadResource(nullptr, hDialogRC);
     DLGTEMPLATEEX* pDlgTemplate = (DLGTEMPLATEEX*)LockResource(hDlgTemplate);
-    unsigned long sizeDlg = SizeofResource(NULL, hDialogRC);
+    unsigned long sizeDlg = SizeofResource(nullptr, hDialogRC);
     HGLOBAL hMyDlgTemplate = GlobalAlloc(GPTR, sizeDlg);
      DLGTEMPLATEEX* pMyDlgTemplate =
       (DLGTEMPLATEEX*)GlobalLock(hMyDlgTemplate);
@@ -852,13 +861,13 @@ static INT_PTR DialogBoxParamMaybeRTL(UINT idd, HWND hwndParent,
 
     pMyDlgTemplate->exStyle |= WS_EX_LAYOUTRTL;
 
-    rv = DialogBoxIndirectParam(NULL, (LPCDLGTEMPLATE)pMyDlgTemplate,
+    rv = DialogBoxIndirectParam(nullptr, (LPCDLGTEMPLATE)pMyDlgTemplate,
                                 hwndParent, dlgProc, param);
     GlobalUnlock(hMyDlgTemplate);
     GlobalFree(hMyDlgTemplate);
   }
   else {
-    rv = DialogBoxParam(NULL, MAKEINTRESOURCE(idd), hwndParent,
+    rv = DialogBoxParam(nullptr, MAKEINTRESOURCE(idd), hwndParent,
                         dlgProc, param);
   }
 
@@ -882,7 +891,7 @@ static BOOL CALLBACK CrashReporterDialogProc(HWND hwndDlg, UINT message,
     sHeight = r.bottom - r.top;
 
     SetWindowText(hwndDlg, Str(ST_CRASHREPORTERTITLE).c_str());
-    HICON hIcon = LoadIcon(GetModuleHandle(NULL),
+    HICON hIcon = LoadIcon(GetModuleHandle(nullptr),
                            MAKEINTRESOURCE(IDI_MAINICON));
     SendMessage(hwndDlg, WM_SETICON, ICON_SMALL, (LPARAM)hIcon);
     SendMessage(hwndDlg, WM_SETICON, ICON_BIG, (LPARAM)hIcon);
@@ -1028,7 +1037,7 @@ static BOOL CALLBACK CrashReporterDialogProc(HWND hwndDlg, UINT message,
     // Resize the description text last, in case the window was resized
     // before this.
     SendDlgItemMessage(hwndDlg, IDC_DESCRIPTIONTEXT,
-                       EM_SETEVENTMASK, (WPARAM)NULL,
+                       EM_SETEVENTMASK, (WPARAM)nullptr,
                        ENM_REQUESTRESIZE);
     
     wstring description = Str(ST_CRASHREPORTERHEADER);
@@ -1049,7 +1058,7 @@ static BOOL CALLBACK CrashReporterDialogProc(HWND hwndDlg, UINT message,
     SendDlgItemMessage(hwndDlg, IDC_DESCRIPTIONTEXT, EM_SETSEL, 0, 0);
     // Force redraw.
     SendDlgItemMessage(hwndDlg, IDC_DESCRIPTIONTEXT,
-                       EM_SETTARGETDEVICE, (WPARAM)NULL, 0);
+                       EM_SETTARGETDEVICE, (WPARAM)nullptr, 0);
     // Force resize.
     SendDlgItemMessage(hwndDlg, IDC_DESCRIPTIONTEXT,
                        EM_REQUESTRESIZE, 0, 0);
@@ -1088,7 +1097,7 @@ static BOOL CALLBACK CrashReporterDialogProc(HWND hwndDlg, UINT message,
   case WM_SIZE: {
     ReflowDialog(hwndDlg, HIWORD(lParam) - sHeight);
     sHeight = HIWORD(lParam);
-    InvalidateRect(hwndDlg, NULL, TRUE);
+    InvalidateRect(hwndDlg, nullptr, TRUE);
     return FALSE;
   }
   case WM_NOTIFY: {
@@ -1160,7 +1169,7 @@ static BOOL CALLBACK CrashReporterDialogProc(HWND hwndDlg, UINT message,
                    Str(ST_SUBMITFAILED).c_str());
     MaybeResizeProgressText(hwndDlg);
     // close dialog after 5 seconds
-    SetTimer(hwndDlg, 0, 5000, NULL);
+    SetTimer(hwndDlg, 0, 5000, nullptr);
     //
     return TRUE;
   }
@@ -1198,9 +1207,9 @@ static BOOL CALLBACK CrashReporterDialogProc(HWND hwndDlg, UINT message,
 
 static wstring UTF8ToWide(const string& utf8, bool *success)
 {
-  wchar_t* buffer = NULL;
+  wchar_t* buffer = nullptr;
   int buffer_size = MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(),
-                                        -1, NULL, 0);
+                                        -1, nullptr, 0);
   if(buffer_size == 0) {
     if (success)
       *success = false;
@@ -1208,7 +1217,7 @@ static wstring UTF8ToWide(const string& utf8, bool *success)
   }
 
   buffer = new wchar_t[buffer_size];
-  if(buffer == NULL) {
+  if(buffer == nullptr) {
     if (success)
       *success = false;
     return L"";
@@ -1225,11 +1234,13 @@ static wstring UTF8ToWide(const string& utf8, bool *success)
   return str;
 }
 
-static string WideToMBCP(const wstring& wide, unsigned int cp, bool* success = nullptr)
+static string WideToMBCP(const wstring& wide,
+                         unsigned int cp,
+                         bool* success = nullptr)
 {
-  char* buffer = NULL;
+  char* buffer = nullptr;
   int buffer_size = WideCharToMultiByte(cp, 0, wide.c_str(),
-                                        -1, NULL, 0, NULL, NULL);
+                                        -1, nullptr, 0, nullptr, nullptr);
   if(buffer_size == 0) {
     if (success)
       *success = false;
@@ -1237,14 +1248,14 @@ static string WideToMBCP(const wstring& wide, unsigned int cp, bool* success = n
   }
 
   buffer = new char[buffer_size];
-  if(buffer == NULL) {
+  if(buffer == nullptr) {
     if (success)
       *success = false;
     return "";
   }
 
   WideCharToMultiByte(cp, 0, wide.c_str(),
-                      -1, buffer, buffer_size, NULL, NULL);
+                      -1, buffer, buffer_size, nullptr, nullptr);
   string mb = buffer;
   delete [] buffer;
 
@@ -1278,19 +1289,50 @@ void UIShutdown()
 
 void UIShowDefaultUI()
 {
-  MessageBox(NULL, Str(ST_CRASHREPORTERDEFAULT).c_str(),
+  MessageBox(nullptr, Str(ST_CRASHREPORTERDEFAULT).c_str(),
              L"Crash Reporter",
              MB_OK | MB_ICONSTOP);
 }
 
-bool UIShowCrashUI(const string& dumpFile,
+static bool CanUseMainCrashReportServer()
+{
+  // Any NT from 6.0 and above is fine.
+  if (IsWindowsVersionOrGreater(6, 0, 0)) {
+    return true;
+  }
+
+  // On NT 5 servers, we need Server 2003 SP2.
+  if (IsWindowsServer()) {
+    return IsWindowsVersionOrGreater(5, 2, 2);
+  }
+
+  // Otherwise we have an NT 5 client.
+  // We need exactly XP SP3 (version 5.1 SP3 but not version 5.2).
+  return (IsWindowsVersionOrGreater(5, 1, 3) &&
+         !IsWindowsVersionOrGreater(5, 2, 0));
+}
+
+bool UIShowCrashUI(const StringTable& files,
                    const StringTable& queryParameters,
                    const string& sendURL,
                    const vector<string>& restartArgs)
 {
-  gSendData.hDlg = NULL;
-  gSendData.dumpFile = UTF8ToWide(dumpFile);
+  gSendData.hDlg = nullptr;
   gSendData.sendURL = UTF8ToWide(sendURL);
+
+  // Older Windows don't support the crash report server's crypto.
+  // This is a hack to use an alternate server.
+  if (!CanUseMainCrashReportServer() &&
+      gSendData.sendURL.find(SENDURL_ORIGINAL) == 0) {
+    gSendData.sendURL.replace(0, ARRAYSIZE(SENDURL_ORIGINAL) - 1,
+                              SENDURL_XPSP2);
+  }
+
+  for (StringTable::const_iterator i = files.begin();
+       i != files.end();
+       i++) {
+    gSendData.files[UTF8ToWide(i->first)] = UTF8ToWide(i->second);
+  }
 
   for (StringTable::const_iterator i = queryParameters.begin();
        i != queryParameters.end();
@@ -1315,7 +1357,7 @@ bool UIShowCrashUI(const string& dumpFile,
       gStrings["isRTL"] == "yes")
     gRTLlayout = true;
 
-  return 1 == DialogBoxParamMaybeRTL(IDD_SENDDIALOG, NULL,
+  return 1 == DialogBoxParamMaybeRTL(IDD_SENDDIALOG, nullptr,
                                      (DLGPROC)CrashReporterDialogProc, 0);
 }
 
@@ -1325,14 +1367,14 @@ void UIError_impl(const string& message)
   if (title.empty())
     title = L"Crash Reporter Error";
 
-  MessageBox(NULL, UTF8ToWide(message).c_str(), title.c_str(),
+  MessageBox(nullptr, UTF8ToWide(message).c_str(), title.c_str(),
              MB_OK | MB_ICONSTOP);
 }
 
 bool UIGetIniPath(string& path)
 {
   wchar_t fileName[MAX_PATH];
-  if (GetModuleFileName(NULL, fileName, MAX_PATH)) {
+  if (GetModuleFileName(nullptr, fileName, MAX_PATH)) {
     // get crashreporter ini
     wchar_t* s = wcsrchr(fileName, '.');
     if (s) {
@@ -1350,9 +1392,9 @@ bool UIGetSettingsPath(const string& vendor,
                        string& settings_path)
 {
   wchar_t path[MAX_PATH];
-  HRESULT hRes = SHGetFolderPath(NULL,
+  HRESULT hRes = SHGetFolderPath(nullptr,
                                  CSIDL_APPDATA,
-                                 NULL,
+                                 nullptr,
                                  0,
                                  path);
   if (FAILED(hRes)) {
@@ -1371,7 +1413,7 @@ bool UIGetSettingsPath(const string& vendor,
 
     dwRes = RegQueryValueExW(key,
                              L"AppData",
-                             NULL,
+                             nullptr,
                              &type,
                              (LPBYTE)&path,
                              &size);
@@ -1393,7 +1435,7 @@ bool UIGetSettingsPath(const string& vendor,
 
 bool UIEnsurePathExists(const string& path)
 {
-  if (CreateDirectory(UTF8ToWide(path).c_str(), NULL) == 0) {
+  if (CreateDirectory(UTF8ToWide(path).c_str(), nullptr) == 0) {
     if (GetLastError() != ERROR_ALREADY_EXISTS)
       return false;
   }
@@ -1425,42 +1467,37 @@ ifstream* UIOpenRead(const string& filename)
 {
   // adapted from breakpad's src/common/windows/http_upload.cc
 
-  // The "open" method on pre-MSVC8 ifstream implementations doesn't accept a
-  // wchar_t* filename, so use _wfopen directly in that case.  For VC8 and
-  // later, _wfopen has been deprecated in favor of _wfopen_s, which does
-  // not exist in earlier versions, so let the ifstream open the file itself.
-#if _MSC_VER >= 1400  // MSVC 2005/8
+#if defined(_MSC_VER)
   ifstream* file = new ifstream();
   file->open(UTF8ToWide(filename).c_str(), ios::in);
-#elif defined(_MSC_VER)
-  ifstream* file = new ifstream(_wfopen(UTF8ToWide(filename).c_str(), L"r"));
 #else   // GCC
   ifstream* file = new ifstream(WideToMBCP(UTF8ToWide(filename), CP_ACP).c_str(),
                                 ios::in);
-#endif  // _MSC_VER >= 1400
+#endif  // _MSC_VER
 
   return file;
 }
 
-ofstream* UIOpenWrite(const string& filename, bool append) // append=false
+ofstream* UIOpenWrite(const string& filename,
+                      bool append, // append=false
+                      bool binary) // binary=false
 {
   // adapted from breakpad's src/common/windows/http_upload.cc
+  std::ios_base::openmode mode = ios::out;
+  if (append) {
+    mode = mode | ios::app;
+  }
+  if (binary) {
+    mode = mode | ios::binary;
+  }
 
-  // The "open" method on pre-MSVC8 ifstream implementations doesn't accept a
-  // wchar_t* filename, so use _wfopen directly in that case.  For VC8 and
-  // later, _wfopen has been deprecated in favor of _wfopen_s, which does
-  // not exist in earlier versions, so let the ifstream open the file itself.
-#if _MSC_VER >= 1400  // MSVC 2005/8
+#if defined(_MSC_VER)
   ofstream* file = new ofstream();
-  file->open(UTF8ToWide(filename).c_str(), append ? ios::out | ios::app
-                                                  : ios::out);
-#elif defined(_MSC_VER)
-  ofstream* file = new ofstream(_wfopen(UTF8ToWide(filename).c_str(),
-                                        append ? L"a" : L"w"));
+  file->open(UTF8ToWide(filename).c_str(), mode);
 #else   // GCC
   ofstream* file = new ofstream(WideToMBCP(UTF8ToWide(filename), CP_ACP).c_str(),
-                                append ? ios::out | ios::app : ios::out);
-#endif  // _MSC_VER >= 1400
+                                mode);
+#endif  // _MSC_VER
 
   return file;
 }
@@ -1505,5 +1542,27 @@ void UIPruneSavedDumps(const std::string& directory)
     DeleteFile(path.c_str());
 
     dumpfiles.pop_back();
+  }
+}
+
+void UIRunMinidumpAnalyzer(const string& exename, const string& filename)
+{
+  wstring cmdLine;
+
+  cmdLine += L"\"" + UTF8ToWide(exename) + L"\" ";
+  cmdLine += L"\"" + UTF8ToWide(filename) + L"\" ";
+
+  STARTUPINFO si = {};
+  PROCESS_INFORMATION pi = {};
+
+  si.cb = sizeof(si);
+  si.dwFlags = STARTF_USESHOWWINDOW;
+  si.wShowWindow = SW_SHOWNORMAL;
+
+  if (CreateProcess(nullptr, (LPWSTR)cmdLine.c_str(), nullptr, nullptr, FALSE,
+                    0, nullptr, nullptr, &si, &pi)) {
+    WaitForSingleObject(pi.hProcess, INFINITE);
+    CloseHandle(pi.hProcess);
+    CloseHandle(pi.hThread);
   }
 }

@@ -1,6 +1,6 @@
 // env.find() finds nonenumerable names in the global environment.
 
-var g = newGlobal('new-compartment');
+var g = newGlobal();
 var dbg = Debugger(g);
 var hits = 0;
 g.h = function () {
@@ -14,5 +14,5 @@ g.h = function () {
 };
 
 g.eval("h();");
-g.eval("(function () { let (x = 1, y = 2) h(); })();");
+g.eval("(function () { h(); })();");
 assertEq(hits, 2);

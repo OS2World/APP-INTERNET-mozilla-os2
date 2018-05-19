@@ -22,22 +22,11 @@ var cpm = Cc["@mozilla.org/childprocessmessagemanager;1"].getService(Ci.nsISyncM
 
 const PERMISSIONSETTINGS_CONTRACTID = "@mozilla.org/permissionSettings;1";
 const PERMISSIONSETTINGS_CID        = Components.ID("{cd2cf7a1-f4c1-487b-8c1b-1a71c7097431}");
-const nsIDOMPermissionSettings      = Ci.nsIDOMPermissionSettings;
 
 function PermissionSettings()
 {
   debug("Constructor");
 }
-
-XPCOMUtils.defineLazyServiceGetter(this,
-                                   "permissionManager",
-                                   "@mozilla.org/permissionmanager;1",
-                                   "nsIPermissionManager");
-
-XPCOMUtils.defineLazyServiceGetter(this,
-                                   "secMan",
-                                   "@mozilla.org/scriptsecuritymanager;1",
-                                   "nsIScriptSecurityManager");
 
 XPCOMUtils.defineLazyServiceGetter(this,
                                    "appsService",
@@ -46,11 +35,15 @@ XPCOMUtils.defineLazyServiceGetter(this,
 
 PermissionSettings.prototype = {
   get: function get(aPermName, aManifestURL, aOrigin, aBrowserFlag) {
+    // TODO: Bug 1196644 - Add signPKg parameter into PermissionSettings.js
     debug("Get called with: " + aPermName + ", " + aManifestURL + ", " + aOrigin + ", " + aBrowserFlag);
     let uri = Services.io.newURI(aOrigin, null, null);
     let appID = appsService.getAppLocalIdByManifestURL(aManifestURL);
-    let principal = secMan.getAppCodebasePrincipal(uri, appID, aBrowserFlag);
-    let result = permissionManager.testExactPermanentPermission(principal, aPermName);
+    let principal =
+      Services.scriptSecurityManager.createCodebasePrincipal(uri,
+                                                             {appId: appID,
+                                                              inIsolatedMozBrowser: aBrowserFlag});
+    let result = Services.perms.testExactPermanentPermission(principal, aPermName);
 
     switch (result)
     {
@@ -70,18 +63,21 @@ PermissionSettings.prototype = {
 
   isExplicit: function isExplicit(aPermName, aManifestURL, aOrigin,
                                   aBrowserFlag) {
+    // TODO: Bug 1196644 - Add signPKg parameter into PermissionSettings.js
     debug("isExplicit: " + aPermName + ", " + aManifestURL + ", " + aOrigin);
     let uri = Services.io.newURI(aOrigin, null, null);
-    let appID = appsService.getAppLocalIdByManifestURL(aManifestURL);
-    let principal = secMan.getAppCodebasePrincipal(uri, appID, aBrowserFlag);
+    let app = appsService.getAppByManifestURL(aManifestURL);
+    let principal = Services.scriptSecurityManager
+      .createCodebasePrincipal(uri, {appId: app.localId, inIsolatedMozBrowser: aBrowserFlag});
 
-    return isExplicitInPermissionsTable(aPermName, principal.appStatus);
+    return isExplicitInPermissionsTable(aPermName,
+                                        principal.appStatus);
   },
 
   set: function set(aPermName, aPermValue, aManifestURL, aOrigin,
                     aBrowserFlag) {
     debug("Set called with: " + aPermName + ", " + aManifestURL + ", " +
-          aOrigin + ",  " + aPermValue + ", " + aBrowserFlag);
+          aOrigin + ", " + aPermValue + ", " + aBrowserFlag);
     let currentPermValue = this.get(aPermName, aManifestURL, aOrigin,
                                     aBrowserFlag);
     let action;
@@ -107,9 +103,13 @@ PermissionSettings.prototype = {
   },
 
   remove: function remove(aPermName, aManifestURL, aOrigin) {
+    // TODO: Bug 1196644 - Add signPKg parameter into PermissionSettings.js
     let uri = Services.io.newURI(aOrigin, null, null);
     let appID = appsService.getAppLocalIdByManifestURL(aManifestURL);
-    let principal = secMan.getAppCodebasePrincipal(uri, appID, true);
+    let principal =
+      Services.scriptSecurityManager.createCodebasePrincipal(uri,
+                                                             {appId: appID,
+                                                              inIsolatedMozBrowser: true});
 
     if (principal.appStatus !== Ci.nsIPrincipal.APP_STATUS_NOT_INSTALLED) {
       let errorMsg = "PermissionSettings.js: '" + aOrigin + "'" +
@@ -129,27 +129,8 @@ PermissionSettings.prototype = {
     });
   },
 
-  init: function init(aWindow) {
-    debug("init");
-
-    // Set navigator.mozPermissionSettings to null.
-    let perm = Services.perms.testExactPermissionFromPrincipal(aWindow.document.nodePrincipal, "permissions");
-    if (!Services.prefs.getBoolPref("dom.mozPermissionSettings.enabled")
-        || perm != Ci.nsIPermissionManager.ALLOW_ACTION) {
-      return null;
-    }
-
-    debug("Permission to get/set permissions granted!");
-  },
-
   classID : PERMISSIONSETTINGS_CID,
-  QueryInterface : XPCOMUtils.generateQI([nsIDOMPermissionSettings, Ci.nsIDOMGlobalPropertyInitializer]),
-
-  classInfo : XPCOMUtils.generateCI({classID: PERMISSIONSETTINGS_CID,
-                                     contractID: PERMISSIONSETTINGS_CONTRACTID,
-                                     classDescription: "PermissionSettings",
-                                     interfaces: [nsIDOMPermissionSettings],
-                                     flags: Ci.nsIClassInfo.DOM_OBJECT})
+  QueryInterface : XPCOMUtils.generateQI([])
 }
 
 this.NSGetFactory = XPCOMUtils.generateNSGetFactory([PermissionSettings])

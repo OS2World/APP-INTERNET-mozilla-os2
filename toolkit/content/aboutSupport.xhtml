@@ -16,6 +16,10 @@
   <head>
     <title>&aboutSupport.pageTitle;</title>
 
+    <link rel="icon" type="image/png" id="favicon"
+          href="chrome://branding/content/icon32.png"/>
+    <link rel="stylesheet" href="chrome://global/skin/in-content/common.css"
+          type="text/css"/>
     <link rel="stylesheet" href="chrome://global/skin/aboutSupport.css"
           type="text/css"/>
 
@@ -27,14 +31,21 @@
 
   <body dir="&locale.dir;">
 
-    <div id="reset-box" style="visibility: hidden">
-      <h3>&resetProfile.title;</h3>
-      <p>&resetProfile.description;</p>
-      <button onclick="resetProfileAndRestart()">
-        &resetProfile.button.label2;
-      </button>
-    </div>
+    <div id="action-box">
+      <div id="reset-box">
+        <h3>&refreshProfile.title;</h3>
+        <button id="reset-box-button">
+          &refreshProfile.button.label;
+        </button>
+      </div>
+      <div id="safe-mode-box">
+        <h3>&aboutSupport.safeModeTitle;</h3>
+        <button id="restart-in-safe-mode-button">
+          &aboutSupport.restartInSafeMode.label;
+        </button>
+      </div>
 
+    </div>
     <h1>
       &aboutSupport.pageTitle;
     </h1>
@@ -44,11 +55,10 @@
     </div>
 
     <div>
-      <button id="copy-raw-data-to-clipboard"
-              onclick="copyRawDataToClipboard(this);">
+      <button id="copy-raw-data-to-clipboard">
         &aboutSupport.copyRawDataToClipboard.label;
       </button>
-      <button id="copy-to-clipboard" onclick="copyContentsToClipboard()">
+      <button id="copy-to-clipboard">
         &aboutSupport.copyTextToClipboard.label;
       </button>
     </div>
@@ -81,6 +91,13 @@
             </td>
           </tr>
 
+          <tr>
+            <th class="column">
+              &aboutSupport.appBasicsBuildID;
+              </th>
+            <td id="buildid-box"></td>
+          </tr>
+
 #ifndef ANDROID
           <tr class="no-copy">
             <th class="column">
@@ -88,10 +105,19 @@
             </th>
 
             <td>
-              <button onclick="showUpdateHistory()">
+              <button id="show-update-history-button">
                 &aboutSupport.appBasicsShowUpdateHistory;
               </button>
             </td>
+          </tr>
+#endif
+
+#ifdef MOZ_UPDATER
+          <tr>
+            <th class="column">
+              &aboutSupport.appBasicsUpdateChannel;
+            </th>
+            <td id="updatechannel-box"></td>
           </tr>
 #endif
 
@@ -101,6 +127,15 @@
             </th>
 
             <td id="useragent-box">
+            </td>
+          </tr>
+
+          <tr>
+            <th class="column">
+              &aboutSupport.appBasicsOS;
+            </th>
+
+            <td id="os-box">
             </td>
           </tr>
 
@@ -118,9 +153,9 @@
             </th>
 
             <td>
-              <button onclick="openProfileDirectory()">
+              <button id="profile-dir-button">
 #ifdef XP_WIN
-                &aboutSupport.showWin.label;
+                &aboutSupport.showWin2.label;
 #else
 #ifdef XP_MACOSX
                 &aboutSupport.showMac.label;
@@ -154,16 +189,6 @@
 
           <tr class="no-copy">
             <th class="column">
-              &aboutSupport.appBasicsCrashIDs;
-            </th>
-
-            <td>
-              <a href="about:crashes">about:crashes</a>
-            </td>
-          </tr>
-
-          <tr class="no-copy">
-            <th class="column">
               &aboutSupport.appBasicsMemoryUse;
             </th>
 
@@ -172,9 +197,86 @@
             </td>
           </tr>
 
+          <tr class="no-copy">
+            <th class="column">
+              &aboutSupport.appBasicsPerformance;
+            </th>
+
+            <td>
+              <a href="about:performance">about:performance</a>
+            </td>
+          </tr>
+
+          <tr class="no-copy">
+            <th class="column">
+              &aboutSupport.appBasicsServiceWorkers;
+            </th>
+
+            <td>
+              <a href="about:serviceworkers">about:serviceworkers</a>
+            </td>
+          </tr>
+
+          <tr>
+            <th class="column">
+              &aboutSupport.appBasicsMultiProcessSupport;
+            </th>
+
+            <td id="multiprocess-box">
+            </td>
+          </tr>
+
+          <tr>
+            <th class="column">
+              &aboutSupport.appBasicsSafeMode;
+            </th>
+
+            <td id="safemode-box">
+            </td>
+          </tr>
+
+#ifndef ANDROID
+          <tr class="no-copy">
+            <th class="column">
+              &aboutSupport.appBasicsProfiles;
+            </th>
+
+            <td>
+              <a href="about:profiles">about:profiles</a>
+            </td>
+          </tr>
+#endif
+
         </tbody>
       </table>
 
+      <!-- - - - - - - - - - - - - - - - - - - - - -->
+#ifdef MOZ_CRASHREPORTER
+
+      <h2 class="major-section" id="crashes-title">
+        &aboutSupport.crashes.title;
+      </h2>
+
+      <table id="crashes-table">
+        <thead>
+          <tr>
+            <th>
+              &aboutSupport.crashes.id;
+            </th>
+            <th>
+              &aboutSupport.crashes.sendDate;
+            </th>
+          </tr>
+        </thead>
+        <tbody id="crashes-tbody">
+        </tbody>
+      </table>
+      <p id="crashes-allReports" class="hidden no-copy">
+        <a href="about:crashes" id="crashes-allReportsWithPending" class="block">&aboutSupport.crashes.allReports;</a>
+      </p>
+      <p id="crashes-noConfig" class="hidden no-copy">&aboutSupport.crashes.noConfig;</p>
+
+#endif
       <!-- - - - - - - - - - - - - - - - - - - - - -->
 
       <h2 class="major-section">
@@ -205,6 +307,81 @@
       <!-- - - - - - - - - - - - - - - - - - - - - -->
 
       <h2 class="major-section">
+        &aboutSupport.graphicsTitle;
+      </h2>
+
+      <table>
+        <tbody id="graphics-features-tbody">
+          <tr>
+            <th colspan="2" class="title-column">
+              &aboutSupport.graphicsFeaturesTitle;
+            </th>
+          </tr>
+        </tbody>
+
+        <tbody id="graphics-tbody">
+        </tbody>
+
+        <tbody id="graphics-gpu-1-tbody">
+          <tr>
+            <th colspan="2" class="title-column">
+              &aboutSupport.graphicsGPU1Title;
+            </th>
+          </tr>
+        </tbody>
+
+        <tbody id="graphics-gpu-2-tbody">
+          <tr>
+            <th colspan="2" class="title-column">
+              &aboutSupport.graphicsGPU2Title;
+            </th>
+          </tr>
+        </tbody>
+
+        <tbody id="graphics-diagnostics-tbody">
+          <tr>
+            <th colspan="2" class="title-column">
+              &aboutSupport.graphicsDiagnosticsTitle;
+            </th>
+          </tr>
+        </tbody>
+
+        <tbody id="graphics-decisions-tbody">
+          <tr>
+            <th colspan="2" class="title-column">
+              &aboutSupport.graphicsDecisionLogTitle;
+            </th>
+          </tr>
+        </tbody>
+
+        <tbody id="graphics-crashguards-tbody">
+          <tr>
+            <th colspan="2" class="title-column">
+              &aboutSupport.graphicsCrashGuardsTitle;
+            </th>
+          </tr>
+        </tbody>
+
+        <tbody id="graphics-workarounds-tbody">
+          <tr>
+            <th colspan="2" class="title-column">
+              &aboutSupport.graphicsWorkaroundsTitle;
+            </th>
+          </tr>
+        </tbody>
+
+        <tbody id="graphics-failures-tbody">
+          <tr>
+            <th colspan="2" class="title-column">
+              &aboutSupport.graphicsFailureLogTitle;
+            </th>
+          </tr>
+        </tbody>
+      </table>
+
+      <!-- - - - - - - - - - - - - - - - - - - - - -->
+
+      <h2 class="major-section">
         &aboutSupport.modifiedKeyPrefsTitle;
       </h2>
 
@@ -223,25 +400,51 @@
         </tbody>
       </table>
 
-      <section id="prefs-user-js-section" class="no-copy" style="display:none">
+      <section id="prefs-user-js-section" class="hidden no-copy">
         <h3>&aboutSupport.userJSTitle;</h3>
         <p>&aboutSupport.userJSDescription;</p>
       </section>
 
       <!-- - - - - - - - - - - - - - - - - - - - - -->
+
       <h2 class="major-section">
-        &aboutSupport.graphicsTitle;
+        &aboutSupport.lockedKeyPrefsTitle;
+      </h2>
+
+      <table class="prefs-table">
+        <thead class="no-copy">
+          <th class="name">
+            &aboutSupport.lockedPrefsName;
+          </th>
+
+          <th class="value">
+            &aboutSupport.lockedPrefsValue;
+          </th>
+        </thead>
+
+        <tbody id="locked-prefs-tbody">
+        </tbody>
+      </table>
+
+      <!-- - - - - - - - - - - - - - - - - - - - - -->
+
+      <h2 class="major-section">
+        &aboutSupport.placeDatabaseTitle;
       </h2>
 
       <table>
-        <tbody id="graphics-tbody">
-        </tbody>
+        <tr class="no-copy">
+          <th class="column">
+            &aboutSupport.placeDatabaseIntegrity;
+          </th>
 
-        <tbody id="graphics-info-properties">
-        </tbody>
-
-        <tbody id="graphics-failures-tbody">
-        </tbody>
+          <td>
+            <button id="verify-place-integrity-button">
+              &aboutSupport.placeDatabaseVerifyIntegrity;
+            </button>
+            <pre id="verify-place-result" class="hidden no-copy"></pre>
+          </td>
+        </tr>
       </table>
 
       <!-- - - - - - - - - - - - - - - - - - - - - -->
@@ -297,6 +500,53 @@
         <tbody id="libversions-tbody">
         </tbody>
       </table>
+
+
+      <h2 class="major-section">
+        &aboutSupport.experimentsTitle;
+      </h2>
+
+      <table>
+        <thead>
+          <tr>
+            <th>
+              &aboutSupport.experimentName;
+            </th>
+            <th>
+              &aboutSupport.experimentId;
+            </th>
+            <th>
+              &aboutSupport.experimentDescription;
+            </th>
+            <th>
+              &aboutSupport.experimentActive;
+            </th>
+            <th>
+              &aboutSupport.experimentEndDate;
+            </th>
+            <th>
+              &aboutSupport.experimentHomepage;
+            </th>
+            <th>
+              &aboutSupport.experimentBranch;
+            </th>
+          </tr>
+        </thead>
+        <tbody id="experiments-tbody">
+        </tbody>
+      </table>
+      <!-- - - - - - - - - - - - - - - - - - - - - -->
+
+#if defined(MOZ_SANDBOX)
+      <h2 class="major-section" id="sandbox">
+	&aboutSupport.sandboxTitle;
+      </h2>
+
+      <table>
+	<tbody id="sandbox-tbody">
+	</tbody>
+      </table>
+#endif
 
     </div>
 

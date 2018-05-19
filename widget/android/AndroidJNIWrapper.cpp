@@ -3,32 +3,25 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#include "mozilla/Util.h"
-
 #include <android/log.h>
 #include <dlfcn.h>
 #include <prthread.h>
 
 #include "mozilla/DebugOnly.h"
 #include "mozilla/Assertions.h"
+#include "mozilla/SyncRunnable.h"
 #include "nsThreadUtils.h"
 #include "AndroidBridge.h"
-
-#ifdef DEBUG
-#define ALOG_BRIDGE(args...) ALOG(args)
-#else
-#define ALOG_BRIDGE(args...)
-#endif
 
 extern "C" {
   jclass __jsjni_GetGlobalClassRef(const char *className);
 }
 
-class GetGlobalClassRefRunnable : public nsRunnable {
+class GetGlobalClassRefRunnable : public mozilla::Runnable {
   public:
     GetGlobalClassRefRunnable(const char *className, jclass *foundClass) :
         mClassName(className), mResult(foundClass) {}
-    NS_IMETHOD Run() {
+    NS_IMETHOD Run() override {
         *mResult = __jsjni_GetGlobalClassRef(mClassName);
         return NS_OK;
     }
@@ -44,18 +37,17 @@ extern "C" {
     // FindClass outside the main thread will run into problems due
     // to missing the classpath
     MOZ_ASSERT(NS_IsMainThread());
-    JNIEnv *env = mozilla::AndroidBridge::GetJNIEnv();
-    if (!env) return NULL;
+    JNIEnv *env = mozilla::jni::GetGeckoThreadEnv();
     return env->FindClass(className);
   }
 
   jclass
   __jsjni_GetGlobalClassRef(const char *className) {
     // root class globally
-    JNIEnv *env = mozilla::AndroidBridge::GetJNIEnv();
+    JNIEnv *env = mozilla::jni::GetGeckoThreadEnv();
     jclass globalRef = static_cast<jclass>(env->NewGlobalRef(env->FindClass(className)));
     if (!globalRef)
-      return NULL;
+      return nullptr;
 
     // return the newly create global reference
     return globalRef;
@@ -64,16 +56,21 @@ extern "C" {
   __attribute__ ((visibility("default")))
   jclass
   jsjni_GetGlobalClassRef(const char *className) {
+    if (NS_IsMainThread()) {
+      return __jsjni_GetGlobalClassRef(className);
+    }
+
     nsCOMPtr<nsIThread> mainThread;
     mozilla::DebugOnly<nsresult> rv = NS_GetMainThread(getter_AddRefs(mainThread));
     MOZ_ASSERT(NS_SUCCEEDED(rv));
 
     jclass foundClass;
-    nsRefPtr<nsIRunnable> runnable_ref(new GetGlobalClassRefRunnable(className,
+    nsCOMPtr<nsIRunnable> runnable_ref(new GetGlobalClassRefRunnable(className,
                                                                      &foundClass));
-    mainThread->Dispatch(runnable_ref, NS_DISPATCH_SYNC);
+    RefPtr<mozilla::SyncRunnable> sr = new mozilla::SyncRunnable(runnable_ref);
+    sr->DispatchToThread(mainThread);
     if (!foundClass)
-      return NULL;
+      return nullptr;
 
     return foundClass;
   }
@@ -83,16 +80,14 @@ extern "C" {
   jsjni_GetStaticMethodID(jclass methodClass,
                           const char *methodName,
                           const char *signature) {
-    JNIEnv *env = mozilla::AndroidBridge::GetJNIEnv();
-    if (!env) return NULL;
+    JNIEnv *env = mozilla::jni::GetGeckoThreadEnv();
     return env->GetStaticMethodID(methodClass, methodName, signature);
   }
 
   __attribute__ ((visibility("default")))
   bool
   jsjni_ExceptionCheck() {
-    JNIEnv *env = mozilla::AndroidBridge::GetJNIEnv();
-    if (!env) return NULL;
+    JNIEnv *env = mozilla::jni::GetGeckoThreadEnv();
     return env->ExceptionCheck();
   }
 
@@ -101,8 +96,7 @@ extern "C" {
   jsjni_CallStaticVoidMethodA(jclass cls,
                               jmethodID method,
                               jvalue *values) {
-    JNIEnv *env = mozilla::AndroidBridge::GetJNIEnv();
-    if (!env) return;
+    JNIEnv *env = mozilla::jni::GetGeckoThreadEnv();
 
     mozilla::AutoLocalJNIFrame jniFrame(env);
     env->CallStaticVoidMethodA(cls, method, values);
@@ -113,8 +107,7 @@ extern "C" {
   jsjni_CallStaticIntMethodA(jclass cls,
                              jmethodID method,
                              jvalue *values) {
-    JNIEnv *env = mozilla::AndroidBridge::GetJNIEnv();
-    if (!env) return -1;
+    JNIEnv *env = mozilla::jni::GetGeckoThreadEnv();
 
     mozilla::AutoLocalJNIFrame jniFrame(env);
     return env->CallStaticIntMethodA(cls, method, values);
@@ -127,6 +120,21 @@ extern "C" {
 
   __attribute__ ((visibility("default")))
   JavaVM* jsjni_GetVM() {
-    return mozilla::AndroidBridge::GetVM();
+    JavaVM* jvm;
+    JNIEnv* const env = mozilla::jni::GetGeckoThreadEnv();
+    MOZ_ALWAYS_TRUE(!env->GetJavaVM(&jvm));
+    return jvm;
+  }
+
+  __attribute__ ((visibility("default")))
+  JNIEnv* jsjni_GetJNIForThread() {
+    return mozilla::jni::GetEnvForThread();
+  }
+
+  // For compatibility with JNI.jsm; some addons bundle their own JNI.jsm,
+  // so we cannot just change the function name used in JNI.jsm.
+  __attribute__ ((visibility("default")))
+  JNIEnv* GetJNIForThread() {
+    return mozilla::jni::GetEnvForThread();
   }
 }

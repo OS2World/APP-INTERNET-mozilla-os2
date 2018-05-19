@@ -1,9 +1,5 @@
 /***********************************************************************
-Copyright (c) 2006-2012 IETF Trust and Skype Limited. All rights reserved.
-
-This file is extracted from RFC6716. Please see that RFC for additional
-information.
-
+Copyright (c) 2006-2011, Skype Limited. All rights reserved.
 Redistribution and use in source and binary forms, with or without
 modification, are permitted provided that the following conditions
 are met:
@@ -16,7 +12,7 @@ documentation and/or other materials provided with the distribution.
 names of specific contributors, may be used to endorse or promote
 products derived from this software without specific prior written
 permission.
-THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS “AS IS”
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
 AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
 IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
 ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE
@@ -54,7 +50,8 @@ void silk_find_LTP_FIX(
     const opus_int                  subfr_length,                           /* I    subframe length                                                             */
     const opus_int                  nb_subfr,                               /* I    number of subframes                                                         */
     const opus_int                  mem_offset,                             /* I    number of samples in LTP memory                                             */
-    opus_int                        corr_rshifts[ MAX_NB_SUBFR ]            /* O    right shifts applied to correlations                                        */
+    opus_int                        corr_rshifts[ MAX_NB_SUBFR ],           /* O    right shifts applied to correlations                                        */
+    int                             arch                                    /* I    Run-time architecture                                                       */
 )
 {
     opus_int   i, k, lshift;
@@ -88,10 +85,10 @@ void silk_find_LTP_FIX(
             rr_shifts += ( LTP_CORRS_HEAD_ROOM - LZs );
         }
         corr_rshifts[ k ] = rr_shifts;
-        silk_corrMatrix_FIX( lag_ptr, subfr_length, LTP_ORDER, LTP_CORRS_HEAD_ROOM, WLTP_ptr, &corr_rshifts[ k ] );  /* WLTP_fix_ptr in Q( -corr_rshifts[ k ] ) */
+        silk_corrMatrix_FIX( lag_ptr, subfr_length, LTP_ORDER, LTP_CORRS_HEAD_ROOM, WLTP_ptr, &corr_rshifts[ k ], arch );  /* WLTP_fix_ptr in Q( -corr_rshifts[ k ] ) */
 
         /* The correlation vector always has lower max abs value than rr and/or RR so head room is assured */
-        silk_corrVector_FIX( lag_ptr, r_ptr, subfr_length, LTP_ORDER, Rr, corr_rshifts[ k ] );  /* Rr_fix_ptr   in Q( -corr_rshifts[ k ] ) */
+        silk_corrVector_FIX( lag_ptr, r_ptr, subfr_length, LTP_ORDER, Rr, corr_rshifts[ k ], arch );  /* Rr_fix_ptr   in Q( -corr_rshifts[ k ] ) */
         if( corr_rshifts[ k ] > rr_shifts ) {
             rr[ k ] = silk_RSHIFT( rr[ k ], corr_rshifts[ k ] - rr_shifts ); /* rr[ k ] in Q( -corr_rshifts[ k ] ) */
         }
@@ -114,7 +111,7 @@ void silk_find_LTP_FIX(
         /* temp = Wght[ k ] / ( nrg[ k ] * Wght[ k ] + 0.01f * subfr_length ); */
         extra_shifts = silk_min_int( corr_rshifts[ k ], LTP_CORRS_HEAD_ROOM );
         denom32 = silk_LSHIFT_SAT32( silk_SMULWB( nrg[ k ], Wght_Q15[ k ] ), 1 + extra_shifts ) + /* Q( -corr_rshifts[ k ] + extra_shifts ) */
-            silk_RSHIFT( silk_SMULWB( subfr_length, 655 ), corr_rshifts[ k ] - extra_shifts );    /* Q( -corr_rshifts[ k ] + extra_shifts ) */
+            silk_RSHIFT( silk_SMULWB( (opus_int32)subfr_length, 655 ), corr_rshifts[ k ] - extra_shifts );    /* Q( -corr_rshifts[ k ] + extra_shifts ) */
         denom32 = silk_max( denom32, 1 );
         silk_assert( ((opus_int64)Wght_Q15[ k ] << 16 ) < silk_int32_MAX );                       /* Wght always < 0.5 in Q0 */
         temp32 = silk_DIV32( silk_LSHIFT( (opus_int32)Wght_Q15[ k ], 16 ), denom32 );             /* Q( 15 + 16 + corr_rshifts[k] - extra_shifts ) */

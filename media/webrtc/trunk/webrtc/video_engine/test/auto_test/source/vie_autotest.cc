@@ -12,18 +12,18 @@
 // vie_autotest.cc
 //
 
-#include "video_engine/test/auto_test/interface/vie_autotest.h"
+#include "webrtc/video_engine/test/auto_test/interface/vie_autotest.h"
 
 #include <stdio.h>
 
-#include "engine_configurations.h"
+#include "webrtc/engine_configurations.h"
 #include "webrtc/modules/video_render/include/video_render.h"
-#include "testsupport/fileutils.h"
-#include "video_engine/test/auto_test/interface/vie_autotest_defines.h"
-#include "video_engine/test/auto_test/primitives/general_primitives.h"
-#include "video_engine/test/libvietest/include/tb_capture_device.h"
-#include "video_engine/test/libvietest/include/tb_interfaces.h"
-#include "video_engine/test/libvietest/include/tb_video_channel.h"
+#include "webrtc/test/testsupport/fileutils.h"
+#include "webrtc/video_engine/test/auto_test/interface/vie_autotest_defines.h"
+#include "webrtc/video_engine/test/auto_test/primitives/general_primitives.h"
+#include "webrtc/video_engine/test/libvietest/include/tb_capture_device.h"
+#include "webrtc/video_engine/test/libvietest/include/tb_interfaces.h"
+#include "webrtc/video_engine/test/libvietest/include/tb_video_channel.h"
 
 DEFINE_bool(include_timing_dependent_tests, true,
             "If true, we will include tests / parts of tests that are known "
@@ -64,10 +64,7 @@ void ViEAutoTest::ViEStandardTest()
     ViEBaseStandardTest();
     ViECaptureStandardTest();
     ViECodecStandardTest();
-    ViEEncryptionStandardTest();
-    ViEFileStandardTest();
     ViEImageProcessStandardTest();
-    ViENetworkStandardTest();
     ViERenderStandardTest();
     ViERtpRtcpStandardTest();
 }
@@ -77,12 +74,8 @@ void ViEAutoTest::ViEExtendedTest()
     ViEBaseExtendedTest();
     ViECaptureExtendedTest();
     ViECodecExtendedTest();
-    ViEEncryptionExtendedTest();
-    ViEFileExtendedTest();
     ViEImageProcessExtendedTest();
-    ViENetworkExtendedTest();
     ViERenderExtendedTest();
-    ViERtpRtcpExtendedTest();
 }
 
 void ViEAutoTest::ViEAPITest()
@@ -90,10 +83,7 @@ void ViEAutoTest::ViEAPITest()
     ViEBaseAPITest();
     ViECaptureAPITest();
     ViECodecAPITest();
-    ViEEncryptionAPITest();
-    ViEFileAPITest();
     ViEImageProcessAPITest();
-    ViENetworkAPITest();
     ViERenderAPITest();
     ViERtpRtcpAPITest();
 }
@@ -107,12 +97,14 @@ void ViEAutoTest::PrintVideoCodec(const webrtc::VideoCodec videoCodec)
         case webrtc::kVideoCodecVP8:
             ViETest::Log("\tcodecType: VP8");
             break;
-            // TODO(sh): keep or remove MPEG4?
-            //    case webrtc::kVideoCodecMPEG4:
-            //        ViETest::Log("\tcodecType: MPEG4");
-            //        break;
+        case webrtc::kVideoCodecVP9:
+            ViETest::Log("\tcodecType: VP9");
+            break;
         case webrtc::kVideoCodecI420:
             ViETest::Log("\tcodecType: I420");
+            break;
+        case webrtc::kVideoCodecH264:
+            ViETest::Log("\tcodecType: H264");
             break;
         case webrtc::kVideoCodecRED:
             ViETest::Log("\tcodecType: RED");
@@ -120,8 +112,11 @@ void ViEAutoTest::PrintVideoCodec(const webrtc::VideoCodec videoCodec)
         case webrtc::kVideoCodecULPFEC:
             ViETest::Log("\tcodecType: ULPFEC");
             break;
+        case webrtc::kVideoCodecGeneric:
+            ViETest::Log("\tcodecType: GENERIC");
+            break;
         case webrtc::kVideoCodecUnknown:
-            ViETest::Log("\tcodecType: ????");
+            ViETest::Log("\tcodecType: UNKNOWN");
             break;
     }
 
@@ -143,7 +138,7 @@ void ViEAutoTest::PrintAudioCodec(const webrtc::CodecInst audioCodec)
     ViETest::Log("\t: %u", audioCodec.pacsize);
     ViETest::Log("\t: %u", audioCodec.plfreq);
     ViETest::Log("\t: %s", audioCodec.plname);
-    ViETest::Log("\t: %u", audioCodec.pltype);
+    ViETest::Log("\t: %d", audioCodec.pltype);
     ViETest::Log("\t: %u", audioCodec.rate);
     ViETest::Log("");
 }
@@ -156,4 +151,12 @@ void ViEAutoTest::RenderCaptureDeviceAndOutputStream(
       video_engine->render, capture_device->captureId, _window1, 0);
   RenderInWindow(
       video_engine->render, video_channel->videoChannel, _window2, 1);
+}
+
+void ViEAutoTest::StopRenderCaptureDeviceAndOutputStream(
+    TbInterfaces* video_engine,
+    TbVideoChannel* video_channel,
+    TbCaptureDevice* capture_device) {
+  StopRenderInWindow(video_engine->render, capture_device->captureId);
+  StopRenderInWindow(video_engine->render, video_channel->videoChannel);
 }

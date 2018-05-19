@@ -4,8 +4,6 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "nsIServiceManager.h"
-#include "nsIComponentManager.h"
-#include "nsIComponentRegistrar.h"
 #include "nsIStreamConverterService.h"
 #include "nsIStreamConverter.h"
 #include "nsICategoryManager.h"
@@ -13,12 +11,14 @@
 #include "nsXULAppAPI.h"
 #include "nsIStringStream.h"
 #include "nsCOMPtr.h"
-#include "nsNetUtil.h"
 #include "nsThreadUtils.h"
 #include "mozilla/Attributes.h"
-
-#include "nspr.h"
-#include <algorithm>
+#include "nsMemory.h"
+#include "nsServiceManagerUtils.h"
+#include "nsComponentManagerUtils.h"
+#include "nsIRequest.h"
+#include "nsNetCID.h"
+#include "nsNetUtil.h"
 
 #define ASYNC_TEST // undefine this if you want to test sycnronous conversion.
 
@@ -29,6 +29,8 @@
 #include <windows.h>
 #endif
 #ifdef XP_OS2
+#define INCL_BASE
+#define INCL_PM
 #include <os2.h>
 #endif
 
@@ -51,7 +53,8 @@ static NS_DEFINE_CID(kStreamConverterServiceCID, NS_STREAMCONVERTERSERVICE_CID);
 //   receives the fully converted data, although it doesn't do anything with
 //   the data.
 ////////////////////////////////////////////////////////////////////////
-class EndListener MOZ_FINAL : public nsIStreamListener {
+class EndListener final : public nsIStreamListener {
+    ~EndListener() {}
 public:
     // nsISupports declaration
     NS_DECL_ISUPPORTS
@@ -60,7 +63,7 @@ public:
 
     // nsIStreamListener method
     NS_IMETHOD OnDataAvailable(nsIRequest* request, nsISupports *ctxt, nsIInputStream *inStr, 
-                               uint64_t sourceOffset, uint32_t count)
+                               uint64_t sourceOffset, uint32_t count) override
     {
         nsresult rv;
         uint32_t read;
@@ -69,7 +72,7 @@ public:
         if (NS_FAILED(rv)) return rv;
         uint32_t len = (uint32_t)std::min(len64, (uint64_t)(UINT32_MAX - 1));
 
-        char *buffer = (char*)nsMemory::Alloc(len + 1);
+        char *buffer = (char*)moz_xmalloc(len + 1);
         if (!buffer) return NS_ERROR_OUT_OF_MEMORY;
 
         rv = inStr->Read(buffer, len, &read);
@@ -78,32 +81,26 @@ public:
             printf("CONTEXT %p: Received %u bytes and the following data: \n %s\n\n",
                    static_cast<void*>(ctxt), read, buffer);
         }
-        nsMemory::Free(buffer);
+        free(buffer);
 
         return NS_OK;
     }
 
     // nsIRequestObserver methods
-    NS_IMETHOD OnStartRequest(nsIRequest* request, nsISupports *ctxt) { return NS_OK; }
+    NS_IMETHOD OnStartRequest(nsIRequest* request, nsISupports *ctxt) override { return NS_OK; }
 
     NS_IMETHOD OnStopRequest(nsIRequest* request, nsISupports *ctxt, 
-                             nsresult aStatus) { return NS_OK; }
+                             nsresult aStatus) override { return NS_OK; }
 };
 
-NS_IMPL_ISUPPORTS2(EndListener,
-                   nsIStreamListener,
-                   nsIRequestObserver)
+NS_IMPL_ISUPPORTS(EndListener,
+                  nsIStreamListener,
+                  nsIRequestObserver)
 
 ////////////////////////////////////////////////////////////////////////
 // EndListener END
 ////////////////////////////////////////////////////////////////////////
 
-static uint32_t 
-saturated(uint64_t aValue)
-{
-    return (uint32_t)std::min(aValue, (uint64_t)UINT32_MAX);
-}
- 
 nsresult SendData(const char * aData, nsIStreamListener* aListener, nsIRequest* request) {
     nsresult rv;
 
@@ -132,8 +129,8 @@ nsresult SendData(const char * aData, nsIStreamListener* aListener, nsIRequest* 
 #define SEND_DATA(x) SendData(x, converterListener, request)
 
 static const mozilla::Module::CIDEntry kTestCIDs[] = {
-    { &kTestConverterCID, false, NULL, CreateTestConverter },
-    { NULL }
+    { &kTestConverterCID, false, nullptr, CreateTestConverter },
+    { nullptr }
 };
 
 static const mozilla::Module::ContractIDEntry kTestContracts[] = {
@@ -144,7 +141,7 @@ static const mozilla::Module::ContractIDEntry kTestContracts[] = {
     { NS_ISTREAMCONVERTER_KEY "?from=d/foo&to=e/foo", &kTestConverterCID },
     { NS_ISTREAMCONVERTER_KEY "?from=d/foo&to=f/foo", &kTestConverterCID },
     { NS_ISTREAMCONVERTER_KEY "?from=t/foo&to=k/foo", &kTestConverterCID },
-    { NULL }
+    { nullptr }
 };
 
 static const mozilla::Module::CategoryEntry kTestCategories[] = {
@@ -155,7 +152,7 @@ static const mozilla::Module::CategoryEntry kTestCategories[] = {
     { NS_ISTREAMCONVERTER_KEY, "?from=d/foo&to=e/foo", "x" },
     { NS_ISTREAMCONVERTER_KEY, "?from=d/foo&to=f/foo", "x" },
     { NS_ISTREAMCONVERTER_KEY, "?from=t/foo&to=k/foo", "x" },
-    { NULL }
+    { nullptr }
 };
 
 static const mozilla::Module kTestModule = {

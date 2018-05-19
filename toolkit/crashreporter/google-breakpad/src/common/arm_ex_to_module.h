@@ -1,4 +1,3 @@
-
 /* libunwind - a platform-independent unwind library
    Copyright 2011 Linaro Limited
 
@@ -94,16 +93,6 @@ enum extab_cmd_flags {
   ARM_EXIDX_VFP_FSTMD = 1 << 17, // distinguishes FSTMxxD from FSTMxxX
 };
 
-const string kRA = ".ra";
-const string kCFA = ".cfa";
-
-static const char* const regnames[] = {
- "r0", "r1", "r2", "r3", "r4", "r5", "r6", "r7",
- "r8", "r9", "r10", "r11", "r12", "sp", "lr", "pc",
- "f0", "f1", "f2", "f3", "f4", "f5", "f6", "f7",
- "fps", "cpsr"
-};
-
 // Receives information from arm_ex_reader::ExceptionTableInfo
 // and adds it to the Module object
 class ARMExToModule {
@@ -111,6 +100,7 @@ class ARMExToModule {
   ARMExToModule(Module* module)
       : module_(module) { }
   ~ARMExToModule() { }
+  bool HasStackFrame(uintptr_t addr, size_t size);
   void AddStackFrame(uintptr_t addr, size_t size);
   int ImproveStackFrame(const struct extab_data* edata);
   void DeleteStackFrame();

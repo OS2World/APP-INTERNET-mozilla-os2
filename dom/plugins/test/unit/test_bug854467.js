@@ -9,7 +9,9 @@ function check_state(aTag, aExpectedClicktoplay, aExpectedDisabled) {
 }
 
 function run_test() {
+  allow_all_plugins();
   let tag = get_test_plugintag();
+  tag.enabledState = Ci.nsIPluginTag.STATE_ENABLED;
   check_state(tag, false, false);
 
   /* test going to click-to-play from always enabled and back */

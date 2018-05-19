@@ -8,7 +8,7 @@ Cu.import("resource://testing-common/services/sync/rotaryengine.js");
 Cu.import("resource://testing-common/services/sync/utils.js");
 
 // Track HMAC error counts.
-let hmacErrorCount = 0;
+var hmacErrorCount = 0;
 (function () {
   let hHE = Service.handleHMACEvent;
   Service.handleHMACEvent = function () {
@@ -21,9 +21,8 @@ function shared_setup() {
   hmacErrorCount = 0;
 
   // Do not instantiate SyncTestingInfrastructure; we need real crypto.
+  ensureLegacyIdentityManager();
   setBasicCredentials("foo", "foo", "aabcdeabcdeabcdeabcdeabcde");
-  Service.serverURL  = TEST_SERVER_URL;
-  Service.clusterURL = TEST_CLUSTER_URL;
 
   // Make sure RotaryEngine is the only one we sync.
   Service.engineManager._engines = {};
@@ -50,7 +49,7 @@ function shared_setup() {
   return [engine, rotaryColl, clientsColl, keysWBO, global];
 }
 
-add_test(function hmac_error_during_404() {
+add_task(function *hmac_error_during_404() {
   _("Attempt to replicate the HMAC error setup.");
   let [engine, rotaryColl, clientsColl, keysWBO, global] = shared_setup();
 
@@ -80,16 +79,18 @@ add_test(function hmac_error_during_404() {
   };
 
   let server = sync_httpd_setup(handlers);
+  Service.serverURL = server.baseURI;
 
   try {
     _("Syncing.");
-    Service.sync();
+    yield sync_and_validate_telem();
+
     _("Partially resetting client, as if after a restart, and forcing redownload.");
     Service.collectionKeys.clear();
     engine.lastSync = 0;        // So that we redownload records.
     key404Counter = 1;
     _("---------------------------");
-    Service.sync();
+    yield sync_and_validate_telem();
     _("---------------------------");
 
     // Two rotary items, one client record... no errors.
@@ -97,7 +98,7 @@ add_test(function hmac_error_during_404() {
   } finally {
     Svc.Prefs.resetBranch("");
     Service.recordManager.clearCache();
-    server.stop(run_next_test);
+    yield new Promise(resolve => server.stop(resolve));
   }
 });
 
@@ -155,6 +156,7 @@ add_test(function hmac_error_during_node_reassignment() {
   };
 
   let server = sync_httpd_setup(handlers);
+  Service.serverURL = server.baseURI;
   _("Syncing.");
   // First hit of clients will 401. This will happen after meta/global and
   // keys -- i.e., in the middle of the sync, but before RotaryEngine.

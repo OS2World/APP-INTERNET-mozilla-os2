@@ -1,4 +1,5 @@
-//* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
+/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
+/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -7,17 +8,21 @@
 // complete description of the expected file format and parsing rules, see
 // http://wiki.mozilla.org/Gecko:Effective_TLD_Service
 
-#include "mozilla/Util.h"
+#include "mozilla/ArrayUtils.h"
+#include "mozilla/MemoryReporting.h"
 
 #include "nsEffectiveTLDService.h"
 #include "nsIIDNService.h"
-#include "nsIMemoryReporter.h"
 #include "nsNetUtil.h"
 #include "prnetdb.h"
+#include "nsIURI.h"
+#include "nsNetCID.h"
+#include "nsServiceManagerUtils.h"
 
 using namespace mozilla;
 
-NS_IMPL_ISUPPORTS1(nsEffectiveTLDService, nsIEffectiveTLDService)
+NS_IMPL_ISUPPORTS(nsEffectiveTLDService, nsIEffectiveTLDService,
+                  nsIMemoryReporter)
 
 // ----------------------------------------------------------------------
 
@@ -25,13 +30,13 @@ NS_IMPL_ISUPPORTS1(nsEffectiveTLDService, nsIEffectiveTLDService)
 #define ETLD_STR_NUM(line) ETLD_STR_NUM_1(line)
 #define ETLD_ENTRY_OFFSET(name) offsetof(struct etld_string_list, ETLD_STR_NUM(__LINE__))
 
-const ETLDEntry nsDomainEntry::entries[] = {
+const ETLDEntry ETLDEntry::entries[] = {
 #define ETLD_ENTRY(name, ex, wild) { ETLD_ENTRY_OFFSET(name), ex, wild },
 #include "etld_data.inc"
 #undef ETLD_ENTRY
 };
 
-const union nsDomainEntry::etld_strings nsDomainEntry::strings = {
+const union ETLDEntry::etld_strings ETLDEntry::strings = {
   {
 #define ETLD_ENTRY(name, ex, wild) name,
 #include "etld_data.inc"
@@ -39,14 +44,25 @@ const union nsDomainEntry::etld_strings nsDomainEntry::strings = {
   }
 };
 
+/* static */ const ETLDEntry*
+ETLDEntry::GetEntry(const char* aDomain)
+{
+  size_t i;
+  if (BinarySearchIf(entries, 0, ArrayLength(ETLDEntry::entries),
+                     Cmp(aDomain), &i)) {
+    return &entries[i];
+  }
+  return nullptr;
+}
+
 // Dummy function to statically ensure that our indices don't overflow
 // the storage provided for them.
 void
-nsDomainEntry::FuncForStaticAsserts(void)
+ETLDEntry::FuncForStaticAsserts(void)
 {
 #define ETLD_ENTRY(name, ex, wild)                                      \
-  MOZ_STATIC_ASSERT(ETLD_ENTRY_OFFSET(name) < (1 << ETLD_ENTRY_N_INDEX_BITS), \
-                    "invalid strtab index");
+  static_assert(ETLD_ENTRY_OFFSET(name) < (1 << ETLD_ENTRY_N_INDEX_BITS), \
+                "invalid strtab index");
 #include "etld_data.inc"
 #undef ETLD_ENTRY
 }
@@ -59,76 +75,73 @@ nsDomainEntry::FuncForStaticAsserts(void)
 
 static nsEffectiveTLDService *gService = nullptr;
 
-NS_MEMORY_REPORTER_MALLOC_SIZEOF_FUN(EffectiveTLDServiceMallocSizeOf)
-
-static int64_t
-GetEffectiveTLDSize()
+nsEffectiveTLDService::nsEffectiveTLDService()
 {
-  return gService->SizeOfIncludingThis(EffectiveTLDServiceMallocSizeOf);
 }
-
-NS_MEMORY_REPORTER_IMPLEMENT(
-  EffectiveTLDService,
-  "explicit/xpcom/effective-TLD-service",
-  KIND_HEAP,
-  nsIMemoryReporter::UNITS_BYTES,
-  GetEffectiveTLDSize,
-  "Memory used by the effective TLD service.")
 
 nsresult
 nsEffectiveTLDService::Init()
 {
-  const ETLDEntry *entries = nsDomainEntry::entries;
-
-  // We'll probably have to rehash at least once, since nsTHashtable doesn't
-  // use a perfect hash, but at least we'll save a few rehashes along the way.
-  // Next optimization here is to precompute the hash using something like
-  // gperf, but one step at a time.  :-)
-  mHash.Init(ArrayLength(nsDomainEntry::entries));
-
   nsresult rv;
   mIDNService = do_GetService(NS_IDNSERVICE_CONTRACTID, &rv);
   if (NS_FAILED(rv)) return rv;
 
-  // Initialize eTLD hash from static array
-  for (uint32_t i = 0; i < ArrayLength(nsDomainEntry::entries); i++) {
-    const char *domain = nsDomainEntry::GetEffectiveTLDName(entries[i].strtab_index);
 #ifdef DEBUG
+  // Sanity-check the eTLD entries.
+  for (uint32_t i = 0; i < ArrayLength(ETLDEntry::entries); i++) {
+    const char* domain = ETLDEntry::entries[i].GetEffectiveTLDName();
     nsDependentCString name(domain);
     nsAutoCString normalizedName(domain);
-    NS_ASSERTION(NS_SUCCEEDED(NormalizeHostname(normalizedName)),
-                 "normalization failure!");
-    NS_ASSERTION(name.Equals(normalizedName), "domain not normalized!");
-#endif
-    nsDomainEntry *entry = mHash.PutEntry(domain);
-    NS_ENSURE_TRUE(entry, NS_ERROR_OUT_OF_MEMORY);
-    entry->SetData(&entries[i]);
+    MOZ_ASSERT(NS_SUCCEEDED(NormalizeHostname(normalizedName)),
+               "normalization failure!");
+    MOZ_ASSERT(name.Equals(normalizedName), "domain not normalized!");
+
+    // Domains must be in sorted order for binary search to work.
+    if (i > 0) {
+      const char* domain0 = ETLDEntry::entries[i - 1].GetEffectiveTLDName();
+      MOZ_ASSERT(strcmp(domain0, domain) < 0, "domains not in sorted order!");
+    }
   }
+#endif
 
   MOZ_ASSERT(!gService);
   gService = this;
-  mReporter = new NS_MEMORY_REPORTER_NAME(EffectiveTLDService);
-  (void)::NS_RegisterMemoryReporter(mReporter);
+  RegisterWeakMemoryReporter(this);
 
   return NS_OK;
 }
 
 nsEffectiveTLDService::~nsEffectiveTLDService()
 {
-  (void)::NS_UnregisterMemoryReporter(mReporter);
-  mReporter = nullptr;
+  UnregisterWeakMemoryReporter(this);
   gService = nullptr;
 }
 
+MOZ_DEFINE_MALLOC_SIZE_OF(EffectiveTLDServiceMallocSizeOf)
+
+// The amount of heap memory measured here is tiny. It used to be bigger when
+// nsEffectiveTLDService used a separate hash table instead of binary search.
+// Nonetheless, we keep this code here in anticipation of bug 1083971 which will
+// change ETLDEntries::entries to a heap-allocated array modifiable at runtime.
+NS_IMETHODIMP
+nsEffectiveTLDService::CollectReports(nsIHandleReportCallback* aHandleReport,
+                                      nsISupports* aData, bool aAnonymize)
+{
+  MOZ_COLLECT_REPORT(
+    "explicit/network/effective-TLD-service", KIND_HEAP, UNITS_BYTES,
+    SizeOfIncludingThis(EffectiveTLDServiceMallocSizeOf),
+    "Memory used by the effective TLD service.");
+
+  return NS_OK;
+}
+
 size_t
-nsEffectiveTLDService::SizeOfIncludingThis(nsMallocSizeOfFun aMallocSizeOf)
+nsEffectiveTLDService::SizeOfIncludingThis(mozilla::MallocSizeOf aMallocSizeOf)
 {
   size_t n = aMallocSizeOf(this);
-  n += mHash.SizeOfExcludingThis(nullptr, aMallocSizeOf);
 
   // Measurement of the following members may be added later if DMD finds it is
   // worthwhile:
-  // - mReporter
   // - mIDNService
 
   return n;
@@ -162,6 +175,7 @@ nsEffectiveTLDService::GetBaseDomain(nsIURI     *aURI,
                                      nsACString &aBaseDomain)
 {
   NS_ENSURE_ARG_POINTER(aURI);
+  NS_ENSURE_TRUE( ((int32_t)aAdditionalParts) >= 0, NS_ERROR_INVALID_ARG);
 
   nsCOMPtr<nsIURI> innerURI = NS_GetInnermostURI(aURI);
   NS_ENSURE_ARG_POINTER(innerURI);
@@ -196,6 +210,8 @@ nsEffectiveTLDService::GetBaseDomainFromHost(const nsACString &aHostname,
                                              uint32_t          aAdditionalParts,
                                              nsACString       &aBaseDomain)
 {
+  NS_ENSURE_TRUE( ((int32_t)aAdditionalParts) >= 0, NS_ERROR_INVALID_ARG);
+
   // Create a mutable copy of the hostname and normalize it to ACE.
   // This will fail if the hostname includes invalid characters.
   nsAutoCString normHostname(aHostname);
@@ -254,16 +270,17 @@ nsEffectiveTLDService::GetBaseDomainInternal(nsCString  &aHostname,
   const char *currDomain = aHostname.get();
   const char *nextDot = strchr(currDomain, '.');
   const char *end = currDomain + aHostname.Length();
-  const char *eTLD = currDomain;
-  while (1) {
+  // Default value of *eTLD is currDomain as set in the while loop below
+  const char *eTLD = nullptr;
+  while (true) {
     // sanity check the string we're about to look up: it should not begin with
     // a '.'; this would mean the hostname began with a '.' or had an
     // embedded '..' sequence.
     if (*currDomain == '.')
       return NS_ERROR_INVALID_ARG;
 
-    // perform the hash lookup.
-    nsDomainEntry *entry = mHash.GetEntry(currDomain);
+    // Perform the lookup.
+    const ETLDEntry* entry = ETLDEntry::GetEntry(currDomain);
     if (entry) {
       if (entry->IsWild() && prevDomain) {
         // wildcard rules imply an eTLD one level inferior to the match.
@@ -296,7 +313,7 @@ nsEffectiveTLDService::GetBaseDomainInternal(nsCString  &aHostname,
   const char *begin, *iter;
   if (aAdditionalParts < 0) {
     NS_ASSERTION(aAdditionalParts == -1,
-                 "aAdditionalParts should can't be negative and different from -1");
+                 "aAdditionalParts can't be negative and different from -1");
 
     for (iter = aHostname.get(); iter != eTLD && *iter != '.'; iter++);
 
@@ -311,7 +328,7 @@ nsEffectiveTLDService::GetBaseDomainInternal(nsCString  &aHostname,
     begin = aHostname.get();
     iter = eTLD;
 
-    while (1) {
+    while (true) {
       if (iter == begin)
         break;
 

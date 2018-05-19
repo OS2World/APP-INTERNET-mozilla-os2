@@ -1,11 +1,13 @@
+/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
+/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "TimeManager.h"
 
+#include "mozilla/dom/Date.h"
 #include "mozilla/dom/MozTimeManagerBinding.h"
-#include "nsContentUtils.h"
 #include "nsITimeService.h"
 #include "nsServiceManagerUtils.h"
 
@@ -21,18 +23,18 @@ NS_INTERFACE_MAP_END
 NS_IMPL_CYCLE_COLLECTING_ADDREF(TimeManager)
 NS_IMPL_CYCLE_COLLECTING_RELEASE(TimeManager)
 
-NS_IMPL_CYCLE_COLLECTION_WRAPPERCACHE_1(TimeManager, mWindow)
+NS_IMPL_CYCLE_COLLECTION_WRAPPERCACHE(TimeManager, mWindow)
 
 JSObject*
-TimeManager::WrapObject(JSContext* aCx, JS::Handle<JSObject*> aScope)
+TimeManager::WrapObject(JSContext* aCx, JS::Handle<JSObject*> aGivenProto)
 {
-  return MozTimeManagerBinding::Wrap(aCx, aScope, this);
+  return MozTimeManagerBinding::Wrap(aCx, this, aGivenProto);
 }
 
 void
 TimeManager::Set(Date& aDate)
 {
-  Set(aDate.TimeStamp());
+  Set(aDate.ToDouble());
 }
 
 void

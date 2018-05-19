@@ -9,12 +9,14 @@ const Cr = Components.results;
 
 Cu.import("resource://gre/modules/XPCOMUtils.jsm");
 Cu.import("resource://gre/modules/Services.jsm");
+Cu.import("resource://gre/modules/AppConstants.jsm");
 
 const XRE_OS_UPDATE_APPLY_TO_DIR = "OSUpdApplyToD"
 const UPDATE_ARCHIVE_DIR = "UpdArchD"
 const LOCAL_DIR = "/data/local";
 const UPDATES_DIR = "updates/0";
 const FOTA_DIR = "updates/fota";
+const COREAPPSDIR_PREF = "b2g.coreappsdir"
 
 XPCOMUtils.defineLazyServiceGetter(Services, "env",
                                    "@mozilla.org/process/environment;1",
@@ -28,6 +30,10 @@ XPCOMUtils.defineLazyServiceGetter(Services, "volumeService",
                                    "@mozilla.org/telephony/volume-service;1",
                                    "nsIVolumeService");
 
+XPCOMUtils.defineLazyServiceGetter(this, "cpmm",
+                                   "@mozilla.org/childprocessmessagemanager;1",
+                                   "nsISyncMessageSender");
+
 XPCOMUtils.defineLazyGetter(this, "gExtStorage", function dp_gExtStorage() {
     return Services.env.get("EXTERNAL_STORAGE");
 });
@@ -36,7 +42,7 @@ XPCOMUtils.defineLazyGetter(this, "gExtStorage", function dp_gExtStorage() {
 const gUseSDCard = true;
 
 const VERBOSE = 1;
-let log =
+var log =
   VERBOSE ?
   function log_dump(msg) { dump("DirectoryProvider: " + msg + "\n"); } :
   function log_noop(msg) { };
@@ -50,8 +56,16 @@ DirectoryProvider.prototype = {
   QueryInterface: XPCOMUtils.generateQI([Ci.nsIDirectoryServiceProvider]),
   _xpcom_factory: XPCOMUtils.generateSingletonFactory(DirectoryProvider),
 
-  getFile: function dp_getFile(prop, persistent) {
-#ifdef MOZ_WIDGET_GONK
+  _profD: null,
+
+  getFile: function(prop, persistent) {
+    if (AppConstants.platform === "gonk") {
+      return this.getFileOnGonk(prop, persistent);
+    }
+    return this.getFileNotGonk(prop, persistent);
+  },
+
+  getFileOnGonk: function(prop, persistent) {
     let localProps = ["cachePDir", "webappsDir", "PrefD", "indexedDBPDir",
                       "permissionDBPDir", "UpdRootD"];
     if (localProps.indexOf(prop) != -1) {
@@ -60,6 +74,15 @@ DirectoryProvider.prototype = {
       file.initWithPath(LOCAL_DIR);
       persistent.value = true;
       return file;
+    }
+    if (prop == "ProfD") {
+      let dir = Cc["@mozilla.org/file/local;1"]
+                  .createInstance(Ci.nsILocalFile);
+      dir.initWithPath(LOCAL_DIR+"/tests/profile");
+      if (dir.exists()) {
+        persistent.value = true;
+        return dir;
+      }
     }
     if (prop == "coreAppsDir") {
       let file = Cc["@mozilla.org/file/local;1"].createInstance(Ci.nsIFile)
@@ -71,15 +94,59 @@ DirectoryProvider.prototype = {
       // getUpdateDir will set persistent to false since it may toggle between
       // /data/local/ and /mnt/sdcard based on free space and/or availability
       // of the sdcard.
-      return this.getUpdateDir(persistent, UPDATES_DIR);
+      // before download, check if free space is 2.1 times of update.mar
+      return this.getUpdateDir(persistent, UPDATES_DIR, 2.1);
     }
     if (prop == XRE_OS_UPDATE_APPLY_TO_DIR) {
       // getUpdateDir will set persistent to false since it may toggle between
       // /data/local/ and /mnt/sdcard based on free space and/or availability
       // of the sdcard.
-      return this.getUpdateDir(persistent, FOTA_DIR);
+      // before apply, check if free space is 1.1 times of update.mar
+      return this.getUpdateDir(persistent, FOTA_DIR, 1.1);
     }
-#endif
+    return null;
+  },
+
+  getFileNotGonk: function(prop, persistent) {
+    // In desktop builds, coreAppsDir is the same as the profile
+    // directory unless otherwise specified. We just need to get the
+    // path from the parent, and it is then used to build
+    // jar:remoteopenfile:// uris.
+    if (prop == "coreAppsDir") {
+      let coreAppsDirPref;
+      try {
+        coreAppsDirPref = Services.prefs.getCharPref(COREAPPSDIR_PREF);
+      } catch (e) {
+        // coreAppsDirPref may not exist if we're on an older version
+        // of gaia, so just fail silently.
+      }
+      let appsDir;
+      // If pref doesn't exist or isn't set, default to old value
+      if (!coreAppsDirPref || coreAppsDirPref == "") {
+        appsDir = Services.dirsvc.get("ProfD", Ci.nsIFile);
+        appsDir.append("webapps");
+      } else {
+        appsDir = Cc["@mozilla.org/file/local;1"].createInstance(Ci.nsIFile)
+        appsDir.initWithPath(coreAppsDirPref);
+      }
+      persistent.value = true;
+      return appsDir;
+    } else if (prop == "ProfD") {
+      let inParent = Cc["@mozilla.org/xre/app-info;1"]
+                       .getService(Ci.nsIXULRuntime)
+                       .processType == Ci.nsIXULRuntime.PROCESS_TYPE_DEFAULT;
+      if (inParent) {
+        // Just bail out to use the default from toolkit.
+        return null;
+      }
+      if (!this._profD) {
+        this._profD = cpmm.sendSyncMessage("getProfD", {})[0];
+      }
+      let file = Cc["@mozilla.org/file/local;1"].createInstance(Ci.nsIFile);
+      file.initWithPath(this._profD);
+      persistent.value = true;
+      return file;
+    }
     return null;
   },
 
@@ -131,7 +198,7 @@ DirectoryProvider.prototype = {
     return null;
   },
 
-  getUpdateDir: function dp_getUpdateDir(persistent, subdir) {
+  getUpdateDir: function dp_getUpdateDir(persistent, subdir, multiple) {
     let defaultUpdateDir = this.getDefaultUpdateDir();
     persistent.value = false;
 
@@ -149,7 +216,7 @@ DirectoryProvider.prototype = {
       return defaultUpdateDir;
     }
 
-    let requiredSpace = selectedPatch.size * 2;
+    let requiredSpace = selectedPatch.size * multiple;
     let updateDir = this.findUpdateDirWithFreeSpace(requiredSpace, subdir);
     if (updateDir) {
       return updateDir;
@@ -185,7 +252,7 @@ DirectoryProvider.prototype = {
       // subdir doesn't exist, and the parent is writable, so try to
       // create it. This can fail if a file named updates exists.
       try {
-        dir.create(Ci.nsIFile.DIRECTORY_TYPE, 0770);
+        dir.create(Ci.nsIFile.DIRECTORY_TYPE, parseInt('0770', 8));
       } catch (e) {
         // The create failed for some reason. We can't use it.
         log("Error: " + dir.path + " unable to create directory");

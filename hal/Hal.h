@@ -7,18 +7,19 @@
 #ifndef mozilla_Hal_h
 #define mozilla_Hal_h
 
-#include "mozilla/hal_sandbox/PHal.h"
-#include "mozilla/HalTypes.h"
 #include "base/basictypes.h"
-#include "mozilla/Types.h"
+#include "base/platform_thread.h"
 #include "nsTArray.h"
-#include "prlog.h"
 #include "mozilla/dom/battery/Types.h"
+#include "mozilla/dom/MozPowerManagerBinding.h"
 #include "mozilla/dom/network/Types.h"
 #include "mozilla/dom/power/Types.h"
-#include "mozilla/dom/ContentParent.h"
-#include "mozilla/hal_sandbox/PHal.h"
 #include "mozilla/dom/ScreenOrientation.h"
+#include "mozilla/hal_sandbox/PHal.h"
+#include "mozilla/HalScreenConfiguration.h"
+#include "mozilla/HalTypes.h"
+#include "mozilla/Observer.h"
+#include "mozilla/Types.h"
 
 /*
  * Hal.h contains the public Hal API.
@@ -30,7 +31,7 @@
  * functions here in the hal_impl and hal_sandbox namespaces.
  */
 
-class nsIDOMWindow;
+class nsPIDOMWindowInner;
 
 #ifndef MOZ_HAL_NAMESPACE
 # define MOZ_HAL_NAMESPACE hal
@@ -39,18 +40,11 @@ class nsIDOMWindow;
 
 namespace mozilla {
 
-template <class T>
-class Observer;
-
 namespace hal {
 
 typedef Observer<void_t> AlarmObserver;
-typedef Observer<ScreenConfiguration> ScreenConfigurationObserver;
 
 class WindowIdentifier;
-
-extern PRLogModuleInfo *GetHalLog();
-#define HAL_LOG(msg) PR_LOG(mozilla::hal::GetHalLog(), PR_LOG_DEBUG, msg)
 
 typedef Observer<int64_t> SystemClockChangeObserver;
 typedef Observer<SystemTimezoneChangeInformation> SystemTimezoneChangeObserver;
@@ -75,7 +69,7 @@ namespace MOZ_HAL_NAMESPACE {
  * The method with WindowIdentifier will be called automatically.
  */
 void Vibrate(const nsTArray<uint32_t>& pattern,
-             nsIDOMWindow* aWindow);
+             nsPIDOMWindowInner* aWindow);
 void Vibrate(const nsTArray<uint32_t>& pattern,
              const hal::WindowIdentifier &id);
 
@@ -91,7 +85,7 @@ void Vibrate(const nsTArray<uint32_t>& pattern,
  * world, pass an nsIDOMWindow*. The method with WindowIdentifier will be called
  * automatically.
  */
-void CancelVibrate(nsIDOMWindow* aWindow);
+void CancelVibrate(nsPIDOMWindowInner* aWindow);
 void CancelVibrate(const hal::WindowIdentifier &id);
 
 /**
@@ -127,7 +121,17 @@ bool GetScreenEnabled();
  *
  * Note that it may take a few seconds for the screen to turn on or off.
  */
-void SetScreenEnabled(bool enabled);
+void SetScreenEnabled(bool aEnabled);
+
+/**
+ * Determine whether the device's keypad/button backlight is currently enabled.
+ */
+bool GetKeyLightEnabled();
+
+/**
+ * Enable or disable the device's keypad/button backlight.
+ */
+void SetKeyLightEnabled(bool aEnabled);
 
 /**
  * Get the brightness of the device's screen's backlight, on a scale from 0
@@ -148,7 +152,7 @@ double GetScreenBrightness();
  * followed by GetScreenBrightness(), the value returned by
  * GetScreenBrightness() may not be exactly x.
  */
-void SetScreenBrightness(double brightness);
+void SetScreenBrightness(double aBrightness);
 
 /**
  * Determine whether the device is allowed to sleep.
@@ -159,25 +163,7 @@ bool GetCpuSleepAllowed();
  * Set whether the device is allowed to suspend automatically after
  * the screen is disabled.
  */
-void SetCpuSleepAllowed(bool allowed);
-
-/**
- * Set the value of a light to a particular color, with a specific flash pattern.
- * light specifices which light.  See Hal.idl for the list of constants
- * mode specifies user set or based on ambient light sensor
- * flash specifies whether or how to flash the light
- * flashOnMS and flashOffMS specify the pattern for XXX flash mode
- * color specifies the color.  If the light doesn't support color, the given color is
- * transformed into a brightness, or just an on/off if that is all the light is capable of.
- * returns true if successful and false if failed.
- */
-bool SetLight(hal::LightType light, const hal::LightConfiguration& aConfig);
-/**
- * GET the value of a light returning a particular color, with a specific flash pattern.
- * returns true if successful and false if failed.
- */
-bool GetLight(hal::LightType light, hal::LightConfiguration* aConfig);
-
+void SetCpuSleepAllowed(bool aAllowed);
 
 /**
  * Register an observer for the sensor of given type.
@@ -259,6 +245,12 @@ void SetTimezone(const nsCString& aTimezoneSpec);
  * http://en.wikipedia.org/wiki/List_of_tz_database_time_zones
  */
 nsCString GetTimezone();
+
+/**
+ * Get timezone offset
+ * returns the timezone offset relative to UTC in minutes (DST effect included)
+ */
+int32_t GetTimezoneOffset();
 
 /**
  * Register observer for system clock changed notification.
@@ -402,7 +394,7 @@ void NotifyScreenConfigurationChange(const hal::ScreenConfiguration& aScreenConf
  * Lock the screen orientation to the specific orientation.
  * @return Whether the lock has been accepted.
  */
-bool LockScreenOrientation(const dom::ScreenOrientation& aOrientation);
+MOZ_MUST_USE bool LockScreenOrientation(const dom::ScreenOrientationInternal& aOrientation);
 
 /**
  * Unlock the screen orientation.
@@ -435,12 +427,18 @@ void NotifySwitchChange(const hal::SwitchEvent& aEvent);
 hal::SwitchState GetCurrentSwitchState(hal::SwitchDevice aDevice);
 
 /**
+ * Notify switch status change from input device.
+ */
+void NotifySwitchStateFromInputDevice(hal::SwitchDevice aDevice,
+                                      hal::SwitchState aState);
+
+/**
  * Register an observer that is notified when a programmed alarm
  * expires.
  *
  * Currently, there can only be 0 or 1 alarm observers.
  */
-bool RegisterTheOneAlarmObserver(hal::AlarmObserver* aObserver);
+MOZ_MUST_USE bool RegisterTheOneAlarmObserver(hal::AlarmObserver* aObserver);
 
 /**
  * Unregister the alarm observer.  Doing so will implicitly cancel any
@@ -467,16 +465,10 @@ void NotifyAlarmFired();
  * This API is currently only allowed to be used from non-sandboxed
  * contexts.
  */
-bool SetAlarm(int32_t aSeconds, int32_t aNanoseconds);
+MOZ_MUST_USE bool SetAlarm(int32_t aSeconds, int32_t aNanoseconds);
 
 /**
- * Set the priority of the given process.  A process's priority is a two-tuple
- * consisting of a hal::ProcessPriority value and a hal::ProcessCPUPriority
- * value.
- *
- * Two processes with the same ProcessCPUPriority value don't necessarily have
- * the same CPU priority; the CPU priority we assign to a process is a function
- * of its ProcessPriority and ProcessCPUPriority.
+ * Set the priority of the given process.
  *
  * Exactly what this does will vary between platforms.  On *nix we might give
  * background processes higher nice values.  On other platforms, we might
@@ -484,74 +476,23 @@ bool SetAlarm(int32_t aSeconds, int32_t aNanoseconds);
  */
 void SetProcessPriority(int aPid,
                         hal::ProcessPriority aPriority,
-                        hal::ProcessCPUPriority aCPUPriority);
+                        uint32_t aLRU = 0);
+
 
 /**
- * Register an observer for the FM radio.
+ * Set the current thread's priority to appropriate platform-specific value for
+ * given functionality. Instead of providing arbitrary priority numbers you
+ * must specify a type of function like THREAD_PRIORITY_COMPOSITOR.
  */
-void RegisterFMRadioObserver(hal::FMRadioObserver* aRadioObserver);
+void SetCurrentThreadPriority(hal::ThreadPriority aThreadPriority);
 
 /**
- * Unregister the observer for the FM radio.
+ * Set a thread priority to appropriate platform-specific value for
+ * given functionality. Instead of providing arbitrary priority numbers you
+ * must specify a type of function like THREAD_PRIORITY_COMPOSITOR.
  */
-void UnregisterFMRadioObserver(hal::FMRadioObserver* aRadioObserver);
-
-/**
- * Notify observers that a call to EnableFMRadio, DisableFMRadio, or FMRadioSeek
- * has completed, and indicate what the call returned.
- */
-void NotifyFMRadioStatus(const hal::FMRadioOperationInformation& aRadioState);
-
-/**
- * Enable the FM radio and configure it according to the settings in aInfo.
- */
-void EnableFMRadio(const hal::FMRadioSettings& aInfo);
-
-/**
- * Disable the FM radio.
- */
-void DisableFMRadio();
-
-/**
- * Seek to an available FM radio station.
- *
- */
-void FMRadioSeek(const hal::FMRadioSeekDirection& aDirection);
-
-/**
- * Get the current FM radio settings.
- */
-void GetFMRadioSettings(hal::FMRadioSettings* aInfo);
-
-/**
- * Set the FM radio's frequency.
- */
-void SetFMRadioFrequency(const uint32_t frequency);
-
-/**
- * Get the FM radio's frequency.
- */
-uint32_t GetFMRadioFrequency();
-
-/**
- * Get FM radio power state
- */
-bool IsFMRadioOn();
-
-/**
- * Get FM radio signal strength
- */
-uint32_t GetFMRadioSignalStrength();
-
-/**
- * Cancel FM radio seeking
- */
-void CancelFMRadioSeek();
-
-/**
- * Get FM radio band settings by country.
- */
-hal::FMRadioSettings GetFMBandSettings(hal::FMRadioCountry aCountry);
+void SetThreadPriority(PlatformThreadId aThreadId,
+                       hal::ThreadPriority aThreadPriority);
 
 /**
  * Start a watchdog to compulsively shutdown the system if it hangs.
@@ -565,17 +506,7 @@ void StartForceQuitWatchdog(hal::ShutdownMode aMode, int32_t aTimeoutSecs);
 /**
  * Perform Factory Reset to wipe out all user data.
  */
-void FactoryReset();
-
-/**
- * Start monitoring the status of gamepads attached to the system.
- */
-void StartMonitoringGamepadStatus();
-
-/**
- * Stop monitoring the status of gamepads attached to the system.
- */
-void StopMonitoringGamepadStatus();
+void FactoryReset(mozilla::dom::FactoryResetReason& aReason);
 
 /**
  * Start monitoring disk space for low space situations.
@@ -590,6 +521,33 @@ void StartDiskSpaceWatcher();
  * This API is currently only allowed to be used from the main process.
  */
 void StopDiskSpaceWatcher();
+
+/**
+ * Get total system memory of device being run on in bytes.
+ *
+ * Returns 0 if we are unable to determine this information from /proc/meminfo.
+ */
+uint32_t GetTotalSystemMemory();
+
+/**
+ * Determine whether the headphone switch event is from input device
+ */
+bool IsHeadphoneEventFromInputDev();
+
+/**
+ * Start the system service with the specified name and arguments.
+ */
+nsresult StartSystemService(const char* aSvcName, const char* aArgs);
+
+/**
+ * Stop the system service with the specified name.
+ */
+void StopSystemService(const char* aSvcName);
+
+/**
+ * Determine whether the system service with the specified name is running.
+ */
+bool SystemServiceIsRunning(const char* aSvcName);
 
 } // namespace MOZ_HAL_NAMESPACE
 } // namespace mozilla

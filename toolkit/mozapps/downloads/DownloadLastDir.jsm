@@ -1,4 +1,4 @@
-/* -*- Mode: javascript; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
+/* -*- indent-tabs-mode: nil; js-indent-level: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -30,10 +30,11 @@ const nsIFile = Components.interfaces.nsIFile;
 
 this.EXPORTED_SYMBOLS = [ "DownloadLastDir" ];
 
+Components.utils.import("resource://gre/modules/XPCOMUtils.jsm");
 Components.utils.import("resource://gre/modules/Services.jsm");
 Components.utils.import("resource://gre/modules/PrivateBrowsingUtils.jsm");
 
-let observer = {
+var observer = {
   QueryInterface: function (aIID) {
     if (aIID.equals(Components.interfaces.nsIObserver) ||
         aIID.equals(Components.interfaces.nsISupports) ||
@@ -62,7 +63,7 @@ let observer = {
   }
 };
 
-let os = Components.classes["@mozilla.org/observer-service;1"]
+var os = Components.classes["@mozilla.org/observer-service;1"]
                    .getService(Components.interfaces.nsIObserverService);
 os.addObserver(observer, "last-pb-context-exited", true);
 os.addObserver(observer, "browser:purge-session-history", true);
@@ -85,18 +86,28 @@ function isContentPrefEnabled() {
   }
 }
 
-let gDownloadLastDirFile = readLastDirPref();
+var gDownloadLastDirFile = readLastDirPref();
 
 this.DownloadLastDir = function DownloadLastDir(aWindow) {
-  this.window = aWindow;
+  let loadContext = aWindow.QueryInterface(Components.interfaces.nsIInterfaceRequestor)
+                           .getInterface(Components.interfaces.nsIWebNavigation)
+                           .QueryInterface(Components.interfaces.nsILoadContext);
+  // Need this in case the real thing has gone away by the time we need it.
+  // We only care about the private browsing state. All the rest of the
+  // load context isn't of interest to the content pref service.
+  this.fakeContext = {
+    QueryInterface: XPCOMUtils.generateQI([Components.interfaces.nsILoadContext]),
+    usePrivateBrowsing: loadContext.usePrivateBrowsing,
+    originAttributes: {},
+  };
 }
 
 DownloadLastDir.prototype = {
   isPrivate: function DownloadLastDir_isPrivate() {
-    return PrivateBrowsingUtils.isWindowPrivate(this.window);
+    return this.fakeContext.usePrivateBrowsing;
   },
   // compat shims
-  get file() { return this.getFile(); },
+  get file() { return this._getLastFile(); },
   set file(val) { this.setFile(null, val); },
   cleanupPrivateFile: function () {
     gDownloadLastDirFile = null;
@@ -104,12 +115,13 @@ DownloadLastDir.prototype = {
   // This function is now deprecated as it uses the sync nsIContentPrefService
   // interface. New consumers should use the getFileAsync function.
   getFile: function (aURI) {
+    let Deprecated = Components.utils.import("resource://gre/modules/Deprecated.jsm", {}).Deprecated;
+    Deprecated.warning("DownloadLastDir.getFile is deprecated. Please use getFileAsync instead.",
+                       "https://developer.mozilla.org/en-US/docs/Mozilla/JavaScript_code_modules/DownloadLastDir.jsm",
+                       Components.stack.caller);
+
     if (aURI && isContentPrefEnabled()) {
-      let loadContext = this.window
-                            .QueryInterface(Components.interfaces.nsIInterfaceRequestor)
-                            .getInterface(Components.interfaces.nsIWebNavigation)
-                            .QueryInterface(Components.interfaces.nsILoadContext);
-      let lastDir = Services.contentPrefs.getPref(aURI, LAST_DIR_PREF, loadContext);
+      let lastDir = Services.contentPrefs.getPref(aURI, LAST_DIR_PREF, this.fakeContext);
       if (lastDir) {
         var lastDirFile = Components.classes["@mozilla.org/file/local;1"]
                                     .createInstance(Components.interfaces.nsIFile);
@@ -117,6 +129,10 @@ DownloadLastDir.prototype = {
         return lastDirFile;
       }
     }
+    return this._getLastFile();
+  },
+
+  _getLastFile: function () {
     if (gDownloadLastDirFile && !gDownloadLastDirFile.exists())
       gDownloadLastDirFile = null;
 
@@ -125,14 +141,13 @@ DownloadLastDir.prototype = {
         gDownloadLastDirFile = readLastDirPref();
       return gDownloadLastDirFile;
     }
-    else
-      return readLastDirPref();
+    return readLastDirPref();
   },
 
   getFileAsync: function(aURI, aCallback) {
-    let plainPrefFile = this.getFile();
+    let plainPrefFile = this._getLastFile();
     if (!aURI || !isContentPrefEnabled()) {
-      Services.tm.mainThread.dispatch(function() aCallback(plainPrefFile),
+      Services.tm.mainThread.dispatch(() => aCallback(plainPrefFile),
                                       Components.interfaces.nsIThread.DISPATCH_NORMAL);
       return;
     }
@@ -140,13 +155,9 @@ DownloadLastDir.prototype = {
     let uri = aURI instanceof Components.interfaces.nsIURI ? aURI.spec : aURI;
     let cps2 = Components.classes["@mozilla.org/content-pref/service;1"]
                          .getService(Components.interfaces.nsIContentPrefService2);
-    let loadContext = this.window
-                          .QueryInterface(Components.interfaces.nsIInterfaceRequestor)
-                          .getInterface(Components.interfaces.nsIWebNavigation)
-                          .QueryInterface(Components.interfaces.nsILoadContext);
     let result = null;
-    cps2.getByDomainAndName(uri, LAST_DIR_PREF, loadContext, {
-      handleResult: function(aResult) result = aResult,
+    cps2.getByDomainAndName(uri, LAST_DIR_PREF, this.fakeContext, {
+      handleResult: aResult => result = aResult,
       handleCompletion: function(aReason) {
         let file = plainPrefFile;
         if (aReason == Components.interfaces.nsIContentPrefCallback2.COMPLETE_OK &&
@@ -165,25 +176,20 @@ DownloadLastDir.prototype = {
       let uri = aURI instanceof Components.interfaces.nsIURI ? aURI.spec : aURI;
       let cps2 = Components.classes["@mozilla.org/content-pref/service;1"]
                            .getService(Components.interfaces.nsIContentPrefService2);
-      let loadContext = this.window
-                            .QueryInterface(Components.interfaces.nsIInterfaceRequestor)
-                            .getInterface(Components.interfaces.nsIWebNavigation)
-                            .QueryInterface(Components.interfaces.nsILoadContext);
       if (aFile instanceof Components.interfaces.nsIFile)
-        cps2.set(uri, LAST_DIR_PREF, aFile.path, loadContext);
+        cps2.set(uri, LAST_DIR_PREF, aFile.path, this.fakeContext);
       else
-        cps2.removeByDomainAndName(uri, LAST_DIR_PREF, loadContext);
+        cps2.removeByDomainAndName(uri, LAST_DIR_PREF, this.fakeContext);
     }
     if (this.isPrivate()) {
       if (aFile instanceof Components.interfaces.nsIFile)
         gDownloadLastDirFile = aFile.clone();
       else
         gDownloadLastDirFile = null;
-    } else {
-      if (aFile instanceof Components.interfaces.nsIFile)
-        Services.prefs.setComplexValue(LAST_DIR_PREF, nsIFile, aFile);
-      else if (Services.prefs.prefHasUserValue(LAST_DIR_PREF))
-        Services.prefs.clearUserPref(LAST_DIR_PREF);
+    } else if (aFile instanceof Components.interfaces.nsIFile) {
+      Services.prefs.setComplexValue(LAST_DIR_PREF, nsIFile, aFile);
+    } else if (Services.prefs.prefHasUserValue(LAST_DIR_PREF)) {
+      Services.prefs.clearUserPref(LAST_DIR_PREF);
     }
   }
 };

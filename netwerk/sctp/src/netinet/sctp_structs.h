@@ -32,7 +32,7 @@
 
 #ifdef __FreeBSD__
 #include <sys/cdefs.h>
-__FBSDID("$FreeBSD: head/sys/netinet/sctp_structs.h 246595 2013-02-09 17:26:14Z tuexen $");
+__FBSDID("$FreeBSD: head/sys/netinet/sctp_structs.h 279859 2015-03-10 19:49:25Z tuexen $");
 #endif
 
 #ifndef _NETINET_SCTP_STRUCTS_H_
@@ -236,6 +236,9 @@ struct sctp_net_route {
 #endif
 #endif
 #if defined(__APPLE__)
+#if !defined(APPLE_LEOPARD) && !defined(APPLE_SNOWLEOPARD) && !defined(APPLE_LION) && !defined(APPLE_MOUNTAINLION)
+	struct ifaddr *ro_srcia;
+#endif
 #if !defined(APPLE_LEOPARD)
 	uint32_t ro_flags;
 #endif
@@ -425,9 +428,7 @@ struct sctp_nets {
 	uint8_t rto_needed;
 #if defined(__FreeBSD__)
 	uint32_t flowid;
-#ifdef INVARIANTS
-	uint8_t flowidset;
-#endif
+	uint8_t flowtype;
 #endif
 };
 
@@ -465,8 +466,8 @@ TAILQ_HEAD(sctpchunk_listhead, sctp_tmit_chunk);
 #define CHUNK_FLAGS_FRAGMENT_OK	        0x0100
 
 struct chk_id {
-	uint16_t id;
-	uint16_t can_take_data;
+	uint8_t id;
+	uint8_t can_take_data;
 };
 
 
@@ -493,7 +494,6 @@ struct sctp_tmit_chunk {
 	uint8_t do_rtt;
 	uint8_t book_size_scale;
 	uint8_t no_fr_allowed;
-	uint8_t pr_sctp_on;
 	uint8_t copy_by_ref;
 	uint8_t window_probe;
 };
@@ -568,7 +568,6 @@ struct sctp_stream_queue_pending {
 	uint8_t  holds_key_ref;
 	uint8_t  msg_is_complete;
 	uint8_t  some_taken;
-	uint8_t  pr_sctp_on;
 	uint8_t  sender_all_done;
 	uint8_t  put_last_out;
 	uint8_t  discard_rest;
@@ -635,6 +634,14 @@ struct sctp_stream_out {
 	struct sctp_streamhead outqueue;
 	union scheduling_parameters ss_params;
 	uint32_t chunks_on_queues;
+#if defined(SCTP_DETAILED_STR_STATS)
+	uint32_t abandoned_unsent[SCTP_PR_SCTP_MAX + 1];
+	uint32_t abandoned_sent[SCTP_PR_SCTP_MAX + 1];
+#else
+	/* Only the aggregation */
+	uint32_t abandoned_unsent[1];
+	uint32_t abandoned_sent[1];
+#endif
 	uint16_t stream_no;
 	uint16_t next_sequence_send;	/* next one I expect to send out */
 	uint8_t last_msg_incomplete;
@@ -713,8 +720,8 @@ struct sctp_nonpad_sndrcvinfo {
 struct sctp_cc_functions {
 	void (*sctp_set_initial_cc_param)(struct sctp_tcb *stcb, struct sctp_nets *net);
 	void (*sctp_cwnd_update_after_sack)(struct sctp_tcb *stcb,
-		 	struct sctp_association *asoc,
-		 	int accum_moved ,int reneged_all, int will_exit);
+	                                    struct sctp_association *asoc,
+	                                    int accum_moved ,int reneged_all, int will_exit);
 	void (*sctp_cwnd_update_exit_pf)(struct sctp_tcb *stcb, struct sctp_nets *net);
 	void (*sctp_cwnd_update_after_fr)(struct sctp_tcb *stcb,
 			struct sctp_association *asoc);
@@ -1199,30 +1206,21 @@ struct sctp_association {
 	 * sum is updated as well.
 	 */
 
-	/* Flag to tell if ECN is allowed */
-	uint8_t ecn_allowed;
+	/* Flags whether an extension is supported or not */
+	uint8_t ecn_supported;
+	uint8_t prsctp_supported;
+	uint8_t auth_supported;
+	uint8_t asconf_supported;
+	uint8_t reconfig_supported;
+	uint8_t nrsack_supported;
+	uint8_t pktdrop_supported;
 
 	/* Did the peer make the stream config (add out) request */
 	uint8_t peer_req_out;
 
-	/* flag to indicate if peer can do asconf */
-	uint8_t peer_supports_asconf;
-	/* EY - flag to indicate if peer can do nr_sack*/
-	uint8_t peer_supports_nr_sack;
-	/* pr-sctp support flag */
-	uint8_t peer_supports_prsctp;
-	/* peer authentication support flag */
-	uint8_t peer_supports_auth;
-	/* stream resets are supported by the peer */
-	uint8_t peer_supports_strreset;
 	uint8_t local_strreset_support;
 
-        uint8_t peer_supports_nat;
-	/*
-	 * packet drop's are supported by the peer, we don't really care
-	 * about this but we bookkeep it anyway.
-	 */
-	uint8_t peer_supports_pktdrop;
+	uint8_t peer_supports_nat;
 
 	struct sctp_scoping scope;
 	/* flags to handle send alternate net tracking */
@@ -1247,12 +1245,11 @@ struct sctp_association {
 	uint8_t sctp_cmt_on_off;
 	uint8_t iam_blocking;
 	uint8_t cookie_how[8];
-	/* EY 05/05/08 - NR_SACK variable*/
-	uint8_t sctp_nr_sack_on_off;
 	/* JRS 5/21/07 - CMT PF variable */
 	uint8_t sctp_cmt_pf;
 	uint8_t use_precise_time;
-	uint32_t sctp_features;
+	uint64_t sctp_features;
+	uint32_t max_cwnd;
 	uint16_t port; /* remote UDP encapsulation port */
 	/*
 	 * The mapping array is used to track out of order sequences above
@@ -1271,6 +1268,8 @@ struct sctp_association {
 	uint32_t timoshutdownack;
 	struct timeval start_time;
 	struct timeval discontinuity_time;
+	uint64_t abandoned_unsent[SCTP_PR_SCTP_MAX + 1];
+	uint64_t abandoned_sent[SCTP_PR_SCTP_MAX + 1];
 };
 
 #endif

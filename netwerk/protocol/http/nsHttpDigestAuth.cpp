@@ -7,20 +7,22 @@
 // HttpLog.h should generally be included first
 #include "HttpLog.h"
 
+#include "mozilla/Sprintf.h"
+
 #include "nsHttp.h"
 #include "nsHttpDigestAuth.h"
 #include "nsIHttpAuthenticableChannel.h"
-#include "nsIServiceManager.h"
-#include "nsXPCOM.h"
 #include "nsISupportsPrimitives.h"
 #include "nsIURI.h"
 #include "nsString.h"
-#include "nsReadableUtils.h"
 #include "nsEscape.h"
 #include "nsNetCID.h"
-#include "plbase64.h"
-#include "prprf.h"
 #include "nsCRT.h"
+#include "nsICryptoHash.h"
+#include "nsComponentManagerUtils.h"
+
+namespace mozilla {
+namespace net {
 
 //-----------------------------------------------------------------------------
 // nsHttpDigestAuth <public>
@@ -36,7 +38,7 @@ nsHttpDigestAuth::~nsHttpDigestAuth()
 // nsHttpDigestAuth::nsISupports
 //-----------------------------------------------------------------------------
 
-NS_IMPL_ISUPPORTS1(nsHttpDigestAuth, nsIHttpAuthenticator)
+NS_IMPL_ISUPPORTS(nsHttpDigestAuth, nsIHttpAuthenticator)
 
 //-----------------------------------------------------------------------------
 // nsHttpDigestAuth <protected>
@@ -119,7 +121,10 @@ nsHttpDigestAuth::GetMethodAndPath(nsIHttpAuthenticableChannel *authChannel,
           // instead of regenerating it here.
           //
           nsAutoCString buf;
-          path = NS_EscapeURL(path, esc_OnlyNonASCII, buf);
+          rv = NS_EscapeURL(path, esc_OnlyNonASCII, buf, mozilla::fallible);
+          if (NS_SUCCEEDED(rv)) {
+            path = buf;
+          }
         }
       }
     }
@@ -157,13 +162,29 @@ nsHttpDigestAuth::ChallengeReceived(nsIHttpAuthenticableChannel *authChannel,
   return NS_OK;
 }
 
+
+NS_IMETHODIMP
+nsHttpDigestAuth::GenerateCredentialsAsync(nsIHttpAuthenticableChannel *authChannel,
+                                           nsIHttpAuthenticatorCallback* aCallback,
+                                           const char *challenge,
+                                           bool isProxyAuth,
+                                           const char16_t *domain,
+                                           const char16_t *username,
+                                           const char16_t *password,
+                                           nsISupports *sessionState,
+                                           nsISupports *continuationState,
+                                           nsICancelable **aCancellable)
+{
+  return NS_ERROR_NOT_IMPLEMENTED;
+}
+
 NS_IMETHODIMP
 nsHttpDigestAuth::GenerateCredentials(nsIHttpAuthenticableChannel *authChannel,
                                       const char *challenge,
                                       bool isProxyAuth,
-                                      const PRUnichar *userdomain,
-                                      const PRUnichar *username,
-                                      const PRUnichar *password,
+                                      const char16_t *userdomain,
+                                      const char16_t *username,
+                                      const char16_t *password,
                                       nsISupports **sessionState,
                                       nsISupports **continuationState,
                                       uint32_t *aFlags,
@@ -262,7 +283,7 @@ nsHttpDigestAuth::GenerateCredentials(nsIHttpAuthenticableChannel *authChannel,
     if (v) {
       uint32_t nc;
       v->GetData(&nc);
-      PR_snprintf(nonce_count, sizeof(nonce_count), "%08x", ++nc);
+      SprintfLiteral(nonce_count, "%08x", ++nc);
       v->SetData(nc);
     }
   }
@@ -271,7 +292,7 @@ nsHttpDigestAuth::GenerateCredentials(nsIHttpAuthenticableChannel *authChannel,
             do_CreateInstance(NS_SUPPORTS_PRUINT32_CONTRACTID));
     if (v) {
       v->SetData(1);
-      NS_ADDREF(*sessionState = v);
+      v.forget(sessionState);
     }
   }
   LOG(("   nonce_count=%s\n", nonce_count));
@@ -504,9 +525,9 @@ nsHttpDigestAuth::CalculateHA2(const nsAFlatCString & method,
                                const char * bodyDigest,
                                char * result)
 {
-  int16_t methodLen = method.Length();
-  int16_t pathLen = path.Length();
-  int16_t len = methodLen + pathLen + 1;
+  uint16_t methodLen = method.Length();
+  uint32_t pathLen = path.Length();
+  uint32_t len = methodLen + pathLen + 1;
 
   if (qop & QOP_AUTH_INT) {
     len += EXPANDED_DIGEST_LENGTH + 1;
@@ -540,7 +561,13 @@ nsHttpDigestAuth::ParseChallenge(const char * challenge,
                                  uint16_t * algorithm,
                                  uint16_t * qop)
 {
-  const char *p = challenge + 7; // first 7 characters are "Digest "
+  // put an absurd, but maximum, length cap on the challenge so
+  // that calculations are 32 bit safe
+  if (strlen(challenge) > 16000000) {
+    return NS_ERROR_INVALID_ARG;
+  }
+
+  const char *p = challenge + 6; // first 6 characters are "Digest"
 
   *stale = false;
   *algorithm = ALGO_MD5; // default is MD5
@@ -553,12 +580,12 @@ nsHttpDigestAuth::ParseChallenge(const char * challenge,
       break;
 
     // name
-    int16_t nameStart = (p - challenge);
+    int32_t nameStart = (p - challenge);
     while (*p && !nsCRT::IsAsciiSpace(*p) && *p != '=')
       ++p;
     if (!*p)
       return NS_ERROR_INVALID_ARG;
-    int16_t nameLength = (p - challenge) - nameStart;
+    int32_t nameLength = (p - challenge) - nameStart;
 
     while (*p && (nsCRT::IsAsciiSpace(*p) || *p == '='))
       ++p;
@@ -572,8 +599,8 @@ nsHttpDigestAuth::ParseChallenge(const char * challenge,
     }
 
     // value
-    int16_t valueStart = (p - challenge);
-    int16_t valueLength = 0;
+    int32_t valueStart = (p - challenge);
+    int32_t valueLength = 0;
     if (quoted) {
       while (*p && *p != '"')
         ++p;
@@ -631,13 +658,13 @@ nsHttpDigestAuth::ParseChallenge(const char * challenge,
     else if (nameLength == 3 &&
         nsCRT::strncasecmp(challenge+nameStart, "qop", 3) == 0)
     {
-      int16_t ipos = valueStart;
+      int32_t ipos = valueStart;
       while (ipos < valueStart+valueLength) {
         while (ipos < valueStart+valueLength &&
                (nsCRT::IsAsciiSpace(challenge[ipos]) ||
                 challenge[ipos] == ','))
           ipos++;
-        int16_t algostart = ipos;
+        int32_t algostart = ipos;
         while (ipos < valueStart+valueLength &&
                !nsCRT::IsAsciiSpace(challenge[ipos]) &&
                challenge[ipos] != ',')
@@ -688,5 +715,8 @@ nsHttpDigestAuth::AppendQuotedString(const nsACString & value,
   aHeaderLine.Append(quoted);
   return NS_OK;
 }
+
+} // namespace net
+} // namespace mozilla
 
 // vim: ts=2 sw=2

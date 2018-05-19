@@ -9,12 +9,12 @@ const PREF_EM_SHOW_MISMATCH_UI        = "extensions.showMismatchUI";
 // The test extension uses an insecure update url.
 Services.prefs.setBoolPref("extensions.checkUpdateSecurity", false);
 
-const Cc = Components.classes;
-const Ci = Components.interfaces;
-const Cu = Components.utils;
-const Cr = Components.results;
+var Cc = Components.classes;
+var Ci = Components.interfaces;
+var Cu = Components.utils;
+var Cr = Components.results;
 
-Cu.import("resource://testing-common/httpd.js");
+Cu.import("resource://testing-common/MockRegistrar.jsm");
 var testserver;
 
 const profileDir = gProfD.clone();
@@ -26,21 +26,21 @@ var gCheckUpdates = false;
 // This will be called to show the compatibility update dialog.
 var WindowWatcher = {
   expected: false,
-  arguments: null,
+  args: null,
 
-  openWindow: function(parent, url, name, features, arguments) {
+  openWindow: function(parent, url, name, features, args) {
     do_check_true(Services.startup.interrupted);
     do_check_eq(url, URI_EXTENSION_UPDATE_DIALOG);
     do_check_true(this.expected);
     this.expected = false;
-    this.arguments = arguments.QueryInterface(AM_Ci.nsIVariant);
+    this.args = args.QueryInterface(AM_Ci.nsIVariant);
 
     var updated = !gCheckUpdates;
     if (gCheckUpdates) {
-      AddonManager.getAddonByID("bug542391_6@tests.mozilla.org", function(a6) {
+      AddonManager.getAddonByID("override1x2-1x3@tests.mozilla.org", function(a6) {
         a6.findUpdates({
           onUpdateFinished: function() {
-            AddonManagerPrivate.removeStartupChange("disabled", "bug542391_6@tests.mozilla.org");
+            AddonManagerPrivate.removeStartupChange("disabled", "override1x2-1x3@tests.mozilla.org");
             updated = true;
           }
         }, AddonManager.UPDATE_WHEN_NEW_APP_INSTALLED);
@@ -50,9 +50,9 @@ var WindowWatcher = {
     var installed = !gInstallUpdate;
     if (gInstallUpdate) {
       // Simulate installing an update while in the dialog
-      installAllFiles([do_get_addon("test_bug542391_3_2")], function() {
-        AddonManagerPrivate.removeStartupChange("disabled", "bug542391_3@tests.mozilla.org");
-        AddonManagerPrivate.addStartupChange("updated", "bug542391_3@tests.mozilla.org");
+      installAllFiles([do_get_addon("upgradeable1x2-3_2")], function() {
+        AddonManagerPrivate.removeStartupChange("disabled", "upgradeable1x2-3@tests.mozilla.org");
+        AddonManagerPrivate.addStartupChange("updated", "upgradeable1x2-3@tests.mozilla.org");
         installed = true;
       });
     }
@@ -77,18 +77,7 @@ var WindowWatcher = {
   }
 }
 
-var WindowWatcherFactory = {
-  createInstance: function createInstance(outer, iid) {
-    if (outer != null)
-      throw Components.results.NS_ERROR_NO_AGGREGATION;
-    return WindowWatcher.QueryInterface(iid);
-  }
-};
-
-var registrar = Components.manager.QueryInterface(Components.interfaces.nsIComponentRegistrar);
-registrar.registerFactory(Components.ID("{1dfeb90a-2193-45d5-9cb8-864928b2af55}"),
-                          "Fake Window Watcher",
-                          "@mozilla.org/embedcomp/window-watcher;1", WindowWatcherFactory);
+MockRegistrar.register("@mozilla.org/embedcomp/window-watcher;1", WindowWatcher);
 
 function check_state_v1([a1, a2, a3, a4, a5, a6]) {
   do_check_neq(a1, null);
@@ -287,8 +276,7 @@ function check_state_v3_2([a1, a2, a3, a4, a5, a6]) {
 
 // Install all the test add-ons, disable two of them and "upgrade" the app to
 // version 2 which will appDisable one.
-function run_test() {
-  do_test_pending();
+add_task(function* init() {
   createAppInfo("xpcshell@tests.mozilla.org", "XPCShell", "1", "1");
 
   Services.prefs.setBoolPref(PREF_EM_SHOW_MISMATCH_UI, true);
@@ -307,200 +295,170 @@ function run_test() {
   }, profileDir);
 
   // Create and configure the HTTP server.
-  testserver = new HttpServer();
+  testserver = createHttpServer(4444);
   testserver.registerDirectory("/data/", do_get_file("data"));
   testserver.registerDirectory("/addons/", do_get_file("addons"));
-  testserver.start(4444);
 
   startupManager();
 
+  // Remove the add-on we installed directly in the profile directory;
+  // this should show as uninstalled on next restart
   dest.remove(true);
 
-  installAllFiles([do_get_addon("test_bug542391_1"),
-                   do_get_addon("test_bug542391_2"),
-                   do_get_addon("test_bug542391_3_1"),
-                   do_get_addon("test_bug542391_4"),
-                   do_get_addon("test_bug542391_5"),
-                   do_get_addon("test_bug542391_6")], function() {
+  // Load up an initial set of add-ons
+  yield promiseInstallAllFiles([do_get_addon("min1max1"),
+                                do_get_addon("min1max2"),
+                                do_get_addon("upgradeable1x2-3_1"),
+                                do_get_addon("min1max3"),
+                                do_get_addon("min1max3b"),
+                                do_get_addon("override1x2-1x3")]);
+  yield promiseRestartManager();
 
-    restartManager();
-    check_startup_changes("installed", []);
-    check_startup_changes("updated", []);
-    check_startup_changes("uninstalled", ["addon1@tests.mozilla.org"]);
-    check_startup_changes("disabled", []);
-    check_startup_changes("enabled", []);
-
-    AddonManager.getAddonsByIDs(["bug542391_2@tests.mozilla.org",
-                                 "bug542391_4@tests.mozilla.org"],
-                                 function([a2, a4]) {
-      a2.userDisabled = true;
-      a4.userDisabled = true;
-      restartManager();
-      check_startup_changes("installed", []);
-      check_startup_changes("updated", []);
-      check_startup_changes("uninstalled", []);
-      check_startup_changes("disabled", []);
-      check_startup_changes("enabled", []);
-
-      AddonManager.getAddonsByIDs(["bug542391_1@tests.mozilla.org",
-                                   "bug542391_2@tests.mozilla.org",
-                                   "bug542391_3@tests.mozilla.org",
-                                   "bug542391_4@tests.mozilla.org",
-                                   "bug542391_5@tests.mozilla.org",
-                                   "bug542391_6@tests.mozilla.org"],
-                                   function(addons) {
-        check_state_v1(addons);
-
-        WindowWatcher.expected = true;
-        restartManager("2");
-        check_startup_changes("installed", []);
-        check_startup_changes("updated", []);
-        check_startup_changes("uninstalled", []);
-        check_startup_changes("disabled", ["bug542391_1@tests.mozilla.org"]);
-        check_startup_changes("enabled", []);
-        do_check_false(WindowWatcher.expected);
-
-        AddonManager.getAddonsByIDs(["bug542391_1@tests.mozilla.org",
-                                     "bug542391_2@tests.mozilla.org",
-                                     "bug542391_3@tests.mozilla.org",
-                                     "bug542391_4@tests.mozilla.org",
-                                     "bug542391_5@tests.mozilla.org",
-                                     "bug542391_6@tests.mozilla.org"],
-                                     function(addons) {
-          check_state_v2(addons);
-
-          run_test_1();
-        });
-      });
-    });
-  });
-}
-
-function end_test() {
-  testserver.stop(do_test_finished);
-}
-
-// Upgrade to version 3 which will appDisable two more add-ons. Check that the
-// 3 already disabled add-ons were passed to the mismatch dialog.
-function run_test_1() {
-  gCheckUpdates = true;
-  WindowWatcher.expected = true;
-  restartManager("3");
   check_startup_changes("installed", []);
   check_startup_changes("updated", []);
-  check_startup_changes("uninstalled", []);
-  check_startup_changes("disabled", ["bug542391_3@tests.mozilla.org"]);
+  check_startup_changes("uninstalled", ["addon1@tests.mozilla.org"]);
+  check_startup_changes("disabled", []);
   check_startup_changes("enabled", []);
-  do_check_false(WindowWatcher.expected);
-  gCheckUpdates = false;
 
-  AddonManager.getAddonsByIDs(["bug542391_1@tests.mozilla.org",
-                               "bug542391_2@tests.mozilla.org",
-                               "bug542391_3@tests.mozilla.org",
-                               "bug542391_4@tests.mozilla.org",
-                               "bug542391_5@tests.mozilla.org",
-                               "bug542391_6@tests.mozilla.org"],
-                               function(addons) {
-    check_state_v3(addons);
-
-    do_check_eq(WindowWatcher.arguments.length, 3);
-    do_check_true(WindowWatcher.arguments.indexOf("bug542391_1@tests.mozilla.org") >= 0);
-    do_check_true(WindowWatcher.arguments.indexOf("bug542391_2@tests.mozilla.org") >= 0);
-    do_check_true(WindowWatcher.arguments.indexOf("bug542391_4@tests.mozilla.org") >= 0);
-
-    run_test_2();
-  });
-}
-
-// Downgrade to version 2 which will remove appDisable from two add-ons and
-// should pass all 4 previously disabled add-ons.
-function run_test_2() {
-  WindowWatcher.expected = true;
-  restartManager("2");
+  // user-disable two add-ons
+  let [a2, a4] = yield promiseAddonsByIDs(["min1max2@tests.mozilla.org",
+                                           "min1max3@tests.mozilla.org"]);
+  do_check_true(a2 != null && a4 != null);
+  a2.userDisabled = true;
+  a4.userDisabled = true;
+  yield promiseRestartManager();
   check_startup_changes("installed", []);
   check_startup_changes("updated", []);
   check_startup_changes("uninstalled", []);
   check_startup_changes("disabled", []);
-  check_startup_changes("enabled", ["bug542391_3@tests.mozilla.org"]);
+  check_startup_changes("enabled", []);
+
+  let addons = yield promiseAddonsByIDs(["min1max1@tests.mozilla.org",
+                                         "min1max2@tests.mozilla.org",
+                                         "upgradeable1x2-3@tests.mozilla.org",
+                                         "min1max3@tests.mozilla.org",
+                                         "min1max3b@tests.mozilla.org",
+                                         "override1x2-1x3@tests.mozilla.org"]);
+  check_state_v1(addons);
+
+  // Restart as version 2, add-on _1 should become app-disabled
+  WindowWatcher.expected = true;
+  yield promiseRestartManager("2");
+  check_startup_changes("installed", []);
+  check_startup_changes("updated", []);
+  check_startup_changes("uninstalled", []);
+  check_startup_changes("disabled", ["min1max1@tests.mozilla.org"]);
+  check_startup_changes("enabled", []);
   do_check_false(WindowWatcher.expected);
 
-  AddonManager.getAddonsByIDs(["bug542391_1@tests.mozilla.org",
-                               "bug542391_2@tests.mozilla.org",
-                               "bug542391_3@tests.mozilla.org",
-                               "bug542391_4@tests.mozilla.org",
-                               "bug542391_5@tests.mozilla.org",
-                               "bug542391_6@tests.mozilla.org"],
-                               function(addons) {
-    check_state_v2(addons);
+  addons = yield promiseAddonsByIDs(["min1max1@tests.mozilla.org",
+                                     "min1max2@tests.mozilla.org",
+                                     "upgradeable1x2-3@tests.mozilla.org",
+                                     "min1max3@tests.mozilla.org",
+                                     "min1max3b@tests.mozilla.org",
+                                     "override1x2-1x3@tests.mozilla.org"]);
+  check_state_v2(addons);
+});
 
-    do_check_eq(WindowWatcher.arguments.length, 4);
-    do_check_true(WindowWatcher.arguments.indexOf("bug542391_1@tests.mozilla.org") >= 0);
-    do_check_true(WindowWatcher.arguments.indexOf("bug542391_2@tests.mozilla.org") >= 0);
-    do_check_true(WindowWatcher.arguments.indexOf("bug542391_3@tests.mozilla.org") >= 0);
-    do_check_true(WindowWatcher.arguments.indexOf("bug542391_4@tests.mozilla.org") >= 0);
+// Upgrade to version 3 which will appDisable addons
+// upgradeable1x2-3 and override1x2-1x3
+// Only the newly disabled add-ons should be passed to the
+// upgrade window
+add_task(function* run_test_1() {
+  gCheckUpdates = true;
+  WindowWatcher.expected = true;
 
-    run_test_5();
-  });
-}
+  yield promiseRestartManager("3");
+  check_startup_changes("installed", []);
+  check_startup_changes("updated", []);
+  check_startup_changes("uninstalled", []);
+  check_startup_changes("disabled", ["upgradeable1x2-3@tests.mozilla.org"]);
+  check_startup_changes("enabled", []);
+  do_check_false(WindowWatcher.expected);
+  gCheckUpdates = false;
 
-// Upgrade to version 3 which will appDisable two more add-ons. Check that when
+  let addons = yield promiseAddonsByIDs(["min1max1@tests.mozilla.org",
+                                         "min1max2@tests.mozilla.org",
+                                         "upgradeable1x2-3@tests.mozilla.org",
+                                         "min1max3@tests.mozilla.org",
+                                         "min1max3b@tests.mozilla.org",
+                                         "override1x2-1x3@tests.mozilla.org"]);
+  check_state_v3(addons);
+
+  do_check_eq(WindowWatcher.args.length, 2);
+  do_check_true(WindowWatcher.args.indexOf("upgradeable1x2-3@tests.mozilla.org") >= 0);
+  do_check_true(WindowWatcher.args.indexOf("override1x2-1x3@tests.mozilla.org") >= 0);
+});
+
+// Downgrade to version 2 which will remove appDisable from two add-ons
+// Still displays the compat window, because metadata is not recently updated
+add_task(function* run_test_2() {
+  WindowWatcher.expected = true;
+  yield promiseRestartManager("2");
+  check_startup_changes("installed", []);
+  check_startup_changes("updated", []);
+  check_startup_changes("uninstalled", []);
+  check_startup_changes("disabled", []);
+  check_startup_changes("enabled", ["upgradeable1x2-3@tests.mozilla.org"]);
+  do_check_false(WindowWatcher.expected);
+
+  let addons = yield promiseAddonsByIDs(["min1max1@tests.mozilla.org",
+                                         "min1max2@tests.mozilla.org",
+                                         "upgradeable1x2-3@tests.mozilla.org",
+                                         "min1max3@tests.mozilla.org",
+                                         "min1max3b@tests.mozilla.org",
+                                         "override1x2-1x3@tests.mozilla.org"]);
+  check_state_v2(addons);
+});
+
+// Upgrade back to version 3 which should only appDisable
+// upgradeable1x2-3, because we already have the override
+// stored in our DB for override1x2-1x3. Ensure that when
 // the upgrade dialog updates an add-on no restart is necessary
-function run_test_5() {
+add_task(function* run_test_5() {
   Services.prefs.setBoolPref(PREF_EM_SHOW_MISMATCH_UI, true);
+  // tell the mock compatibility window to install the available upgrade
   gInstallUpdate = true;
 
   WindowWatcher.expected = true;
-  restartManager("3");
+  yield promiseRestartManager("3");
   check_startup_changes("installed", []);
-  check_startup_changes("updated", ["bug542391_3@tests.mozilla.org"]);
+  check_startup_changes("updated", ["upgradeable1x2-3@tests.mozilla.org"]);
   check_startup_changes("uninstalled", []);
   check_startup_changes("disabled", []);
   check_startup_changes("enabled", []);
   do_check_false(WindowWatcher.expected);
   gInstallUpdate = false;
 
-  AddonManager.getAddonsByIDs(["bug542391_1@tests.mozilla.org",
-                               "bug542391_2@tests.mozilla.org",
-                               "bug542391_3@tests.mozilla.org",
-                               "bug542391_4@tests.mozilla.org",
-                               "bug542391_5@tests.mozilla.org",
-                               "bug542391_6@tests.mozilla.org"],
-                               function(addons) {
-    check_state_v3_2(addons);
+  let addons = yield promiseAddonsByIDs(["min1max1@tests.mozilla.org",
+                                         "min1max2@tests.mozilla.org",
+                                         "upgradeable1x2-3@tests.mozilla.org",
+                                         "min1max3@tests.mozilla.org",
+                                         "min1max3b@tests.mozilla.org",
+                                         "override1x2-1x3@tests.mozilla.org"]);
+  check_state_v3_2(addons);
 
-    do_check_eq(WindowWatcher.arguments.length, 3);
-    do_check_true(WindowWatcher.arguments.indexOf("bug542391_1@tests.mozilla.org") >= 0);
-    do_check_true(WindowWatcher.arguments.indexOf("bug542391_2@tests.mozilla.org") >= 0);
-    do_check_true(WindowWatcher.arguments.indexOf("bug542391_4@tests.mozilla.org") >= 0);
-
-    run_test_6();
-  });
-}
+  do_check_eq(WindowWatcher.args.length, 1);
+  do_check_true(WindowWatcher.args.indexOf("upgradeable1x2-3@tests.mozilla.org") >= 0);
+});
 
 // Downgrade to version 1 which will appEnable all the add-ons
-function run_test_6() {
+// except upgradeable1x2-3; the update we installed isn't compatible with 1
+add_task(function* run_test_6() {
   WindowWatcher.expected = true;
-  restartManager("1");
+  yield promiseRestartManager("1");
   check_startup_changes("installed", []);
   check_startup_changes("updated", []);
   check_startup_changes("uninstalled", []);
-  check_startup_changes("disabled", ["bug542391_3@tests.mozilla.org"]);
-  check_startup_changes("enabled", ["bug542391_1@tests.mozilla.org"]);
+  check_startup_changes("disabled", ["upgradeable1x2-3@tests.mozilla.org"]);
+  check_startup_changes("enabled", ["min1max1@tests.mozilla.org"]);
   do_check_false(WindowWatcher.expected);
 
-  AddonManager.getAddonsByIDs(["bug542391_1@tests.mozilla.org",
-                               "bug542391_2@tests.mozilla.org",
-                               "bug542391_3@tests.mozilla.org",
-                               "bug542391_4@tests.mozilla.org",
-                               "bug542391_5@tests.mozilla.org",
-                               "bug542391_6@tests.mozilla.org"],
-                               function(addons) {
-    check_state_v1_2(addons);
-
-    finish_test();
-  });
-}
-
-function finish_test() {
-  do_test_finished();
-}
+  let addons = yield promiseAddonsByIDs(["min1max1@tests.mozilla.org",
+                                         "min1max2@tests.mozilla.org",
+                                         "upgradeable1x2-3@tests.mozilla.org",
+                                         "min1max3@tests.mozilla.org",
+                                         "min1max3b@tests.mozilla.org",
+                                         "override1x2-1x3@tests.mozilla.org"]);
+  check_state_v1_2(addons);
+});

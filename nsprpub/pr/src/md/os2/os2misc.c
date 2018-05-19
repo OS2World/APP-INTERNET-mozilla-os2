@@ -573,8 +573,11 @@ void * _MD_MemMap(PRFileMap *fmap, PROffset64 offset, PRUint32 len)
         return NULL;
     }
     /* try for high memory, fall back to low memory if hi-mem fails */
+#if defined(MOZ_OS2_HIGH_MEMORY)
     rv = DosAllocMem(&addr, len, OBJ_ANY | PAG_COMMIT | PAG_READ | PAG_WRITE);
-    if (rv) {
+    if (rv)
+#endif
+    {
         rv = DosAllocMem(&addr, len, PAG_COMMIT | PAG_READ | PAG_WRITE);
         if (rv) {
             PR_SetError(PR_OUT_OF_MEMORY_ERROR, rv);
@@ -617,3 +620,12 @@ PRStatus _MD_CloseFileMap(PRFileMap *fmap)
     return PR_SUCCESS;
 }
 
+PRStatus _MD_SyncMemMap(
+    PRFileDesc *fd,
+    void *addr,
+    PRUint32 len)
+{
+    /* Since modifying the mapped file is not supported ATM, sync is neither */
+    PR_SetError(PR_NOT_IMPLEMENTED_ERROR, 0);
+    return PR_FAILURE;
+}

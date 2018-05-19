@@ -9,6 +9,7 @@
 #include "nsMemory.h"
 #include "nsString.h"
 #include "nsNativeCharsetUtils.h"
+#include "xpc_make_class.h"
 
 #define JSREFLECT_CONTRACTID \
   "@mozilla.org/jsreflect;1"
@@ -21,7 +22,7 @@ namespace reflect {
 
 NS_GENERIC_FACTORY_CONSTRUCTOR(Module)
 
-NS_IMPL_ISUPPORTS1(Module, nsIXPCScriptable)
+NS_IMPL_ISUPPORTS(Module, nsIXPCScriptable)
 
 Module::Module()
 {
@@ -44,27 +45,27 @@ Module::Call(nsIXPConnectWrappedNative* wrapper,
              const JS::CallArgs& args,
              bool* _retval)
 {
-  JSObject* global = JS_GetGlobalForScopeChain(cx);
+  JS::Rooted<JSObject*> global(cx, JS::CurrentGlobalOrNull(cx));
   if (!global)
     return NS_ERROR_NOT_AVAILABLE;
 
-  *_retval = !!JS_InitReflect(cx, global);
+  *_retval = JS_InitReflectParse(cx, global);
   return NS_OK;
 }
 
-}
-}
+} // namespace reflect
+} // namespace mozilla
 
 NS_DEFINE_NAMED_CID(JSREFLECT_CID);
 
 static const mozilla::Module::CIDEntry kReflectCIDs[] = {
-  { &kJSREFLECT_CID, false, NULL, mozilla::reflect::ModuleConstructor },
-  { NULL }
+  { &kJSREFLECT_CID, false, nullptr, mozilla::reflect::ModuleConstructor },
+  { nullptr }
 };
 
 static const mozilla::Module::ContractIDEntry kReflectContracts[] = {
   { JSREFLECT_CONTRACTID, &kJSREFLECT_CID },
-  { NULL }
+  { nullptr }
 };
 
 static const mozilla::Module kReflectModule = {

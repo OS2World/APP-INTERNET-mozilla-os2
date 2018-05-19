@@ -2,22 +2,29 @@
  * http://creativecommons.org/publicdomain/zero/1.0/
  */
 
+// This should eventually be moved to head_addons.js
+var { classes: Cc, interfaces: Ci, utils: Cu, results: Cr } = Components;
+
 // Test whether a machine which is newer than the equal
 // blacklist entry is allowed.
 // Uses test_gfxBlacklist.xml
 
-Components.utils.import("resource://testing-common/httpd.js");
+Cu.import("resource://testing-common/httpd.js");
 
-var gTestserver = null;
+var gTestserver = new HttpServer();
+gTestserver.start(-1);
+gPort = gTestserver.identity.primaryPort;
+mapFile("/data/test_gfxBlacklist.xml", gTestserver);
 
 function get_platform() {
-  var xulRuntime = Components.classes["@mozilla.org/xre/app-info;1"]
-                             .getService(Components.interfaces.nsIXULRuntime);
+  var xulRuntime = Cc["@mozilla.org/xre/app-info;1"]
+                             .getService(Ci.nsIXULRuntime);
   return xulRuntime.OS;
 }
 
 function load_blocklist(file) {
-  Services.prefs.setCharPref("extensions.blocklist.url", "http://localhost:4444/data/" + file);
+  Services.prefs.setCharPref("extensions.blocklist.url", "http://localhost:" +
+                             gPort + "/data/" + file);
   var blocklist = Cc["@mozilla.org/extensions/blocklist;1"].
                   getService(Ci.nsITimerCallback);
   blocklist.notify(null);
@@ -25,12 +32,7 @@ function load_blocklist(file) {
 
 // Performs the initial setup
 function run_test() {
-  try {
-    var gfxInfo = Cc["@mozilla.org/gfx/info;1"].getService(Ci.nsIGfxInfo);
-  } catch (e) {
-    do_test_finished();
-    return;
-  }
+  var gfxInfo = Cc["@mozilla.org/gfx/info;1"].getService(Ci.nsIGfxInfo);
 
   // We can't do anything if we can't spoof the stuff we need.
   if (!(gfxInfo instanceof Ci.nsIGfxInfoDebug)) {
@@ -54,7 +56,7 @@ function run_test() {
       do_test_finished();
       return;
     case "Darwin":
-      // We don't support driver versions on Darwin.
+      // We don't support driver versions on OS X.
       do_test_finished();
       return;
     case "Android":
@@ -64,23 +66,49 @@ function run_test() {
       break;
   }
 
-  createAppInfo("xpcshell@tests.mozilla.org", "XPCShell", "3", "8");
+  createAppInfo("xpcshell@tests.mozilla.org", "XPCShell", "15.0", "8");
   startupManager();
-
-  gTestserver = new HttpServer();
-  gTestserver.registerDirectory("/data/", do_get_file("data"));
-  gTestserver.start(4444);
 
   do_test_pending();
 
   function checkBlacklist()
   {
     var status = gfxInfo.getFeatureStatus(Ci.nsIGfxInfo.FEATURE_DIRECT2D);
-    do_check_eq(status, Ci.nsIGfxInfo.FEATURE_NO_INFO);
+    do_check_eq(status, Ci.nsIGfxInfo.FEATURE_STATUS_OK);
 
     // Make sure unrelated features aren't affected
     status = gfxInfo.getFeatureStatus(Ci.nsIGfxInfo.FEATURE_DIRECT3D_9_LAYERS);
-    do_check_eq(status, Ci.nsIGfxInfo.FEATURE_NO_INFO);
+    do_check_eq(status, Ci.nsIGfxInfo.FEATURE_STATUS_OK);
+
+    status = gfxInfo.getFeatureStatus(Ci.nsIGfxInfo.FEATURE_DIRECT3D_11_LAYERS);
+    do_check_eq(status, Ci.nsIGfxInfo.FEATURE_STATUS_OK);
+
+    status = gfxInfo.getFeatureStatus(Ci.nsIGfxInfo.FEATURE_OPENGL_LAYERS);
+    do_check_eq(status, Ci.nsIGfxInfo.FEATURE_STATUS_OK);
+
+    status = gfxInfo.getFeatureStatus(Ci.nsIGfxInfo.FEATURE_DIRECT3D_11_ANGLE);
+    do_check_eq(status, Ci.nsIGfxInfo.FEATURE_BLOCKED_DRIVER_VERSION);
+
+    status = gfxInfo.getFeatureStatus(Ci.nsIGfxInfo.FEATURE_HARDWARE_VIDEO_DECODING);
+    do_check_eq(status, Ci.nsIGfxInfo.FEATURE_BLOCKED_DRIVER_VERSION);
+
+    status = gfxInfo.getFeatureStatus(Ci.nsIGfxInfo.FEATURE_WEBRTC_HW_ACCELERATION);
+    do_check_eq(status, Ci.nsIGfxInfo.FEATURE_BLOCKED_DRIVER_VERSION);
+
+    status = gfxInfo.getFeatureStatus(Ci.nsIGfxInfo.FEATURE_WEBRTC_HW_ACCELERATION_DECODE);
+    do_check_eq(status, Ci.nsIGfxInfo.FEATURE_BLOCKED_DRIVER_VERSION);
+
+    status = gfxInfo.getFeatureStatus(Ci.nsIGfxInfo.FEATURE_WEBRTC_HW_ACCELERATION_ENCODE);
+    do_check_eq(status, Ci.nsIGfxInfo.FEATURE_BLOCKED_DRIVER_VERSION);
+
+    status = gfxInfo.getFeatureStatus(Ci.nsIGfxInfo.FEATURE_WEBGL_MSAA);
+    do_check_eq(status, Ci.nsIGfxInfo.FEATURE_BLOCKED_DRIVER_VERSION);
+
+    status = gfxInfo.getFeatureStatus(Ci.nsIGfxInfo.FEATURE_WEBGL_ANGLE);
+    do_check_eq(status, Ci.nsIGfxInfo.FEATURE_STATUS_OK);
+
+    status = gfxInfo.getFeatureStatus(Ci.nsIGfxInfo.FEATURE_CANVAS2D_ACCELERATION);
+    do_check_eq(status, Ci.nsIGfxInfo.FEATURE_BLOCKED_DRIVER_VERSION);
 
     gTestserver.stop(do_test_finished);
   }

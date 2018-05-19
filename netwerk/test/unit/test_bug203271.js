@@ -4,12 +4,8 @@
 // specified in RFC 2616 section 14.9.3 by letting max-age
 // take precedence
 
-const Cc = Components.classes;
-const Ci = Components.interfaces;
-const Cu = Components.utils;
-const Cr = Components.results;
-
 Cu.import("resource://testing-common/httpd.js");
+Cu.import("resource://gre/modules/NetUtil.jsm");
 const BUGID = "203271";
 
 var httpserver = new HttpServer();
@@ -99,9 +95,10 @@ function logit(i, data, ctx) {
 }
 
 function setupChannel(suffix, value) {
-    var ios = Components.classes["@mozilla.org/network/io-service;1"].
-                         getService(Ci.nsIIOService);
-    var chan = ios.newChannel("http://localhost:4444" + suffix, "", null);
+    var chan = NetUtil.newChannel({
+        uri: "http://localhost:" + httpserver.identity.primaryPort + suffix,
+        loadUsingSystemPrincipal: true
+    });
     var httpChan = chan.QueryInterface(Components.interfaces.nsIHttpChannel);
     httpChan.requestMethod = "GET"; // default value, just being paranoid...
     httpChan.setRequestHeader("x-request", value, false);
@@ -110,7 +107,7 @@ function setupChannel(suffix, value) {
 
 function triggerNextTest() {
     var channel = setupChannel(tests[index].url, tests[index].server);
-    channel.asyncOpen(new ChannelListener(checkValueAndTrigger, channel), null);
+    channel.asyncOpen2(new ChannelListener(checkValueAndTrigger, channel));
 }
 
 function checkValueAndTrigger(request, data, ctx) {
@@ -131,7 +128,7 @@ function checkValueAndTrigger(request, data, ctx) {
 
 function run_test() {
     httpserver.registerPathHandler("/precedence", handler);
-    httpserver.start(4444);
+    httpserver.start(-1);
 
     // clear cache
     evict_cache_entries();

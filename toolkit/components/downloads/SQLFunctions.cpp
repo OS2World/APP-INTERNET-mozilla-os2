@@ -16,6 +16,11 @@
 #include "nsIRandomGenerator.h"
 #endif
 
+#ifdef XP_WIN
+#include <windows.h>
+#include <wincrypt.h>
+#endif
+
 // The length of guids that are used by the download manager
 #define GUID_LENGTH 12
 
@@ -44,7 +49,7 @@ GenerateGUIDFunction::create(mozIStorageConnection *aDBConn)
   NS_ENSURE_STATE(rg);
 #endif
 
-  nsRefPtr<GenerateGUIDFunction> function = new GenerateGUIDFunction();
+  RefPtr<GenerateGUIDFunction> function = new GenerateGUIDFunction();
   nsresult rv = aDBConn->CreateFunction(
     NS_LITERAL_CSTRING("generate_guid"), 0, function
   );
@@ -53,7 +58,7 @@ GenerateGUIDFunction::create(mozIStorageConnection *aDBConn)
   return NS_OK;
 }
 
-NS_IMPL_THREADSAFE_ISUPPORTS1(
+NS_IMPL_ISUPPORTS(
     GenerateGUIDFunction,
     mozIStorageFunction
 )
@@ -64,12 +69,12 @@ Base64urlEncode(const uint8_t* aBytes,
                 uint32_t aNumBytes,
                 nsCString& _result)
 {
-  // SetLength does not set aside space for NULL termination.  PL_Base64Encode
-  // will not NULL terminate, however, nsCStrings must be NULL terminated.  As a
+  // SetLength does not set aside space for null termination.  PL_Base64Encode
+  // will not null terminate, however, nsCStrings must be null terminated.  As a
   // result, we set the capacity to be one greater than what we need, and the
   // length to our desired length.
   uint32_t length = (aNumBytes + 2) / 3 * 4; // +2 due to integer math.
-  NS_ENSURE_TRUE(_result.SetCapacity(length + 1, mozilla::fallible_t()),
+  NS_ENSURE_TRUE(_result.SetCapacity(length + 1, mozilla::fallible),
                  NS_ERROR_OUT_OF_MEMORY);
   _result.SetLength(length);
   (void)PL_Base64Encode(reinterpret_cast<const char*>(aBytes), aNumBytes,
@@ -81,13 +86,6 @@ Base64urlEncode(const uint8_t* aBytes,
   _result.ReplaceChar('/', '_');
   return NS_OK;
 }
-
-#ifdef XP_WIN
-// Included here because windows.h conflicts with the use of mozIStorageError
-// above.
-#include <windows.h>
-#include <wincrypt.h>
-#endif
 
 static
 nsresult
@@ -168,5 +166,5 @@ GenerateGUIDFunction::OnFunctionCall(mozIStorageValueArray *aArguments,
   return NS_OK;
 }
 
-} // namespace mozilla
 } // namespace downloads
+} // namespace mozilla

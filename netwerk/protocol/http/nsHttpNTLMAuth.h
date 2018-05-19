@@ -7,6 +7,8 @@
 
 #include "nsIHttpAuthenticator.h"
 
+namespace mozilla { namespace net {
+
 class nsHttpNTLMAuth : public nsIHttpAuthenticator
 {
 public:
@@ -14,12 +16,16 @@ public:
     NS_DECL_NSIHTTPAUTHENTICATOR
 
     nsHttpNTLMAuth() {}
-    virtual ~nsHttpNTLMAuth() {}
 
 private:
+    virtual ~nsHttpNTLMAuth() {}
+
     // This flag indicates whether we are using the native NTLM implementation
     // or the internal one.
     bool  mUseNative;
 };
+
+} // namespace net
+} // namespace mozilla
 
 #endif // !nsHttpNTLMAuth_h__

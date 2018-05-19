@@ -1,11 +1,12 @@
-const Cc = Components.classes;
-const Ci = Components.interfaces;
+var Cc = Components.classes;
+var Ci = Components.interfaces;
 
 var addedTopic = "xpcom-category-entry-added";
 var removedTopic = "xpcom-category-entry-removed";
 var testCategory = "bug-test-category";
 var testEntry = "@mozilla.org/bug-test-entry;1";
 
+var testValue= "check validity";
 var result = "";
 var expected = "add remove add remove ";
 var timer;
@@ -49,8 +50,8 @@ function run_test() {
   observerService.addObserver(observer, removedTopic, false);
 
   var categoryManager = Cc["@mozilla.org/categorymanager;1"].getService(Ci.nsICategoryManager);
-  categoryManager.addCategoryEntry(testCategory, testEntry, testEntry, false, true);
-  categoryManager.addCategoryEntry(testCategory, testEntry, testEntry, false, true);
+  categoryManager.addCategoryEntry(testCategory, testEntry, testValue, false, true);
+  categoryManager.addCategoryEntry(testCategory, testEntry, testValue, false, true);
   categoryManager.deleteCategoryEntry(testCategory, testEntry, false);
 
   timer = Cc["@mozilla.org/timer;1"].createInstance(Ci.nsITimer);

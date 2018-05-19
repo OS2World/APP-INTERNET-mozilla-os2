@@ -9,17 +9,16 @@
 #include "nsMenuUtilsX.h"
 #include "nsIDOMElement.h"
 #include "nsIMutationObserver.h"
-#include "nsEvent.h"
-#include "nsGUIEvent.h"
 #include "nsGkAtoms.h"
-#include "nsContentUtils.h"
 #include "nsObjCExceptions.h"
 
 
-NS_IMPL_ISUPPORTS2(nsStandaloneNativeMenu, nsIMutationObserver, nsIStandaloneNativeMenu)
+NS_IMPL_ISUPPORTS_INHERITED(nsStandaloneNativeMenu, nsMenuGroupOwnerX,
+                            nsIMutationObserver, nsIStandaloneNativeMenu)
 
 nsStandaloneNativeMenu::nsStandaloneNativeMenu()
 : mMenu(nullptr)
+, mContainerStatusBarItem(nil)
 {
 }
 
@@ -38,9 +37,7 @@ nsStandaloneNativeMenu::Init(nsIDOMElement * aDOMElement)
   nsCOMPtr<nsIContent> content = do_QueryInterface(aDOMElement, &rv);
   NS_ENSURE_SUCCESS(rv, rv);
 
-  nsIAtom * tag = content->Tag();
-  if (!content->IsXUL() ||
-      (tag != nsGkAtoms::menu && tag != nsGkAtoms::menupopup))
+  if (!content->IsAnyOfXULElements(nsGkAtoms::menu, nsGkAtoms::menupopup))
     return NS_ERROR_FAILURE;
 
   rv = nsMenuGroupOwnerX::Create(content);
@@ -54,6 +51,8 @@ nsStandaloneNativeMenu::Init(nsIDOMElement * aDOMElement)
     mMenu = nullptr;
     return rv;
   }
+
+  mMenu->SetupIcon();
 
   return NS_OK;
 }
@@ -136,7 +135,8 @@ nsStandaloneNativeMenu::ActivateNativeMenuItemAt(const nsAString& indexString)
   if (!mMenu)
     return NS_ERROR_NOT_INITIALIZED;
 
-  NSString * locationString = [NSString stringWithCharacters:indexString.BeginReading() length:indexString.Length()];
+  NSString * locationString = [NSString stringWithCharacters:reinterpret_cast<const unichar*>(indexString.BeginReading())
+                                                      length:indexString.Length()];
   NSMenu * menu = static_cast<NSMenu *> (mMenu->NativeData());
   NSMenuItem * item = NativeMenuItemWithLocation(menu, locationString);
 
@@ -163,7 +163,8 @@ nsStandaloneNativeMenu::ForceUpdateNativeMenuAt(const nsAString& indexString)
   if (!mMenu)
     return NS_ERROR_NOT_INITIALIZED;
 
-  NSString* locationString = [NSString stringWithCharacters:indexString.BeginReading() length:indexString.Length()];
+  NSString* locationString = [NSString stringWithCharacters:reinterpret_cast<const unichar*>(indexString.BeginReading())
+                                                     length:indexString.Length()];
   NSArray* indexes = [locationString componentsSeparatedByString:@"|"];
   unsigned int indexCount = [indexes count];
   if (indexCount == 0)
@@ -194,4 +195,19 @@ nsStandaloneNativeMenu::ForceUpdateNativeMenuAt(const nsAString& indexString)
   }
 
   return NS_OK;
+}
+
+void
+nsStandaloneNativeMenu::IconUpdated()
+{
+  if (mContainerStatusBarItem) {
+    [mContainerStatusBarItem setImage:[mMenu->NativeMenuItem() image]];
+  }
+}
+
+void
+nsStandaloneNativeMenu::SetContainerStatusBarItem(NSStatusItem* aItem)
+{
+  mContainerStatusBarItem = aItem;
+  IconUpdated();
 }

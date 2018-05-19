@@ -1,9 +1,5 @@
 /***********************************************************************
-Copyright (c) 2006-2012 IETF Trust and Skype Limited. All rights reserved.
-
-This file is extracted from RFC6716. Please see that RFC for additional
-information.
-
+Copyright (c) 2006-2011, Skype Limited. All rights reserved.
 Redistribution and use in source and binary forms, with or without
 modification, are permitted provided that the following conditions
 are met:
@@ -16,7 +12,7 @@ documentation and/or other materials provided with the distribution.
 names of specific contributors, may be used to endorse or promote
 products derived from this software without specific prior written
 permission.
-THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS “AS IS”
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
 AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
 IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
 ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE
@@ -45,7 +41,7 @@ void silk_process_NLSFs(
 {
     opus_int     i, doInterpolate;
     opus_int     NLSF_mu_Q20;
-    opus_int32   i_sqr_Q15;
+    opus_int16   i_sqr_Q15;
     opus_int16   pNLSF0_temp_Q15[ MAX_LPC_ORDER ];
     opus_int16   pNLSFW_QW[ MAX_LPC_ORDER ];
     opus_int16   pNLSFW0_temp_QW[ MAX_LPC_ORDER ];
@@ -83,7 +79,8 @@ void silk_process_NLSFs(
         /* Update NLSF weights with contribution from first half */
         i_sqr_Q15 = silk_LSHIFT( silk_SMULBB( psEncC->indices.NLSFInterpCoef_Q2, psEncC->indices.NLSFInterpCoef_Q2 ), 11 );
         for( i = 0; i < psEncC->predictLPCOrder; i++ ) {
-            pNLSFW_QW[ i ] = silk_SMLAWB( silk_RSHIFT( pNLSFW_QW[ i ], 1 ), pNLSFW0_temp_QW[ i ], i_sqr_Q15 );
+            pNLSFW_QW[ i ] = silk_ADD16( silk_RSHIFT( pNLSFW_QW[ i ], 1 ), silk_RSHIFT(
+                  silk_SMULBB( pNLSFW0_temp_QW[ i ], i_sqr_Q15 ), 16) );
             silk_assert( pNLSFW_QW[ i ] >= 1 );
         }
     }
@@ -104,6 +101,7 @@ void silk_process_NLSFs(
 
     } else {
         /* Copy LPC coefficients for first half from second half */
+        silk_assert( psEncC->predictLPCOrder <= MAX_LPC_ORDER );
         silk_memcpy( PredCoef_Q12[ 0 ], PredCoef_Q12[ 1 ], psEncC->predictLPCOrder * sizeof( opus_int16 ) );
     }
 }

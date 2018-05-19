@@ -7,9 +7,9 @@
 #ifndef _nsDiskCacheMap_h_
 #define _nsDiskCacheMap_h_
 
+#include "mozilla/MemoryReporting.h"
 #include <limits.h>
 
-#include "prtypes.h"
 #include "prnetdb.h"
 #include "nsDebug.h"
 #include "nsError.h"
@@ -408,8 +408,7 @@ public:
  *  Returns error if it detects change in format or cache wasn't closed.
  */
     nsresult  Open( nsIFile *  cacheDirectory,
-                    nsDiskCache::CorruptCacheInfo *  corruptInfo,
-                    bool reportCacheCleanTelemetryData);
+                    nsDiskCache::CorruptCacheInfo *  corruptInfo);
     nsresult  Close(bool flush);
     nsresult  Trim();
 
@@ -485,7 +484,7 @@ public:
     
     int32_t  EntryCount()  { return mHeader.mEntryCount; }
 
-    size_t  SizeOfExcludingThis(nsMallocSizeOfFun aMallocSizeOf);
+    size_t  SizeOfExcludingThis(mozilla::MallocSizeOf aMallocSizeOf);
 
 
 private:
@@ -542,8 +541,7 @@ private:
 
     // Initializes the _CACHE_CLEAN_ related functionality
     nsresult InitCacheClean(nsIFile *  cacheDirectory,
-                            nsDiskCache::CorruptCacheInfo *  corruptInfo,
-                            bool reportCacheCleanTelemetryData);
+                            nsDiskCache::CorruptCacheInfo *  corruptInfo);
     // Writes out a value of '0' or '1' in the _CACHE_CLEAN_ file
     nsresult WriteCacheClean(bool clean);
     // Resets the timout for revalidating the cache

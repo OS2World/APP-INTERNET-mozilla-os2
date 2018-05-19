@@ -6,7 +6,7 @@
 // the proper action is taken.
 EnableEngines(["addons"]);
 
-let phases = {
+var phases = {
   "phase01": "profile1",
   "phase02": "profile2",
   "phase03": "profile1",
@@ -19,10 +19,13 @@ const id = "restartless-xpi@tests.mozilla.org";
 
 // Install the add-on in 2 profiles.
 Phase("phase01", [
+  [Addons.verifyNot, [id]],
   [Addons.install, [id]],
+  [Addons.verify, [id], STATE_ENABLED],
   [Sync]
 ]);
 Phase("phase02", [
+  [Addons.verifyNot, [id]],
   [Sync],
   [Addons.verify, [id], STATE_ENABLED]
 ]);
@@ -31,9 +34,14 @@ Phase("phase02", [
 Phase("phase03", [
   [Sync], // Get GUID updates, potentially.
   [Addons.setEnabled, [id], STATE_DISABLED],
+  // We've changed the state, but don't want this profile to sync until phase5,
+  // so if we ran a validation now we'd be expecting to find errors.
+  [Addons.skipValidation]
 ]);
 Phase("phase04", [
+  [EnsureTracking],
   [Addons.uninstall, [id]],
+  [Sync]
 ]);
 
 // When we sync, the uninstall should take precedence because it was newer.

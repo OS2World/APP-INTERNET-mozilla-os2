@@ -10,15 +10,23 @@
  * liability, trademark and document use rules apply.
  */
 
-[PrefControlled]
-interface SpeechSynthesis {
+[Pref="media.webspeech.synth.enabled"]
+interface SpeechSynthesis : EventTarget{
   readonly attribute boolean pending;
   readonly attribute boolean speaking;
   readonly attribute boolean paused;
 
+  [UnsafeInPrerendering]
   void speak(SpeechSynthesisUtterance utterance);
   void cancel();
   void pause();
+  [UnsafeInPrerendering]
   void resume();
   sequence<SpeechSynthesisVoice> getVoices();
+
+  attribute EventHandler onvoiceschanged;
+
+  [ChromeOnly]
+  // Force an utterance to end. Circumvents bad speech service implementations.
+  void forceEnd();
 };

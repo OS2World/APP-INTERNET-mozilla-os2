@@ -8,15 +8,15 @@
  *  be found in the AUTHORS file in the root of the source tree.
  */
 
-#include "engine_configurations.h"
+#include "webrtc/engine_configurations.h"
 #if defined(COCOA_RENDERING)
 
-#include "video_render_nsopengl.h"
-#include "critical_section_wrapper.h"
-#include "event_wrapper.h"
-#include "trace.h"
-#include "thread_wrapper.h"
-#include "common_video/libyuv/include/webrtc_libyuv.h"
+#include "webrtc/common_video/libyuv/include/webrtc_libyuv.h"
+#include "webrtc/modules/video_render/mac/video_render_nsopengl.h"
+#include "webrtc/system_wrappers/interface/critical_section_wrapper.h"
+#include "webrtc/system_wrappers/interface/event_wrapper.h"
+#include "webrtc/system_wrappers/interface/thread_wrapper.h"
+#include "webrtc/system_wrappers/interface/trace.h"
 
 namespace webrtc {
 
@@ -36,7 +36,7 @@ _oldStretchedHeight( 0),
 _oldStretchedWidth( 0),
 _buffer( 0),
 _bufferSize( 0),
-_incommingBufferSize( 0),
+_incomingBufferSize( 0),
 _bufferIsUpdated( false),
 _numberOfStreams( 0),
 _pixelFormat( GL_RGBA),
@@ -64,7 +64,7 @@ VideoChannelNSOpenGL::~VideoChannelNSOpenGL()
 
 int VideoChannelNSOpenGL::ChangeContext(NSOpenGLContext *nsglContext)
 {
-    _owner->UnlockAGLCntx();
+    _owner->LockAGLCntx();
 
     _nsglContext = nsglContext;
     [_nsglContext makeCurrentContext];
@@ -74,10 +74,8 @@ int VideoChannelNSOpenGL::ChangeContext(NSOpenGLContext *nsglContext)
 
 }
 
-WebRtc_Word32 VideoChannelNSOpenGL::GetChannelProperties(float& left,
-        float& top,
-        float& right,
-        float& bottom)
+int32_t VideoChannelNSOpenGL::GetChannelProperties(float& left, float& top,
+                                                   float& right, float& bottom)
 {
 
     _owner->LockAGLCntx();
@@ -91,8 +89,8 @@ WebRtc_Word32 VideoChannelNSOpenGL::GetChannelProperties(float& left,
     return 0;
 }
 
-WebRtc_Word32 VideoChannelNSOpenGL::RenderFrame(
-  const WebRtc_UWord32 /*streamId*/, I420VideoFrame& videoFrame) {
+int32_t VideoChannelNSOpenGL::RenderFrame(
+  const uint32_t /*streamId*/, const I420VideoFrame& videoFrame) {
 
   _owner->LockAGLCntx();
 
@@ -152,7 +150,7 @@ int VideoChannelNSOpenGL::FrameSizeChange(int width, int height, int numberOfStr
         _bufferSize = 0;
     }
 
-    _incommingBufferSize = CalcBufferSize(kI420, _width, _height);
+    _incomingBufferSize = CalcBufferSize(kI420, _width, _height);
     _bufferSize = CalcBufferSize(kARGB, _width, _height);
     _buffer = new unsigned char [_bufferSize];
     memset(_buffer, 0, _bufferSize * sizeof(unsigned char));
@@ -217,8 +215,8 @@ int VideoChannelNSOpenGL::DeliverFrame(const I420VideoFrame& videoFrame) {
     return 0;
   }
 
-  int length = CalcBufferSize(kI420, videoFrame.width(), videoFrame.height());
-  if (length != _incommingBufferSize) {
+  if (CalcBufferSize(kI420, videoFrame.width(), videoFrame.height()) !=
+      _incomingBufferSize) {
     _owner->UnlockAGLCntx();
     return -1;
   }
@@ -369,7 +367,6 @@ _windowRef( (CocoaRenderView*)windowRef),
 _fullScreen( fullScreen),
 _id( iId),
 _nsglContextCritSec( *CriticalSectionWrapper::CreateCriticalSection()),
-_screenUpdateThread( 0),
 _screenUpdateEvent( 0),
 _nsglContext( 0),
 _nsglFullScreenContext( 0),
@@ -379,12 +376,12 @@ _windowWidth( 0),
 _windowHeight( 0),
 _nsglChannels( ),
 _zOrderToChannel( ),
-_threadID (0),
 _renderingIsPaused (FALSE),
 _windowRefSuperView(NULL),
 _windowRefSuperViewFrame(NSMakeRect(0,0,0,0))
 {
-    _screenUpdateThread = ThreadWrapper::CreateThread(ScreenUpdateThreadProc, this, kRealtimePriority);
+    _screenUpdateThread = ThreadWrapper::CreateThread(ScreenUpdateThreadProc,
+            this, "ScreenUpdateNSOpenGL");
     _screenUpdateEvent = EventWrapper::Create();
 }
 
@@ -422,7 +419,7 @@ int VideoRenderNSOpenGL::ChangeWindow(CocoaRenderView* newWindowRef)
  * If so then they will simply be restarted
  * If not then create them and continue
  */
-WebRtc_Word32 VideoRenderNSOpenGL::StartRender()
+int32_t VideoRenderNSOpenGL::StartRender()
 {
 
     LockAGLCntx();
@@ -433,13 +430,15 @@ WebRtc_Word32 VideoRenderNSOpenGL::StartRender()
         WEBRTC_TRACE(kTraceDebug, kTraceVideoRenderer, _id, "Restarting screenUpdateThread");
 
         // we already have the thread. Most likely StopRender() was called and they were paused
-        if(FALSE == _screenUpdateThread->Start(_threadID) ||
+        if(FALSE == _screenUpdateThread->Start() ||
                 FALSE == _screenUpdateEvent->StartTimer(true, 1000/MONITOR_FREQ))
         {
             WEBRTC_TRACE(kTraceError, kTraceVideoRenderer, _id, "Failed to restart screenUpdateThread or screenUpdateEvent");
             UnlockAGLCntx();
             return -1;
         }
+
+        _screenUpdateThread->SetPriority(kRealtimePriority);
 
         UnlockAGLCntx();
         return 0;
@@ -457,7 +456,7 @@ WebRtc_Word32 VideoRenderNSOpenGL::StartRender()
     UnlockAGLCntx();
     return 0;
 }
-WebRtc_Word32 VideoRenderNSOpenGL::StopRender()
+int32_t VideoRenderNSOpenGL::StopRender()
 {
 
     LockAGLCntx();
@@ -558,7 +557,8 @@ int VideoRenderNSOpenGL::setRenderTargetWindow()
         0
     };
 
-    NSOpenGLPixelFormat* fmt = [[NSOpenGLPixelFormat alloc] initWithAttributes: (NSOpenGLPixelFormatAttribute*) attribs];
+    NSOpenGLPixelFormat* fmt = [[[NSOpenGLPixelFormat alloc] initWithAttributes:
+                          (NSOpenGLPixelFormatAttribute*) attribs] autorelease];
 
     if(_windowRef)
     {
@@ -569,8 +569,6 @@ int VideoRenderNSOpenGL::setRenderTargetWindow()
         UnlockAGLCntx();
         return -1;
     }
-
-    [fmt release];
 
     _nsglContext = [_windowRef nsOpenGLContext];
     [_nsglContext makeCurrentContext];
@@ -599,7 +597,8 @@ int VideoRenderNSOpenGL::setRenderTargetFullScreen()
         0
     };
 
-    NSOpenGLPixelFormat* fmt = [[NSOpenGLPixelFormat alloc] initWithAttributes: (NSOpenGLPixelFormatAttribute*) attribs];
+    NSOpenGLPixelFormat* fmt = [[[NSOpenGLPixelFormat alloc] initWithAttributes:
+                          (NSOpenGLPixelFormatAttribute*) attribs] autorelease];
 
     // Store original superview and frame for use when exiting full screens
     _windowRefSuperViewFrame = [_windowRef frame];
@@ -625,8 +624,6 @@ int VideoRenderNSOpenGL::setRenderTargetFullScreen()
         UnlockAGLCntx();
         return -1;
     }
-
-    [fmt release];
 
     _nsglContext = [_windowRef nsOpenGLContext];
     [_nsglContext makeCurrentContext];
@@ -663,12 +660,10 @@ VideoRenderNSOpenGL::~VideoRenderNSOpenGL()
     }
 
     // Signal event to exit thread, then delete it
-    ThreadWrapper* tmpPtr = _screenUpdateThread;
-    _screenUpdateThread = NULL;
+    ThreadWrapper* tmpPtr = _screenUpdateThread.release();
 
     if (tmpPtr)
     {
-        tmpPtr->SetNotAlive();
         _screenUpdateEvent->Set();
         _screenUpdateEvent->StopTimer();
 
@@ -723,7 +718,8 @@ int VideoRenderNSOpenGL::Init()
         return -1;
     }
 
-    _screenUpdateThread->Start(_threadID);
+    _screenUpdateThread->Start();
+    _screenUpdateThread->SetPriority(kRealtimePriority);
 
     // Start the event triggering the render process
     unsigned int monitorFreq = 60;
@@ -792,7 +788,7 @@ int VideoRenderNSOpenGL::DeleteAllNSGLChannels()
     return 0;
 }
 
-WebRtc_Word32 VideoRenderNSOpenGL::DeleteNSGLChannel(const WebRtc_UWord32 channel)
+int32_t VideoRenderNSOpenGL::DeleteNSGLChannel(const uint32_t channel)
 {
 
     CriticalSectionScoped cs(&_nsglContextCritSec);
@@ -823,12 +819,12 @@ WebRtc_Word32 VideoRenderNSOpenGL::DeleteNSGLChannel(const WebRtc_UWord32 channe
     return 0;
 }
 
-WebRtc_Word32 VideoRenderNSOpenGL::GetChannelProperties(const WebRtc_UWord16 streamId,
-        WebRtc_UWord32& zOrder,
-        float& left,
-        float& top,
-        float& right,
-        float& bottom)
+int32_t VideoRenderNSOpenGL::GetChannelProperties(const uint16_t streamId,
+                                                  uint32_t& zOrder,
+                                                  float& left,
+                                                  float& top,
+                                                  float& right,
+                                                  float& bottom)
 {
 
     CriticalSectionScoped cs(&_nsglContextCritSec);
@@ -871,13 +867,12 @@ WebRtc_Word32 VideoRenderNSOpenGL::GetChannelProperties(const WebRtc_UWord16 str
 int VideoRenderNSOpenGL::StopThread()
 {
 
-    ThreadWrapper* tmpPtr = _screenUpdateThread;
-    WEBRTC_TRACE(kTraceInfo, kTraceVideoRenderer, _id, "%s Stopping thread ", __FUNCTION__, _screenUpdateThread);
-    _screenUpdateThread = NULL;
+    ThreadWrapper* tmpPtr = _screenUpdateThread.release();
+    WEBRTC_TRACE(kTraceInfo, kTraceVideoRenderer, _id,
+                 "%s Stopping thread ", __FUNCTION__, tmpPtr);
 
     if (tmpPtr)
     {
-        tmpPtr->SetNotAlive();
         _screenUpdateEvent->Set();
         if (tmpPtr->Stop())
         {
@@ -1180,23 +1175,15 @@ int VideoRenderNSOpenGL::GetWindowRect(Rect& rect)
     }
 }
 
-WebRtc_Word32 VideoRenderNSOpenGL::ChangeUniqueID(WebRtc_Word32 id)
-{
-
-    CriticalSectionScoped cs(&_nsglContextCritSec);
-    _id = id;
-    return 0;
-}
-
-WebRtc_Word32 VideoRenderNSOpenGL::SetText(const WebRtc_UWord8 /*textId*/,
-        const WebRtc_UWord8* /*text*/,
-        const WebRtc_Word32 /*textLength*/,
-        const WebRtc_UWord32 /*textColorRef*/,
-        const WebRtc_UWord32 /*backgroundColorRef*/,
-        const float /*left*/,
-        const float /*top*/,
-        const float /*right*/,
-        const float /*bottom*/)
+int32_t VideoRenderNSOpenGL::SetText(const uint8_t /*textId*/,
+                                     const uint8_t* /*text*/,
+                                     const int32_t /*textLength*/,
+                                     const uint32_t /*textColorRef*/,
+                                     const uint32_t /*backgroundColorRef*/,
+                                     const float /*left*/,
+                                     const float /*top*/,
+                                     const float /*right*/,
+                                     const float /*bottom*/)
 {
 
     return 0;
@@ -1262,6 +1249,6 @@ void VideoRenderNSOpenGL::UnlockAGLCntx()
  */
 
 
-} //namespace webrtc
+}  // namespace webrtc
 
 #endif // COCOA_RENDERING

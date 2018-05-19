@@ -6,18 +6,18 @@
 #include "HttpLog.h"
 
 #include "nsHttpActivityDistributor.h"
-#include "nsIChannel.h"
 #include "nsCOMPtr.h"
 #include "nsAutoPtr.h"
-#include "nsNetUtil.h"
 #include "nsThreadUtils.h"
 
-using namespace mozilla;
+namespace mozilla {
+namespace net {
+
 typedef nsMainThreadPtrHolder<nsIHttpActivityObserver> ObserverHolder;
 typedef nsMainThreadPtrHandle<nsIHttpActivityObserver> ObserverHandle;
 typedef nsTArray<ObserverHandle> ObserverArray;
 
-class nsHttpActivityEvent : public nsRunnable
+class nsHttpActivityEvent : public Runnable
 {
 public:
     nsHttpActivityEvent(nsISupports *aHttpChannel,
@@ -37,7 +37,7 @@ public:
     {
     }
 
-    NS_IMETHOD Run()
+    NS_IMETHOD Run() override
     {
         for (size_t i = 0 ; i < mObservers.Length() ; i++)
             mObservers[i]->ObserveActivity(mHttpChannel, mActivityType,
@@ -61,9 +61,9 @@ private:
     ObserverArray mObservers;
 };
 
-NS_IMPL_THREADSAFE_ISUPPORTS2(nsHttpActivityDistributor,
-                              nsIHttpActivityDistributor,
-                              nsIHttpActivityObserver)
+NS_IMPL_ISUPPORTS(nsHttpActivityDistributor,
+                  nsIHttpActivityDistributor,
+                  nsIHttpActivityObserver)
 
 nsHttpActivityDistributor::nsHttpActivityDistributor()
     : mLock("nsHttpActivityDistributor.mLock")
@@ -82,7 +82,7 @@ nsHttpActivityDistributor::ObserveActivity(nsISupports *aHttpChannel,
                                            uint64_t aExtraSizeData,
                                            const nsACString & aExtraStringData)
 {
-    nsRefPtr<nsIRunnable> event;
+    nsCOMPtr<nsIRunnable> event;
     {
         MutexAutoLock lock(mLock);
 
@@ -130,3 +130,6 @@ nsHttpActivityDistributor::RemoveObserver(nsIHttpActivityObserver *aObserver)
 
     return NS_OK;
 }
+
+} // namespace net
+} // namespace mozilla

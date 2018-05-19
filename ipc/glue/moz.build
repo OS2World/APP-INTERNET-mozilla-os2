@@ -1,55 +1,83 @@
-# -*- Mode: python; c-basic-offset: 4; indent-tabs-mode: nil; tab-width: 40 -*-
+# -*- Mode: python; indent-tabs-mode: nil; tab-width: 40 -*-
 # vim: set filetype=python:
 # This Source Code Form is subject to the terms of the Mozilla Public
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
-MODULE = 'ipc'
-
 EXPORTS += [
+    'nsIIPCBackgroundChildCreateCallback.h',
     'nsIIPCSerializableInputStream.h',
     'nsIIPCSerializableURI.h',
 ]
 
 EXPORTS.mozilla.ipc += [
-    'AsyncChannel.h',
+    'BackgroundChild.h',
+    'BackgroundParent.h',
+    'BackgroundUtils.h',
     'BrowserProcessSubThread.h',
+    'CrashReporterClient.h',
+    'CrashReporterHost.h',
+    'CrashReporterMetadataShmem.h',
     'CrossProcessMutex.h',
     'FileDescriptor.h',
+    'FileDescriptorSetChild.h',
+    'FileDescriptorSetParent.h',
     'FileDescriptorUtils.h',
     'GeckoChildProcessHost.h',
-    'IOThreadChild.h',
     'InputStreamUtils.h',
+    'IOThreadChild.h',
+    'IPCStreamUtils.h',
+    'MessageChannel.h',
+    'MessageLink.h',
+    'Neutering.h',
     'ProcessChild.h',
     'ProtocolUtils.h',
-    'RPCChannel.h',
     'ScopedXREEmbed.h',
+    'SendStream.h',
+    'SendStreamAlloc.h',
     'SharedMemory.h',
     'SharedMemoryBasic.h',
-    'SharedMemorySysV.h',
     'Shmem.h',
-    'SyncChannel.h',
+    'TaskFactory.h',
     'Transport.h',
     'URIUtils.h',
+    'WindowsMessageLoop.h',
 ]
 
+if CONFIG['MOZ_FAULTY'] == '1':
+    EXPORTS.mozilla.ipc += ['Faulty.h']
+    SOURCES += ['Faulty.cpp']
+
 if CONFIG['OS_ARCH'] == 'WINNT':
+    DEFINES['WEBRTC_WIN'] = True
     EXPORTS.mozilla.ipc += [
         'Transport_win.h',
     ]
-    CPP_SOURCES += [
+    SOURCES += [
         'SharedMemory_windows.cpp',
         'Transport_win.cpp',
         'WindowsMessageLoop.cpp',
-        'CrossProcessMutex_windows.cpp',
     ]
 else:
+    DEFINES['WEBRTC_POSIX'] = True
     EXPORTS.mozilla.ipc += [
         'Transport_posix.h',
     ]
-    CPP_SOURCES += [
+    UNIFIED_SOURCES += [
         'SharedMemory_posix.cpp',
         'Transport_posix.cpp',
+    ]
+
+if CONFIG['OS_ARCH'] == 'WINNT':
+    SOURCES += [
+        'CrossProcessMutex_windows.cpp',
+    ]
+elif not CONFIG['OS_ARCH'] in ('NetBSD', 'OpenBSD'):
+    UNIFIED_SOURCES += [
+        'CrossProcessMutex_posix.cpp',
+    ]
+else:
+    UNIFIED_SOURCES += [
         'CrossProcessMutex_unimplemented.cpp',
     ]
 
@@ -58,18 +86,31 @@ else:
 # impl.
 if CONFIG['OS_TARGET'] == 'Android':
     EXPORTS.mozilla.ipc += ['SharedMemoryBasic_android.h']
-    CPP_SOURCES += [
+    UNIFIED_SOURCES += [
         'SharedMemoryBasic_android.cpp',
+    ]
+elif CONFIG['OS_ARCH'] == 'Darwin':
+    EXPORTS.mozilla.ipc += ['SharedMemoryBasic_mach.h']
+    SOURCES += [
+        'SharedMemoryBasic_mach.mm',
     ]
 else:
     EXPORTS.mozilla.ipc += ['SharedMemoryBasic_chromium.h']
 
 if CONFIG['OS_ARCH'] == 'Linux':
-    CPP_SOURCES += [
+    UNIFIED_SOURCES += [
         'ProcessUtils_linux.cpp',
     ]
+elif CONFIG['OS_ARCH'] in ('DragonFly', 'FreeBSD', 'NetBSD', 'OpenBSD'):
+    UNIFIED_SOURCES += [
+        'ProcessUtils_bsd.cpp'
+    ]
+elif CONFIG['OS_ARCH'] == 'Darwin':
+    UNIFIED_SOURCES += [
+        'ProcessUtils_mac.mm'
+    ]
 else:
-    CPP_SOURCES += [
+    UNIFIED_SOURCES += [
         'ProcessUtils_none.cpp',
     ]
 
@@ -77,22 +118,93 @@ EXPORTS.ipc += [
     'IPCMessageUtils.h',
 ]
 
-CPP_SOURCES += [
-    'AsyncChannel.cpp',
+UNIFIED_SOURCES += [
+    'BackgroundImpl.cpp',
+    'BackgroundUtils.cpp',
     'BrowserProcessSubThread.cpp',
+    'CrashReporterClient.cpp',
+    'CrashReporterHost.cpp',
+    'CrashReporterMetadataShmem.cpp',
     'FileDescriptor.cpp',
     'FileDescriptorUtils.cpp',
-    'GeckoChildProcessHost.cpp',
     'InputStreamUtils.cpp',
+    'IPCMessageUtils.cpp',
+    'IPCStreamUtils.cpp',
+    'MessageChannel.cpp',
+    'MessageLink.cpp',
     'MessagePump.cpp',
     'ProcessChild.cpp',
     'ProtocolUtils.cpp',
-    'RPCChannel.cpp',
     'ScopedXREEmbed.cpp',
+    'SendStreamChild.cpp',
+    'SendStreamParent.cpp',
     'SharedMemory.cpp',
     'Shmem.cpp',
     'StringUtil.cpp',
-    'SyncChannel.cpp',
+]
+
+# GeckoChildProcessHost.cpp cannot be built in unified mode because it uses plarena.h.
+# URIUtils.cpp cannot be built in unified mode because of name clashes on strdup.
+SOURCES += [
+    'BackgroundChildImpl.cpp',
+    'BackgroundParentImpl.cpp',
+    'FileDescriptorSetChild.cpp',
+    'FileDescriptorSetParent.cpp',
+    'GeckoChildProcessHost.cpp',
     'URIUtils.cpp',
 ]
 
+if CONFIG['_MSC_VER']:
+    # This is intended as a temporary hack to support building with VS2015.
+    # 'reinterpret_cast': conversion from 'DWORD' to 'HANDLE' of greater size
+    SOURCES['BackgroundChildImpl.cpp'].flags += ['-wd4312']
+    SOURCES['BackgroundParentImpl.cpp'].flags += ['-wd4312']
+
+LOCAL_INCLUDES += [
+    '/caps',
+    '/dom/broadcastchannel',
+    '/dom/indexedDB',
+    '/dom/workers',
+    '/xpcom/build',
+]
+
+IPDL_SOURCES = [
+    'InputStreamParams.ipdlh',
+    'IPCStream.ipdlh',
+    'PBackground.ipdl',
+    'PBackgroundSharedTypes.ipdlh',
+    'PBackgroundTest.ipdl',
+    'PFileDescriptorSet.ipdl',
+    'ProtocolTypes.ipdlh',
+    'PSendStream.ipdl',
+    'URIParams.ipdlh',
+]
+
+LOCAL_INCLUDES += [
+    '/dom/ipc',
+    '/toolkit/crashreporter',
+    '/toolkit/xre',
+    '/xpcom/threads',
+]
+
+include('/ipc/chromium/chromium-config.mozbuild')
+
+FINAL_LIBRARY = 'xul'
+
+for var in ('MOZ_CHILD_PROCESS_NAME', 'MOZ_CHILD_PROCESS_NAME_PIE',
+            'MOZ_CHILD_PROCESS_BUNDLE', 'DLL_PREFIX', 'DLL_SUFFIX'):
+    DEFINES[var] = '"%s"' % CONFIG[var]
+
+LOCAL_INCLUDES += [
+    '/media/webrtc/trunk',
+]
+
+if CONFIG['MOZ_SANDBOX'] and CONFIG['OS_ARCH'] == 'WINNT':
+    LOCAL_INCLUDES += [
+        '/security/sandbox/chromium',
+        '/security/sandbox/chromium-shim',
+        '/security/sandbox/win/src/sandboxbroker',
+    ]
+
+if CONFIG['GNU_CXX']:
+    CXXFLAGS += ['-Wno-shadow']

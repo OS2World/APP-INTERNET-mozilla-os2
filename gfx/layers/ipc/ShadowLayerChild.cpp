@@ -6,26 +6,33 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "ShadowLayerChild.h"
-#include "Layers.h"
-#include "ShadowLayers.h"
+#include "Layers.h"                     // for Layer
+#include "ShadowLayers.h"               // for ShadowableLayer
 
 namespace mozilla {
 namespace layers {
 
-ShadowLayerChild::ShadowLayerChild(ShadowableLayer* aLayer)
-  : mLayer(aLayer)
+ShadowLayerChild::ShadowLayerChild()
+  : mLayer(nullptr)
 { }
 
 ShadowLayerChild::~ShadowLayerChild()
 { }
 
 void
+ShadowLayerChild::SetShadowableLayer(ShadowableLayer* aLayer)
+{
+  MOZ_ASSERT(!mLayer);
+  mLayer = aLayer;
+}
+
+void
 ShadowLayerChild::ActorDestroy(ActorDestroyReason why)
 {
-  NS_ABORT_IF_FALSE(AncestorDeletion != why,
-                    "shadowable layer should have been cleaned up by now");
+  MOZ_ASSERT(AncestorDeletion != why,
+             "shadowable layer should have been cleaned up by now");
 
-  if (AbnormalShutdown == why) {
+  if (AbnormalShutdown == why && mLayer) {
     // This is last-ditch emergency shutdown.  Just have the layer
     // forget its IPDL resources; IPDL-generated code will clean up
     // automatically in this case.
@@ -34,5 +41,5 @@ ShadowLayerChild::ActorDestroy(ActorDestroyReason why)
   }
 }
 
-}  // namespace layers
-}  // namespace mozilla
+} // namespace layers
+} // namespace mozilla

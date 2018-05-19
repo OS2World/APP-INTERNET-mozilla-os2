@@ -26,14 +26,13 @@ class EventWindows : public EventWrapper {
 
   virtual EventTypeWrapper Wait(unsigned long max_time);
   virtual bool Set();
-  virtual bool Reset();
 
   virtual bool StartTimer(bool periodic, unsigned long time);
   virtual bool StopTimer();
 
  private:
   HANDLE  event_;
-  WebRtc_UWord32 timerID_;
+  uint32_t timerID_;
 };
 
 }  // namespace webrtc

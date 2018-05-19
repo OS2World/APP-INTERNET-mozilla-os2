@@ -1,16 +1,26 @@
 /* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
+/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "mozilla/HangMonitor.h"
+
+#include "mozilla/Atomics.h"
+#include "mozilla/BackgroundHangMonitor.h"
 #include "mozilla/Monitor.h"
 #include "mozilla/Preferences.h"
-#include "mozilla/Telemetry.h"
 #include "mozilla/ProcessedStack.h"
-#include "nsXULAppAPI.h"
+#include "mozilla/Telemetry.h"
+#include "mozilla/StaticPtr.h"
+#include "mozilla/UniquePtr.h"
+#include "nsReadableUtils.h"
+#include "mozilla/StackWalk.h"
+#ifdef _WIN64
+#include "mozilla/StackWalk_windows.h"
+#endif
 #include "nsThreadUtils.h"
-#include "nsStackWalk.h"
+#include "nsXULAppAPI.h"
 
 #ifdef MOZ_CRASHREPORTER
 #include "nsExceptionHandler.h"
@@ -24,7 +34,8 @@
   #define REPORT_CHROME_HANGS
 #endif
 
-namespace mozilla { namespace HangMonitor {
+namespace mozilla {
+namespace HangMonitor {
 
 /**
  * A flag which may be set from within a debugger to disable the hang
@@ -34,9 +45,7 @@ volatile bool gDebugDisableHangMonitor = false;
 
 const char kHangMonitorPrefName[] = "hangmonitor.timeout";
 
-#ifdef MOZ_TELEMETRY_ON_BY_DEFAULT
-const char kTelemetryPrefName[] = "toolkit.telemetry.enabledPreRelease";
-#else
+#ifdef REPORT_CHROME_HANGS
 const char kTelemetryPrefName[] = "toolkit.telemetry.enabled";
 #endif
 
@@ -55,11 +64,11 @@ bool gShutdown;
 
 // The timestamp of the last event notification, or PR_INTERVAL_NO_WAIT if
 // we're currently not processing events.
-volatile PRIntervalTime gTimestamp = PR_INTERVAL_NO_WAIT;
+Atomic<PRIntervalTime> gTimestamp(PR_INTERVAL_NO_WAIT);
 
 #ifdef REPORT_CHROME_HANGS
 // Main thread ID used in reporting chrome hangs under Windows
-static HANDLE winMainThreadHandle = NULL;
+static HANDLE winMainThreadHandle = nullptr;
 
 // Default timeout for reporting chrome hangs to Telemetry (5 seconds)
 static const int32_t DEFAULT_CHROME_HANG_INTERVAL = 5;
@@ -69,7 +78,7 @@ static const int32_t MAX_CALL_STACK_PCS = 400;
 #endif
 
 // PrefChangedFunc
-int
+void
 PrefChanged(const char*, void*)
 {
   int32_t newval = Preferences::GetInt(kHangMonitorPrefName);
@@ -87,8 +96,6 @@ PrefChanged(const char*, void*)
     gTimeout = newval;
     lock.Notify();
   }
-
-  return 0;
 }
 
 void
@@ -105,28 +112,36 @@ Crash()
 #endif
 
 #ifdef MOZ_CRASHREPORTER
-  CrashReporter::AnnotateCrashReport(NS_LITERAL_CSTRING("Hang"),
-                                     NS_LITERAL_CSTRING("1"));
+  // If you change this, you must also deal with the threadsafety of AnnotateCrashReport in
+  // non-chrome processes!
+  if (GeckoProcessType_Default == XRE_GetProcessType()) {
+    CrashReporter::AnnotateCrashReport(NS_LITERAL_CSTRING("Hang"),
+                                       NS_LITERAL_CSTRING("1"));
+  }
 #endif
 
   NS_RUNTIMEABORT("HangMonitor triggered");
 }
 
 #ifdef REPORT_CHROME_HANGS
+
 static void
-ChromeStackWalker(void *aPC, void *aSP, void *aClosure)
+ChromeStackWalker(uint32_t aFrameNumber, void* aPC, void* aSP, void* aClosure)
 {
   MOZ_ASSERT(aClosure);
-  std::vector<uintptr_t> *stack =
+  std::vector<uintptr_t>* stack =
     static_cast<std::vector<uintptr_t>*>(aClosure);
-  if (stack->size() == MAX_CALL_STACK_PCS)
+  if (stack->size() == MAX_CALL_STACK_PCS) {
     return;
+  }
   MOZ_ASSERT(stack->size() < MAX_CALL_STACK_PCS);
   stack->push_back(reinterpret_cast<uintptr_t>(aPC));
 }
 
 static void
-GetChromeHangReport(Telemetry::ProcessedStack &aStack)
+GetChromeHangReport(Telemetry::ProcessedStack& aStack,
+                    int32_t& aSystemUptime,
+                    int32_t& aFirefoxUptime)
 {
   MOZ_ASSERT(winMainThreadHandle);
 
@@ -134,17 +149,61 @@ GetChromeHangReport(Telemetry::ProcessedStack &aStack)
   // so allocate ahead of time
   std::vector<uintptr_t> rawStack;
   rawStack.reserve(MAX_CALL_STACK_PCS);
+
+  // Workaround possible deadlock where the main thread is running a
+  // long-standing JS job, and happens to be in the JIT allocator when we
+  // suspend it. Since, on win 64, this requires holding a process lock that
+  // MozStackWalk requires, take this "workaround lock" to avoid deadlock.
+#ifdef _WIN64
+  AcquireStackWalkWorkaroundLock();
+#endif
   DWORD ret = ::SuspendThread(winMainThreadHandle);
-  if (ret == -1)
+  bool suspended = false;
+  if (ret != -1) {
+    // SuspendThread is asynchronous, so the thread may still be running. Use
+    // GetThreadContext to ensure it's really suspended.
+    // See https://blogs.msdn.microsoft.com/oldnewthing/20150205-00/?p=44743.
+    CONTEXT context;
+    context.ContextFlags = CONTEXT_CONTROL;
+    if (::GetThreadContext(winMainThreadHandle, &context)) {
+      suspended = true;
+    }
+  }
+
+#ifdef _WIN64
+  ReleaseStackWalkWorkaroundLock();
+#endif
+
+  if (!suspended) {
+    if (ret != -1) {
+      MOZ_ALWAYS_TRUE(::ResumeThread(winMainThreadHandle) != DWORD(-1));
+    }
     return;
-  NS_StackWalk(ChromeStackWalker, /* skipFrames */ 0, /* maxFrames */ 0,
+  }
+
+  MozStackWalk(ChromeStackWalker, /* skipFrames */ 0, /* maxFrames */ 0,
                reinterpret_cast<void*>(&rawStack),
                reinterpret_cast<uintptr_t>(winMainThreadHandle), nullptr);
   ret = ::ResumeThread(winMainThreadHandle);
-  if (ret == -1)
+  if (ret == -1) {
     return;
+  }
   aStack = Telemetry::GetStackAndModules(rawStack);
+
+  // Record system uptime (in minutes) at the time of the hang
+  aSystemUptime = ((GetTickCount() / 1000) - (gTimeout * 2)) / 60;
+
+  // Record Firefox uptime (in minutes) at the time of the hang
+  bool error;
+  TimeStamp processCreation = TimeStamp::ProcessCreation(error);
+  if (!error) {
+    TimeDuration td = TimeStamp::Now() - processCreation;
+    aFirefoxUptime = (static_cast<int32_t>(td.ToSeconds()) - (gTimeout * 2)) / 60;
+  } else {
+    aFirefoxUptime = -1;
+  }
 }
+
 #endif
 
 void
@@ -162,6 +221,9 @@ ThreadMain(void*)
 
 #ifdef REPORT_CHROME_HANGS
   Telemetry::ProcessedStack stack;
+  int32_t systemUptime = -1;
+  int32_t firefoxUptime = -1;
+  UniquePtr<HangAnnotations> annotations;
 #endif
 
   while (true) {
@@ -184,24 +246,31 @@ ThreadMain(void*)
         timestamp == lastTimestamp &&
         gTimeout > 0) {
       ++waitCount;
-      if (waitCount >= 2) {
 #ifdef REPORT_CHROME_HANGS
-        GetChromeHangReport(stack);
+      // Capture the chrome-hang stack + Firefox & system uptimes after
+      // the minimum hang duration has been reached (not when the hang ends)
+      if (waitCount == 2) {
+        GetChromeHangReport(stack, systemUptime, firefoxUptime);
+        annotations = ChromeHangAnnotatorCallout();
+      }
 #else
+      // This is the crash-on-hang feature.
+      // See bug 867313 for the quirk in the waitCount comparison
+      if (waitCount >= 2) {
         int32_t delay =
           int32_t(PR_IntervalToSeconds(now - timestamp));
         if (delay >= gTimeout) {
           MonitorAutoUnlock unlock(*gMonitor);
           Crash();
         }
-#endif
       }
-    }
-    else {
+#endif
+    } else {
 #ifdef REPORT_CHROME_HANGS
       if (waitCount >= 2) {
         uint32_t hangDuration = PR_IntervalToSeconds(now - lastTimestamp);
-        Telemetry::RecordChromeHang(hangDuration, stack);
+        Telemetry::RecordChromeHang(hangDuration, stack, systemUptime,
+                                    firefoxUptime, Move(annotations));
         stack.Clear();
       }
 #endif
@@ -212,8 +281,7 @@ ThreadMain(void*)
     PRIntervalTime timeout;
     if (gTimeout <= 0) {
       timeout = PR_INTERVAL_NO_TIMEOUT;
-    }
-    else {
+    } else {
       timeout = PR_MillisecondsToInterval(gTimeout * 500);
     }
     lock.Wait(timeout);
@@ -223,24 +291,24 @@ ThreadMain(void*)
 void
 Startup()
 {
-  // The hang detector only runs in chrome processes. If you change this,
-  // you must also deal with the threadsafety of AnnotateCrashReport in
-  // non-chrome processes!
-  if (GeckoProcessType_Default != XRE_GetProcessType())
+  if (GeckoProcessType_Default != XRE_GetProcessType() &&
+      GeckoProcessType_Content != XRE_GetProcessType()) {
     return;
+  }
 
   MOZ_ASSERT(!gMonitor, "Hang monitor already initialized");
   gMonitor = new Monitor("HangMonitor");
 
-  Preferences::RegisterCallback(PrefChanged, kHangMonitorPrefName, NULL);
-  PrefChanged(NULL, NULL);
+  Preferences::RegisterCallback(PrefChanged, kHangMonitorPrefName, nullptr);
+  PrefChanged(nullptr, nullptr);
 
 #ifdef REPORT_CHROME_HANGS
-  Preferences::RegisterCallback(PrefChanged, kTelemetryPrefName, NULL);
+  Preferences::RegisterCallback(PrefChanged, kTelemetryPrefName, nullptr);
   winMainThreadHandle =
     OpenThread(THREAD_ALL_ACCESS, FALSE, GetCurrentThreadId());
-  if (!winMainThreadHandle)
+  if (!winMainThreadHandle) {
     return;
+  }
 #endif
 
   // Don't actually start measuring hangs until we hit the main event loop.
@@ -251,19 +319,22 @@ Startup()
 
   gThread = PR_CreateThread(PR_USER_THREAD,
                             ThreadMain,
-                            NULL, PR_PRIORITY_LOW, PR_GLOBAL_THREAD,
+                            nullptr, PR_PRIORITY_LOW, PR_GLOBAL_THREAD,
                             PR_JOINABLE_THREAD, 0);
 }
 
 void
 Shutdown()
 {
-  if (GeckoProcessType_Default != XRE_GetProcessType())
+  if (GeckoProcessType_Default != XRE_GetProcessType() &&
+      GeckoProcessType_Content != XRE_GetProcessType()) {
     return;
+  }
 
   MOZ_ASSERT(gMonitor, "Hang monitor not started");
 
-  { // Scope the lock we're going to delete later
+  {
+    // Scope the lock we're going to delete later
     MonitorAutoLock lock(*gMonitor);
     gShutdown = true;
     lock.Notify();
@@ -272,11 +343,11 @@ Shutdown()
   // thread creation could theoretically fail
   if (gThread) {
     PR_JoinThread(gThread);
-    gThread = NULL;
+    gThread = nullptr;
   }
 
   delete gMonitor;
-  gMonitor = NULL;
+  gMonitor = nullptr;
 }
 
 static bool
@@ -285,47 +356,47 @@ IsUIMessageWaiting()
 #ifndef XP_WIN
   return false;
 #else
-  #define NS_WM_IMEFIRST WM_IME_SETCONTEXT
-  #define NS_WM_IMELAST  WM_IME_KEYUP
+#define NS_WM_IMEFIRST WM_IME_SETCONTEXT
+#define NS_WM_IMELAST  WM_IME_KEYUP
   BOOL haveUIMessageWaiting = FALSE;
   MSG msg;
-  haveUIMessageWaiting |= ::PeekMessageW(&msg, NULL, WM_KEYFIRST, 
+  haveUIMessageWaiting |= ::PeekMessageW(&msg, nullptr, WM_KEYFIRST,
                                          WM_IME_KEYLAST, PM_NOREMOVE);
-  haveUIMessageWaiting |= ::PeekMessageW(&msg, NULL, NS_WM_IMEFIRST,
+  haveUIMessageWaiting |= ::PeekMessageW(&msg, nullptr, NS_WM_IMEFIRST,
                                          NS_WM_IMELAST, PM_NOREMOVE);
-  haveUIMessageWaiting |= ::PeekMessageW(&msg, NULL, WM_MOUSEFIRST,
+  haveUIMessageWaiting |= ::PeekMessageW(&msg, nullptr, WM_MOUSEFIRST,
                                          WM_MOUSELAST, PM_NOREMOVE);
   return haveUIMessageWaiting;
 #endif
 }
 
 void
-NotifyActivity(ActivityType activityType)
+NotifyActivity(ActivityType aActivityType)
 {
   MOZ_ASSERT(NS_IsMainThread(),
              "HangMonitor::Notify called from off the main thread.");
 
   // Determine the activity type more specifically
-  if (activityType == kGeneralActivity) {
-    activityType = IsUIMessageWaiting() ? kActivityUIAVail : 
-                                          kActivityNoUIAVail;
+  if (aActivityType == kGeneralActivity) {
+    aActivityType = IsUIMessageWaiting() ? kActivityUIAVail :
+                                           kActivityNoUIAVail;
   }
 
   // Calculate the cumulative amount of lag time since the last UI message
   static uint32_t cumulativeUILagMS = 0;
-  switch(activityType) {
-  case kActivityNoUIAVail:
-    cumulativeUILagMS = 0;
-    break;
-  case kActivityUIAVail:
-  case kUIActivity:
-    if (gTimestamp != PR_INTERVAL_NO_WAIT) {
-      cumulativeUILagMS += PR_IntervalToMilliseconds(PR_IntervalNow() -
-                                                     gTimestamp);
-    }
-    break;
-  default:
-    break;
+  switch (aActivityType) {
+    case kActivityNoUIAVail:
+      cumulativeUILagMS = 0;
+      break;
+    case kActivityUIAVail:
+    case kUIActivity:
+      if (gTimestamp != PR_INTERVAL_NO_WAIT) {
+        cumulativeUILagMS += PR_IntervalToMilliseconds(PR_IntervalNow() -
+                                                       gTimestamp);
+      }
+      break;
+    default:
+      break;
   }
 
   // This is not a locked activity because PRTimeStamp is a 32-bit quantity
@@ -333,17 +404,15 @@ NotifyActivity(ActivityType activityType)
   // penalties here.
   gTimestamp = PR_IntervalNow();
 
-  // If we have UI activity we should reset the timer and report it if it is
-  // significant enough.
-  if (activityType == kUIActivity) {
-    // The minimum amount of lag time that we should report for telemetry data.
-    // Mozilla's UI responsiveness goal is 50ms
-    static const uint32_t kUIResponsivenessThresholdMS = 50;
-    if (cumulativeUILagMS > kUIResponsivenessThresholdMS) {
-      mozilla::Telemetry::Accumulate(mozilla::Telemetry::EVENTLOOP_UI_LAG_EXP_MS,
+  // If we have UI activity we should reset the timer and report it
+  if (aActivityType == kUIActivity) {
+    mozilla::Telemetry::Accumulate(mozilla::Telemetry::EVENTLOOP_UI_ACTIVITY_EXP_MS,
                                      cumulativeUILagMS);
-    }
     cumulativeUILagMS = 0;
+  }
+
+  if (gThread && !gShutdown) {
+    mozilla::BackgroundHangMonitor().NotifyActivity();
   }
 }
 
@@ -355,6 +424,11 @@ Suspend()
 
   // Because gTimestamp changes this resets the wait count.
   gTimestamp = PR_INTERVAL_NO_WAIT;
+
+  if (gThread && !gShutdown) {
+    mozilla::BackgroundHangMonitor().NotifyWait();
+  }
 }
 
-} } // namespace mozilla::HangMonitor
+} // namespace HangMonitor
+} // namespace mozilla

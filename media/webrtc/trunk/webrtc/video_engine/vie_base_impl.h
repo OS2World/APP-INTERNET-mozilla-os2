@@ -11,13 +11,14 @@
 #ifndef WEBRTC_VIDEO_ENGINE_VIE_BASE_IMPL_H_
 #define WEBRTC_VIDEO_ENGINE_VIE_BASE_IMPL_H_
 
-#include "video_engine/include/vie_base.h"
-#include "video_engine/vie_defines.h"
-#include "video_engine/vie_ref_count.h"
-#include "video_engine/vie_shared_data.h"
+#include "webrtc/video_engine/include/vie_base.h"
+#include "webrtc/video_engine/vie_defines.h"
+#include "webrtc/video_engine/vie_ref_count.h"
+#include "webrtc/video_engine/vie_shared_data.h"
 
 namespace webrtc {
 
+class Config;
 class Module;
 class VoiceEngine;
 
@@ -30,9 +31,26 @@ class ViEBaseImpl
   // Implements ViEBase.
   virtual int Init();
   virtual int SetVoiceEngine(VoiceEngine* voice_engine);
+  virtual int RegisterCpuOveruseObserver(int channel,
+                                         CpuOveruseObserver* observer);
+  virtual int SetCpuOveruseOptions(int channel,
+                                   const CpuOveruseOptions& options);
+  void RegisterCpuOveruseMetricsObserver(
+      int channel,
+      CpuOveruseMetricsObserver* observer) override;
+  virtual int GetCpuOveruseMetrics(int channel,
+                                   CpuOveruseMetrics* metrics);
+  void RegisterSendSideDelayObserver(int channel,
+                                     SendSideDelayObserver* observer) override;
+  virtual void SetLoadManager(CPULoadStateCallbackInvoker* aLoadManager);
   virtual int CreateChannel(int& video_channel);  // NOLINT
   virtual int CreateChannel(int& video_channel,  // NOLINT
+                            const Config* config);
+  virtual int CreateChannel(int& video_channel,  // NOLINT
                             int original_channel);
+  virtual int CreateChannelWithoutDefaultEncoder(int& video_channel,  // NOLINT
+                                                 int original_channel);
+
   virtual int CreateReceiveChannel(int& video_channel,  // NOLINT
                                    int original_channel);
   virtual int DeleteChannel(const int video_channel);
@@ -47,20 +65,21 @@ class ViEBaseImpl
   virtual int LastError();
 
  protected:
-  ViEBaseImpl();
+  explicit ViEBaseImpl(const Config& config);
   virtual ~ViEBaseImpl();
 
   ViESharedData* shared_data() { return &shared_data_; }
 
  private:
-  // Version functions.
-  WebRtc_Word32 AddViEVersion(char* str) const;
-  WebRtc_Word32 AddBuildInfo(char* str) const;
-  WebRtc_Word32 AddExternalTransportBuild(char* str) const;
-
   int CreateChannel(int& video_channel, int original_channel,  // NOLINT
-                    bool sender);
+                    bool sender, bool disable_default_encoder);
 
+  void RegisterSendStatisticsProxy(
+      int channel,
+      SendStatisticsProxy* send_statistics_proxy) override;
+  void RegisterReceiveStatisticsProxy(
+      int channel,
+      ReceiveStatisticsProxy* receive_statistics_proxy) override;
   // ViEBaseImpl owns ViESharedData used by all interface implementations.
   ViESharedData shared_data_;
 };

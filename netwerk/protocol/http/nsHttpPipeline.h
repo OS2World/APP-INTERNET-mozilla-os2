@@ -6,32 +6,39 @@
 #ifndef nsHttpPipeline_h__
 #define nsHttpPipeline_h__
 
-#include "nsHttp.h"
 #include "nsAHttpConnection.h"
 #include "nsAHttpTransaction.h"
-#include "nsIInputStream.h"
-#include "nsIOutputStream.h"
 #include "nsTArray.h"
 #include "nsCOMPtr.h"
 
-class nsHttpPipeline : public nsAHttpConnection
-                     , public nsAHttpTransaction
-                     , public nsAHttpSegmentReader
+class nsIInputStream;
+class nsIOutputStream;
+
+namespace mozilla { namespace net {
+
+class nsHttpPipeline final : public nsAHttpConnection
+                           , public nsAHttpTransaction
+                           , public nsAHttpSegmentReader
 {
 public:
-    NS_DECL_ISUPPORTS
+    NS_DECL_THREADSAFE_ISUPPORTS
     NS_DECL_NSAHTTPCONNECTION(mConnection)
     NS_DECL_NSAHTTPTRANSACTION
     NS_DECL_NSAHTTPSEGMENTREADER
 
     nsHttpPipeline();
-    virtual ~nsHttpPipeline();
+
+  bool ResponseTimeoutEnabled() const override final {
+    return true;
+  }
 
 private:
+    virtual ~nsHttpPipeline();
+
     nsresult FillSendBuf();
 
-    static NS_METHOD ReadFromPipe(nsIInputStream *, void *, const char *,
-                                  uint32_t, uint32_t, uint32_t *);
+    static nsresult ReadFromPipe(nsIInputStream *, void *, const char *,
+                                 uint32_t, uint32_t, uint32_t *);
 
     // convenience functions
     nsAHttpTransaction *Request(int32_t i)
@@ -50,11 +57,11 @@ private:
     }
 
     // overload of nsAHttpTransaction::QueryPipeline()
-    nsHttpPipeline *QueryPipeline();
+    nsHttpPipeline *QueryPipeline() override;
 
-    nsAHttpConnection            *mConnection;
-    nsTArray<nsAHttpTransaction*> mRequestQ;  // array of transactions
-    nsTArray<nsAHttpTransaction*> mResponseQ; // array of transactions
+    RefPtr<nsAHttpConnection>   mConnection;
+    nsTArray<RefPtr<nsAHttpTransaction> > mRequestQ;
+    nsTArray<RefPtr<nsAHttpTransaction> > mResponseQ;
     nsresult                      mStatus;
 
     // these flags indicate whether or not the first request or response
@@ -87,9 +94,12 @@ private:
     uint32_t  mHttp1xTransactionCount;
 
     // For support of OnTransportStatus()
-    uint64_t  mReceivingFromProgress;
-    uint64_t  mSendingToProgress;
-    bool      mSuppressSendEvents;
+    int64_t  mReceivingFromProgress;
+    int64_t  mSendingToProgress;
+    bool     mSuppressSendEvents;
 };
+
+} // namespace net
+} // namespace mozilla
 
 #endif // nsHttpPipeline_h__

@@ -25,10 +25,13 @@ UNICODE_ORG_XML_URL = "http://unicode.org/repos/cldr/trunk/common/supplemental/p
 
 CONDITION_RE = r'n( mod \d+)? (is|in|within|(not in))( not)? ([^\s]+)'
 
-# For a given regexp.MatchObject `g` for `CONDITION_RE`, 
-# returns the equivalent JS piece of code
-# i.e. maps pseudo conditional language from unicode.org XML to JS code
+
 def parseCondition(g):
+    """
+    For a given regexp.MatchObject `g` for `CONDITION_RE`, 
+    returns the equivalent JS piece of code
+    i.e. maps pseudo conditional language from unicode.org XML to JS code
+    """
     lvalue = "n"
     if g.group(1):
         lvalue = "(n %% %d)" % int(g.group(1).replace("mod ", ""))
@@ -81,7 +84,9 @@ def parseCondition(g):
     return "%s(%s)" % (notPrefix, " || ".join(subCondition))
 
 def computeRules():
-    # Fetch plural rules data directly from unicode.org website:
+    """
+    Fetch plural rules data directly from unicode.org website:
+    """
     url = UNICODE_ORG_XML_URL
     f = urllib2.urlopen(url)
     doc = xml.dom.minidom.parse(f)
@@ -147,8 +152,12 @@ print """/* This Source Code Form is subject to the terms of the Mozilla Public
 const LOCALES_TO_RULES = %s;
 
 // Utility functions for plural rules methods
-function isIn(n, list) list.indexOf(n) !== -1;
-function isBetween(n, start, end) start <= n && n <= end;
+function isIn(n, list) {
+  return list.indexOf(n) !== -1;
+}
+function isBetween(n, start, end) {
+  return start <= n && n <= end;
+}
 
 // List of all plural rules methods, that maps an integer to the plural form name to use
 const RULES = {

@@ -17,7 +17,7 @@ function testSteps()
   request.onerror = errorHandler;
   request.onupgradeneeded = grabEventAndContinueHandler;
   request.onsuccess = grabEventAndContinueHandler;
-  let event = yield;
+  let event = yield undefined;
 
   is(event.type, "upgradeneeded", "Got correct event type");
 
@@ -26,7 +26,7 @@ function testSteps()
 
   let objectStore = db.createObjectStore(objectStoreName, { });
 
-  event = yield;
+  event = yield undefined;
 
   is(event.type, "success", "Got correct event type");
 
@@ -35,28 +35,28 @@ function testSteps()
 
   request = objectStore.get(data.key);
   request.onsuccess = grabEventAndContinueHandler;
-  event = yield;
+  event = yield undefined;
 
   is(event.target.result, null, "Got no data");
 
   request = objectStore.add(data.value, data.key);
   request.onsuccess = grabEventAndContinueHandler;
-  event = yield;
+  event = yield undefined;
 
   is(event.target.result, data.key, "Got correct key");
 
   let uri = Components.classes["@mozilla.org/network/io-service;1"]
                       .getService(Components.interfaces.nsIIOService)
                       .newURI("http://appdata.example.com", null, null);
-  let principal = Components.classes["@mozilla.org/scriptsecuritymanager;1"]
-                     .getService(Components.interfaces.nsIScriptSecurityManager)
-                     .getNoAppCodebasePrincipal(uri);
+  let ssm = Components.classes["@mozilla.org/scriptsecuritymanager;1"]
+                      .getService(Components.interfaces.nsIScriptSecurityManager);
+  let principal = ssm.createCodebasePrincipal(uri, {});
 
   request = indexedDB.openForPrincipal(principal, name, 1);
   request.onerror = errorHandler;
   request.onupgradeneeded = grabEventAndContinueHandler;
   request.onsuccess = grabEventAndContinueHandler;
-  let event = yield;
+  event = yield undefined;
 
   is(event.type, "upgradeneeded", "Got correct event type");
 
@@ -65,7 +65,7 @@ function testSteps()
 
   objectStore = db.createObjectStore(objectStoreName, { });
 
-  event = yield;
+  event = yield undefined;
 
   is(event.type, "success", "Got correct event type");
 
@@ -74,7 +74,7 @@ function testSteps()
 
   request = objectStore.get(data.key);
   request.onsuccess = grabEventAndContinueHandler;
-  event = yield;
+  event = yield undefined;
 
   is(event.target.result, null, "Got no data");
 
@@ -83,8 +83,8 @@ function testSteps()
   request = indexedDB.deleteForPrincipal(principal, name);
   request.onerror = errorHandler;
   request.onsuccess = grabEventAndContinueHandler
-  event = yield;
+  event = yield undefined;
 
   finishTest();
-  yield;
+  yield undefined;
 }

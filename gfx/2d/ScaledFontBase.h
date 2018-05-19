@@ -8,14 +8,18 @@
 
 #include "2D.h"
 
-#ifdef USE_SKIA
-#include "skia/SkTypeface.h"
-#endif
-#ifdef USE_CAIRO
-#include "cairo.h"
+// Skia uses cairo_scaled_font_t as the internal font type in ScaledFont
+#if defined(USE_SKIA) || defined(USE_CAIRO)
+#define USE_CAIRO_SCALED_FONT
 #endif
 
-class gfxFont;
+#ifdef USE_SKIA
+#include "skia/include/core/SkPath.h"
+#include "skia/include/core/SkTypeface.h"
+#endif
+#ifdef USE_CAIRO_SCALED_FONT
+#include "cairo.h"
+#endif
 
 namespace mozilla {
 namespace gfx {
@@ -23,12 +27,15 @@ namespace gfx {
 class ScaledFontBase : public ScaledFont
 {
 public:
-  ScaledFontBase(Float aSize);
+  MOZ_DECLARE_REFCOUNTED_VIRTUAL_TYPENAME(ScaledFontBase)
+  explicit ScaledFontBase(Float aSize);
   virtual ~ScaledFontBase();
 
-  virtual TemporaryRef<Path> GetPathForGlyphs(const GlyphBuffer &aBuffer, const DrawTarget *aTarget);
+  virtual already_AddRefed<Path> GetPathForGlyphs(const GlyphBuffer &aBuffer, const DrawTarget *aTarget);
 
-  virtual void CopyGlyphsToBuilder(const GlyphBuffer &aBuffer, PathBuilder *aBuilder);
+  virtual void CopyGlyphsToBuilder(const GlyphBuffer &aBuffer, PathBuilder *aBuilder, const Matrix *aTransformHint);
+
+  virtual void GetGlyphDesignMetrics(const uint16_t* aGlyphIndices, uint32_t aNumGlyphs, GlyphMetrics* aGlyphMetrics);
 
   float GetSize() { return mSize; }
 
@@ -37,9 +44,10 @@ public:
 #endif
 
   // Not true, but required to instantiate a ScaledFontBase.
-  virtual FontType GetType() const { return FONT_SKIA; }
+  virtual FontType GetType() const { return FontType::SKIA; }
 
-#ifdef USE_CAIRO
+#ifdef USE_CAIRO_SCALED_FONT
+  bool PopulateCairoScaledFont();
   cairo_scaled_font_t* GetCairoScaledFont() { return mScaledFont; }
   void SetCairoScaledFont(cairo_scaled_font_t* font);
 #endif
@@ -48,14 +56,17 @@ protected:
   friend class DrawTargetSkia;
 #ifdef USE_SKIA
   SkTypeface* mTypeface;
+  SkPath GetSkiaPathForGlyphs(const GlyphBuffer &aBuffer);
 #endif
-#ifdef USE_CAIRO
+#ifdef USE_CAIRO_SCALED_FONT
+  // Overridders should ensure the cairo_font_face_t has been addrefed.
+  virtual cairo_font_face_t* GetCairoFontFace() { return nullptr; }
   cairo_scaled_font_t* mScaledFont;
 #endif
   Float mSize;
 };
 
-}
-}
+} // namespace gfx
+} // namespace mozilla
 
 #endif /* MOZILLA_GFX_SCALEDFONTBASE_H_ */

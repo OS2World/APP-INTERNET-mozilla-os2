@@ -1,5 +1,5 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim:set ts=2 sw=2 sts=2 et cindent: */
+/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
+/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -20,18 +20,18 @@
 #include "nsISupports.h"
 #include "nsISupportsImpl.h"
 #include "nsCycleCollectionParticipant.h"
-#include "jsapi.h"
 #include "jswrapper.h"
 #include "mozilla/Assertions.h"
 #include "mozilla/ErrorResult.h"
-#include "mozilla/Util.h"
-#include "nsContentUtils.h"
-#include "nsCxPusher.h"
+#include "mozilla/HoldDropJSObjects.h"
+#include "mozilla/MemoryReporting.h"
+#include "mozilla/OwningNonNull.h"
+#include "mozilla/dom/ScriptSettings.h"
 #include "nsWrapperCache.h"
 #include "nsJSEnvironment.h"
 #include "xpcpublic.h"
-#include "nsLayoutStatics.h"
-#include "js/RootingAPI.h"
+#include "jsapi.h"
+#include "js/TracingAPI.h"
 
 namespace mozilla {
 namespace dom {
@@ -48,20 +48,52 @@ public:
   NS_DECL_CYCLE_COLLECTING_ISUPPORTS
   NS_DECL_CYCLE_COLLECTION_SCRIPT_HOLDER_CLASS(CallbackObject)
 
-  explicit CallbackObject(JSObject* aCallback)
+  // The caller may pass a global object which will act as an override for the
+  // incumbent script settings object when the callback is invoked (overriding
+  // the entry point computed from aCallback). If no override is required, the
+  // caller should pass null.  |aCx| is used to capture the current
+  // stack, which is later used as an async parent when the callback
+  // is invoked.  aCx can be nullptr, in which case no stack is
+  // captured.
+  explicit CallbackObject(JSContext* aCx, JS::Handle<JSObject*> aCallback,
+                          nsIGlobalObject* aIncumbentGlobal)
   {
-    Init(aCallback);
+    if (aCx && JS::ContextOptionsRef(aCx).asyncStack()) {
+      JS::RootedObject stack(aCx);
+      if (!JS::CaptureCurrentStack(aCx, &stack)) {
+        JS_ClearPendingException(aCx);
+      }
+      Init(aCallback, stack, aIncumbentGlobal);
+    } else {
+      Init(aCallback, nullptr, aIncumbentGlobal);
+    }
   }
 
-  virtual ~CallbackObject()
+  // Instead of capturing the current stack to use as an async parent when the
+  // callback is invoked, the caller can use this overload to pass in a stack
+  // for that purpose.
+  explicit CallbackObject(JS::Handle<JSObject*> aCallback,
+                          JS::Handle<JSObject*> aAsyncStack,
+                          nsIGlobalObject* aIncumbentGlobal)
   {
-    DropCallback();
+    Init(aCallback, aAsyncStack, aIncumbentGlobal);
   }
 
   JS::Handle<JSObject*> Callback() const
   {
-    xpc_UnmarkGrayObject(mCallback);
+    mCallback.exposeToActiveJS();
     return CallbackPreserveColor();
+  }
+
+  JSObject* GetCreationStack() const
+  {
+    return mCreationStack;
+  }
+
+  void MarkForCC()
+  {
+    mCallback.exposeToActiveJS();
+    mCreationStack.exposeToActiveJS();
   }
 
   /*
@@ -71,47 +103,163 @@ public:
    * This should only be called if you are certain that the return value won't
    * be passed into a JS API function and that it won't be stored without being
    * rooted (or otherwise signaling the stored value to the CC).
-   *
-   * This can return a handle because we trace our mCallback.
    */
   JS::Handle<JSObject*> CallbackPreserveColor() const
   {
-    return mCallback;
+    // Calling fromMarkedLocation() is safe because we trace our mCallback, and
+    // because the value of mCallback cannot change after if has been set.
+    return JS::Handle<JSObject*>::fromMarkedLocation(mCallback.address());
+  }
+
+  /*
+   * If the callback is known to be non-gray, then this method can be
+   * used instead of Callback() to avoid the overhead of
+   * ExposeObjectToActiveJS().
+   */
+  JS::Handle<JSObject*> CallbackKnownNotGray() const
+  {
+    MOZ_ASSERT(!JS::ObjectIsMarkedGray(mCallback));
+    return CallbackPreserveColor();
+  }
+
+  nsIGlobalObject* IncumbentGlobalOrNull() const
+  {
+    return mIncumbentGlobal;
   }
 
   enum ExceptionHandling {
+    // Report any exception and don't throw it to the caller code.
     eReportExceptions,
+    // Throw an exception to the caller code if the thrown exception is a
+    // binding object for a DOMError or DOMException from the caller's scope,
+    // otherwise report it.
+    eRethrowContentExceptions,
+    // Throw exceptions to the caller code, unless the caller compartment is
+    // provided, the exception is not a DOMError or DOMException from the
+    // caller compartment, and the caller compartment does not subsume our
+    // unwrapped callback.
     eRethrowExceptions
   };
 
+  size_t SizeOfIncludingThis(mozilla::MallocSizeOf aMallocSizeOf) const
+  {
+    return aMallocSizeOf(this);
+  }
+
 protected:
+  virtual ~CallbackObject()
+  {
+    DropJSObjects();
+  }
+
   explicit CallbackObject(CallbackObject* aCallbackObject)
   {
-    Init(aCallbackObject->mCallback);
+    Init(aCallbackObject->mCallback, aCallbackObject->mCreationStack,
+         aCallbackObject->mIncumbentGlobal);
+  }
+
+  bool operator==(const CallbackObject& aOther) const
+  {
+    JSObject* thisObj =
+      js::UncheckedUnwrap(CallbackPreserveColor());
+    JSObject* otherObj =
+      js::UncheckedUnwrap(aOther.CallbackPreserveColor());
+    return thisObj == otherObj;
   }
 
 private:
-  inline void Init(JSObject* aCallback)
+  inline void InitNoHold(JSObject* aCallback, JSObject* aCreationStack,
+                         nsIGlobalObject* aIncumbentGlobal)
   {
-    // Set mCallback before we hold, on the off chance that a GC could somehow
-    // happen in there... (which would be pretty odd, granted).
+    MOZ_ASSERT(aCallback && !mCallback);
+    // Set script objects before we hold, on the off chance that a GC could
+    // somehow happen in there... (which would be pretty odd, granted).
     mCallback = aCallback;
-    // Make sure we'll be able to drop as needed
-    nsLayoutStatics::AddRef();
-    NS_HOLD_JS_OBJECTS(this, CallbackObject);
-  }
-
-protected:
-  void DropCallback()
-  {
-    if (mCallback) {
-      mCallback = nullptr;
-      NS_DROP_JS_OBJECTS(this, CallbackObject);
-      nsLayoutStatics::Release();
+    mCreationStack = aCreationStack;
+    if (aIncumbentGlobal) {
+      mIncumbentGlobal = aIncumbentGlobal;
+      mIncumbentJSGlobal = aIncumbentGlobal->GetGlobalJSObject();
     }
   }
 
+  inline void Init(JSObject* aCallback, JSObject* aCreationStack,
+                   nsIGlobalObject* aIncumbentGlobal)
+  {
+    InitNoHold(aCallback, aCreationStack, aIncumbentGlobal);
+    mozilla::HoldJSObjects(this);
+  }
+
+  inline void ClearJSReferences()
+  {
+    mCallback = nullptr;
+    mCreationStack = nullptr;
+    mIncumbentJSGlobal = nullptr;
+  }
+
+  CallbackObject(const CallbackObject&) = delete;
+  CallbackObject& operator =(const CallbackObject&) = delete;
+
+protected:
+  void DropJSObjects()
+  {
+    MOZ_ASSERT_IF(mIncumbentJSGlobal, mCallback);
+    if (mCallback) {
+      ClearJSReferences();
+      mozilla::DropJSObjects(this);
+    }
+  }
+
+  // For use from subclasses that want to be usable with Rooted.
+  void Trace(JSTracer* aTracer);
+
+  // For use from subclasses that want to be traced for a bit then possibly
+  // switch to HoldJSObjects.  If we have more than one owner, this will
+  // HoldJSObjects; otherwise it will just forget all our JS references.
+  void HoldJSObjectsIfMoreThanOneOwner();
+
+  // Struct used as a way to force a CallbackObject constructor to not call
+  // HoldJSObjects. We're putting it here so that CallbackObject subclasses will
+  // have access to it, but outside code will not.
+  //
+  // Places that use this need to ensure that the callback is traced (e.g. via a
+  // Rooted) until the HoldJSObjects call happens.
+  struct FastCallbackConstructor {
+  };
+
+  // Just like the public version without the FastCallbackConstructor argument,
+  // except for not calling HoldJSObjects.  If you use this, you MUST ensure
+  // that the object is traced until the HoldJSObjects happens!
+  CallbackObject(JSContext* aCx, JS::Handle<JSObject*> aCallback,
+                 nsIGlobalObject* aIncumbentGlobal,
+                 const FastCallbackConstructor&)
+  {
+    if (aCx && JS::ContextOptionsRef(aCx).asyncStack()) {
+      JS::RootedObject stack(aCx);
+      if (!JS::CaptureCurrentStack(aCx, &stack)) {
+        JS_ClearPendingException(aCx);
+      }
+      InitNoHold(aCallback, stack, aIncumbentGlobal);
+    } else {
+      InitNoHold(aCallback, nullptr, aIncumbentGlobal);
+    }
+  }
+
+  // mCallback is not unwrapped, so it can be a cross-compartment-wrapper.
+  // This is done to ensure that, if JS code can't call a callback f(), or get
+  // its members, directly itself, this code won't call f(), or get its members,
+  // on the code's behalf.
   JS::Heap<JSObject*> mCallback;
+  JS::Heap<JSObject*> mCreationStack;
+  // Ideally, we'd just hold a reference to the nsIGlobalObject, since that's
+  // what we need to pass to AutoIncumbentScript. Unfortunately, that doesn't
+  // hold the actual JS global alive. So we maintain an additional pointer to
+  // the JS global itself so that we can trace it.
+  //
+  // At some point we should consider trying to make native globals hold their
+  // scripted global alive, at which point we can get rid of the duplication
+  // here.
+  nsCOMPtr<nsIGlobalObject> mIncumbentGlobal;
+  JS::TenuredHeap<JSObject*> mIncumbentJSGlobal;
 
   class MOZ_STACK_CLASS CallSetup
   {
@@ -122,8 +270,18 @@ protected:
      * non-null.
      */
   public:
-    CallSetup(JS::Handle<JSObject*> aCallable, ErrorResult& aRv,
-              ExceptionHandling aExceptionHandling);
+    // If aExceptionHandling == eRethrowContentExceptions then aCompartment
+    // needs to be set to the compartment in which exceptions will be rethrown.
+    //
+    // If aExceptionHandling == eRethrowExceptions then aCompartment may be set
+    // to the compartment in which exceptions will be rethrown.  In that case
+    // they will only be rethrown if that compartment's principal subsumes the
+    // principal of our (unwrapped) callback.
+    CallSetup(CallbackObject* aCallback, ErrorResult& aRv,
+              const char* aExecutionReason,
+              ExceptionHandling aExceptionHandling,
+              JSCompartment* aCompartment = nullptr,
+              bool aIsJSImplementedWebIDL = false);
     ~CallSetup();
 
     JSContext* GetContext() const
@@ -133,35 +291,38 @@ protected:
 
   private:
     // We better not get copy-constructed
-    CallSetup(const CallSetup&) MOZ_DELETE;
+    CallSetup(const CallSetup&) = delete;
+
+    bool ShouldRethrowException(JS::Handle<JS::Value> aException);
 
     // Members which can go away whenever
     JSContext* mCx;
-    nsCOMPtr<nsIScriptContext> mCtx;
+
+    // Caller's compartment. This will only have a sensible value if
+    // mExceptionHandling == eRethrowContentExceptions or eRethrowExceptions.
+    JSCompartment* mCompartment;
 
     // And now members whose construction/destruction order we need to control.
+    Maybe<AutoEntryScript> mAutoEntryScript;
+    Maybe<AutoIncumbentScript> mAutoIncumbentScript;
 
-    // Put our nsAutoMicrotask first, so it gets destroyed after everything else
-    // is gone
-    nsAutoMicroTask mMt;
-
-    nsCxPusher mCxPusher;
-
-    // Constructed the rooter within the scope of mCxPusher above, so that it's
-    // always within a request during its lifetime.
     Maybe<JS::Rooted<JSObject*> > mRootedCallable;
 
+    // Members which are used to set the async stack.
+    Maybe<JS::Rooted<JSObject*>> mAsyncStack;
+    Maybe<JS::AutoSetAsyncStackForNewCalls> mAsyncStackSetter;
+
     // Can't construct a JSAutoCompartment without a JSContext either.  Also,
-    // Put mAc after mCxPusher so that we exit the compartment before we pop the
-    // JSContext.  Though in practice we'll often manually order those two
-    // things.
+    // Put mAc after mAutoEntryScript so that we exit the compartment before
+    // we pop the JSContext. Though in practice we'll often manually order
+    // those two things.
     Maybe<JSAutoCompartment> mAc;
 
     // An ErrorResult to possibly re-throw exceptions on and whether
     // we should re-throw them.
     ErrorResult& mErrorResult;
     const ExceptionHandling mExceptionHandling;
-    uint32_t mSavedJSContextOptions;
+    const bool mIsMainThread;
   };
 };
 
@@ -204,11 +365,17 @@ public:
     NS_IF_ADDREF(aCallback);
   }
 
-  explicit CallbackObjectHolder(const CallbackObjectHolder& aOther)
+  CallbackObjectHolder(CallbackObjectHolder&& aOther)
     : mPtrBits(aOther.mPtrBits)
   {
-    NS_IF_ADDREF(GetISupports());
+    aOther.mPtrBits = 0;
+    static_assert(sizeof(CallbackObjectHolder) == sizeof(void*),
+                  "This object is expected to be as small as a pointer, and it "
+                  "is currently passed by value in various places. If it is "
+                  "bloating, we may want to pass it by reference then.");
   }
+
+  CallbackObjectHolder(const CallbackObjectHolder& aOther) = delete;
 
   CallbackObjectHolder()
     : mPtrBits(0)
@@ -233,12 +400,14 @@ public:
     NS_IF_ADDREF(aCallback);
   }
 
-  void operator=(const CallbackObjectHolder& aOther)
+  void operator=(CallbackObjectHolder&& aOther)
   {
     UnlinkSelf();
     mPtrBits = aOther.mPtrBits;
-    NS_IF_ADDREF(GetISupports());
+    aOther.mPtrBits = 0;
   }
+
+  void operator=(const CallbackObjectHolder& aOther) = delete;
 
   nsISupports* GetISupports() const
   {
@@ -246,9 +415,17 @@ public:
   }
 
   // Boolean conversion operator so people can use this in boolean tests
-  operator bool() const
+  explicit operator bool() const
   {
     return GetISupports();
+  }
+
+  CallbackObjectHolder Clone() const
+  {
+    CallbackObjectHolder result;
+    result.mPtrBits = mPtrBits;
+    NS_IF_ADDREF(GetISupports());
+    return result;
   }
 
   // Even if HasWebIDLCallback returns true, GetWebIDLCallback() might still
@@ -283,11 +460,7 @@ public:
       return false;
     }
 
-    JSObject* thisObj =
-      js::UncheckedUnwrap(GetWebIDLCallback()->CallbackPreserveColor());
-    JSObject* otherObj =
-      js::UncheckedUnwrap(aOtherCallback->CallbackPreserveColor());
-    return thisObj == otherObj;
+    return *GetWebIDLCallback() == *aOtherCallback;
   }
 
   bool operator==(XPCOMCallbackT* aOtherCallback) const
@@ -309,7 +482,7 @@ public:
   already_AddRefed<XPCOMCallbackT> ToXPCOMCallback() const
   {
     if (!HasWebIDLCallback()) {
-      nsRefPtr<XPCOMCallbackT> callback = GetXPCOMCallback();
+      RefPtr<XPCOMCallbackT> callback = GetXPCOMCallback();
       return callback.forget();
     }
 
@@ -324,31 +497,10 @@ public:
   already_AddRefed<WebIDLCallbackT> ToWebIDLCallback() const
   {
     if (HasWebIDLCallback()) {
-      nsRefPtr<WebIDLCallbackT> callback = GetWebIDLCallback();
+      RefPtr<WebIDLCallbackT> callback = GetWebIDLCallback();
       return callback.forget();
     }
-
-    XPCOMCallbackT* callback = GetXPCOMCallback();
-    if (!callback) {
-      return nullptr;
-    }
-
-    nsCOMPtr<nsIXPConnectWrappedJS> wrappedJS = do_QueryInterface(callback);
-    if (!wrappedJS) {
-      return nullptr;
-    }
-
-    AutoSafeJSContext cx;
-
-    JS::Rooted<JSObject*> obj(cx, wrappedJS->GetJSObject());
-    if (!obj) {
-      return nullptr;
-    }
-
-    JSAutoCompartment ac(cx, obj);
-
-    nsRefPtr<WebIDLCallbackT> newCallback = new WebIDLCallbackT(obj);
-    return newCallback.forget();
+    return nullptr;
   }
 
 private:
@@ -387,6 +539,67 @@ ImplCycleCollectionUnlink(CallbackObjectHolder<T, U>& aField)
 {
   aField.UnlinkSelf();
 }
+
+// T is expected to be a RefPtr or OwningNonNull around a CallbackObject
+// subclass.  This class is used in bindings to safely handle Fast* callbacks;
+// it ensures that the callback is traced, and that if something is holding onto
+// the callback when we're done with it HoldJSObjects is called.
+template<typename T>
+class RootedCallback : public JS::Rooted<T>
+{
+public:
+  explicit RootedCallback(JSContext* cx)
+    : JS::Rooted<T>(cx)
+  {}
+
+  // We need a way to make assignment from pointers (how we're normally used)
+  // work.
+  template<typename S>
+  void operator=(S* arg)
+  {
+    this->get().operator=(arg);
+  }
+
+  // But nullptr can't use the above template, because it doesn't know which S
+  // to select.  So we need a special overload for nullptr.
+  void operator=(decltype(nullptr) arg)
+  {
+    this->get().operator=(arg);
+  }
+
+  // Codegen relies on being able to do Callback() on us.
+  JS::Handle<JSObject*> Callback() const
+  {
+    return this->get()->Callback();
+  }
+
+  ~RootedCallback()
+  {
+    // Ensure that our callback starts holding on to its own JS objects as
+    // needed.  Having to null-check here when T is OwningNonNull is a bit
+    // silly, but it's simpler than creating two separate RootedCallback
+    // instantiations for OwningNonNull and RefPtr.
+    if (IsInitialized(this->get())) {
+      this->get()->HoldJSObjectsIfMoreThanOneOwner();
+    }
+  }
+
+private:
+  template<typename U>
+  static bool IsInitialized(U& aArg); // Not implemented
+
+  template<typename U>
+  static bool IsInitialized(RefPtr<U>& aRefPtr)
+  {
+    return aRefPtr;
+  }
+
+  template<typename U>
+  static bool IsInitialized(OwningNonNull<U>& aOwningNonNull)
+  {
+    return aOwningNonNull.isInitialized();
+  }
+};
 
 } // namespace dom
 } // namespace mozilla

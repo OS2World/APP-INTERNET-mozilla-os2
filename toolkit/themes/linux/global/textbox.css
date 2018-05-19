@@ -21,7 +21,7 @@ textbox {
   -moz-border-bottom-colors: ThreeDHighlight ThreeDLightShadow;
   -moz-border-left-colors: ThreeDShadow ThreeDDarkShadow;
   padding: 2px 2px 3px;
-  -moz-padding-start: 4px;
+  padding-inline-start: 4px;
   background-color: -moz-Field;
   color: -moz-FieldText;
 }
@@ -30,7 +30,7 @@ html|*.textbox-input,
 html|*.textbox-textarea {
   margin: 0px !important;
   border: none !important;
-  padding: 0px !important;
+  padding: 0px 1px !important;
   background-color: inherit;
   color: inherit;
   font: inherit;
@@ -65,6 +65,11 @@ textbox.plain {
   border: none !important;
 }
 
+textbox.plain html|*.textbox-input,
+textbox.plain html|*.textbox-textarea {
+  padding: 0px !important;
+}
+
 /* ::::: search textbox ::::: */
 
 .textbox-search-icon {
@@ -85,58 +90,3 @@ textbox.plain {
 toolbarpaletteitem > toolbaritem > textbox > .textbox-input-box > html|*.textbox-input {
   visibility: hidden;
 }
-
-/* ::::: context menu ::::: */
-
-menuitem:not([type]) {
-  -moz-binding: url("chrome://global/content/bindings/menu.xml#menuitem-iconic");
-}
-
-menuitem[cmd="cmd_undo"] {
-  list-style-image: url("moz-icon://stock/gtk-undo?size=menu");
-}
-
-menuitem[cmd="cmd_undo"][disabled] {
-  list-style-image: url("moz-icon://stock/gtk-undo?size=menu&state=disabled");
-}
-
-menuitem[cmd="cmd_cut"] {
-  list-style-image: url("moz-icon://stock/gtk-cut?size=menu");
-}
-
-menuitem[cmd="cmd_cut"][disabled] {
-  list-style-image: url("moz-icon://stock/gtk-cut?size=menu&state=disabled");
-}
-
-menuitem[cmd="cmd_copy"] {
-  list-style-image: url("moz-icon://stock/gtk-copy?size=menu");
-}
-
-menuitem[cmd="cmd_copy"][disabled] {
-  list-style-image: url("moz-icon://stock/gtk-copy?size=menu&state=disabled");
-}
-
-menuitem[cmd="cmd_paste"] {
-  list-style-image: url("moz-icon://stock/gtk-paste?size=menu");
-}
-
-menuitem[cmd="cmd_paste"][disabled] {
-  list-style-image: url("moz-icon://stock/gtk-paste?size=menu&state=disabled");
-}
-
-menuitem[cmd="cmd_delete"] {
-  list-style-image: url("moz-icon://stock/gtk-delete?size=menu");
-}
-
-menuitem[cmd="cmd_delete"][disabled] {
-  list-style-image: url("moz-icon://stock/gtk-delete?size=menu&state=disabled");
-}
-
-menuitem[cmd="cmd_selectAll"] {
-  list-style-image: url("moz-icon://stock/gtk-select-all?size=menu");
-}
-
-menuitem[cmd="cmd_selectAll"][disabled] {
-  list-style-image: url("moz-icon://stock/gtk-select-all?size=menu&state=disabled");
-}
-

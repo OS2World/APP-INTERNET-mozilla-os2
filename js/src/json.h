@@ -7,24 +7,36 @@
 #ifndef json_h
 #define json_h
 
-#include "js/CharacterEncoding.h"
+#include "mozilla/Range.h"
+
+#include "NamespaceImports.h"
+
 #include "js/RootingAPI.h"
-#include "js/Value.h"
-#include "js/Vector.h"
-#include "vm/StringBuffer.h"
-
-extern JSObject *
-js_InitJSONClass(JSContext *cx, js::HandleObject obj);
-
-extern JSBool
-js_Stringify(JSContext *cx, js::MutableHandleValue vp, JSObject *replacer,
-             js::Value space, js::StringBuffer &sb);
 
 namespace js {
+class StringBuffer;
 
+extern JSObject*
+InitJSONClass(JSContext* cx, HandleObject obj);
+
+enum class StringifyBehavior {
+    Normal,
+    RestrictedSafe
+};
+
+/**
+ * If maybeSafely is true, Stringify will attempt to assert the API requirements
+ * of JS::ToJSONMaybeSafely as it traverses the graph, and will not try to
+ * invoke .toJSON on things as it goes.
+ */
 extern bool
-ParseJSONWithReviver(JSContext *cx, JS::StableCharPtr chars, size_t length, HandleValue reviver,
-                     MutableHandleValue vp);
+Stringify(JSContext* cx, js::MutableHandleValue vp, JSObject* replacer,
+          const Value& space, StringBuffer& sb, StringifyBehavior stringifyBehavior);
+
+template <typename CharT>
+extern bool
+ParseJSONWithReviver(JSContext* cx, const mozilla::Range<const CharT> chars,
+                     HandleValue reviver, MutableHandleValue vp);
 
 } // namespace js
 

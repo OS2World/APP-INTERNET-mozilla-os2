@@ -7,7 +7,6 @@ var testGenerator = testSteps();
 
 function testSteps()
 {
-  const IDBObjectStore = Components.interfaces.nsIIDBObjectStore;
   const name = this.window ? window.location.pathname : "Splendid Test";
 
   var data = [
@@ -43,9 +42,13 @@ function testSteps()
     let request = indexedDB.open(name, i+1);
     request.onerror = errorHandler;
     request.onupgradeneeded = grabEventAndContinueHandler;
-    let event = yield;
+    request.onsuccess = grabEventAndContinueHandler;
+    let event = yield undefined;
 
     let db = event.target.result;
+    db.onversionchange = function(event) {
+      event.target.close();
+    };
 
     let objectStore = db.createObjectStore(test.name,
                                            { keyPath: test.keyName,
@@ -54,13 +57,13 @@ function testSteps()
     request = objectStore.add(test.storedObject, test.keyValue);
     request.onerror = errorHandler;
     request.onsuccess = grabEventAndContinueHandler;
-    event = yield;
+    event = yield undefined;
 
     let id = event.target.result;
     request = objectStore.get(id);
     request.onerror = errorHandler;
     request.onsuccess = grabEventAndContinueHandler;
-    event = yield;
+    event = yield undefined;
 
     // Sanity check!
     is(test.storedObject.name, event.target.result.name,
@@ -69,19 +72,21 @@ function testSteps()
     request = objectStore.delete(id);
     request.onerror = errorHandler;
     request.onsuccess = grabEventAndContinueHandler;
-    event = yield;
+    event = yield undefined;
 
     // Make sure it was removed.
     request = objectStore.get(id);
     request.onerror = errorHandler;
     request.onsuccess = grabEventAndContinueHandler;
-    event = yield;
+    event = yield undefined;
 
     ok(event.target.result === undefined, "Object was deleted");
-    db.close();
+
+    // Wait for success
+    yield undefined;
   }
 
   finishTest();
-  yield;
+  yield undefined;
 }
 

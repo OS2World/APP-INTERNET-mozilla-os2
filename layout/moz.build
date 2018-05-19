@@ -1,44 +1,37 @@
-# -*- Mode: python; c-basic-offset: 4; indent-tabs-mode: nil; tab-width: 40 -*-
+# -*- Mode: python; indent-tabs-mode: nil; tab-width: 40 -*-
 # vim: set filetype=python:
 # This Source Code Form is subject to the terms of the Mozilla Public
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
-PARALLEL_DIRS += [
+with Files('**'):
+    BUG_COMPONENT = ('Core', 'Layout')
+
+DIRS += [
     'style',
     'base',
     'generic',
     'forms',
     'tables',
     'svg',
-    'xul/base/public',
-    'xul/base/src',
+    'xul',
     'ipc',
     'mathml',
-    'inspector/public',
-    'inspector/src',
+    'inspector',
     'tools/recording',
+    'reftests',
+]
+
+
+IPDL_SOURCES = [
+    'printing/ipc/PRemotePrintJob.ipdl',
 ]
 
 if CONFIG['NS_PRINTING']:
-    PARALLEL_DIRS += ['printing']
+    DIRS += ['printing']
 
-if CONFIG['MOZ_XUL']:
-    PARALLEL_DIRS += ['xul/tree', 'xul/grid']
-
-if CONFIG['ENABLE_TESTS']:
-    PARALLEL_DIRS += [
-        'inspector/tests',
-        'inspector/tests/chrome',
-        'mathml/tests',
-        'xul/test',
-        'xul/base/test',
-    ]
-
-TEST_TOOL_DIRS += [
+TEST_DIRS += [
     'tools/reftest',
-    'reftests/fonts',
-    'reftests/fonts/mplus',
 ]
 
 DIRS += ['build', 'media']
@@ -46,5 +39,4 @@ DIRS += ['build', 'media']
 if CONFIG['MOZ_DEBUG']:
     TEST_DIRS += ['tools/layout-debug']
 
-MODULE = 'layout'
-
+CRASHTEST_MANIFESTS += ['../testing/crashtest/crashtests.list']

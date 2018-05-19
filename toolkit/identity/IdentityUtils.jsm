@@ -1,4 +1,4 @@
-/* -*- Mode: js2; js2-basic-offset: 2; indent-tabs-mode: nil; -*- */
+/* -*- js-indent-level: 2; indent-tabs-mode: nil -*- */
 /* vim: set ft=javascript ts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
@@ -12,7 +12,8 @@ this.EXPORTED_SYMBOLS = [
   "checkDeprecated",
   "checkRenamed",
   "getRandomId",
-  "objectCopy"
+  "objectCopy",
+  "makeMessageObject",
 ];
 
 const Cu = Components.utils;
@@ -64,7 +65,7 @@ this.getRandomId = function getRandomId() {
  * copy source object into target, excluding private properties
  * (those whose names begin with an underscore)
  */
-this.objectCopy = function objectCopy(source, target){
+this.objectCopy = function objectCopy(source, target) {
   let desc;
   Object.getOwnPropertyNames(source).forEach(function(name) {
     if (name[0] !== '_') {
@@ -73,3 +74,38 @@ this.objectCopy = function objectCopy(source, target){
     }
   });
 };
+
+this.makeMessageObject = function makeMessageObject(aRpCaller) {
+  let options = {};
+
+  options.id = aRpCaller.id;
+  options.origin = aRpCaller.origin;
+
+  // Backwards compatibility with Persona beta:
+  // loggedInUser can be undefined, null, or a string
+  options.loggedInUser = aRpCaller.loggedInUser;
+
+  // Special flag for internal calls for Persona in b2g
+  options._internal = aRpCaller._internal;
+
+  Object.keys(aRpCaller).forEach(function(option) {
+    // Duplicate the callerobject, scrubbing out functions and other
+    // internal variables (like _mm, the message manager object)
+    if (!Object.hasOwnProperty(this, option)
+        && option[0] !== '_'
+        && typeof aRpCaller[option] !== 'function') {
+      options[option] = aRpCaller[option];
+    }
+  });
+
+  // check validity of message structure
+  if ((typeof options.id === 'undefined') ||
+      (typeof options.origin === 'undefined')) {
+    let err = "id and origin required in relying-party message: " + JSON.stringify(options);
+    reportError(err);
+    throw new Error(err);
+  }
+
+  return options;
+}
+

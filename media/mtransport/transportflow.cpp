@@ -16,6 +16,8 @@ namespace mozilla {
 
 MOZ_MTLOG_MODULE("mtransport")
 
+NS_IMPL_ISUPPORTS0(TransportFlow)
+
 // There are some hacks here to allow destruction off of
 // the main thread.
 TransportFlow::~TransportFlow() {
@@ -33,14 +35,14 @@ TransportFlow::~TransportFlow() {
   // destroy it simultaneously. The conversion to an nsAutoPtr
   // ensures automatic destruction of the queue at exit of
   // DestroyFinal.
-  nsAutoPtr<std::deque<TransportLayer*> > layers_tmp(layers_.forget());
+  nsAutoPtr<std::deque<TransportLayer*>> layers_tmp(layers_.release());
   RUN_ON_THREAD(target_,
                 WrapRunnableNM(&TransportFlow::DestroyFinal, layers_tmp),
                 NS_DISPATCH_NORMAL);
 }
 
 void TransportFlow::DestroyFinal(nsAutoPtr<std::deque<TransportLayer *> > layers) {
-  ClearLayers(layers);
+  ClearLayers(layers.get());
 }
 
 void TransportFlow::ClearLayers(std::queue<TransportLayer *>* layers) {
@@ -59,11 +61,11 @@ void TransportFlow::ClearLayers(std::deque<TransportLayer *>* layers) {
 
 nsresult TransportFlow::PushLayer(TransportLayer *layer) {
   CheckThread();
-  ScopedDeletePtr<TransportLayer> layer_tmp(layer);  // Destroy on failure.
+  UniquePtr<TransportLayer> layer_tmp(layer);  // Destroy on failure.
 
   // Don't allow pushes once we are in error state.
   if (state_ == TransportLayer::TS_ERROR) {
-    MOZ_MTLOG(PR_LOG_ERROR, id_ + ": Can't call PushLayer in error state for flow ");
+    MOZ_MTLOG(ML_ERROR, id_ + ": Can't call PushLayer in error state for flow");
     return NS_ERROR_FAILURE;
   }
 
@@ -74,7 +76,7 @@ nsresult TransportFlow::PushLayer(TransportLayer *layer) {
     ClearLayers(layers_.get());
 
     // Set ourselves to have failed.
-    MOZ_MTLOG(PR_LOG_ERROR, id_ << ": Layer initialization failed; invalidating");
+    MOZ_MTLOG(ML_ERROR, id_ << ": Layer initialization failed; invalidating");
     StateChangeInt(TransportLayer::TS_ERROR);
 
     return rv;
@@ -88,7 +90,7 @@ nsresult TransportFlow::PushLayer(TransportLayer *layer) {
     old_layer->SignalStateChange.disconnect(this);
     old_layer->SignalPacketReceived.disconnect(this);
   }
-  layers_->push_front(layer_tmp.forget());
+  layers_->push_front(layer_tmp.release());
   layer->Inserted(this, old_layer);
 
   layer->SignalStateChange.connect(this, &TransportFlow::StateChange);
@@ -104,13 +106,14 @@ nsresult TransportFlow::PushLayers(nsAutoPtr<std::queue<TransportLayer *> > laye
 
   MOZ_ASSERT(!layers->empty());
   if (layers->empty()) {
-    MOZ_MTLOG(PR_LOG_ERROR, id_ << ": Can't call PushLayers with empty layers");
+    MOZ_MTLOG(ML_ERROR, id_ << ": Can't call PushLayers with empty layers");
     return NS_ERROR_INVALID_ARG;
   }
 
   // Don't allow pushes once we are in error state.
   if (state_ == TransportLayer::TS_ERROR) {
-    MOZ_MTLOG(PR_LOG_ERROR, id_ << ": Can't call PushLayers in error state for flow ");
+    MOZ_MTLOG(ML_ERROR,
+              id_ << ": Can't call PushLayers in error state for flow ");
     ClearLayers(layers.get());
     return NS_ERROR_FAILURE;
   }
@@ -128,7 +131,8 @@ nsresult TransportFlow::PushLayers(nsAutoPtr<std::queue<TransportLayer *> > laye
 
     rv = layer->Init();
     if (NS_FAILED(rv)) {
-      MOZ_MTLOG(PR_LOG_ERROR, id_ << ": Layer initialization failed; invalidating flow ");
+      MOZ_MTLOG(ML_ERROR,
+                id_ << ": Layer initialization failed; invalidating flow ");
       break;
     }
 
@@ -142,11 +146,11 @@ nsresult TransportFlow::PushLayers(nsAutoPtr<std::queue<TransportLayer *> > laye
 
   if (NS_FAILED(rv)) {
     // Destroy any layers we could not push.
-    ClearLayers(layers);
+    ClearLayers(layers.get());
 
     // Now destroy the rest of the flow, because it's no longer
     // in an acceptable state.
-    ClearLayers(layers_);
+    ClearLayers(layers_.get());
 
     // Set ourselves to have failed.
     StateChangeInt(TransportLayer::TS_ERROR);
@@ -195,6 +199,17 @@ TransportResult TransportFlow::SendPacket(const unsigned char *data,
     return TE_ERROR;
   }
   return top() ? top()->SendPacket(data, len) : TE_ERROR;
+}
+
+bool TransportFlow::Contains(TransportLayer *layer) const {
+  if (layers_) {
+    for (auto l = layers_->begin(); l != layers_->end(); ++l) {
+      if (*l == layer) {
+        return true;
+      }
+    }
+  }
+  return false;
 }
 
 void TransportFlow::EnsureSameThread(TransportLayer *layer)  {

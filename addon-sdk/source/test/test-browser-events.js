@@ -1,8 +1,13 @@
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
-
 "use strict";
+
+module.metadata = {
+  engines: {
+    "Firefox": "*"
+  }
+};
 
 const { Loader } = require("sdk/test/loader");
 const { open, getMostRecentBrowserWindow, getOuterId } = require("sdk/window/utils");
@@ -52,7 +57,9 @@ exports["test browser events ignore other wins"] = function(assert, done) {
   let actualBrowser = [];
   let actualWindow = [];
 
-  function browserEventHandler(e) actualBrowser.push(e)
+  function browserEventHandler(e) {
+    return actualBrowser.push(e);
+  }
   on(browserEvents, "data", browserEventHandler);
   on(windowEvents, "data", function handler(e) {
     actualWindow.push(e);
@@ -92,14 +99,4 @@ exports["test browser events ignore other wins"] = function(assert, done) {
   let window = open("data:text/html,not a browser");
 };
 
-if (require("sdk/system/xul-app").is("Fennec")) {
-  module.exports = {
-    "test Unsupported Test": function UnsupportedTest (assert) {
-        assert.pass(
-          "Skipping this test until Fennec support is implemented." +
-          "See bug 793071");
-    }
-  }
-}
-
-require("test").run(exports);
+require("sdk/test").run(exports);

@@ -8,13 +8,14 @@ endif
 
 include $(MOZILLA_DIR)/toolkit/mozapps/installer/signing.mk
 
-ABS_CONFIG_DIR := $(shell pwd)/$(CONFIG_DIR)
+ABS_CONFIG_DIR := $(abspath $(CONFIG_DIR))
 
 SFX_MODULE ?= $(error SFX_MODULE is not defined)
 
 TOOLKIT_NSIS_FILES = \
 	common.nsh \
 	locale.nlf \
+	locale-fonts.nsh \
 	locale-rtl.nlf \
 	locales.nsi \
 	overrides.nsh \
@@ -29,6 +30,7 @@ CUSTOM_NSIS_PLUGINS = \
 	CityHash.dll \
 	InetBgDL.dll \
 	InvokeShellVerb.dll \
+	liteFirewallW.dll \
 	ServicesHelper.dll \
 	ShellLink.dll \
 	UAC.dll \
@@ -51,8 +53,8 @@ endif
 	$(MAKE) $(CONFIG_DIR)/7zSD.sfx
 	cd $(CONFIG_DIR) &&  $(CYGWIN_WRAPPER) 7z a -t7z $(ABS_CONFIG_DIR)/stub.7z setup-stub.exe -mx -m0=BCJ2 -m1=LZMA:d21 -m2=LZMA:d17 -m3=LZMA:d17 -mb0:1 -mb0s1:2 -mb0s2:3
 	cat $(CONFIG_DIR)/7zSD.sfx $(CONFIG_DIR)/stub.tag $(CONFIG_DIR)/stub.7z > "$(CONFIG_DIR)/stub.exe"
-ifdef MOZ_EXTERNAL_SIGNING_FORMAT
-	$(MOZ_SIGN_CMD) $(foreach f,$(MOZ_EXTERNAL_SIGNING_FORMAT),-f $(f)) $(CONFIG_DIR)/stub.exe
+ifdef MOZ_EXTERNAL_SIGNING_FORMAT_STUB
+	$(MOZ_SIGN_CMD) $(foreach f,$(MOZ_EXTERNAL_SIGNING_FORMAT_STUB),-f $(f)) $(CONFIG_DIR)/stub.exe
 endif
 endif
 # Support for building the uninstaller when repackaging locales
@@ -95,13 +97,4 @@ maintenanceservice_installer::
 	cd $(CONFIG_DIR) && $(MAKENSISU) maintenanceservice_installer.nsi
 	$(NSINSTALL) -D $(DIST)/bin/
 	cp $(CONFIG_DIR)/maintenanceservice_installer.exe $(DIST)/bin
-endif
-
-ifdef MOZ_WEBAPP_RUNTIME
-webapp_uninstaller::
-	$(INSTALL) $(addprefix $(MOZILLA_DIR)/toolkit/mozapps/installer/windows/nsis/,$(TOOLKIT_NSIS_FILES)) $(CONFIG_DIR)
-	$(INSTALL) $(addprefix $(MOZILLA_DIR)/other-licenses/nsis/Plugins/,$(CUSTOM_NSIS_PLUGINS)) $(CONFIG_DIR)
-	cd $(CONFIG_DIR) && $(MAKENSISU) webapp-uninstaller.nsi
-	$(NSINSTALL) -D $(DIST)/bin
-	cp $(CONFIG_DIR)/webapp-uninstaller.exe $(DIST)/bin
 endif

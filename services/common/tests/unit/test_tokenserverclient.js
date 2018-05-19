@@ -14,6 +14,7 @@ add_test(function test_working_bid_exchange() {
   _("Ensure that working BrowserID token exchange works as expected.");
 
   let service = "http://example.com/foo";
+  let duration = 300;
 
   let server = httpd_setup({
     "/1.0/foo/1.0": function(request, response) {
@@ -29,6 +30,7 @@ add_test(function test_working_bid_exchange() {
         key:          "key",
         api_endpoint: service,
         uid:          "uid",
+        duration:     duration,
       });
       response.bodyOutputStream.write(body, body.length);
     }
@@ -36,16 +38,16 @@ add_test(function test_working_bid_exchange() {
 
   let client = new TokenServerClient();
   let cb = Async.makeSpinningCallback();
-  let url = TEST_SERVER_URL + "1.0/foo/1.0";
+  let url = server.baseURI + "/1.0/foo/1.0";
   client.getTokenFromBrowserIDAssertion(url, "assertion", cb);
   let result = cb.wait();
   do_check_eq("object", typeof(result));
-  do_check_attribute_count(result, 4);
+  do_check_attribute_count(result, 6);
   do_check_eq(service, result.endpoint);
   do_check_eq("id", result.id);
   do_check_eq("key", result.key);
   do_check_eq("uid", result.uid);
-
+  do_check_eq(duration, result.duration);
   server.stop(run_next_test);
 });
 
@@ -58,7 +60,7 @@ add_test(function test_invalid_arguments() {
     ["http://example.com/", "assertion", null]
   ];
 
-  for each (let arg in args) {
+  for (let arg of args) {
     try {
       let client = new TokenServerClient();
       client.getTokenFromBrowserIDAssertion(arg[0], arg[1], arg[2]);
@@ -93,11 +95,13 @@ add_test(function test_conditions_required_response_handling() {
   });
 
   let client = new TokenServerClient();
-  let url = TEST_SERVER_URL + "1.0/foo/1.0";
+  let url = server.baseURI + "/1.0/foo/1.0";
 
   function onResponse(error, token) {
     do_check_true(error instanceof TokenServerClientServerError);
     do_check_eq(error.cause, "conditions-required");
+    // Check a JSON.stringify works on our errors as our logging will try and use it.
+    do_check_true(JSON.stringify(error), "JSON.stringify worked");
     do_check_null(token);
 
     do_check_eq(error.urls.tos, tosURL);
@@ -125,7 +129,7 @@ add_test(function test_invalid_403_no_content_type() {
   });
 
   let client = new TokenServerClient();
-  let url = TEST_SERVER_URL + "1.0/foo/1.0";
+  let url = server.baseURI + "/1.0/foo/1.0";
 
   function onResponse(error, token) {
     do_check_true(error instanceof TokenServerClientServerError);
@@ -156,7 +160,7 @@ add_test(function test_invalid_403_bad_json() {
   });
 
   let client = new TokenServerClient();
-  let url = TEST_SERVER_URL + "1.0/foo/1.0";
+  let url = server.baseURI + "/1.0/foo/1.0";
 
   function onResponse(error, token) {
     do_check_true(error instanceof TokenServerClientServerError);
@@ -184,7 +188,7 @@ add_test(function test_403_no_urls() {
   });
 
   let client = new TokenServerClient();
-  let url = TEST_SERVER_URL + "1.0/foo/1.0";
+  let url = server.baseURI + "/1.0/foo/1.0";
 
   client.getTokenFromBrowserIDAssertion(url, "assertion",
                                         function onResponse(error, result) {
@@ -197,13 +201,17 @@ add_test(function test_403_no_urls() {
   });
 });
 
-add_test(function test_send_conditions_accepted() {
+add_test(function test_send_extra_headers() {
   _("Ensures that the condition acceptance header is sent when asked.");
 
+  let duration = 300;
   let server = httpd_setup({
     "/1.0/foo/1.0": function(request, response) {
-      do_check_true(request.hasHeader("x-conditions-accepted"));
-      do_check_eq(request.getHeader("x-conditions-accepted"), "1");
+      do_check_true(request.hasHeader("x-foo"));
+      do_check_eq(request.getHeader("x-foo"), "42");
+
+      do_check_true(request.hasHeader("x-bar"));
+      do_check_eq(request.getHeader("x-bar"), "17");
 
       response.setStatusLine(request.httpVersion, 200, "OK");
       response.setHeader("Content-Type", "application/json");
@@ -213,13 +221,14 @@ add_test(function test_send_conditions_accepted() {
         key:          "key",
         api_endpoint: "http://example.com/",
         uid:          "uid",
+        duration:     duration,
       });
       response.bodyOutputStream.write(body, body.length);
     }
   });
 
   let client = new TokenServerClient();
-  let url = TEST_SERVER_URL + "1.0/foo/1.0";
+  let url = server.baseURI + "/1.0/foo/1.0";
 
   function onResponse(error, token) {
     do_check_null(error);
@@ -229,7 +238,11 @@ add_test(function test_send_conditions_accepted() {
     server.stop(run_next_test);
   }
 
-  client.getTokenFromBrowserIDAssertion(url, "assertion", onResponse, true);
+  let extra = {
+    "X-Foo": 42,
+    "X-Bar": 17
+  };
+  client.getTokenFromBrowserIDAssertion(url, "assertion", onResponse, extra);
 });
 
 add_test(function test_error_404_empty() {
@@ -238,7 +251,7 @@ add_test(function test_error_404_empty() {
   let server = httpd_setup();
 
   let client = new TokenServerClient();
-  let url = TEST_SERVER_URL + "foo";
+  let url = server.baseURI + "/foo";
   client.getTokenFromBrowserIDAssertion(url, "assertion", function(error, r) {
     do_check_true(error instanceof TokenServerClientServerError);
     do_check_eq(error.cause, "malformed-response");
@@ -276,7 +289,7 @@ add_test(function test_error_404_proper_response() {
   }
 
   let client = new TokenServerClient();
-  let url = TEST_SERVER_URL + "1.0/foo/1.0";
+  let url = server.baseURI + "/1.0/foo/1.0";
   client.getTokenFromBrowserIDAssertion(url, "assertion", onResponse);
 });
 
@@ -294,7 +307,7 @@ add_test(function test_bad_json() {
   });
 
   let client = new TokenServerClient();
-  let url = TEST_SERVER_URL + "1.0/foo/1.0";
+  let url = server.baseURI + "/1.0/foo/1.0";
   client.getTokenFromBrowserIDAssertion(url, "assertion", function(error, r) {
     do_check_neq(null, error);
     do_check_eq("TokenServerClientServerError", error.name);
@@ -320,12 +333,37 @@ add_test(function test_400_response() {
   });
 
   let client = new TokenServerClient();
-  let url = TEST_SERVER_URL + "1.0/foo/1.0";
+  let url = server.baseURI + "/1.0/foo/1.0";
   client.getTokenFromBrowserIDAssertion(url, "assertion", function(error, r) {
     do_check_neq(null, error);
     do_check_eq("TokenServerClientServerError", error.name);
     do_check_neq(null, error.response);
     do_check_eq(error.cause, "malformed-request");
+
+    server.stop(run_next_test);
+  });
+});
+
+add_test(function test_401_with_error_cause() {
+  _("Ensure 401 cause is specified in body.status");
+
+  let server = httpd_setup({
+    "/1.0/foo/1.0": function(request, response) {
+      response.setStatusLine(request.httpVersion, 401, "Unauthorized");
+      response.setHeader("Content-Type", "application/json; charset=utf-8");
+
+      let body = JSON.stringify({status: "no-soup-for-you"});
+      response.bodyOutputStream.write(body, body.length);
+    }
+  });
+
+  let client = new TokenServerClient();
+  let url = server.baseURI + "/1.0/foo/1.0";
+  client.getTokenFromBrowserIDAssertion(url, "assertion", function(error, r) {
+    do_check_neq(null, error);
+    do_check_eq("TokenServerClientServerError", error.name);
+    do_check_neq(null, error.response);
+    do_check_eq(error.cause, "no-soup-for-you");
 
     server.stop(run_next_test);
   });
@@ -344,7 +382,7 @@ add_test(function test_unhandled_media_type() {
     }
   });
 
-  let url = TEST_SERVER_URL + "1.0/foo/1.0";
+  let url = server.baseURI + "/1.0/foo/1.0";
   let client = new TokenServerClient();
   client.getTokenFromBrowserIDAssertion(url, "assertion", function(error, r) {
     do_check_neq(null, error);
@@ -359,6 +397,7 @@ add_test(function test_unhandled_media_type() {
 add_test(function test_rich_media_types() {
   _("Ensure that extra tokens in the media type aren't rejected.");
 
+  let duration = 300;
   let server = httpd_setup({
     "/foo": function(request, response) {
       response.setStatusLine(request.httpVersion, 200, "OK");
@@ -369,12 +408,13 @@ add_test(function test_rich_media_types() {
         key:          "key",
         api_endpoint: "foo",
         uid:          "uid",
+        duration:     duration,
       });
       response.bodyOutputStream.write(body, body.length);
     }
   });
 
-  let url = TEST_SERVER_URL + "foo";
+  let url = server.baseURI + "/foo";
   let client = new TokenServerClient();
   client.getTokenFromBrowserIDAssertion(url, "assertion", function(error, r) {
     do_check_eq(null, error);
@@ -386,6 +426,7 @@ add_test(function test_rich_media_types() {
 add_test(function test_exception_during_callback() {
   _("Ensure that exceptions thrown during callback handling are handled.");
 
+  let duration = 300;
   let server = httpd_setup({
     "/foo": function(request, response) {
       response.setStatusLine(request.httpVersion, 200, "OK");
@@ -396,12 +437,13 @@ add_test(function test_exception_during_callback() {
         key:          "key",
         api_endpoint: "foo",
         uid:          "uid",
+        duration:     duration,
       });
       response.bodyOutputStream.write(body, body.length);
     }
   });
 
-  let url = TEST_SERVER_URL + "foo";
+  let url = server.baseURI + "/foo";
   let client = new TokenServerClient();
   let cb = Async.makeSpinningCallback();
   let callbackCount = 0;

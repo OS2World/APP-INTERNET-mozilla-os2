@@ -10,22 +10,27 @@
   'targets': [
     {
       'target_name': 'iLBC',
-      'type': '<(library)',
+      'type': 'static_library',
       'dependencies': [
-        '<(webrtc_root)/common_audio/common_audio.gyp:signal_processing',
+        '<(webrtc_root)/common_audio/common_audio.gyp:common_audio',
+        'audio_encoder_interface',
       ],
       'include_dirs': [
         'interface',
+        '<(webrtc_root)',
       ],
       'direct_dependent_settings': {
         'include_dirs': [
           'interface',
+          '<(webrtc_root)',
         ],
       },
       'sources': [
+        'interface/audio_encoder_ilbc.h',
         'interface/ilbc.h',
         'abs_quant.c',
         'abs_quant_loop.c',
+        'audio_encoder_ilbc.cc',
         'augmented_cb_corr.c',
         'bw_expand.c',
         'cb_construct.c',
@@ -182,9 +187,3 @@
     }], # include_tests
   ], # conditions
 }
-
-# Local Variables:
-# tab-width:2
-# indent-tabs-mode:nil
-# End:
-# vim: set expandtab tabstop=2 shiftwidth=2:

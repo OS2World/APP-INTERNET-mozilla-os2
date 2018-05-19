@@ -1,11 +1,10 @@
-var g = newGlobal('new-compartment');
+var g = newGlobal();
 var dbg = new Debugger(g);
 
 var fscript = null;
 dbg.onNewScript = function(script) {
     dbg.onNewScript = undefined;
     fscript = script.getChildScripts()[0];
-    assertEq(fscript.staticLevel, 1);
 }
 
 g.eval("function f(x) { arguments[0] = 3; return x }");

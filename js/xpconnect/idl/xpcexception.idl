@@ -7,28 +7,16 @@
 #include "nsISupports.idl"
 #include "nsIException.idl"
 
-%{ C++
-#include "jsapi.h"
-%}
-
-[ptr] native xpcexJSContextPtr(JSContext);
-      native xpcexJSVal(jsval);
-
-[scriptable, uuid(cac29630-7bf2-4e22-811b-46855a7d5af0)]
+[scriptable, builtinclass, uuid(875e6645-e762-4da6-9ec8-bf19ab0050df)]
 interface nsIXPCException : nsIException
 {
     // inherits methods from nsIException
 
-    void initialize(in string           aMessage,
+    void initialize(in AUTF8String      aMessage,
                     in nsresult         aResult,
-                    in string           aName,
+                    in AUTF8String      aName,
                     in nsIStackFrame    aLocation,
-                    in nsISupports      aData,
-                    in nsIException     aInner);
-
-    [noscript] xpcexJSVal stealJSVal();
-    [noscript] void stowJSVal(in xpcexJSContextPtr cx,
-                              in xpcexJSVal val);
+                    in nsISupports      aData);
 };
 
 /* this goes into the C++ header verbatim. */

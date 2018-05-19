@@ -1,19 +1,20 @@
-const Cc = Components.classes;
-const Ci = Components.interfaces;
-const Cu = Components.utils;
-const Cr = Components.results;
-
 Cu.import("resource://testing-common/httpd.js");
+Cu.import("resource://gre/modules/NetUtil.jsm");
+
+XPCOMUtils.defineLazyGetter(this, "URL", function() {
+  return "http://localhost:" + httpserver.identity.primaryPort;
+});
 
 var httpserver = null;
 // Need to randomize, because apparently no one clears our cache
 var randomPath = "/redirect/" + Math.random();
-var randomURI = "http://localhost:4444" + randomPath;
+
+XPCOMUtils.defineLazyGetter(this, "randomURI", function() {
+  return URL + randomPath;
+});
 
 function make_channel(url, callback, ctx) {
-  var ios = Cc["@mozilla.org/network/io-service;1"].
-            getService(Ci.nsIIOService);
-  return ios.newChannel(url, "", null);
+  return NetUtil.newChannel({uri: url, loadUsingSystemPrincipal: true});
 }
 
 const responseBody = "response body";
@@ -21,7 +22,7 @@ const responseBody = "response body";
 function redirectHandler(metadata, response)
 {
   response.setStatusLine(metadata.httpVersion, 301, "Moved");
-  response.setHeader("Location", "http://localhost:4444/content", false);
+  response.setHeader("Location", URL + "/content", false);
   return;
 }
 
@@ -36,7 +37,7 @@ function firstTimeThrough(request, buffer)
   do_check_eq(buffer, responseBody);
   var chan = make_channel(randomURI);
   chan.loadFlags |= Ci.nsIRequest.LOAD_FROM_CACHE;
-  chan.asyncOpen(new ChannelListener(finish_test, null), null);
+  chan.asyncOpen2(new ChannelListener(finish_test, null));
 }
 
 function finish_test(request, buffer)
@@ -50,9 +51,9 @@ function run_test()
   httpserver = new HttpServer();
   httpserver.registerPathHandler(randomPath, redirectHandler);
   httpserver.registerPathHandler("/content", contentHandler);
-  httpserver.start(4444);
+  httpserver.start(-1);
 
   var chan = make_channel(randomURI);
-  chan.asyncOpen(new ChannelListener(firstTimeThrough, null), null);
+  chan.asyncOpen2(new ChannelListener(firstTimeThrough, null));
   do_test_pending();
 }

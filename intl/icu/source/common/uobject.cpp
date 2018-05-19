@@ -1,3 +1,5 @@
+// Copyright (C) 2016 and later: Unicode, Inc. and others.
+// License & terms of use: http://www.unicode.org/copyright.html
 /*
 ******************************************************************************
 *
@@ -91,23 +93,7 @@ void U_EXPORT2 UMemory::operator delete(void* p, const char* /*file*/, int /*lin
 
 UObject::~UObject() {}
 
-// Future implementation for RTTI that support subtyping. [alan]
-// 
-// UClassID UObject::getStaticClassID() {
-//     return (UClassID) NULL;
-// }
-// 
-// UBool UObject::instanceOf(UClassID type) const {
-//     UClassID c = getDynamicClassID();
-//     for (;;) {
-//         if (c == type) {
-//             return TRUE;
-//         } else if (c == (UClassID) NULL) {
-//             return FALSE;
-//         }
-//         c = * (UClassID*) c;
-//     }
-// }
+UClassID UObject::getDynamicClassID() const { return NULL; }
 
 U_NAMESPACE_END
 

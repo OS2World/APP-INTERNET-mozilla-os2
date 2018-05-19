@@ -13,19 +13,21 @@
 
 #include <pthread.h>
 
-#include "condition_variable_wrapper.h"
+#include "webrtc/system_wrappers/interface/condition_variable_wrapper.h"
+#include "webrtc/typedefs.h"
 
 namespace webrtc {
 
 class ConditionVariablePosix : public ConditionVariableWrapper {
  public:
   static ConditionVariableWrapper* Create();
-  ~ConditionVariablePosix();
+  ~ConditionVariablePosix() override;
 
-  void SleepCS(CriticalSectionWrapper& crit_sect);
-  bool SleepCS(CriticalSectionWrapper& crit_sect, unsigned long max_time_in_ms);
-  void Wake();
-  void WakeAll();
+  void SleepCS(CriticalSectionWrapper& crit_sect) override;
+  bool SleepCS(CriticalSectionWrapper& crit_sect,
+               unsigned long max_time_in_ms) override;
+  void Wake() override;
+  void WakeAll() override;
 
  private:
   ConditionVariablePosix();
@@ -35,6 +37,6 @@ class ConditionVariablePosix : public ConditionVariableWrapper {
   pthread_cond_t cond_;
 };
 
-} // namespace webrtc
+}  // namespace webrtc
 
 #endif  // WEBRTC_SYSTEM_WRAPPERS_SOURCE_CONDITION_VARIABLE_POSIX_H_

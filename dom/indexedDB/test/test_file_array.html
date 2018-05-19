@@ -34,11 +34,15 @@
         expectedFileIds: [9, 9, 10, 11, 11, 9, 9] }
     ];
 
+    SpecialPowers.pushPrefEnv({ set: [["dom.indexedDB.dataThreshold", -1]] },
+                              continueToNextStep);
+    yield undefined;
+
     let request = indexedDB.open(name, 1);
     request.onerror = errorHandler;
     request.onupgradeneeded = grabEventAndContinueHandler;
     request.onsuccess = grabEventAndContinueHandler;
-    let event = yield;
+    let event = yield undefined;
 
     is(event.type, "upgradeneeded", "Got correct event type");
 
@@ -47,30 +51,30 @@
 
     let objectStore = db.createObjectStore(objectStoreName, { });
 
-    for each (let data in objectStoreData) {
+    for (let data of objectStoreData) {
       objectStore.add(data.blobs, data.key);
     }
 
-    event = yield;
+    event = yield undefined;
 
     is(event.type, "success", "Got correct event type");
 
-    for each (let data in objectStoreData) {
+    for (let data of objectStoreData) {
       objectStore = db.transaction([objectStoreName])
                       .objectStore(objectStoreName);
 
       request = objectStore.get(data.key);
       request.onsuccess = grabEventAndContinueHandler;
-      event = yield;
+      event = yield undefined;
 
       verifyBlobArray(event.target.result, data.blobs, data.expectedFileIds);
-      yield;
+      yield undefined;
     }
 
     is(bufferCache.length, 11, "Correct length");
 
     finishTest();
-    yield;
+    yield undefined;
   }
   </script>
   <script type="text/javascript;version=1.7" src="file.js"></script>

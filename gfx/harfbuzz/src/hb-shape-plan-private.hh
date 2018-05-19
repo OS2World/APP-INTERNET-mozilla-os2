@@ -28,7 +28,6 @@
 #define HB_SHAPE_PLAN_PRIVATE_HH
 
 #include "hb-private.hh"
-#include "hb-shape-plan.h"
 #include "hb-object-private.hh"
 #include "hb-shaper-private.hh"
 
@@ -39,18 +38,26 @@ struct hb_shape_plan_t
   ASSERT_POD ();
 
   hb_bool_t default_shaper_list;
-  hb_face_t *face;
+  hb_face_t *face_unsafe; /* We don't carry a reference to face. */
   hb_segment_properties_t props;
 
   hb_shape_func_t *shaper_func;
   const char *shaper_name;
 
+  hb_feature_t *user_features;
+  unsigned int num_user_features;
+
+  int *coords;
+  unsigned int num_coords;
+
   struct hb_shaper_data_t shaper_data;
 };
 
 #define HB_SHAPER_DATA_CREATE_FUNC_EXTRA_ARGS \
-	, const hb_feature_t            *user_features \
-	, unsigned int                   num_user_features
+	, const hb_feature_t *user_features \
+	, unsigned int        num_user_features \
+	, const int          *coords \
+	, unsigned int        num_coords
 #define HB_SHAPER_IMPLEMENT(shaper) HB_SHAPER_DATA_PROTOTYPE(shaper, shape_plan);
 #include "hb-shaper-list.hh"
 #undef HB_SHAPER_IMPLEMENT

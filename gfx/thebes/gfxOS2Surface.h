@@ -13,21 +13,23 @@ class gfxOS2Surface : public gfxASurface {
 public:
     // constructor for an os2Image surface -
     // the surface is only used by Cairo and not by PM
-    gfxOS2Surface(const gfxIntSize& aSize,
-                  gfxASurface::gfxImageFormat aFormat);
+    gfxOS2Surface(const mozilla::gfx::IntSize& aSize,
+                  gfxImageFormat aFormat);
 
     // constructor for an os2Window surface
     gfxOS2Surface(HWND aWnd);
 
+#if 0 // This is temporariy disabled, see #171.
     // constructor for an os2Print surface
-    gfxOS2Surface(HDC aDC, const gfxIntSize& aSize, int aPreview);
+    gfxOS2Surface(HDC aDC, const mozilla::gfx::IntSize& aSize, int aPreview);
+#endif
 
     // constructor for an as-yet-unwrapped os2Image surface
     gfxOS2Surface(cairo_surface_t *csurf);
 
     virtual ~gfxOS2Surface();
 
-    virtual const gfxIntSize GetSize() const { return mSize; }
+    virtual const mozilla::gfx::IntSize GetSize() const { return mSize; }
 
     // invoked on os2Window surfaces to update the screen -
     // it uses the HPS provided by WinBeginPaint()
@@ -35,7 +37,7 @@ public:
 
     // invoked on os2Window surfaces to adjust the cairo_os2_surface's
     // size when the window's size changes
-    int Resize(const gfxIntSize& aSize);
+    int Resize(const mozilla::gfx::IntSize& aSize);
 
     // invoked on os2Print surfaces to get the associated PS
     HPS GetPS();
@@ -45,9 +47,6 @@ public:
 
     // enable/disable DIVE (direct access to the video framebuffer)
     static bool EnableDIVE(bool aEnable, bool aHidePointer);
-
-    // returns special rendering flags for os2Print surfaces
-    virtual int32_t GetDefaultContextFlags() const;
 
 private:
     typedef enum {
@@ -60,7 +59,7 @@ private:
     HWND           mWnd;      // window associated with the surface
     HDC            mDC;       // device context
     HPS            mPS;       // presentation space associated with HDC
-    gfxIntSize     mSize;     // current size of the surface
+    mozilla::gfx::IntSize mSize; // current size of the surface
     os2SurfaceType mSurfType; // type of surface
 };
 

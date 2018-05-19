@@ -7,37 +7,42 @@
 #ifndef mozilla_ipc_dbus_gonk_rawdbusconnection_h__
 #define mozilla_ipc_dbus_gonk_rawdbusconnection_h__
 
-#include <string.h>
-#include <stdint.h>
-#include <stdio.h>
-#include <string>
-#include <stdlib.h>
-#include "nscore.h"
-#include "mozilla/Scoped.h"
-#include <mozilla/Mutex.h>
-
-struct DBusConnection;
+#include <dbus/dbus.h>
+#include "mozilla/ipc/DBusConnectionRefPtr.h"
 
 namespace mozilla {
 namespace ipc {
 
+typedef void (*DBusReplyCallback)(DBusMessage*, void*);
+
 class RawDBusConnection
 {
-  struct ScopedDBusConnectionPtrTraits : ScopedFreePtrTraits<DBusConnection>
-  {
-    static void release(DBusConnection* ptr);
-  };
-
 public:
   RawDBusConnection();
-  ~RawDBusConnection();
+  virtual ~RawDBusConnection();
+
   nsresult EstablishDBusConnection();
-  DBusConnection* GetConnection() {
+
+  bool Watch();
+
+  DBusConnection* GetConnection()
+  {
     return mConnection;
   }
 
+  bool Send(DBusMessage* aMessage);
+
+  bool SendWithReply(DBusReplyCallback aCallback, void* aData,
+                     int aTimeout, DBusMessage* aMessage);
+
+  bool SendWithReply(DBusReplyCallback aCallback, void* aData,
+                     int aTimeout,
+                     const char* aDestination,
+                     const char* aPath, const char* aIntf,
+                     const char *aFunc, int aFirstArgType, ...);
+
 protected:
-  Scoped<ScopedDBusConnectionPtrTraits> mConnection;
+  RefPtr<DBusConnection> mConnection;
 
 private:
   static bool sDBusIsInit;

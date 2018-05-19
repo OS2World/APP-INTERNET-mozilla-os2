@@ -7,166 +7,323 @@
  *  in the file PATENTS.  All contributing project authors may
  *  be found in the AUTHORS file in the root of the source tree.
  */
-#include "modules/video_coding/main/source/jitter_buffer.h"
+#include "webrtc/modules/video_coding/main/source/jitter_buffer.h"
+
+#include <assert.h>
 
 #include <algorithm>
-#include <cassert>
+#include <utility>
 
-#include "modules/video_coding/main/source/event.h"
-#include "modules/video_coding/main/source/frame_buffer.h"
-#include "modules/video_coding/main/source/inter_frame_delay.h"
-#include "modules/video_coding/main/source/internal_defines.h"
-#include "modules/video_coding/main/source/jitter_buffer_common.h"
-#include "modules/video_coding/main/source/jitter_estimator.h"
-#include "modules/video_coding/main/source/packet.h"
-#include "modules/video_coding/main/source/tick_time_base.h"
-#include "system_wrappers/interface/critical_section_wrapper.h"
-#include "system_wrappers/interface/trace.h"
+#include "webrtc/base/checks.h"
+#include "webrtc/base/trace_event.h"
+#include "webrtc/modules/rtp_rtcp/interface/rtp_rtcp_defines.h"
+#include "webrtc/modules/video_coding/main/interface/video_coding.h"
+#include "webrtc/modules/video_coding/main/source/frame_buffer.h"
+#include "webrtc/modules/video_coding/main/source/inter_frame_delay.h"
+#include "webrtc/modules/video_coding/main/source/internal_defines.h"
+#include "webrtc/modules/video_coding/main/source/jitter_buffer_common.h"
+#include "webrtc/modules/video_coding/main/source/jitter_estimator.h"
+#include "webrtc/modules/video_coding/main/source/packet.h"
+#include "webrtc/system_wrappers/interface/clock.h"
+#include "webrtc/system_wrappers/interface/critical_section_wrapper.h"
+#include "webrtc/system_wrappers/interface/event_wrapper.h"
+#include "webrtc/system_wrappers/interface/logging.h"
+#include "webrtc/system_wrappers/interface/metrics.h"
 
 namespace webrtc {
 
+// Interval for updating SS data.
+static const uint32_t kSsCleanupIntervalSec = 60;
+
 // Use this rtt if no value has been reported.
-static uint32_t kDefaultRtt = 200;
+static const int64_t kDefaultRtt = 200;
 
-// Predicates used when searching for frames in the frame buffer list
-class FrameSmallerTimestamp {
- public:
-  explicit FrameSmallerTimestamp(uint32_t timestamp) : timestamp_(timestamp) {}
-  bool operator()(VCMFrameBuffer* frame) {
-    return (LatestTimestamp(timestamp_, frame->TimeStamp(), NULL) ==
-            timestamp_);
+typedef std::pair<uint32_t, VCMFrameBuffer*> FrameListPair;
+
+bool IsKeyFrame(FrameListPair pair) {
+  return pair.second->FrameType() == kVideoFrameKey;
+}
+
+bool HasNonEmptyState(FrameListPair pair) {
+  return pair.second->GetState() != kStateEmpty;
+}
+
+void FrameList::InsertFrame(VCMFrameBuffer* frame) {
+  insert(rbegin().base(), FrameListPair(frame->TimeStamp(), frame));
+}
+
+// Find a Frame which (may) include seq_num
+// Note: if we don't have an end for the frame yet AND there are multiple Frames
+// with the same timestamp being input, in theory you can get packets
+// for a later Frame mixed with an earlier one where there's a reordering.
+// e.g. for <frame 1: 1 2 3> <frame 2: 4 5 6> and we receive
+//          1 2 4 3 5 6
+// or       4 1 2 3 5 6
+// we'll return <frame 1> for packet 4, and at some point it needs to move to
+// <frame 2>.  You can't key off isFirstPacket or kNaluStart because the OOO packet
+// may be 5:
+//          1 5 2 3 4 6
+//          1 5 3 4 2 6 etc
+
+// This can be done by re-characterizing 4 when <frame 1> becomes complete
+// and we find it doesn't include 4.  Perhaps a better abstraction would be
+// to keep the packets in a single sorted list (per timestamp or not,
+// doesn't really matter), and then on insertion look to see if it's in a
+// complete unit (kNaluComplete or kNaluStart ... kNaluEnd sequence), and
+// remove the set *then*.
+//
+// If we instead limit multiple frames with the same timestamp to
+// kNaluComplete (single-packet) frames (i.e. Mode 0 H264), it's simpler.
+// You do need to be careful to pull off Frames only if they're contiguous
+// in sequence number to the previous frame, but that's normal since you
+// can get 4 5 6 1 2 3
+//
+// Note that you have to be careful reordering still:
+// <frame 1: 1> <frame 2: 2 3 4>
+// and arrival 2 1 3 4
+// means you must not match the frame created for 2 when 1 comes in
+
+// XXX This is NOT implemented here; we need to redo this
+
+VCMFrameBuffer* FrameList::PopFrame(uint32_t timestamp) {
+  FrameList::iterator it = find(timestamp);
+  if (it == end())
+    return NULL;
+  VCMFrameBuffer* frame = it->second;
+  erase(it);
+  return frame;
+}
+
+VCMFrameBuffer* FrameList::Front() const {
+  return begin()->second;
+}
+
+VCMFrameBuffer* FrameList::Back() const {
+  return rbegin()->second;
+}
+
+int FrameList::RecycleFramesUntilKeyFrame(FrameList::iterator* key_frame_it,
+                                          UnorderedFrameList* free_frames) {
+  int drop_count = 0;
+  FrameList::iterator it = begin();
+  while (!empty()) {
+    // Throw at least one frame.
+    it->second->Reset();
+    free_frames->push_back(it->second);
+    erase(it++);
+    ++drop_count;
+    if (it != end() && it->second->FrameType() == kVideoFrameKey) {
+      *key_frame_it = it;
+      return drop_count;
+    }
   }
+  *key_frame_it = end();
+  return drop_count;
+}
 
- private:
-  uint32_t timestamp_;
-};
-
-class FrameEqualTimestamp {
- public:
-  explicit FrameEqualTimestamp(uint32_t timestamp) : timestamp_(timestamp) {}
-  bool operator()(VCMFrameBuffer* frame) {
-    return (timestamp_ == frame->TimeStamp());
+void FrameList::CleanUpOldOrEmptyFrames(VCMDecodingState* decoding_state,
+                                       UnorderedFrameList* free_frames) {
+  while (!empty()) {
+    VCMFrameBuffer* oldest_frame = Front();
+    bool remove_frame = false;
+    if (oldest_frame->GetState() == kStateEmpty && size() > 1) {
+      // This frame is empty, try to update the last decoded state and drop it
+      // if successful.
+      remove_frame = decoding_state->UpdateEmptyFrame(oldest_frame);
+    } else {
+      remove_frame = decoding_state->IsOldFrame(oldest_frame);
+    }
+    if (!remove_frame) {
+      break;
+    }
+    free_frames->push_back(oldest_frame);
+    TRACE_EVENT_INSTANT1("webrtc", "JB::OldOrEmptyFrameDropped", "timestamp",
+                         oldest_frame->TimeStamp());
+    erase(begin());
   }
+}
 
- private:
-  uint32_t timestamp_;
-};
-
-class CompleteDecodableKeyFrameCriteria {
- public:
-  bool operator()(VCMFrameBuffer* frame) {
-    return (frame->FrameType() == kVideoFrameKey) &&
-           (frame->GetState() == kStateComplete ||
-            frame->GetState() == kStateDecodable);
+void FrameList::Reset(UnorderedFrameList* free_frames) {
+  while (!empty()) {
+    begin()->second->Reset();
+    free_frames->push_back(begin()->second);
+    erase(begin());
   }
-};
+}
 
-VCMJitterBuffer::VCMJitterBuffer(TickTimeBase* clock,
-                                 int vcm_id,
-                                 int receiver_id,
-                                 bool master)
-    : vcm_id_(vcm_id),
-      receiver_id_(receiver_id),
-      clock_(clock),
+bool Vp9SsMap::Insert(const VCMPacket& packet) {
+  if (!packet.codecSpecificHeader.codecHeader.VP9.ss_data_available)
+    return false;
+
+  ss_map_[packet.timestamp] = packet.codecSpecificHeader.codecHeader.VP9.gof;
+  return true;
+}
+
+void Vp9SsMap::Reset() {
+  ss_map_.clear();
+}
+
+bool Vp9SsMap::Find(uint32_t timestamp, SsMap::iterator* it_out) {
+  bool found = false;
+  for (SsMap::iterator it = ss_map_.begin(); it != ss_map_.end(); ++it) {
+    if (it->first == timestamp || IsNewerTimestamp(timestamp, it->first)) {
+      *it_out = it;
+      found = true;
+    }
+  }
+  return found;
+}
+
+void Vp9SsMap::RemoveOld(uint32_t timestamp) {
+  if (!TimeForCleanup(timestamp))
+    return;
+
+  SsMap::iterator it;
+  if (!Find(timestamp, &it))
+    return;
+
+  ss_map_.erase(ss_map_.begin(), it);
+  AdvanceFront(timestamp);
+}
+
+bool Vp9SsMap::TimeForCleanup(uint32_t timestamp) const {
+  if (ss_map_.empty() || !IsNewerTimestamp(timestamp, ss_map_.begin()->first))
+    return false;
+
+  uint32_t diff = timestamp - ss_map_.begin()->first;
+  return diff / kVideoPayloadTypeFrequency >= kSsCleanupIntervalSec;
+}
+
+void Vp9SsMap::AdvanceFront(uint32_t timestamp) {
+  DCHECK(!ss_map_.empty());
+  GofInfoVP9 gof = ss_map_.begin()->second;
+  ss_map_.erase(ss_map_.begin());
+  ss_map_[timestamp] = gof;
+}
+
+// TODO(asapersson): Update according to updates in RTP payload profile.
+bool Vp9SsMap::UpdatePacket(VCMPacket* packet) {
+  uint8_t gof_idx = packet->codecSpecificHeader.codecHeader.VP9.gof_idx;
+  if (gof_idx == kNoGofIdx)
+    return false;  // No update needed.
+
+  SsMap::iterator it;
+  if (!Find(packet->timestamp, &it))
+    return false;  // Corresponding SS not yet received.
+
+  if (gof_idx >= it->second.num_frames_in_gof)
+    return false;  // Assume corresponding SS not yet received.
+
+  RTPVideoHeaderVP9* vp9 = &packet->codecSpecificHeader.codecHeader.VP9;
+  vp9->temporal_idx = it->second.temporal_idx[gof_idx];
+  vp9->temporal_up_switch = it->second.temporal_up_switch[gof_idx];
+
+  // TODO(asapersson): Set vp9.ref_picture_id[i] and add usage.
+  vp9->num_ref_pics = it->second.num_ref_pics[gof_idx];
+  for (uint8_t i = 0; i < it->second.num_ref_pics[gof_idx]; ++i) {
+    vp9->pid_diff[i] = it->second.pid_diff[gof_idx][i];
+  }
+  return true;
+}
+
+void Vp9SsMap::UpdateFrames(FrameList* frames) {
+  for (const auto& frame_it : *frames) {
+    uint8_t gof_idx =
+        frame_it.second->CodecSpecific()->codecSpecific.VP9.gof_idx;
+    if (gof_idx == kNoGofIdx) {
+      continue;
+    }
+    SsMap::iterator ss_it;
+    if (Find(frame_it.second->TimeStamp(), &ss_it)) {
+      if (gof_idx >= ss_it->second.num_frames_in_gof) {
+        continue;  // Assume corresponding SS not yet received.
+      }
+      frame_it.second->SetGofInfo(ss_it->second, gof_idx);
+    }
+  }
+}
+
+VCMJitterBuffer::VCMJitterBuffer(Clock* clock, EventFactory* event_factory)
+    : clock_(clock),
       running_(false),
       crit_sect_(CriticalSectionWrapper::CreateCriticalSection()),
-      master_(master),
-      frame_event_(),
-      packet_event_(),
+      frame_event_(event_factory->CreateEvent()),
       max_number_of_frames_(kStartNumberOfFrames),
-      frame_buffers_(),
-      frame_list_(),
+      free_frames_(),
+      decodable_frames_(),
+      incomplete_frames_(),
       last_decoded_state_(),
-      first_packet_(true),
-      num_not_decodable_packets_(0),
-      receive_statistics_(),
+      first_packet_since_reset_(true),
+      stats_callback_(NULL),
       incoming_frame_rate_(0),
       incoming_frame_count_(0),
       time_last_incoming_frame_count_(0),
       incoming_bit_count_(0),
       incoming_bit_rate_(0),
-      drop_count_(0),
-      num_consecutive_old_frames_(0),
       num_consecutive_old_packets_(0),
+      num_packets_(0),
+      num_duplicated_packets_(0),
       num_discarded_packets_(0),
-      jitter_estimate_(vcm_id, receiver_id),
-      inter_frame_delay_(clock_->MillisecondTimestamp()),
+      time_first_packet_ms_(0),
+      jitter_estimate_(clock),
+      inter_frame_delay_(clock_->TimeInMilliseconds()),
       rtt_ms_(kDefaultRtt),
       nack_mode_(kNoNack),
       low_rtt_nack_threshold_ms_(-1),
       high_rtt_nack_threshold_ms_(-1),
+      missing_sequence_numbers_(SequenceNumberLessThan()),
       nack_seq_nums_(),
-      nack_seq_nums_length_(0),
-      waiting_for_key_frame_(false) {
-  memset(frame_buffers_, 0, sizeof(frame_buffers_));
-  memset(receive_statistics_, 0, sizeof(receive_statistics_));
-  memset(nack_seq_nums_internal_, -1, sizeof(nack_seq_nums_internal_));
-
-  for (int i = 0; i < kStartNumberOfFrames; i++) {
-    frame_buffers_[i] = new VCMFrameBuffer();
-  }
+      max_nack_list_size_(0),
+      max_packet_age_to_nack_(0),
+      max_incomplete_time_ms_(0),
+      decode_error_mode_(kNoErrors),
+      average_packets_per_frame_(0.0f),
+      frame_counter_(0) {
+  for (int i = 0; i < kStartNumberOfFrames; i++)
+    free_frames_.push_back(new VCMFrameBuffer());
 }
 
 VCMJitterBuffer::~VCMJitterBuffer() {
   Stop();
-  for (int i = 0; i < kMaxNumberOfFrames; i++) {
-    if (frame_buffers_[i]) {
-      delete frame_buffers_[i];
-    }
+  for (UnorderedFrameList::iterator it = free_frames_.begin();
+       it != free_frames_.end(); ++it) {
+    delete *it;
+  }
+  for (FrameList::iterator it = incomplete_frames_.begin();
+       it != incomplete_frames_.end(); ++it) {
+    delete it->second;
+  }
+  for (FrameList::iterator it = decodable_frames_.begin();
+       it != decodable_frames_.end(); ++it) {
+    delete it->second;
   }
   delete crit_sect_;
 }
 
-void VCMJitterBuffer::CopyFrom(const VCMJitterBuffer& rhs) {
-  if (this != &rhs) {
-    crit_sect_->Enter();
-    rhs.crit_sect_->Enter();
-    vcm_id_ = rhs.vcm_id_;
-    receiver_id_ = rhs.receiver_id_;
-    running_ = rhs.running_;
-    master_ = !rhs.master_;
-    max_number_of_frames_ = rhs.max_number_of_frames_;
-    incoming_frame_rate_ = rhs.incoming_frame_rate_;
-    incoming_frame_count_ = rhs.incoming_frame_count_;
-    time_last_incoming_frame_count_ = rhs.time_last_incoming_frame_count_;
-    incoming_bit_count_ = rhs.incoming_bit_count_;
-    incoming_bit_rate_ = rhs.incoming_bit_rate_;
-    drop_count_ = rhs.drop_count_;
-    num_consecutive_old_frames_ = rhs.num_consecutive_old_frames_;
-    num_consecutive_old_packets_ = rhs.num_consecutive_old_packets_;
-    num_discarded_packets_ = rhs.num_discarded_packets_;
-    jitter_estimate_ = rhs.jitter_estimate_;
-    inter_frame_delay_ = rhs.inter_frame_delay_;
-    waiting_for_completion_ = rhs.waiting_for_completion_;
-    rtt_ms_ = rhs.rtt_ms_;
-    nack_seq_nums_length_ = rhs.nack_seq_nums_length_;
-    waiting_for_key_frame_ = rhs.waiting_for_key_frame_;
-    first_packet_ = rhs.first_packet_;
-    last_decoded_state_ =  rhs.last_decoded_state_;
-    num_not_decodable_packets_ = rhs.num_not_decodable_packets_;
-    memcpy(receive_statistics_, rhs.receive_statistics_,
-           sizeof(receive_statistics_));
-    memcpy(nack_seq_nums_internal_, rhs.nack_seq_nums_internal_,
-           sizeof(nack_seq_nums_internal_));
-    memcpy(nack_seq_nums_, rhs.nack_seq_nums_, sizeof(nack_seq_nums_));
-    for (int i = 0; i < kMaxNumberOfFrames; i++) {
-      if (frame_buffers_[i] != NULL) {
-        delete frame_buffers_[i];
-        frame_buffers_[i] = NULL;
-      }
-    }
-    frame_list_.clear();
-    for (int i = 0; i < max_number_of_frames_; i++) {
-      frame_buffers_[i] = new VCMFrameBuffer(*(rhs.frame_buffers_[i]));
-      if (frame_buffers_[i]->Length() > 0) {
-        FrameList::reverse_iterator rit = std::find_if(
-            frame_list_.rbegin(), frame_list_.rend(),
-            FrameSmallerTimestamp(frame_buffers_[i]->TimeStamp()));
-        frame_list_.insert(rit.base(), frame_buffers_[i]);
-      }
-    }
-    rhs.crit_sect_->Leave();
-    crit_sect_->Leave();
+void VCMJitterBuffer::UpdateHistograms() {
+  if (num_packets_ <= 0 || !running_) {
+    return;
+  }
+  int64_t elapsed_sec =
+      (clock_->TimeInMilliseconds() - time_first_packet_ms_) / 1000;
+  if (elapsed_sec < metrics::kMinRunTimeInSeconds) {
+    return;
+  }
+
+  RTC_HISTOGRAM_PERCENTAGE("WebRTC.Video.DiscardedPacketsInPercent",
+      num_discarded_packets_ * 100 / num_packets_);
+  RTC_HISTOGRAM_PERCENTAGE("WebRTC.Video.DuplicatedPacketsInPercent",
+      num_duplicated_packets_ * 100 / num_packets_);
+
+  int total_frames =
+      receive_statistics_.key_frames + receive_statistics_.delta_frames;
+  if (total_frames > 0) {
+    RTC_HISTOGRAM_COUNTS_100("WebRTC.Video.CompleteFramesReceivedPerSecond",
+        static_cast<int>((total_frames / elapsed_sec) + 0.5f));
+    RTC_HISTOGRAM_COUNTS_1000(
+        "WebRTC.Video.KeyFramesReceivedInPermille",
+        static_cast<int>(
+            (receive_statistics_.key_frames * 1000.0f / total_frames) + 0.5f));
   }
 }
 
@@ -177,48 +334,47 @@ void VCMJitterBuffer::Start() {
   incoming_frame_rate_ = 0;
   incoming_bit_count_ = 0;
   incoming_bit_rate_ = 0;
-  time_last_incoming_frame_count_ = clock_->MillisecondTimestamp();
-  memset(receive_statistics_, 0, sizeof(receive_statistics_));
+  time_last_incoming_frame_count_ = clock_->TimeInMilliseconds();
+  receive_statistics_ = FrameCounts();
 
-  num_consecutive_old_frames_ = 0;
   num_consecutive_old_packets_ = 0;
+  num_packets_ = 0;
+  num_duplicated_packets_ = 0;
   num_discarded_packets_ = 0;
+  time_first_packet_ms_ = 0;
 
   // Start in a non-signaled state.
-  frame_event_.Reset();
-  packet_event_.Reset();
   waiting_for_completion_.frame_size = 0;
   waiting_for_completion_.timestamp = 0;
   waiting_for_completion_.latest_packet_time = -1;
-  first_packet_ = true;
-  nack_seq_nums_length_ = 0;
-  waiting_for_key_frame_ = false;
+  first_packet_since_reset_ = true;
   rtt_ms_ = kDefaultRtt;
-  num_not_decodable_packets_ = 0;
-
-  WEBRTC_TRACE(webrtc::kTraceDebug, webrtc::kTraceVideoCoding,
-               VCMId(vcm_id_, receiver_id_), "JB(0x%x): Jitter buffer: start",
-               this);
+  last_decoded_state_.Reset();
 }
 
 void VCMJitterBuffer::Stop() {
   crit_sect_->Enter();
+  UpdateHistograms();
   running_ = false;
   last_decoded_state_.Reset();
-  frame_list_.clear();
-  for (int i = 0; i < kMaxNumberOfFrames; i++) {
-    if (frame_buffers_[i] != NULL) {
-      static_cast<VCMFrameBuffer*>(frame_buffers_[i])->SetState(kStateFree);
-    }
+  // Make sure all frames are free and reset.
+  for (FrameList::iterator it = decodable_frames_.begin();
+       it != decodable_frames_.end(); ++it) {
+    free_frames_.push_back(it->second);
   }
-
+  for (FrameList::iterator it = incomplete_frames_.begin();
+       it != incomplete_frames_.end(); ++it) {
+    free_frames_.push_back(it->second);
+  }
+  for (UnorderedFrameList::iterator it = free_frames_.begin();
+       it != free_frames_.end(); ++it) {
+    (*it)->Reset();
+  }
+  decodable_frames_.clear();
+  incomplete_frames_.clear();
   crit_sect_->Leave();
   // Make sure we wake up any threads waiting on these events.
-  frame_event_.Set();
-  packet_event_.Set();
-  WEBRTC_TRACE(webrtc::kTraceDebug, webrtc::kTraceVideoCoding,
-               VCMId(vcm_id_, receiver_id_), "JB(0x%x): Jitter buffer: stop",
-               this);
+  frame_event_->Set();
 }
 
 bool VCMJitterBuffer::Running() const {
@@ -228,43 +384,34 @@ bool VCMJitterBuffer::Running() const {
 
 void VCMJitterBuffer::Flush() {
   CriticalSectionScoped cs(crit_sect_);
-  // Erase all frames from the sorted list and set their state to free.
-  frame_list_.clear();
-  for (int i = 0; i < max_number_of_frames_; i++) {
-    ReleaseFrameIfNotDecoding(frame_buffers_[i]);
-  }
+  decodable_frames_.Reset(&free_frames_);
+  incomplete_frames_.Reset(&free_frames_);
   last_decoded_state_.Reset();  // TODO(mikhal): sync reset.
-  num_not_decodable_packets_ = 0;
-  frame_event_.Reset();
-  packet_event_.Reset();
-  num_consecutive_old_frames_ = 0;
   num_consecutive_old_packets_ = 0;
   // Also reset the jitter and delay estimates
   jitter_estimate_.Reset();
-  inter_frame_delay_.Reset(clock_->MillisecondTimestamp());
+  inter_frame_delay_.Reset(clock_->TimeInMilliseconds());
   waiting_for_completion_.frame_size = 0;
   waiting_for_completion_.timestamp = 0;
   waiting_for_completion_.latest_packet_time = -1;
-  first_packet_ = true;
-  nack_seq_nums_length_ = 0;
-  WEBRTC_TRACE(webrtc::kTraceDebug, webrtc::kTraceVideoCoding,
-               VCMId(vcm_id_, receiver_id_), "JB(0x%x): Jitter buffer: flush",
-               this);
+  first_packet_since_reset_ = true;
+  missing_sequence_numbers_.clear();
 }
 
 // Get received key and delta frames
-void VCMJitterBuffer::FrameStatistics(uint32_t* received_delta_frames,
-                                      uint32_t* received_key_frames) const {
-  assert(received_delta_frames);
-  assert(received_key_frames);
+FrameCounts VCMJitterBuffer::FrameStatistics() const {
   CriticalSectionScoped cs(crit_sect_);
-  *received_delta_frames = receive_statistics_[1] + receive_statistics_[3];
-  *received_key_frames = receive_statistics_[0] + receive_statistics_[2];
+  return receive_statistics_;
 }
 
-int VCMJitterBuffer::num_not_decodable_packets() const {
+int VCMJitterBuffer::num_packets() const {
   CriticalSectionScoped cs(crit_sect_);
-  return num_not_decodable_packets_;
+  return num_packets_;
+}
+
+int VCMJitterBuffer::num_duplicated_packets() const {
+  CriticalSectionScoped cs(crit_sect_);
+  return num_duplicated_packets_;
 }
 
 int VCMJitterBuffer::num_discarded_packets() const {
@@ -278,7 +425,7 @@ void VCMJitterBuffer::IncomingRateStatistics(unsigned int* framerate,
   assert(framerate);
   assert(bitrate);
   CriticalSectionScoped cs(crit_sect_);
-  const int64_t now = clock_->MillisecondTimestamp();
+  const int64_t now = clock_->TimeInMilliseconds();
   int64_t diff = now - time_last_incoming_frame_count_;
   if (diff < 1000 && incoming_frame_rate_ > 0 && incoming_bit_rate_ > 0) {
     // Make sure we report something even though less than
@@ -323,59 +470,12 @@ void VCMJitterBuffer::IncomingRateStatistics(unsigned int* framerate,
 
   } else {
     // No frames since last call
-    time_last_incoming_frame_count_ = clock_->MillisecondTimestamp();
+    time_last_incoming_frame_count_ = clock_->TimeInMilliseconds();
     *framerate = 0;
-    bitrate = 0;
+    *bitrate = 0;
+    incoming_frame_rate_ = 0;
     incoming_bit_rate_ = 0;
   }
-}
-
-// Wait for the first packet in the next frame to arrive.
-int64_t VCMJitterBuffer::NextTimestamp(uint32_t max_wait_time_ms,
-                                       FrameType* incoming_frame_type,
-                                       int64_t* render_time_ms) {
-  assert(incoming_frame_type);
-  assert(render_time_ms);
-  if (!running_) {
-    return -1;
-  }
-
-  crit_sect_->Enter();
-
-  // Finding oldest frame ready for decoder, check sequence number and size.
-  CleanUpOldFrames();
-
-  FrameList::iterator it = frame_list_.begin();
-
-  if (it == frame_list_.end()) {
-    packet_event_.Reset();
-    crit_sect_->Leave();
-
-    if (packet_event_.Wait(max_wait_time_ms) == kEventSignaled) {
-      // are we closing down the Jitter buffer
-      if (!running_) {
-        return -1;
-      }
-      crit_sect_->Enter();
-
-      CleanUpOldFrames();
-      it = frame_list_.begin();
-    } else {
-      crit_sect_->Enter();
-    }
-  }
-
-  if (it == frame_list_.end()) {
-    crit_sect_->Leave();
-    return -1;
-  }
-  // We have a frame.
-  *incoming_frame_type = (*it)->FrameType();
-  *render_time_ms = (*it)->RenderTimeMs();
-  const uint32_t timestamp = (*it)->TimeStamp();
-  crit_sect_->Leave();
-
-  return timestamp;
 }
 
 // Answers the question:
@@ -386,191 +486,154 @@ int64_t VCMJitterBuffer::NextTimestamp(uint32_t max_wait_time_ms,
 bool VCMJitterBuffer::CompleteSequenceWithNextFrame() {
   CriticalSectionScoped cs(crit_sect_);
   // Finding oldest frame ready for decoder, check sequence number and size
-  CleanUpOldFrames();
-
-  if (frame_list_.empty())
-    return true;
-
-  VCMFrameBuffer* oldest_frame = frame_list_.front();
-  if (frame_list_.size() <= 1 &&
-      oldest_frame->GetState() != kStateComplete) {
+  CleanUpOldOrEmptyFrames();
+  if (!decodable_frames_.empty()) {
+    if (decodable_frames_.Front()->GetState() == kStateComplete) {
+      return true;
+    }
+  } else if (incomplete_frames_.size() <= 1) {
     // Frame not ready to be decoded.
     return true;
   }
-  if (!oldest_frame->Complete()) {
-    return false;
-  }
-
-  // See if we have lost a frame before this one.
-  if (last_decoded_state_.init()) {
-    // Following start, reset or flush -> check for key frame.
-    if (oldest_frame->FrameType() != kVideoFrameKey) {
-      return false;
-    }
-  } else if (oldest_frame->GetLowSeqNum() == -1) {
-    return false;
-  } else if (!last_decoded_state_.ContinuousFrame(oldest_frame)) {
-    return false;
-  }
-  return true;
+  return false;
 }
 
 // Returns immediately or a |max_wait_time_ms| ms event hang waiting for a
 // complete frame, |max_wait_time_ms| decided by caller.
-VCMEncodedFrame* VCMJitterBuffer::GetCompleteFrameForDecoding(
-    uint32_t max_wait_time_ms) {
-  if (!running_) {
-    return NULL;
-  }
-
+bool VCMJitterBuffer::NextCompleteTimestamp(
+    uint32_t max_wait_time_ms, uint32_t* timestamp) {
   crit_sect_->Enter();
-
-  CleanUpOldFrames();
-
-  if (last_decoded_state_.init() && WaitForRetransmissions()) {
-    waiting_for_key_frame_ = true;
+  if (!running_) {
+    crit_sect_->Leave();
+    return false;
   }
+  CleanUpOldOrEmptyFrames();
 
-  FrameList::iterator it = FindOldestCompleteContinuousFrame(false);
-  if (it == frame_list_.end()) {
-    if (max_wait_time_ms == 0) {
-      crit_sect_->Leave();
-      return NULL;
-    }
-    const int64_t end_wait_time_ms = clock_->MillisecondTimestamp()
-                                           + max_wait_time_ms;
+  if (decodable_frames_.empty() ||
+      decodable_frames_.Front()->GetState() != kStateComplete) {
+    const int64_t end_wait_time_ms = clock_->TimeInMilliseconds() +
+        max_wait_time_ms;
     int64_t wait_time_ms = max_wait_time_ms;
     while (wait_time_ms > 0) {
       crit_sect_->Leave();
       const EventTypeWrapper ret =
-        frame_event_.Wait(static_cast<uint32_t>(wait_time_ms));
+        frame_event_->Wait(static_cast<uint32_t>(wait_time_ms));
       crit_sect_->Enter();
       if (ret == kEventSignaled) {
-        // are we closing down the Jitter buffer
+        // Are we shutting down the jitter buffer?
         if (!running_) {
           crit_sect_->Leave();
-          return NULL;
+          return false;
         }
-
-        // Finding oldest frame ready for decoder, but check
-        // sequence number and size
-        CleanUpOldFrames();
-        it = FindOldestCompleteContinuousFrame(false);
-        if (it == frame_list_.end()) {
-          wait_time_ms = end_wait_time_ms -
-                         clock_->MillisecondTimestamp();
+        // Finding oldest frame ready for decoder.
+        CleanUpOldOrEmptyFrames();
+        if (decodable_frames_.empty() ||
+            decodable_frames_.Front()->GetState() != kStateComplete) {
+          wait_time_ms = end_wait_time_ms - clock_->TimeInMilliseconds();
         } else {
           break;
         }
       } else {
-        crit_sect_->Leave();
-        return NULL;
+        break;
       }
     }
-    // Inside |crit_sect_|.
-  } else {
-    // We already have a frame reset the event.
-    frame_event_.Reset();
   }
-
-  if (it == frame_list_.end()) {
-    // Even after signaling we're still missing a complete continuous frame.
+  if (decodable_frames_.empty() ||
+      decodable_frames_.Front()->GetState() != kStateComplete) {
     crit_sect_->Leave();
-    return NULL;
+    return false;
   }
-
-  VCMFrameBuffer* oldest_frame = *it;
-  it = frame_list_.erase(it);
-
-  // Update jitter estimate.
-  const bool retransmitted = (oldest_frame->GetNackCount() > 0);
-  if (retransmitted) {
-    jitter_estimate_.FrameNacked();
-  } else if (oldest_frame->Length() > 0) {
-    // Ignore retransmitted and empty frames.
-    UpdateJitterEstimate(*oldest_frame, false);
-  }
-
-  oldest_frame->SetState(kStateDecoding);
-
-  CleanUpOldFrames();
-
-  if (oldest_frame->FrameType() == kVideoFrameKey) {
-    waiting_for_key_frame_ = false;
-  }
-
-  // We have a frame - update decoded state with frame info.
-  last_decoded_state_.SetState(oldest_frame);
-
+  *timestamp = decodable_frames_.Front()->TimeStamp();
   crit_sect_->Leave();
-
-  return oldest_frame;
+  return true;
 }
 
-VCMEncodedFrame* VCMJitterBuffer::GetFrameForDecoding() {
+bool VCMJitterBuffer::NextMaybeIncompleteTimestamp(uint32_t* timestamp) {
+  CriticalSectionScoped cs(crit_sect_);
+  if (!running_) {
+    return false;
+  }
+  if (decode_error_mode_ == kNoErrors) {
+    // No point to continue, as we are not decoding with errors.
+    return false;
+  }
+
+  CleanUpOldOrEmptyFrames();
+
+  if (decodable_frames_.empty()) {
+    return false;
+  }
+  VCMFrameBuffer* oldest_frame = decodable_frames_.Front();
+  // If we have exactly one frame in the buffer, release it only if it is
+  // complete. We know decodable_frames_ is  not empty due to the previous
+  // check.
+  if (decodable_frames_.size() == 1 && incomplete_frames_.empty()
+      && oldest_frame->GetState() != kStateComplete) {
+    return false;
+  }
+
+  *timestamp = oldest_frame->TimeStamp();
+  return true;
+}
+
+VCMEncodedFrame* VCMJitterBuffer::ExtractAndSetDecode(uint32_t timestamp) {
   CriticalSectionScoped cs(crit_sect_);
   if (!running_) {
     return NULL;
   }
+  // Extract the frame with the desired timestamp.
+  // This removes the frame, so if you have 2 1 3 4
+  // so when 2 comes in, we pull it
+  // XXX This is NOT implemented here; we may need to redo this
 
-  if (WaitForRetransmissions()) {
-    return GetFrameForDecodingNACK();
+  VCMFrameBuffer* frame = decodable_frames_.PopFrame(timestamp);
+  bool continuous = true;
+  if (!frame) {
+    frame = incomplete_frames_.PopFrame(timestamp);
+    if (frame)
+      continuous = last_decoded_state_.ContinuousFrame(frame);
+    else
+      return NULL;
   }
-
-  CleanUpOldFrames();
-
-  if (frame_list_.empty()) {
-    return NULL;
-  }
-
-  VCMFrameBuffer* oldest_frame = frame_list_.front();
-  if (frame_list_.size() <= 1 &&
-      oldest_frame->GetState() != kStateComplete) {
-    return NULL;
-  }
-
-  // Incomplete frame pulled out from jitter buffer,
-  // update the jitter estimate with what we currently know.
-  // This frame shouldn't have been retransmitted, but if we recently
-  // turned off NACK this might still happen.
-  const bool retransmitted = (oldest_frame->GetNackCount() > 0);
+  TRACE_EVENT_ASYNC_STEP0("webrtc", "Video", timestamp, "Extract");
+  // Frame pulled out from jitter buffer, update the jitter estimate.
+  const bool retransmitted = (frame->GetNackCount() > 0);
   if (retransmitted) {
     jitter_estimate_.FrameNacked();
-  } else if (oldest_frame->Length() > 0) {
+  } else if (frame->Length() > 0) {
     // Ignore retransmitted and empty frames.
-    // Update with the previous incomplete frame first
     if (waiting_for_completion_.latest_packet_time >= 0) {
       UpdateJitterEstimate(waiting_for_completion_, true);
     }
-    // Then wait for this one to get complete
-    waiting_for_completion_.frame_size = oldest_frame->Length();
-    waiting_for_completion_.latest_packet_time =
-      oldest_frame->LatestPacketTimeMs();
-    waiting_for_completion_.timestamp = oldest_frame->TimeStamp();
+    if (frame->GetState() == kStateComplete) {
+      UpdateJitterEstimate(*frame, false);
+    } else {
+      // Wait for this one to get complete.
+      waiting_for_completion_.frame_size = frame->Length();
+      waiting_for_completion_.latest_packet_time =
+          frame->LatestPacketTimeMs();
+      waiting_for_completion_.timestamp = frame->TimeStamp();
+    }
   }
-  frame_list_.erase(frame_list_.begin());
-
-  // Look for previous frame loss
-  VerifyAndSetPreviousFrameLost(oldest_frame);
 
   // The state must be changed to decoding before cleaning up zero sized
   // frames to avoid empty frames being cleaned up and then given to the
-  // decoder.
-  // Set as decoding. Propagates the missing_frame bit.
-  oldest_frame->SetState(kStateDecoding);
+  // decoder. Propagates the missing_frame bit.
+  frame->PrepareForDecode(continuous);
 
-  CleanUpOldFrames();
+  // We have a frame - update the last decoded state and nack list.
+  last_decoded_state_.SetState(frame);
+  DropPacketsFromNackList(last_decoded_state_.sequence_num());
 
-  if (oldest_frame->FrameType() == kVideoFrameKey) {
-    waiting_for_key_frame_ = false;
+  if ((*frame).IsSessionComplete())
+    UpdateAveragePacketsPerFrame(frame->NumPackets());
+
+  if (frame->Length() == 0) {
+    // Normally only if MakeDecodable() on an incomplete frame threw it all away
+    ReleaseFrame(frame);
+    return NULL;
   }
-
-  num_not_decodable_packets_ += oldest_frame->NotDecodablePackets();
-
-  // We have a frame - update decoded state with frame info.
-  last_decoded_state_.SetState(oldest_frame);
-
-  return oldest_frame;
+  return frame;
 }
 
 // Release frame when done with decoding. Should never be used to release
@@ -578,103 +641,114 @@ VCMEncodedFrame* VCMJitterBuffer::GetFrameForDecoding() {
 void VCMJitterBuffer::ReleaseFrame(VCMEncodedFrame* frame) {
   CriticalSectionScoped cs(crit_sect_);
   VCMFrameBuffer* frame_buffer = static_cast<VCMFrameBuffer*>(frame);
-  if (frame_buffer)
-    frame_buffer->SetState(kStateFree);
+  if (frame_buffer) {
+    free_frames_.push_back(frame_buffer);
+  }
 }
 
 // Gets frame to use for this timestamp. If no match, get empty frame.
-int VCMJitterBuffer::GetFrame(const VCMPacket& packet,
-                               VCMEncodedFrame*& frame) {
-  if (!running_) {  // Don't accept incoming packets until we are started.
-    return VCM_UNINITIALIZED;
+VCMFrameBufferEnum VCMJitterBuffer::GetFrame(const VCMPacket& packet,
+                                             VCMFrameBuffer** frame,
+                                             FrameList** frame_list) {
+  // Handle the 2 1 3 4 case (where 2 3 4 are frame 2 with the timestamp)
+  // from above, for complete nalu's (single-nalus) only.
+
+  // TODO(jesup) To handle a sequence of fragmented nalus which all are
+  // slices of the same lower-case frame (timestamp), the more complete
+  // solution for FindFrame that uses the seqNum and can move packets
+  // between sessions would be needed.
+  *frame = incomplete_frames_.PopFrame(packet.timestamp);
+  if (*frame != NULL) {
+    *frame_list = &incomplete_frames_;
+    return kNoError;
+  }
+  *frame = decodable_frames_.PopFrame(packet.timestamp);
+  if (*frame != NULL) {
+    *frame_list = &decodable_frames_;
+    return kNoError;
   }
 
-  crit_sect_->Enter();
+  *frame_list = NULL;
+  // No match, return empty frame.
+  *frame = GetEmptyFrame();
+  if (*frame == NULL) {
+    // No free frame! Try to reclaim some...
+    LOG(LS_WARNING) << "Unable to get empty frame; Recycling.";
+    bool found_key_frame = RecycleFramesUntilKeyFrame();
+    *frame = GetEmptyFrame();
+    if (!*frame) {
+      LOG(LS_ERROR) << "GetEmptyFrame returned NULL.";
+      return kGeneralError;
+    } else if (!found_key_frame) {
+      free_frames_.push_back(*frame);
+      return kFlushIndicator;
+    }
+  }
+  (*frame)->Reset();
+  return kNoError;
+}
+
+int64_t VCMJitterBuffer::LastPacketTime(const VCMEncodedFrame* frame,
+                                        bool* retransmitted) const {
+  assert(retransmitted);
+  CriticalSectionScoped cs(crit_sect_);
+  const VCMFrameBuffer* frame_buffer =
+      static_cast<const VCMFrameBuffer*>(frame);
+  *retransmitted = (frame_buffer->GetNackCount() > 0);
+  return frame_buffer->LatestPacketTimeMs();
+}
+
+VCMFrameBufferEnum VCMJitterBuffer::InsertPacket(const VCMPacket& packet,
+                                                 bool* retransmitted) {
+  CriticalSectionScoped cs(crit_sect_);
+
+  ++num_packets_;
+  if (num_packets_ == 1) {
+    time_first_packet_ms_ = clock_->TimeInMilliseconds();
+  }
   // Does this packet belong to an old frame?
   if (last_decoded_state_.IsOldPacket(&packet)) {
     // Account only for media packets.
     if (packet.sizeBytes > 0) {
       num_discarded_packets_++;
       num_consecutive_old_packets_++;
+      if (stats_callback_ != NULL)
+        stats_callback_->OnDiscardedPacketsUpdated(num_discarded_packets_);
     }
     // Update last decoded sequence number if the packet arrived late and
     // belongs to a frame with a timestamp equal to the last decoded
     // timestamp.
     last_decoded_state_.UpdateOldPacket(&packet);
+    DropPacketsFromNackList(last_decoded_state_.sequence_num());
+
+    // Also see if this old packet made more incomplete frames continuous.
+    FindAndInsertContinuousFramesWithState(last_decoded_state_);
 
     if (num_consecutive_old_packets_ > kMaxConsecutiveOldPackets) {
+      LOG(LS_WARNING)
+          << num_consecutive_old_packets_
+          << " consecutive old packets received. Flushing the jitter buffer.";
       Flush();
-      crit_sect_->Leave();
-      return VCM_FLUSH_INDICATOR;
+      return kFlushIndicator;
     }
-    crit_sect_->Leave();
-    return VCM_OLD_PACKET_ERROR;
+    return kOldPacket;
   }
+
   num_consecutive_old_packets_ = 0;
 
-  FrameList::iterator it = std::find_if(
-                             frame_list_.begin(),
-                             frame_list_.end(),
-                             FrameEqualTimestamp(packet.timestamp));
+  VCMFrameBuffer* frame;
+  FrameList* frame_list;
+  const VCMFrameBufferEnum error = GetFrame(packet, &frame, &frame_list);
+  if (error != kNoError)
+    return error;
 
-  if (it != frame_list_.end()) {
-    frame = *it;
-    crit_sect_->Leave();
-    return VCM_OK;
-  }
-
-  crit_sect_->Leave();
-
-  // No match, return empty frame.
-  frame = GetEmptyFrame();
-  if (frame != NULL) {
-    return VCM_OK;
-  }
-  // No free frame! Try to reclaim some...
-  crit_sect_->Enter();
-  RecycleFramesUntilKeyFrame();
-  crit_sect_->Leave();
-
-  frame = GetEmptyFrame();
-  if (frame != NULL) {
-    return VCM_OK;
-  }
-  return VCM_JITTER_BUFFER_ERROR;
-}
-
-// Deprecated! Kept for testing purposes.
-VCMEncodedFrame* VCMJitterBuffer::GetFrame(const VCMPacket& packet) {
-  VCMEncodedFrame* frame = NULL;
-  if (GetFrame(packet, frame) < 0) {
-    return NULL;
-  }
-  return frame;
-}
-
-int64_t VCMJitterBuffer::LastPacketTime(VCMEncodedFrame* frame,
-                                        bool* retransmitted) const {
-  assert(retransmitted);
-  CriticalSectionScoped cs(crit_sect_);
-  *retransmitted = (static_cast<VCMFrameBuffer*>(frame)->GetNackCount() > 0);
-  return static_cast<VCMFrameBuffer*>(frame)->LatestPacketTimeMs();
-}
-
-VCMFrameBufferEnum VCMJitterBuffer::InsertPacket(VCMEncodedFrame* encoded_frame,
-                                                 const VCMPacket& packet) {
-  assert(encoded_frame);
-  CriticalSectionScoped cs(crit_sect_);
-  int64_t now_ms = clock_->MillisecondTimestamp();
-  VCMFrameBufferEnum buffer_return = kSizeError;
-  VCMFrameBufferEnum ret = kSizeError;
-  VCMFrameBuffer* frame = static_cast<VCMFrameBuffer*>(encoded_frame);
-
-  // We are keeping track of the first seq num, the latest seq num and
+  int64_t now_ms = clock_->TimeInMilliseconds();
+  // We are keeping track of the first and latest seq numbers, and
   // the number of wraps to be able to calculate how many packets we expect.
-  if (first_packet_) {
+  if (first_packet_since_reset_) {
     // Now it's time to start estimating jitter
     // reset the delay estimate.
-    inter_frame_delay_.Reset(clock_->MillisecondTimestamp());
-    first_packet_ = false;
+    inter_frame_delay_.Reset(now_ms);
   }
 
   // Empty packets may bias the jitter estimate (lacking size component),
@@ -695,104 +769,199 @@ VCMFrameBufferEnum VCMJitterBuffer::InsertPacket(VCMEncodedFrame* encoded_frame,
     }
   }
 
-  VCMFrameBufferStateEnum state = frame->GetState();
-  last_decoded_state_.UpdateOldPacket(&packet);
-  // Insert packet
-  // Check for first packet
-  // High sequence number will be -1 if neither an empty packet nor
-  // a media packet has been inserted.
-  bool first = (frame->GetHighSeqNum() == -1);
-  // When in Hybrid mode, we allow for a decodable state
-  // Note: Under current version, a decodable frame will never be
-  // triggered, as the body of the function is empty.
-  // TODO(mikhal): Update when decodable is enabled.
-  buffer_return = frame->InsertPacket(packet, now_ms,
-                                      nack_mode_ == kNackHybrid,
-                                      rtt_ms_);
-  ret = buffer_return;
-  if (buffer_return > 0) {
+  VCMFrameBufferStateEnum previous_state = frame->GetState();
+  // Insert packet.
+  FrameData frame_data;
+  frame_data.rtt_ms = rtt_ms_;
+  frame_data.rolling_average_packets_per_frame = average_packets_per_frame_;
+  VCMFrameBufferEnum buffer_state =
+      frame->InsertPacket(packet, now_ms, decode_error_mode_, frame_data);
+
+  if (previous_state != kStateComplete) {
+    TRACE_EVENT_ASYNC_BEGIN1("webrtc", "Video", frame->TimeStamp(),
+                             "timestamp", frame->TimeStamp());
+  }
+
+  if (buffer_state > 0) {
     incoming_bit_count_ += packet.sizeBytes << 3;
+    if (first_packet_since_reset_) {
+      latest_received_sequence_number_ = packet.seqNum;
+      first_packet_since_reset_ = false;
+    } else {
+      if (IsPacketRetransmitted(packet)) {
+        frame->IncrementNackCount();
+      }
+      if (!UpdateNackList(packet.seqNum) &&
+          packet.frameType != kVideoFrameKey) {
+        buffer_state = kFlushIndicator;
+      }
 
-    // Has this packet been nacked or is it about to be nacked?
-    if (IsPacketRetransmitted(packet)) {
-      frame->IncrementNackCount();
-    }
-
-    // Insert each frame once on the arrival of the first packet
-    // belonging to that frame (media or empty).
-    if (state == kStateEmpty && first) {
-      ret = kFirstPacket;
-      FrameList::reverse_iterator rit = std::find_if(
-          frame_list_.rbegin(),
-          frame_list_.rend(),
-          FrameSmallerTimestamp(frame->TimeStamp()));
-      frame_list_.insert(rit.base(), frame);
+      latest_received_sequence_number_ = LatestSequenceNumber(
+          latest_received_sequence_number_, packet.seqNum);
     }
   }
-  switch (buffer_return) {
-    case kStateError:
+
+  // Is the frame already in the decodable list?
+  bool continuous = IsContinuous(*frame);
+  switch (buffer_state) {
+    case kGeneralError:
     case kTimeStampError:
     case kSizeError: {
-      if (frame != NULL) {
-        // Will be released when it gets old.
-        frame->Reset();
-        frame->SetState(kStateEmpty);
-      }
+      free_frames_.push_back(frame);
       break;
     }
     case kCompleteSession: {
-      // Only update return value for a JB flush indicator.
-      if (UpdateFrameState(frame) == kFlushIndicator)
-        ret = kFlushIndicator;
-      // Signal that we have a received packet.
-      packet_event_.Set();
+      if (previous_state != kStateDecodable &&
+          previous_state != kStateComplete) {
+        CountFrame(*frame);
+        if (continuous) {
+          // Signal that we have a complete session.
+          frame_event_->Set();
+        }
+      }
+      FALLTHROUGH();
+    }
+    // Note: There is no break here - continuing to kDecodableSession.
+    case kDecodableSession: {
+      *retransmitted = (frame->GetNackCount() > 0);
+      if (continuous) {
+        decodable_frames_.InsertFrame(frame);
+        FindAndInsertContinuousFrames(*frame);
+      } else {
+        incomplete_frames_.InsertFrame(frame);
+      }
       break;
     }
-    case kDecodableSession:
     case kIncomplete: {
-      // Signal that we have a received packet.
-      packet_event_.Set();
+      if (frame->GetState() == kStateEmpty &&
+          last_decoded_state_.UpdateEmptyFrame(frame)) {
+        free_frames_.push_back(frame);
+        return kNoError;
+      } else {
+        incomplete_frames_.InsertFrame(frame);
+      }
       break;
     }
     case kNoError:
+    case kOutOfBoundsPacket:
     case kDuplicatePacket: {
+      // Put back the frame where it came from.
+      if (frame_list != NULL) {
+        frame_list->InsertFrame(frame);
+      } else {
+        free_frames_.push_back(frame);
+      }
+      ++num_duplicated_packets_;
       break;
     }
-    default: {
-      assert(false && "JitterBuffer::InsertPacket: Undefined value");
+    case kFlushIndicator:
+      free_frames_.push_back(frame);
+      return kFlushIndicator;
+    default: assert(false);
+  }
+  return buffer_state;
+}
+
+bool VCMJitterBuffer::IsContinuousInState(const VCMFrameBuffer& frame,
+    const VCMDecodingState& decoding_state) const {
+  if (decode_error_mode_ == kWithErrors)
+    return true;
+  // Is this frame (complete or decodable) and continuous?
+  // kStateDecodable will never be set when decode_error_mode_ is false
+  // as SessionInfo determines this state based on the error mode (and frame
+  // completeness).
+  return (frame.GetState() == kStateComplete ||
+          frame.GetState() == kStateDecodable) &&
+         decoding_state.ContinuousFrame(&frame);
+}
+
+bool VCMJitterBuffer::IsContinuous(const VCMFrameBuffer& frame) const {
+  if (IsContinuousInState(frame, last_decoded_state_)) {
+    return true;
+  }
+  VCMDecodingState decoding_state;
+  decoding_state.CopyFrom(last_decoded_state_);
+  for (FrameList::const_iterator it = decodable_frames_.begin();
+       it != decodable_frames_.end(); ++it)  {
+    VCMFrameBuffer* decodable_frame = it->second;
+    if (IsNewerTimestamp(decodable_frame->TimeStamp(), frame.TimeStamp())) {
+      break;
+    }
+    decoding_state.SetState(decodable_frame);
+    if (IsContinuousInState(frame, decoding_state)) {
+      return true;
     }
   }
-  return ret;
+  return false;
+}
+
+void VCMJitterBuffer::FindAndInsertContinuousFrames(
+    const VCMFrameBuffer& new_frame) {
+  VCMDecodingState decoding_state;
+  decoding_state.CopyFrom(last_decoded_state_);
+  decoding_state.SetState(&new_frame);
+  FindAndInsertContinuousFramesWithState(decoding_state);
+}
+
+void VCMJitterBuffer::FindAndInsertContinuousFramesWithState(
+    const VCMDecodingState& original_decoded_state) {
+  // Copy original_decoded_state so we can move the state forward with each
+  // decodable frame we find.
+  VCMDecodingState decoding_state;
+  decoding_state.CopyFrom(original_decoded_state);
+
+  // When temporal layers are available, we search for a complete or decodable
+  // frame until we hit one of the following:
+  // 1. Continuous base or sync layer.
+  // 2. The end of the list was reached.
+  for (FrameList::iterator it = incomplete_frames_.begin();
+       it != incomplete_frames_.end();)  {
+    VCMFrameBuffer* frame = it->second;
+    if (IsNewerTimestamp(original_decoded_state.time_stamp(),
+                         frame->TimeStamp())) {
+      ++it;
+      continue;
+    }
+    if (IsContinuousInState(*frame, decoding_state)) {
+      decodable_frames_.InsertFrame(frame);
+      incomplete_frames_.erase(it++);
+      decoding_state.SetState(frame);
+    } else if (frame->TemporalId() <= 0) {
+      break;
+    } else {
+      ++it;
+    }
+  }
 }
 
 uint32_t VCMJitterBuffer::EstimatedJitterMs() {
   CriticalSectionScoped cs(crit_sect_);
-  uint32_t estimate = VCMJitterEstimator::OPERATING_SYSTEM_JITTER;
-
-  // Compute RTT multiplier for estimation
+  // Compute RTT multiplier for estimation.
   // low_rtt_nackThresholdMs_ == -1 means no FEC.
   double rtt_mult = 1.0f;
-  if (nack_mode_ == kNackHybrid && (low_rtt_nack_threshold_ms_ >= 0 &&
-      static_cast<int>(rtt_ms_) > low_rtt_nack_threshold_ms_)) {
-    // from here we count on FEC
+  if (low_rtt_nack_threshold_ms_ >= 0 &&
+      rtt_ms_ >= low_rtt_nack_threshold_ms_) {
+    // For RTTs above low_rtt_nack_threshold_ms_ we don't apply extra delay
+    // when waiting for retransmissions.
     rtt_mult = 0.0f;
   }
-  estimate += static_cast<uint32_t>
-              (jitter_estimate_.GetJitterEstimate(rtt_mult) + 0.5);
-  return estimate;
+  return jitter_estimate_.GetJitterEstimate(rtt_mult);
 }
 
-void VCMJitterBuffer::UpdateRtt(uint32_t rtt_ms) {
+void VCMJitterBuffer::UpdateRtt(int64_t rtt_ms) {
   CriticalSectionScoped cs(crit_sect_);
   rtt_ms_ = rtt_ms;
   jitter_estimate_.UpdateRtt(rtt_ms);
 }
 
 void VCMJitterBuffer::SetNackMode(VCMNackMode mode,
-                                  int low_rtt_nack_threshold_ms,
-                                  int high_rtt_nack_threshold_ms) {
+                                  int64_t low_rtt_nack_threshold_ms,
+                                  int64_t high_rtt_nack_threshold_ms) {
   CriticalSectionScoped cs(crit_sect_);
   nack_mode_ = mode;
+  if (mode == kNoNack) {
+    missing_sequence_numbers_.clear();
+  }
   assert(low_rtt_nack_threshold_ms >= -1 && high_rtt_nack_threshold_ms >= -1);
   assert(high_rtt_nack_threshold_ms == -1 ||
          low_rtt_nack_threshold_ms <= high_rtt_nack_threshold_ms);
@@ -800,13 +969,25 @@ void VCMJitterBuffer::SetNackMode(VCMNackMode mode,
   low_rtt_nack_threshold_ms_ = low_rtt_nack_threshold_ms;
   high_rtt_nack_threshold_ms_ = high_rtt_nack_threshold_ms;
   // Don't set a high start rtt if high_rtt_nack_threshold_ms_ is used, to not
-  // disable NACK in hybrid mode.
+  // disable NACK in |kNack| mode.
   if (rtt_ms_ == kDefaultRtt && high_rtt_nack_threshold_ms_ != -1) {
     rtt_ms_ = 0;
   }
-  if (nack_mode_ == kNoNack) {
+  if (!WaitForRetransmissions()) {
     jitter_estimate_.ResetNackCount();
   }
+}
+
+void VCMJitterBuffer::SetNackSettings(size_t max_nack_list_size,
+                                      int max_packet_age_to_nack,
+                                      int max_incomplete_time_ms) {
+  CriticalSectionScoped cs(crit_sect_);
+  assert(max_packet_age_to_nack >= 0);
+  assert(max_incomplete_time_ms_ >= 0);
+  max_nack_list_size_ = max_nack_list_size;
+  max_packet_age_to_nack_ = max_packet_age_to_nack;
+  max_incomplete_time_ms_ = max_incomplete_time_ms;
+  nack_seq_nums_.resize(max_nack_list_size_);
 }
 
 VCMNackMode VCMJitterBuffer::nack_mode() const {
@@ -814,198 +995,192 @@ VCMNackMode VCMJitterBuffer::nack_mode() const {
   return nack_mode_;
 }
 
-uint16_t* VCMJitterBuffer::CreateNackList(uint16_t* nack_list_size,
-                                          bool* list_extended) {
-  assert(nack_list_size);
-  assert(list_extended);
-  // TODO(mikhal/stefan): Refactor to use last_decoded_state.
-  CriticalSectionScoped cs(crit_sect_);
-  int i = 0;
-  int32_t low_seq_num = -1;
-  int32_t high_seq_num = -1;
-  *list_extended = false;
+int VCMJitterBuffer::NonContinuousOrIncompleteDuration() {
+  if (incomplete_frames_.empty()) {
+    return 0;
+  }
+  uint32_t start_timestamp = incomplete_frames_.Front()->TimeStamp();
+  if (!decodable_frames_.empty()) {
+    start_timestamp = decodable_frames_.Back()->TimeStamp();
+  }
+  return incomplete_frames_.Back()->TimeStamp() - start_timestamp;
+}
 
-  // Don't create a NACK list if we won't wait for the retransmitted packets.
-  if (!WaitForRetransmissions()) {
+uint16_t VCMJitterBuffer::EstimatedLowSequenceNumber(
+    const VCMFrameBuffer& frame) const {
+  assert(frame.GetLowSeqNum() >= 0);
+  if (frame.HaveFirstPacket())
+    return frame.GetLowSeqNum();
+
+  // This estimate is not accurate if more than one packet with lower sequence
+  // number is lost.
+  return frame.GetLowSeqNum() - 1;
+}
+
+uint16_t* VCMJitterBuffer::GetNackList(uint16_t* nack_list_size,
+                                       bool* request_key_frame) {
+  CriticalSectionScoped cs(crit_sect_);
+  *request_key_frame = false;
+  if (nack_mode_ == kNoNack) {
     *nack_list_size = 0;
     return NULL;
   }
-
-  // Find the lowest (last decoded) sequence number and
-  // the highest (highest sequence number of the newest frame)
-  // sequence number. The NACK list is a subset of the range
-  // between those two numbers.
-  GetLowHighSequenceNumbers(&low_seq_num, &high_seq_num);
-
-  // Build a list of all sequence numbers we have.
-  if (low_seq_num == -1 || high_seq_num == -1) {
-    // This happens if we lose the first packet, nothing is popped.
-    if (high_seq_num == -1) {
-      // We have not received any packets yet.
-      *nack_list_size = 0;
-    } else {
-      // Signal that we want a key frame request to be sent.
-      *nack_list_size = 0xffff;
-    }
-    return NULL;
-  }
-
-  int number_of_seq_num = 0;
-  if (low_seq_num > high_seq_num) {
-    if (low_seq_num - high_seq_num > 0x00ff) {
-      // Wrap.
-      number_of_seq_num = (0xffff - low_seq_num) + high_seq_num + 1;
-    }
-  } else {
-    number_of_seq_num = high_seq_num - low_seq_num;
-  }
-
-  if (number_of_seq_num > kNackHistoryLength) {
-    // NACK list has grown too big, flush and try to restart.
-    WEBRTC_TRACE(webrtc::kTraceWarning, webrtc::kTraceVideoCoding,
-                 VCMId(vcm_id_, receiver_id_),
-                 "Nack list too large, try to find a key frame and restart "
-                 "from seq: %d. Lowest seq in jb %d",
-                 high_seq_num, low_seq_num);
-
-    // This NACK size will trigger a key frame request.
-    bool found_key_frame = false;
-
-    while (number_of_seq_num > kNackHistoryLength) {
-      found_key_frame = RecycleFramesUntilKeyFrame();
-
-      if (!found_key_frame) {
-        break;
+  if (last_decoded_state_.in_initial_state()) {
+    VCMFrameBuffer* next_frame = NextFrame();
+    const bool first_frame_is_key = next_frame &&
+        next_frame->FrameType() == kVideoFrameKey &&
+        next_frame->HaveFirstPacket();
+    if (!first_frame_is_key) {
+      bool have_non_empty_frame = decodable_frames_.end() != find_if(
+          decodable_frames_.begin(), decodable_frames_.end(),
+          HasNonEmptyState);
+      if (!have_non_empty_frame) {
+        have_non_empty_frame = incomplete_frames_.end() != find_if(
+            incomplete_frames_.begin(), incomplete_frames_.end(),
+            HasNonEmptyState);
       }
-
-      // Check if we still have too many packets in the jitter buffer.
-      low_seq_num = -1;
-      high_seq_num = -1;
-      GetLowHighSequenceNumbers(&low_seq_num, &high_seq_num);
-
-      if (high_seq_num == -1) {
-        assert(low_seq_num != -1);  // This should never happen.
-        // We can't calculate the NACK list length.
+      bool found_key_frame = RecycleFramesUntilKeyFrame();
+      if (!found_key_frame) {
+        *request_key_frame = have_non_empty_frame;
+        *nack_list_size = 0;
         return NULL;
       }
-
-      number_of_seq_num = 0;
-      if (low_seq_num > high_seq_num) {
-        if (low_seq_num - high_seq_num > 0x00ff) {
-          // wrap
-          number_of_seq_num = (0xffff - low_seq_num) + high_seq_num + 1;
-          high_seq_num = low_seq_num;
-        }
+    }
+  }
+  if (TooLargeNackList()) {
+    *request_key_frame = !HandleTooLargeNackList();
+  }
+  if (max_incomplete_time_ms_ > 0) {
+    int non_continuous_incomplete_duration =
+        NonContinuousOrIncompleteDuration();
+    if (non_continuous_incomplete_duration > 90 * max_incomplete_time_ms_) {
+      LOG_F(LS_WARNING) << "Too long non-decodable duration: "
+                        << non_continuous_incomplete_duration << " > "
+                        << 90 * max_incomplete_time_ms_;
+      FrameList::reverse_iterator rit = find_if(incomplete_frames_.rbegin(),
+          incomplete_frames_.rend(), IsKeyFrame);
+      if (rit == incomplete_frames_.rend()) {
+        // Request a key frame if we don't have one already.
+        *request_key_frame = true;
+        *nack_list_size = 0;
+        return NULL;
       } else {
-        number_of_seq_num = high_seq_num - low_seq_num;
-      }
-    }
-
-    if (!found_key_frame) {
-      // Set the last decoded sequence number to current high.
-      // This is to not get a large nack list again right away.
-      last_decoded_state_.SetSeqNum(static_cast<uint16_t>(high_seq_num));
-      // Set to trigger key frame signal.
-      *nack_list_size = 0xffff;
-      *list_extended = true;
-      WEBRTC_TRACE(webrtc::kTraceDebug, webrtc::kTraceVideoCoding, -1,
-                   "\tNo key frame found, request one. last_decoded_seq_num_ "
-                   "%d", last_decoded_state_.sequence_num());
-    } else {
-      // We have cleaned up the jitter buffer and found a key frame.
-      WEBRTC_TRACE(webrtc::kTraceDebug, webrtc::kTraceVideoCoding, -1,
-                   "\tKey frame found. last_decoded_seq_num_ %d",
-                   last_decoded_state_.sequence_num());
-      *nack_list_size = 0;
-    }
-
-    return NULL;
-  }
-
-  uint16_t seq_number_iterator = static_cast<uint16_t>(low_seq_num + 1);
-  for (i = 0; i < number_of_seq_num; i++) {
-    nack_seq_nums_internal_[i] = seq_number_iterator;
-    seq_number_iterator++;
-  }
-  // Now we have a list of all sequence numbers that could have been sent.
-  // Zero out the ones we have received.
-  for (i = 0; i < max_number_of_frames_; i++) {
-    // We don't need to check if frame is decoding since low_seq_num is based
-    // on the last decoded sequence number.
-    VCMFrameBufferStateEnum state = frame_buffers_[i]->GetState();
-    if (kStateFree != state) {
-      // Reaching thus far means we are going to update the NACK list
-      // When in hybrid mode, we use the soft NACKing feature.
-      if (nack_mode_ == kNackHybrid) {
-        frame_buffers_[i]->BuildSoftNackList(nack_seq_nums_internal_,
-                                             number_of_seq_num,
-                                             rtt_ms_);
-      } else {
-        // Used when the frame is being processed by the decoding thread
-        // don't need to use that info in this loop.
-        frame_buffers_[i]->BuildHardNackList(nack_seq_nums_internal_,
-                                             number_of_seq_num);
+        // Skip to the last key frame. If it's incomplete we will start
+        // NACKing it.
+        // Note that the estimated low sequence number is correct for VP8
+        // streams because only the first packet of a key frame is marked.
+        last_decoded_state_.Reset();
+        DropPacketsFromNackList(EstimatedLowSequenceNumber(*rit->second));
       }
     }
   }
-
-  // Compress the list.
-  int empty_index = -1;
-  for (i = 0; i < number_of_seq_num; i++) {
-    if (nack_seq_nums_internal_[i] == -1 || nack_seq_nums_internal_[i] == -2) {
-      // This is empty.
-      if (empty_index == -1) {
-        // No empty index before, remember this position.
-        empty_index = i;
-      }
-    } else {
-      // This is not empty.
-      if (empty_index == -1) {
-        // No empty index, continue.
-      } else {
-        nack_seq_nums_internal_[empty_index] = nack_seq_nums_internal_[i];
-        nack_seq_nums_internal_[i] = -1;
-        empty_index++;
-      }
-    }
+  unsigned int i = 0;
+  SequenceNumberSet::iterator it = missing_sequence_numbers_.begin();
+  for (; it != missing_sequence_numbers_.end(); ++it, ++i) {
+    nack_seq_nums_[i] = *it;
   }
+  *nack_list_size = i;
+  return &nack_seq_nums_[0];
+}
 
-  if (empty_index == -1) {
-    // No empty.
-    *nack_list_size = number_of_seq_num;
+void VCMJitterBuffer::SetDecodeErrorMode(VCMDecodeErrorMode error_mode) {
+  CriticalSectionScoped cs(crit_sect_);
+  decode_error_mode_ = error_mode;
+}
+
+VCMFrameBuffer* VCMJitterBuffer::NextFrame() const {
+  if (!decodable_frames_.empty())
+    return decodable_frames_.Front();
+  if (!incomplete_frames_.empty())
+    return incomplete_frames_.Front();
+  return NULL;
+}
+
+bool VCMJitterBuffer::UpdateNackList(uint16_t sequence_number) {
+  if (nack_mode_ == kNoNack) {
+    return true;
+  }
+  // Make sure we don't add packets which are already too old to be decoded.
+  if (!last_decoded_state_.in_initial_state()) {
+    latest_received_sequence_number_ = LatestSequenceNumber(
+        latest_received_sequence_number_,
+        last_decoded_state_.sequence_num());
+  }
+  if (IsNewerSequenceNumber(sequence_number,
+                            latest_received_sequence_number_)) {
+    // Push any missing sequence numbers to the NACK list.
+    for (uint16_t i = latest_received_sequence_number_ + 1;
+         IsNewerSequenceNumber(sequence_number, i); ++i) {
+      missing_sequence_numbers_.insert(missing_sequence_numbers_.end(), i);
+      TRACE_EVENT_INSTANT1(TRACE_DISABLED_BY_DEFAULT("webrtc_rtp"), "AddNack",
+                           "seqnum", i);
+    }
+    if (TooLargeNackList() && !HandleTooLargeNackList()) {
+      LOG(LS_WARNING) << "Requesting key frame due to too large NACK list.";
+      return false;
+    }
+    if (MissingTooOldPacket(sequence_number) &&
+        !HandleTooOldPackets(sequence_number)) {
+      LOG(LS_WARNING) << "Requesting key frame due to missing too old packets";
+      return false;
+    }
   } else {
-    *nack_list_size = empty_index;
+    missing_sequence_numbers_.erase(sequence_number);
+    TRACE_EVENT_INSTANT1(TRACE_DISABLED_BY_DEFAULT("webrtc_rtp"), "RemoveNack",
+                         "seqnum", sequence_number);
   }
+  return true;
+}
 
-  if (*nack_list_size > nack_seq_nums_length_) {
-    // Larger list: NACK list was extended since the last call.
-    *list_extended = true;
+bool VCMJitterBuffer::TooLargeNackList() const {
+  return missing_sequence_numbers_.size() > max_nack_list_size_;
+}
+
+bool VCMJitterBuffer::HandleTooLargeNackList() {
+  // Recycle frames until the NACK list is small enough. It is likely cheaper to
+  // request a key frame than to retransmit this many missing packets.
+  LOG_F(LS_WARNING) << "NACK list has grown too large: "
+                    << missing_sequence_numbers_.size() << " > "
+                    << max_nack_list_size_;
+  bool key_frame_found = false;
+  while (TooLargeNackList()) {
+    key_frame_found = RecycleFramesUntilKeyFrame();
   }
+  return key_frame_found;
+}
 
-  for (unsigned int j = 0; j < *nack_list_size; j++) {
-    // Check if the list has been extended since it was last created, i.e,
-    // new items have been added.
-    if (nack_seq_nums_length_ > j && !*list_extended) {
-      unsigned int k = 0;
-      for (k = j; k < nack_seq_nums_length_; k++) {
-        // Found the item in the last list, i.e, no new items found yet.
-        if (nack_seq_nums_[k] ==
-            static_cast<uint16_t>(nack_seq_nums_internal_[j])) {
-          break;
-        }
-      }
-      if (k == nack_seq_nums_length_) {  // New item not found in last list.
-        *list_extended = true;
-      }
-    } else {
-      *list_extended = true;
-    }
-    nack_seq_nums_[j] = static_cast<uint16_t>(nack_seq_nums_internal_[j]);
+bool VCMJitterBuffer::MissingTooOldPacket(
+    uint16_t latest_sequence_number) const {
+  if (missing_sequence_numbers_.empty()) {
+    return false;
   }
+  const uint16_t age_of_oldest_missing_packet = latest_sequence_number -
+      *missing_sequence_numbers_.begin();
+  // Recycle frames if the NACK list contains too old sequence numbers as
+  // the packets may have already been dropped by the sender.
+  return age_of_oldest_missing_packet > max_packet_age_to_nack_;
+}
 
-  nack_seq_nums_length_ = *nack_list_size;
+bool VCMJitterBuffer::HandleTooOldPackets(uint16_t latest_sequence_number) {
+  bool key_frame_found = false;
+  const uint16_t age_of_oldest_missing_packet = latest_sequence_number -
+      *missing_sequence_numbers_.begin();
+  LOG_F(LS_WARNING) << "NACK list contains too old sequence numbers: "
+                    << age_of_oldest_missing_packet << " > "
+                    << max_packet_age_to_nack_;
+  while (MissingTooOldPacket(latest_sequence_number)) {
+    key_frame_found = RecycleFramesUntilKeyFrame();
+  }
+  return key_frame_found;
+}
 
-  return nack_seq_nums_;
+void VCMJitterBuffer::DropPacketsFromNackList(
+    uint16_t last_decoded_sequence_number) {
+  // Erase all sequence numbers from the NACK list which we won't need any
+  // longer.
+  missing_sequence_numbers_.erase(missing_sequence_numbers_.begin(),
+                                  missing_sequence_numbers_.upper_bound(
+                                      last_decoded_sequence_number));
 }
 
 int64_t VCMJitterBuffer::LastDecodedTimestamp() const {
@@ -1013,296 +1188,133 @@ int64_t VCMJitterBuffer::LastDecodedTimestamp() const {
   return last_decoded_state_.time_stamp();
 }
 
-VCMEncodedFrame* VCMJitterBuffer::GetFrameForDecodingNACK() {
-  CleanUpOldFrames();
-  // First look for a complete continuous__ frame.
-  // When waiting for nack, wait for a key frame, if a continuous frame cannot
-  // be determined (i.e. initial decoding state).
-  if (last_decoded_state_.init()) {
-    waiting_for_key_frame_ = true;
+void VCMJitterBuffer::RenderBufferSize(uint32_t* timestamp_start,
+                                       uint32_t* timestamp_end) {
+  CriticalSectionScoped cs(crit_sect_);
+  CleanUpOldOrEmptyFrames();
+  *timestamp_start = 0;
+  *timestamp_end = 0;
+  if (decodable_frames_.empty()) {
+    return;
   }
-  // Allow for a decodable frame when in Hybrid mode.
-  bool enable_decodable = nack_mode_ == kNackHybrid ? true : false;
-  FrameList::iterator it = FindOldestCompleteContinuousFrame(enable_decodable);
-  if (it == frame_list_.end()) {
-    // If we didn't find one we're good with a complete key/decodable frame.
-    it = find_if(frame_list_.begin(), frame_list_.end(),
-                 CompleteDecodableKeyFrameCriteria());
-    if (it == frame_list_.end()) {
-      return NULL;
-    }
-  }
-  VCMFrameBuffer* oldest_frame = *it;
-  // Update jitter estimate
-  const bool retransmitted = (oldest_frame->GetNackCount() > 0);
-  if (retransmitted) {
-    jitter_estimate_.FrameNacked();
-  } else if (oldest_frame->Length() > 0) {
-    // Ignore retransmitted and empty frames.
-    UpdateJitterEstimate(*oldest_frame, false);
-  }
-  it = frame_list_.erase(it);
-
-  // Look for previous frame loss.
-  VerifyAndSetPreviousFrameLost(oldest_frame);
-
-  // The state must be changed to decoding before cleaning up zero sized
-  // frames to avoid empty frames being cleaned up and then given to the
-  // decoder.
-  oldest_frame->SetState(kStateDecoding);
-
-  // Clean up old frames and empty frames.
-  CleanUpOldFrames();
-
-  if (oldest_frame->FrameType() == kVideoFrameKey) {
-    waiting_for_key_frame_ = false;
-  }
-
-  // We have a frame - update decoded state with frame info.
-  last_decoded_state_.SetState(oldest_frame);
-
-  return oldest_frame;
+  *timestamp_start = decodable_frames_.Front()->TimeStamp();
+  *timestamp_end = decodable_frames_.Back()->TimeStamp();
 }
 
-// Set the frame state to free and remove it from the sorted
-// frame list. Must be called from inside the critical section crit_sect_.
-void VCMJitterBuffer::ReleaseFrameIfNotDecoding(VCMFrameBuffer* frame) {
-  if (frame != NULL && frame->GetState() != kStateDecoding) {
-    frame->SetState(kStateFree);
-  }
+void VCMJitterBuffer::RegisterStatsCallback(
+    VCMReceiveStatisticsCallback* callback) {
+  CriticalSectionScoped cs(crit_sect_);
+  stats_callback_ = callback;
 }
 
 VCMFrameBuffer* VCMJitterBuffer::GetEmptyFrame() {
-  if (!running_) {
-    return NULL;
-  }
-
-  crit_sect_->Enter();
-
-  for (int i = 0; i < max_number_of_frames_; ++i) {
-    if (kStateFree == frame_buffers_[i]->GetState()) {
-      // found a free buffer
-      frame_buffers_[i]->SetState(kStateEmpty);
-      crit_sect_->Leave();
-      return frame_buffers_[i];
+  if (free_frames_.empty()) {
+    if (!TryToIncreaseJitterBufferSize()) {
+      return NULL;
     }
   }
+  VCMFrameBuffer* frame = free_frames_.front();
+  free_frames_.pop_front();
+  return frame;
+}
 
-  // Check if we can increase JB size
-  if (max_number_of_frames_ < kMaxNumberOfFrames) {
-    VCMFrameBuffer* ptr_new_buffer = new VCMFrameBuffer();
-    ptr_new_buffer->SetState(kStateEmpty);
-    frame_buffers_[max_number_of_frames_] = ptr_new_buffer;
-    max_number_of_frames_++;
-
-    crit_sect_->Leave();
-    WEBRTC_TRACE(webrtc::kTraceDebug, webrtc::kTraceVideoCoding,
-                 VCMId(vcm_id_, receiver_id_),
-                 "JB(0x%x) FB(0x%x): Jitter buffer  increased to:%d frames",
-                 this, ptr_new_buffer, max_number_of_frames_);
-    return ptr_new_buffer;
-  }
-  crit_sect_->Leave();
-
-  // We have reached max size, cannot increase JB size
-  return NULL;
+bool VCMJitterBuffer::TryToIncreaseJitterBufferSize() {
+  if (max_number_of_frames_ >= kMaxNumberOfFrames)
+    return false;
+  free_frames_.push_back(new VCMFrameBuffer());
+  ++max_number_of_frames_;
+  TRACE_COUNTER1("webrtc", "JBMaxFrames", max_number_of_frames_);
+  return true;
 }
 
 // Recycle oldest frames up to a key frame, used if jitter buffer is completely
 // full.
 bool VCMJitterBuffer::RecycleFramesUntilKeyFrame() {
-  // Remove up to oldest key frame
-  while (frame_list_.size() > 0) {
-    // Throw at least one frame.
-    drop_count_++;
-    FrameList::iterator it = frame_list_.begin();
-    WEBRTC_TRACE(webrtc::kTraceWarning, webrtc::kTraceVideoCoding,
-                 VCMId(vcm_id_, receiver_id_),
-                 "Jitter buffer drop count:%d, low_seq %d", drop_count_,
-                 (*it)->GetLowSeqNum());
-    ReleaseFrameIfNotDecoding(*it);
-    it = frame_list_.erase(it);
-    if (it != frame_list_.end() && (*it)->FrameType() == kVideoFrameKey) {
-      // Fake the last_decoded_state to match this key frame.
-      last_decoded_state_.SetStateOneBack(*it);
-      return true;
-    }
+  // First release incomplete frames, and only release decodable frames if there
+  // are no incomplete ones.
+  FrameList::iterator key_frame_it;
+  bool key_frame_found = false;
+  int dropped_frames = 0;
+  dropped_frames += incomplete_frames_.RecycleFramesUntilKeyFrame(
+      &key_frame_it, &free_frames_);
+  key_frame_found = key_frame_it != incomplete_frames_.end();
+  if (dropped_frames == 0) {
+    dropped_frames += decodable_frames_.RecycleFramesUntilKeyFrame(
+        &key_frame_it, &free_frames_);
+    key_frame_found = key_frame_it != decodable_frames_.end();
   }
-  waiting_for_key_frame_ = true;
-  last_decoded_state_.Reset();  // TODO(mikhal): No sync.
-  return false;
+  TRACE_EVENT_INSTANT0("webrtc", "JB::RecycleFramesUntilKeyFrame");
+  if (key_frame_found) {
+    LOG(LS_INFO) << "Found key frame while dropping frames.";
+    // Reset last decoded state to make sure the next frame decoded is a key
+    // frame, and start NACKing from here.
+    last_decoded_state_.Reset();
+    DropPacketsFromNackList(EstimatedLowSequenceNumber(*key_frame_it->second));
+  } else if (decodable_frames_.empty()) {
+    // All frames dropped. Reset the decoding state and clear missing sequence
+    // numbers as we're starting fresh.
+    last_decoded_state_.Reset();
+    missing_sequence_numbers_.clear();
+  }
+  return key_frame_found;
 }
 
 // Must be called under the critical section |crit_sect_|.
-VCMFrameBufferEnum VCMJitterBuffer::UpdateFrameState(VCMFrameBuffer* frame) {
-  if (frame == NULL) {
-    WEBRTC_TRACE(webrtc::kTraceWarning, webrtc::kTraceVideoCoding,
-                 VCMId(vcm_id_, receiver_id_), "JB(0x%x) FB(0x%x): "
-                 "UpdateFrameState NULL frame pointer", this, frame);
-    return kNoError;
-  }
+void VCMJitterBuffer::CountFrame(const VCMFrameBuffer& frame) {
+  incoming_frame_count_++;
 
-  int length = frame->Length();
-  if (master_) {
-    // Only trace the primary jitter buffer to make it possible to parse
-    // and plot the trace file.
-    WEBRTC_TRACE(webrtc::kTraceDebug, webrtc::kTraceVideoCoding,
-                 VCMId(vcm_id_, receiver_id_),
-                 "JB(0x%x) FB(0x%x): Complete frame added to jitter buffer,"
-                 " size:%d type %d",
-                 this, frame, length, frame->FrameType());
+  if (frame.FrameType() == kVideoFrameKey) {
+    TRACE_EVENT_ASYNC_STEP0("webrtc", "Video",
+                            frame.TimeStamp(), "KeyComplete");
+  } else {
+    TRACE_EVENT_ASYNC_STEP0("webrtc", "Video",
+                            frame.TimeStamp(), "DeltaComplete");
   }
-
-  if (length != 0 && !frame->GetCountedFrame()) {
-    // Ignore ACK frames.
-    incoming_frame_count_++;
-    frame->SetCountedFrame(true);
-  }
-
-  // Check if we should drop the frame. A complete frame can arrive too late.
-  if (last_decoded_state_.IsOldFrame(frame)) {
-    // Frame is older than the latest decoded frame, drop it. Will be
-    // released by CleanUpOldFrames later.
-    frame->Reset();
-    frame->SetState(kStateEmpty);
-    WEBRTC_TRACE(webrtc::kTraceDebug, webrtc::kTraceVideoCoding,
-                 VCMId(vcm_id_, receiver_id_),
-                 "JB(0x%x) FB(0x%x): Dropping old frame in Jitter buffer",
-                 this, frame);
-    drop_count_++;
-    WEBRTC_TRACE(webrtc::kTraceWarning, webrtc::kTraceVideoCoding,
-                 VCMId(vcm_id_, receiver_id_),
-                 "Jitter buffer drop count: %d, consecutive drops: %u",
-                 drop_count_, num_consecutive_old_frames_);
-    // Flush() if this happens consistently.
-    num_consecutive_old_frames_++;
-    if (num_consecutive_old_frames_ > kMaxConsecutiveOldFrames) {
-      Flush();
-      return kFlushIndicator;
-    }
-    return kNoError;
-  }
-  num_consecutive_old_frames_ = 0;
-  frame->SetState(kStateComplete);
 
   // Update receive statistics. We count all layers, thus when you use layers
   // adding all key and delta frames might differ from frame count.
-  if (frame->IsSessionComplete()) {
-    switch (frame->FrameType()) {
-      case kVideoFrameKey: {
-        receive_statistics_[0]++;
-        break;
-      }
-      case kVideoFrameDelta: {
-        receive_statistics_[1]++;
-        break;
-      }
-      case kVideoFrameGolden: {
-        receive_statistics_[2]++;
-        break;
-      }
-      case kVideoFrameAltRef: {
-        receive_statistics_[3]++;
-        break;
-      }
-      default:
-        assert(false);
+  if (frame.IsSessionComplete()) {
+    if (frame.FrameType() == kVideoFrameKey) {
+      ++receive_statistics_.key_frames;
+    } else {
+      ++receive_statistics_.delta_frames;
     }
+    if (stats_callback_ != NULL)
+      stats_callback_->OnFrameCountsUpdated(receive_statistics_);
   }
-  const FrameList::iterator it = FindOldestCompleteContinuousFrame(false);
-  VCMFrameBuffer* old_frame = NULL;
-  if (it != frame_list_.end()) {
-    old_frame = *it;
-  }
-
-  // Only signal if this is the oldest frame.
-  // Not necessarily the case due to packet reordering or NACK.
-  if (!WaitForRetransmissions() || (old_frame != NULL && old_frame == frame)) {
-    frame_event_.Set();
-  }
-  return kNoError;
 }
 
-// Find oldest complete frame used for getting next frame to decode
-// Must be called under critical section
-FrameList::iterator VCMJitterBuffer::FindOldestCompleteContinuousFrame(
-    bool enable_decodable) {
-  // If we have more than one frame done since last time, pick oldest.
-  VCMFrameBuffer* oldest_frame = NULL;
-  FrameList::iterator it = frame_list_.begin();
-
-  // When temporal layers are available, we search for a complete or decodable
-  // frame until we hit one of the following:
-  // 1. Continuous base or sync layer.
-  // 2. The end of the list was reached.
-  for (; it != frame_list_.end(); ++it)  {
-    oldest_frame = *it;
-    VCMFrameBufferStateEnum state = oldest_frame->GetState();
-    // Is this frame complete or decodable and continuous?
-    if ((state == kStateComplete ||
-         (enable_decodable && state == kStateDecodable)) &&
-        last_decoded_state_.ContinuousFrame(oldest_frame)) {
-      break;
-    } else {
-      int temporal_id = oldest_frame->TemporalId();
-      oldest_frame = NULL;
-      if (temporal_id <= 0) {
-        // When temporal layers are disabled or we have hit a base layer
-        // we break (regardless of continuity and completeness).
-        break;
-      }
-    }
+void VCMJitterBuffer::UpdateAveragePacketsPerFrame(int current_number_packets) {
+  if (frame_counter_ > kFastConvergeThreshold) {
+    average_packets_per_frame_ = average_packets_per_frame_
+              * (1 - kNormalConvergeMultiplier)
+            + current_number_packets * kNormalConvergeMultiplier;
+  } else if (frame_counter_ > 0) {
+    average_packets_per_frame_ = average_packets_per_frame_
+              * (1 - kFastConvergeMultiplier)
+            + current_number_packets * kFastConvergeMultiplier;
+    frame_counter_++;
+  } else {
+    average_packets_per_frame_ = current_number_packets;
+    frame_counter_++;
   }
-
-  if (oldest_frame == NULL) {
-    // No complete frame no point to continue.
-    return frame_list_.end();
-  } else if (waiting_for_key_frame_ &&
-              oldest_frame->FrameType() != kVideoFrameKey) {
-    // We are waiting for a key frame.
-    return frame_list_.end();
-  }
-  // We have a complete continuous frame.
-  return it;
 }
 
 // Must be called under the critical section |crit_sect_|.
-void VCMJitterBuffer::CleanUpOldFrames() {
-  while (frame_list_.size() > 0) {
-    VCMFrameBuffer* oldest_frame = frame_list_.front();
-    if (oldest_frame->GetState() == kStateEmpty && frame_list_.size() > 1) {
-      // This frame is empty, mark it as decoded, thereby making it old.
-      last_decoded_state_.UpdateEmptyFrame(oldest_frame);
-    }
-    if (last_decoded_state_.IsOldFrame(oldest_frame)) {
-      ReleaseFrameIfNotDecoding(frame_list_.front());
-      frame_list_.erase(frame_list_.begin());
-    } else {
-      break;
-    }
+void VCMJitterBuffer::CleanUpOldOrEmptyFrames() {
+  decodable_frames_.CleanUpOldOrEmptyFrames(&last_decoded_state_,
+                                            &free_frames_);
+  incomplete_frames_.CleanUpOldOrEmptyFrames(&last_decoded_state_,
+                                             &free_frames_);
+  if (!last_decoded_state_.in_initial_state()) {
+    DropPacketsFromNackList(last_decoded_state_.sequence_num());
   }
-}
-
-void VCMJitterBuffer::VerifyAndSetPreviousFrameLost(VCMFrameBuffer* frame) {
-  assert(frame);
-  frame->MakeSessionDecodable();  // Make sure the session can be decoded.
-  if (frame->FrameType() == kVideoFrameKey)
-    return;
-
-  if (!last_decoded_state_.ContinuousFrame(frame))
-    frame->SetPreviousFrameLoss();
 }
 
 // Must be called from within |crit_sect_|.
 bool VCMJitterBuffer::IsPacketRetransmitted(const VCMPacket& packet) const {
-  if (nack_seq_nums_length_ > 0) {
-    for (unsigned int i = 0; i < nack_seq_nums_length_; i++) {
-      if (packet.seqNum == nack_seq_nums_[i]) {
-        return true;
-      }
-    }
-  }
-  return false;
+  return missing_sequence_numbers_.find(packet.seqNum) !=
+      missing_sequence_numbers_.end();
 }
 
 // Must be called under the critical section |crit_sect_|. Should never be
@@ -1312,19 +1324,6 @@ void VCMJitterBuffer::UpdateJitterEstimate(const VCMJitterSample& sample,
                                            bool incomplete_frame) {
   if (sample.latest_packet_time == -1) {
     return;
-  }
-  if (incomplete_frame) {
-    WEBRTC_TRACE(webrtc::kTraceDebug, webrtc::kTraceVideoCoding,
-                 VCMId(vcm_id_, receiver_id_), "Received incomplete frame "
-                 "timestamp %u frame size %u at time %u",
-                 sample.timestamp, sample.frame_size,
-                 MaskWord64ToUWord32(sample.latest_packet_time));
-  } else {
-    WEBRTC_TRACE(webrtc::kTraceDebug, webrtc::kTraceVideoCoding,
-                 VCMId(vcm_id_, receiver_id_), "Received complete frame "
-                 "timestamp %u frame size %u at time %u",
-                 sample.timestamp, sample.frame_size,
-                 MaskWord64ToUWord32(sample.latest_packet_time));
   }
   UpdateJitterEstimate(sample.latest_packet_time, sample.timestamp,
                        sample.frame_size, incomplete_frame);
@@ -1340,23 +1339,6 @@ void VCMJitterBuffer::UpdateJitterEstimate(const VCMFrameBuffer& frame,
   }
   // No retransmitted frames should be a part of the jitter
   // estimate.
-  if (incomplete_frame) {
-    WEBRTC_TRACE(webrtc::kTraceDebug, webrtc::kTraceVideoCoding,
-                 VCMId(vcm_id_, receiver_id_),
-                 "Received incomplete frame timestamp %u frame type %d "
-                 "frame size %u at time %u, jitter estimate was %u",
-                 frame.TimeStamp(), frame.FrameType(), frame.Length(),
-                 MaskWord64ToUWord32(frame.LatestPacketTimeMs()),
-                 EstimatedJitterMs());
-  } else {
-    WEBRTC_TRACE(webrtc::kTraceDebug, webrtc::kTraceVideoCoding,
-                 VCMId(vcm_id_, receiver_id_), "Received complete frame "
-                 "timestamp %u frame type %d frame size %u at time %u, "
-                 "jitter estimate was %u",
-                 frame.TimeStamp(), frame.FrameType(), frame.Length(),
-                 MaskWord64ToUWord32(frame.LatestPacketTimeMs()),
-                 EstimatedJitterMs());
-  }
   UpdateJitterEstimate(frame.LatestPacketTimeMs(), frame.TimeStamp(),
                        frame.Length(), incomplete_frame);
 }
@@ -1373,12 +1355,6 @@ void VCMJitterBuffer::UpdateJitterEstimate(
     return;
   }
   int64_t frame_delay;
-  // Calculate the delay estimate
-  WEBRTC_TRACE(webrtc::kTraceDebug, webrtc::kTraceVideoCoding,
-               VCMId(vcm_id_, receiver_id_),
-               "Packet received and sent to jitter estimate with: "
-               "timestamp=%u wall_clock=%u", timestamp,
-               MaskWord64ToUWord32(latest_packet_time_ms));
   bool not_reordered = inter_frame_delay_.CalculateDelay(timestamp,
                                                       &frame_delay,
                                                       latest_packet_time_ms);
@@ -1389,49 +1365,15 @@ void VCMJitterBuffer::UpdateJitterEstimate(
   }
 }
 
-// Assumed to be called internally from inside a critical section.
-void VCMJitterBuffer::GetLowHighSequenceNumbers(
-    int32_t* low_seq_num, int32_t* high_seq_num) const {
-  assert(low_seq_num);
-  assert(high_seq_num);
-  // TODO(mikhal/stefan): Refactor to use last_decoded_state.
-  int i = 0;
-  int32_t seq_num = -1;
-
-  *high_seq_num = -1;
-  *low_seq_num = -1;
-  if (!last_decoded_state_.init())
-    *low_seq_num = last_decoded_state_.sequence_num();
-
-  // find highest seq numbers
-  for (i = 0; i < max_number_of_frames_; ++i) {
-    seq_num = frame_buffers_[i]->GetHighSeqNum();
-
-    // Ignore free / empty frames
-    VCMFrameBufferStateEnum state = frame_buffers_[i]->GetState();
-
-    if ((kStateFree != state) &&
-        (kStateEmpty != state) &&
-        (kStateDecoding != state) &&
-        seq_num != -1) {
-      bool wrap;
-      *high_seq_num = LatestSequenceNumber(seq_num, *high_seq_num, &wrap);
-    }
-  }
-}
-
 bool VCMJitterBuffer::WaitForRetransmissions() {
   if (nack_mode_ == kNoNack) {
     // NACK disabled -> don't wait for retransmissions.
     return false;
-  } else if (nack_mode_ == kNackInfinite) {
-    // NACK only -> always wait for retransmissions.
-    return true;
   }
-  // Hybrid mode. Evaluate if the RTT is high, and in that case we don't wait
-  // for retransmissions.
+  // Evaluate if the RTT is higher than |high_rtt_nack_threshold_ms_|, and in
+  // that case we don't wait for retransmissions.
   if (high_rtt_nack_threshold_ms_ >= 0 &&
-      rtt_ms_ >= static_cast<unsigned int>(high_rtt_nack_threshold_ms_)) {
+      rtt_ms_ >= high_rtt_nack_threshold_ms_) {
     return false;
   }
   return true;

@@ -10,7 +10,7 @@ function testSteps()
   // Blob constructor is not implemented outside of windows yet (Bug 827723).
   if (!this.window) {
     finishTest();
-    yield;
+    yield undefined;
   }
 
   const name = this.window ? window.location.pathname : "Splendid Test";
@@ -45,14 +45,14 @@ function testSteps()
 
   const objectStoreDataLengthSort = [
     { key: "5", value: arr},
-    //{ key: "4", value: str},
+    { key: "4", value: str},
   ];
 
   let request = indexedDB.open(name, 1);
   request.onerror = errorHandler;
   request.onupgradeneeded = grabEventAndContinueHandler;
   request.onsuccess = grabEventAndContinueHandler;
-  let event = yield;
+  let event = yield undefined;
   let db = event.target.result;
 
   let objectStore = db.createObjectStore(objectStoreName, { keyPath: null });
@@ -69,14 +69,14 @@ function testSteps()
       }
     }
   }
-  event = yield;
+  event = yield undefined;
   // Now create the indexes.
   for (let i in indexData) {
     objectStore.createIndex(indexData[i].name, indexData[i].keyPath,
                             indexData[i].options);
   }
   is(objectStore.indexNames.length, indexData.length, "Good index count");
-  yield;
+  yield undefined;
   objectStore = db.transaction(objectStoreName)
                   .objectStore(objectStoreName);
 
@@ -93,7 +93,7 @@ function testSteps()
     is(found, true, "objectStore has our index");
     let index = objectStore.index(indexData[i].name);
     is(index.name, indexData[i].name, "Correct name");
-    is(index.storeName, objectStore.name, "Correct store name");
+    is(index.objectStore.name, objectStore.name, "Correct store name");
     is(index.keyPath, indexData[i].keyPath, "Correct keyPath");
     is(index.unique, indexData[i].options.unique ? true : false,
        "Correct unique value");
@@ -128,7 +128,7 @@ function testSteps()
       testGenerator.next();
     }
   }
-  yield;
+  yield undefined;
 
   is(keyIndex, objectStoreDataTypeSort.length, "Saw all the expected keys");
 
@@ -159,10 +159,10 @@ function testSteps()
       testGenerator.next();
     }
   }
-  yield;
+  yield undefined;
 
   is(keyIndex, objectStoreDataLengthSort.length, "Saw all the expected keys");
 
   finishTest();
-  yield;
+  yield undefined;
 }

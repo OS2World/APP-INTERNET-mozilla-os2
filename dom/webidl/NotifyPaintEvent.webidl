@@ -8,9 +8,11 @@
 
 interface NotifyPaintEvent : Event
 {
-  readonly attribute ClientRectList clientRects;
+  readonly attribute DOMRectList clientRects;
 
-  readonly attribute ClientRect boundingClientRect;
+  readonly attribute DOMRect boundingClientRect;
 
   readonly attribute PaintRequestList paintRequests;
+
+  readonly attribute unsigned long long transactionId;
 };

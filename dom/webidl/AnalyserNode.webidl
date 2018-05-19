@@ -4,20 +4,21 @@
  * You can obtain one at http://mozilla.org/MPL/2.0/.
  *
  * The origin of this IDL file is
- * https://dvcs.w3.org/hg/audio/raw-file/tip/webaudio/specification.html
+ * https://webaudio.github.io/web-audio-api/
  *
  * Copyright © 2012 W3C® (MIT, ERCIM, Keio), All Rights Reserved. W3C
  * liability, trademark and document use rules apply.
  */
 
-[PrefControlled]
+[Pref="dom.webaudio.enabled"]
 interface AnalyserNode : AudioNode {
 
-    // Real-time frequency-domain data 
+    // Real-time frequency-domain data
     void getFloatFrequencyData(Float32Array array);
     void getByteFrequencyData(Uint8Array array);
 
-    // Real-time waveform data 
+    // Real-time waveform data
+    void getFloatTimeDomainData(Float32Array array);
     void getByteTimeDomainData(Uint8Array array);
 
     [SetterThrows, Pure]
@@ -34,4 +35,7 @@ interface AnalyserNode : AudioNode {
     attribute double smoothingTimeConstant;
 
 };
+
+// Mozilla extension
+AnalyserNode implements AudioNodePassThrough;
 

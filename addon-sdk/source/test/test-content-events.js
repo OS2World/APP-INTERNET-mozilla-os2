@@ -10,7 +10,13 @@ const { openTab, closeTab, getBrowserForTab } = require("sdk/tabs/utils");
 const { defer } = require("sdk/core/promise");
 const { curry, identity, partial } = require("sdk/lang/functional");
 
-let when = curry(function(options, tab) {
+const { nuke } = require("sdk/loader/sandbox");
+
+const { open: openWindow, close: closeWindow } = require('sdk/window/helpers');
+
+const openBrowserWindow = partial(openWindow, null, {features: {toolbar: true}});
+
+var when = curry(function(options, tab) {
   let type = options.type || options;
   let capture = options.capture || false;
   let target = getBrowserForTab(tab);
@@ -26,95 +32,61 @@ let when = curry(function(options, tab) {
   return promise;
 });
 
-let use = function(value) function() value;
+var use = use = value => () => value;
 
 
-let open = curry(function(url, window) openTab(window, url));
-let close = function(tab) {
+var open = curry((url, window) => openTab(window, url));
+var close = function(tab) {
   let promise = when("pagehide", tab);
   closeTab(tab);
   return promise;
 }
 
-exports["test multiple tabs"] = function(assert, done) {
+exports["test dead object errors"] = function(assert, done) {
+  let system = require("sdk/system/events");
   let loader = Loader(module);
   let { events } = loader.require("sdk/content/events");
-  let { on, off } = loader.require("sdk/event/core");
-  let actual = [];
-  on(events, "data", function({type, target, timeStamp}) {
-    // ignore about:blank pages and *-document-global-created
-    // events that are not very consistent.
-    if (target.URL !== "about:blank" &&
-        type !== "chrome-document-global-created" &&
-        type !== "content-document-global-created")
-      actual.push(type + " -> " + target.URL)
-  });
 
-  let window =  getMostRecentBrowserWindow();
-  let firstTab = open("data:text/html,first-tab", window);
+  // The dead object error is properly reported on console but
+  // doesn't raise any test's exception
+  function onMessage({ subject }) {
+    let message = subject.wrappedJSObject;
+    let { level } = message;
+    let text = String(message.arguments[0]);
 
-  when("pageshow", firstTab).
-    then(close).
-    then(use(window)).
-    then(open("data:text/html,second-tab")).
-    then(when("pageshow")).
-    then(close).
-    then(function() {
-      assert.deepEqual(actual, [
-        "document-element-inserted -> data:text/html,first-tab",
-        "DOMContentLoaded -> data:text/html,first-tab",
-        "load -> data:text/html,first-tab",
-        "pageshow -> data:text/html,first-tab",
-        "document-element-inserted -> data:text/html,second-tab",
-        "DOMContentLoaded -> data:text/html,second-tab",
-        "load -> data:text/html,second-tab",
-        "pageshow -> data:text/html,second-tab"
-      ], "all events dispatche as expeced")
-    }, function(reason) {
-      assert.fail(Error(reason));
-    }).then(function() {
-      loader.unload();
-      done();
-    });
+    if (level === "error" && text.includes("can't access dead object"))
+      fail(text);
+  }
+
+  let cleanup = () => system.off("console-api-log-event", onMessage);
+  let fail = (reason) => {
+    cleanup();
+    assert.fail(reason);
+  }
+
+  loader.unload();
+
+  nuke(loader.sharedGlobalSandbox);
+
+  system.on("console-api-log-event", onMessage, true);
+
+  openBrowserWindow().
+    then(closeWindow).
+    then(() => assert.pass("checking dead object errors")).
+    then(cleanup).
+    then(done, fail);
 };
 
-exports["test nested frames"] = function(assert, done) {
-  let loader = Loader(module);
-  let { events } = loader.require("sdk/content/events");
-  let { on, off } = loader.require("sdk/event/core");
-  let actual = [];
-  on(events, "data", function({type, target, timeStamp}) {
-    // ignore about:blank pages and *-global-created
-    // events that are not very consistent.
-    if (target.URL !== "about:blank" &&
-       type !== "chrome-document-global-created" &&
-       type !== "content-document-global-created")
-      actual.push(type + " -> " + target.URL)
-  });
+// ignore *-document-global-created events that are not very consistent.
+// only allow data uris that we create to ignore unwanted events, e.g.,
+// about:blank, http:// requests from Fennec's `about:`home page that displays
+// add-ons a user could install, local `searchplugins`, other chrome uris
+// Calls callback if passes filter
+function eventFilter (type, target, callback) {
+  if (target.URL.startsWith("data:text/html,") &&
+    type !== "chrome-document-global-created" &&
+    type !== "content-document-global-created")
 
-  let window =  getMostRecentBrowserWindow();
-  let uri = encodeURI("data:text/html,<iframe src='data:text/html,iframe'>");
-  let tab = open(uri, window);
-
-  when("pageshow", tab).
-    then(close).
-    then(function() {
-      assert.deepEqual(actual, [
-        "document-element-inserted -> " + uri,
-        "DOMContentLoaded -> " + uri,
-        "document-element-inserted -> data:text/html,iframe",
-        "DOMContentLoaded -> data:text/html,iframe",
-        "load -> data:text/html,iframe",
-        "pageshow -> data:text/html,iframe",
-        "load -> " + uri,
-        "pageshow -> " + uri
-      ], "events where dispatched")
-    }, function(reason) {
-      assert.fail(Error(reason))
-    }).then(function() {
-      loader.unload();
-      done();
-    });
-};
-
+    callback();
+}
 require("test").run(exports);

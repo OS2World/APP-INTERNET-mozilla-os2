@@ -83,9 +83,6 @@ ifeq (,$(filter-out _WIN%,$(NS_USE_GCC)_$(OS_TARGET)))
 	$(INSTALL) -m 644 $(SHARED_LIBRARY:$(DLL_SUFFIX)=pdb) $(SOURCE_LIB_DIR)
 endif
 endif
-ifdef DEBUG_SYMFILE
-	$(INSTALL) -m 644 $(call DEBUG_SYMFILE,$(SHARED_LIBRARY)) $(SOURCE_LIB_DIR)
-endif
 endif
 ifdef IMPORT_LIBRARY
 	$(INSTALL) -m 775 $(IMPORT_LIBRARY) $(SOURCE_LIB_DIR)
@@ -96,9 +93,6 @@ ifdef MOZ_DEBUG_SYMBOLS
 ifeq (,$(filter-out _WIN%,$(NS_USE_GCC)_$(OS_TARGET)))
 	$(INSTALL) -m 644 $(PROGRAM:$(PROG_SUFFIX)=.pdb) $(SOURCE_BIN_DIR)
 endif
-endif
-ifdef DEBUG_SYMFILE
-	$(INSTALL) -m 644 $(call DEBUG_SYMFILE,$(PROGRAM)) $(SOURCE_BIN_DIR)
 endif
 endif
 ifdef PROGRAMS
@@ -247,7 +241,7 @@ alltags:
 $(PROGRAM): $(OBJS) $(EXTRA_LIBS)
 	@$(MAKE_OBJDIR)
 ifeq (,$(filter-out _WIN%,$(NS_USE_GCC)_$(OS_TARGET)))
-	$(MKPROG) $(subst /,\\,$(OBJS)) -Fe$@ -link $(LDFLAGS) $(subst /,\\,$(EXTRA_LIBS) $(EXTRA_SHARED_LIBS) $(OS_LIBS))
+	$(MKPROG) $(subst /,\\,$(OBJS)) -Fe$@ -link $(LDFLAGS) $(XLDFLAGS) $(subst /,\\,$(EXTRA_LIBS) $(EXTRA_SHARED_LIBS) $(OS_LIBS))
 ifdef MT
 	if test -f $@.manifest; then \
 		$(MT) -NOLOGO -MANIFEST $@.manifest -OUTPUTRESOURCE:$@\;1; \
@@ -256,13 +250,6 @@ ifdef MT
 endif	# MSVC with manifest tool
 else
 	$(MKPROG) -o $@ $(CFLAGS) $(OBJS) $(LDFLAGS) $(EXTRA_LIBS) $(EXTRA_SHARED_LIBS) $(OS_LIBS)
-endif
-ifdef DEBUG_SYMFILE_GEN
-	$(call DEBUG_SYMFILE_GEN,$@)
-endif
-
-ifdef DEBUG_SYMFILE
-$(call DEBUG_SYMFILE,$(PROGRAM)): $(PROGRAM)
 endif
 
 get_objs:
@@ -284,6 +271,10 @@ $(IMPORT_LIBRARY): $(MAPFILE)
 	rm -f $@
 	$(IMPLIB) $@ $<
 	$(RANLIB) $@
+endif
+ifeq ($(OS_ARCH),WINNT)
+$(IMPORT_LIBRARY): $(LIBRARY)
+	cp -f $< $@
 endif
 
 ifdef SHARED_LIBRARY_LIBS
@@ -322,13 +313,6 @@ else
 	$(MKSHLIB) -o $@ $(OBJS) $(SUB_SHLOBJS) $(LD_LIBS) $(EXTRA_LIBS) $(EXTRA_SHARED_LIBS) $(OS_LIBS)
 	chmod +x $@
 endif
-ifdef DEBUG_SYMFILE_GEN
-	$(call DEBUG_SYMFILE_GEN,$@)
-endif
-endif
-
-ifdef DEBUG_SYMFILE
-$(call DEBUG_SYMFILE,$(SHARED_LIBRARY)): $(SHARED_LIBRARY)
 endif
 
 ifeq (,$(filter-out WIN%,$(OS_TARGET)))
@@ -352,7 +336,7 @@ $(OBJDIR)/$(PROG_PREFIX)%$(PROG_SUFFIX): $(OBJDIR)/$(PROG_PREFIX)%$(OBJ_SUFFIX)
 	@$(MAKE_OBJDIR)
 ifeq (,$(filter-out _WIN%,$(NS_USE_GCC)_$(OS_TARGET)))
 	$(MKPROG) $< -Fe$@ -link \
-	$(LDFLAGS) $(EXTRA_LIBS) $(EXTRA_SHARED_LIBS) $(OS_LIBS)
+	$(LDFLAGS) $(XLDFLAGS) $(EXTRA_LIBS) $(EXTRA_SHARED_LIBS) $(OS_LIBS)
 ifdef MT
 	if test -f $@.manifest; then \
 		$(MT) -NOLOGO -MANIFEST $@.manifest -OUTPUTRESOURCE:$@\;1; \
@@ -380,7 +364,11 @@ else
 # Windows
 ifeq (,$(filter-out _WIN%,$(NS_USE_GCC)_$(OS_TARGET)))
 NEED_ABSOLUTE_PATH := 1
-ifdef .PYMAKE
+# CURDIR is always an absolute path. If it doesn't start with a /, it's a
+# Windows path meaning we're running under MINGW make (as opposed to MSYS
+# make), or pymake. In both cases, it's preferable to use a Windows path,
+# so use $(CURDIR) as is.
+ifeq (,$(filter /%,$(CURDIR)))
 PWD := $(CURDIR)
 else
 PWD := $(shell pwd)
@@ -398,7 +386,7 @@ endif
 endif
 
 # The quotes allow absolute paths to contain spaces.
-core_abspath = "$(if $(findstring :,$(1)),$(1),$(if $(filter /%,$(1)),$(1),$(PWD)/$(1)))"
+core_abspath = '$(if $(findstring :,$(1)),$(1),$(if $(filter /%,$(1)),$(1),$(PWD)/$(1)))'
 
 $(OBJDIR)/$(PROG_PREFIX)%$(OBJ_SUFFIX): %.c
 	@$(MAKE_OBJDIR)
@@ -440,12 +428,12 @@ $(OBJDIR)/$(PROG_PREFIX)%$(OBJ_SUFFIX): %.S
 $(OBJDIR)/$(PROG_PREFIX)%: %.cpp
 	@$(MAKE_OBJDIR)
 ifdef USE_NT_C_SYNTAX
-	$(CCC) -Fo$@ -c $(CFLAGS) $(call core_abspath,$<)
+	$(CCC) -Fo$@ -c $(CFLAGS) $(CXXFLAGS) $(call core_abspath,$<)
 else
 ifdef NEED_ABSOLUTE_PATH
-	$(CCC) -o $@ -c $(CFLAGS) $(call core_abspath,$<)
+	$(CCC) -o $@ -c $(CFLAGS) $(CXXFLAGS) $(call core_abspath,$<)
 else
-	$(CCC) -o $@ -c $(CFLAGS) $<
+	$(CCC) -o $@ -c $(CFLAGS) $(CXXFLAGS) $<
 endif
 endif
 
@@ -453,29 +441,43 @@ endif
 # Please keep the next two rules in sync.
 #
 $(OBJDIR)/$(PROG_PREFIX)%$(OBJ_SUFFIX): %.cc
-	@$(MAKE_OBJDIR)
-	$(CCC) -o $@ -c $(CFLAGS) $<
+	$(MAKE_OBJDIR)
+ifdef STRICT_CPLUSPLUS_SUFFIX
+	echo "#line 1 \"$<\"" | cat - $< > $(OBJDIR)/t_$*.cc
+	$(CCC) -o $@ -c $(CFLAGS) $(CXXFLAGS) $(OBJDIR)/t_$*.cc
+	rm -f $(OBJDIR)/t_$*.cc
+else
+ifdef USE_NT_C_SYNTAX
+	$(CCC) -Fo$@ -c $(CFLAGS) $(CXXFLAGS) $(call core_abspath,$<)
+else
+ifdef NEED_ABSOLUTE_PATH
+	$(CCC) -o $@ -c $(CFLAGS) $(CXXFLAGS) $(call core_abspath,$<)
+else
+	$(CCC) -o $@ -c $(CFLAGS) $(CXXFLAGS) $<
+endif
+endif
+endif #STRICT_CPLUSPLUS_SUFFIX
 
 $(OBJDIR)/$(PROG_PREFIX)%$(OBJ_SUFFIX): %.cpp
 	@$(MAKE_OBJDIR)
 ifdef STRICT_CPLUSPLUS_SUFFIX
 	echo "#line 1 \"$<\"" | cat - $< > $(OBJDIR)/t_$*.cc
-	$(CCC) -o $@ -c $(CFLAGS) $(OBJDIR)/t_$*.cc
+	$(CCC) -o $@ -c $(CFLAGS) $(CXXFLAGS) $(OBJDIR)/t_$*.cc
 	rm -f $(OBJDIR)/t_$*.cc
 else
 ifdef USE_NT_C_SYNTAX
-	$(CCC) -Fo$@ -c $(CFLAGS) $(call core_abspath,$<)
+	$(CCC) -Fo$@ -c $(CFLAGS) $(CXXFLAGS) $(call core_abspath,$<)
 else
 ifdef NEED_ABSOLUTE_PATH
-	$(CCC) -o $@ -c $(CFLAGS) $(call core_abspath,$<)
+	$(CCC) -o $@ -c $(CFLAGS) $(CXXFLAGS) $(call core_abspath,$<)
 else
-	$(CCC) -o $@ -c $(CFLAGS) $<
+	$(CCC) -o $@ -c $(CFLAGS) $(CXXFLAGS) $<
 endif
 endif
 endif #STRICT_CPLUSPLUS_SUFFIX
 
 %.i: %.cpp
-	$(CCC) -C -E $(CFLAGS) $< > $@
+	$(CCC) -C -E $(CFLAGS) $(CXXFLAGS) $< > $@
 
 %.i: %.c
 ifeq (,$(filter-out WIN%,$(OS_TARGET)))

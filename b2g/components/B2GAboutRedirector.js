@@ -5,14 +5,28 @@ const Cc = Components.classes;
 const Ci = Components.interfaces;
 
 Components.utils.import("resource://gre/modules/XPCOMUtils.jsm");
+Components.utils.import("resource://gre/modules/Services.jsm");
 
 function debug(msg) {
   //dump("B2GAboutRedirector: " + msg + "\n");
 }
 
-let modules = {
+function netErrorURL() {
+  let systemManifestURL = Services.prefs.getCharPref("b2g.system_manifest_url");
+  systemManifestURL = Services.io.newURI(systemManifestURL, null, null);
+  let netErrorURL = Services.prefs.getCharPref("b2g.neterror.url");
+  netErrorURL = Services.io.newURI(netErrorURL, null, systemManifestURL);
+  return netErrorURL.spec;
+}
+
+var modules = {
   certerror: {
-    uri: "chrome://browser/content/aboutCertError.xhtml",
+    uri: "chrome://b2g/content/aboutCertError.xhtml",
+    privileged: false,
+    hide: true
+  },
+  neterror: {
+    uri: netErrorURL(),
     privileged: false,
     hide: true
   }
@@ -38,13 +52,15 @@ B2GAboutRedirector.prototype = {
     return flags | Ci.nsIAboutModule.ALLOW_SCRIPT;
   },
 
-  newChannel: function(aURI) {
+  newChannel: function(aURI, aLoadInfo) {
     let moduleInfo = this._getModuleInfo(aURI);
 
     var ios = Cc["@mozilla.org/network/io-service;1"].
               getService(Ci.nsIIOService);
 
-    var channel = ios.newChannel(moduleInfo.uri, null, null);
+    var newURI = ios.newURI(moduleInfo.uri, null, null);
+
+    var channel = ios.newChannelFromURIWithLoadInfo(newURI, aLoadInfo);
 
     if (!moduleInfo.privileged) {
       // Setting the owner to null means that we'll go through the normal

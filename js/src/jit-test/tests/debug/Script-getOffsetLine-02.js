@@ -1,12 +1,12 @@
-// Frame.script/offset and Script.getOffsetLine work in non-top frames.
+// Frame.script/offset and Script.getOffsetLocation work in non-top frames.
 
-var g = newGlobal('new-compartment');
+var g = newGlobal();
 var dbg = Debugger(g);
 var hits = 0;
 dbg.onDebuggerStatement = function (frame) {
     var a = [];
     for (; frame.type == "call"; frame = frame.older)
-        a.push(frame.script.getOffsetLine(frame.offset) - g.line0);
+        a.push(frame.script.getOffsetLocation(frame.offset).lineNumber - g.line0);
     assertEq(a.join(","), "1,2,3,4");
     hits++;
 };

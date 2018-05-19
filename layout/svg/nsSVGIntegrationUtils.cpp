@@ -9,22 +9,28 @@
 // Keep others in (case-insensitive) order:
 #include "gfxDrawable.h"
 #include "nsCSSAnonBoxes.h"
+#include "nsCSSClipPathInstance.h"
 #include "nsDisplayList.h"
+#include "nsFilterInstance.h"
 #include "nsLayoutUtils.h"
 #include "nsRenderingContext.h"
 #include "nsSVGClipPathFrame.h"
 #include "nsSVGEffects.h"
 #include "nsSVGElement.h"
-#include "nsSVGFilterFrame.h"
 #include "nsSVGFilterPaintCallback.h"
 #include "nsSVGMaskFrame.h"
 #include "nsSVGPaintServerFrame.h"
 #include "nsSVGUtils.h"
 #include "FrameLayerBuilder.h"
 #include "BasicLayers.h"
+#include "mozilla/gfx/Point.h"
+#include "nsCSSRendering.h"
+#include "mozilla/Unused.h"
 
 using namespace mozilla;
 using namespace mozilla::layers;
+using namespace mozilla::gfx;
+using namespace mozilla::image;
 
 // ----------------------------------------------------------------------
 
@@ -56,7 +62,7 @@ public:
                  "We want the first continuation here");
   }
 
-  virtual void AddBox(nsIFrame* aFrame) {
+  virtual void AddBox(nsIFrame* aFrame) override {
     nsRect overflow = (aFrame == mCurrentFrame) ?
       mCurrentFrameOverflowArea : GetPreEffectsVisualOverflowRect(aFrame);
     mResult.UnionRect(mResult, overflow + aFrame->GetOffsetTo(mFirstContinuation));
@@ -69,20 +75,19 @@ public:
 private:
 
   static nsRect GetPreEffectsVisualOverflowRect(nsIFrame* aFrame) {
-    nsRect* r = static_cast<nsRect*>
-      (aFrame->Properties().Get(nsIFrame::PreEffectsBBoxProperty()));
+    nsRect* r = aFrame->Properties().Get(nsIFrame::PreEffectsBBoxProperty());
     if (r) {
       return *r;
     }
     // Despite the fact that we're invoked for frames with SVG effects applied,
-    // we can actually get here. All continuations and special siblings of a
+    // we can actually get here. All continuations and IB split siblings of a
     // frame with SVG effects applied will have the PreEffectsBBoxProperty
     // property set on them. Therefore, the frames that are passed to us will
     // always have that property set...well, with one exception. If the frames
     // for an element with SVG effects applied have been subject to an "IB
     // split", then the block frame(s) that caused the split will have been
     // wrapped in anonymous, inline-block, nsBlockFrames of pseudo-type
-    // nsCSSAnonBoxes::mozAnonymousBlock. These "special sibling" anonymous
+    // nsCSSAnonBoxes::mozAnonymousBlock. These "IB split sibling" anonymous
     // blocks will have the PreEffectsBBoxProperty property set on them, but
     // they will never be passed to us. Instead, we'll be passed the block
     // children that they wrap, which don't have the PreEffectsBBoxProperty
@@ -150,11 +155,21 @@ nsSVGIntegrationUtils::UsingEffectsForFrame(const nsIFrame* aFrame)
   // checking the SDL prefs here, since we don't know if we're being called for
   // painting or hit-testing anyway.
   const nsStyleSVGReset *style = aFrame->StyleSVGReset();
-  return (style->mFilter || style->mClipPath || style->mMask);
+  return aFrame->StyleEffects()->HasFilters() ||
+         style->HasClipPath() ||
+         style->mMask.HasLayerWithImage();
 }
 
-/* static */ nsPoint
-nsSVGIntegrationUtils::GetOffsetToUserSpace(nsIFrame* aFrame)
+bool
+nsSVGIntegrationUtils::UsingMaskOrClipPathForFrame(const nsIFrame* aFrame)
+{
+  const nsStyleSVGReset *style = aFrame->StyleSVGReset();
+  return style->HasClipPath() ||
+         style->mMask.HasLayerWithImage();
+}
+
+nsPoint
+nsSVGIntegrationUtils::GetOffsetToBoundingBox(nsIFrame* aFrame)
 {
   if ((aFrame->GetStateBits() & NS_FRAME_SVG_LAYOUT)) {
     // Do NOT call GetAllInFlowRectsUnion for SVG - it will get the
@@ -163,11 +178,6 @@ nsSVGIntegrationUtils::GetOffsetToUserSpace(nsIFrame* aFrame)
     // no offset adjustment to make.
     return nsPoint();
   }
-  // We could allow aFrame to be any continuation, but since that would require
-  // a GetPrevContinuation() virtual call and conditional returns, and since
-  // all our current consumers always pass in the first continuation, we don't
-  // currently bother.
-  NS_ASSERTION(!aFrame->GetPrevContinuation(), "Not first continuation");
 
   // The GetAllInFlowRectsUnion() call gets the union of the frame border-box
   // rects over all continuations, relative to the origin (top-left of the
@@ -181,21 +191,21 @@ nsSVGIntegrationUtils::GetContinuationUnionSize(nsIFrame* aNonSVGFrame)
   NS_ASSERTION(!aNonSVGFrame->IsFrameOfType(nsIFrame::eSVG),
                "SVG frames should not get here");
   nsIFrame* firstFrame =
-    nsLayoutUtils::GetFirstContinuationOrSpecialSibling(aNonSVGFrame);
+    nsLayoutUtils::FirstContinuationOrIBSplitSibling(aNonSVGFrame);
   return nsLayoutUtils::GetAllInFlowRectsUnion(firstFrame, firstFrame).Size();
 }
 
-/* static */ gfxSize
+/* static */ gfx::Size
 nsSVGIntegrationUtils::GetSVGCoordContextForNonSVGFrame(nsIFrame* aNonSVGFrame)
 {
   NS_ASSERTION(!aNonSVGFrame->IsFrameOfType(nsIFrame::eSVG),
                "SVG frames should not get here");
   nsIFrame* firstFrame =
-    nsLayoutUtils::GetFirstContinuationOrSpecialSibling(aNonSVGFrame);
+    nsLayoutUtils::FirstContinuationOrIBSplitSibling(aNonSVGFrame);
   nsRect r = nsLayoutUtils::GetAllInFlowRectsUnion(firstFrame, firstFrame);
   nsPresContext* presContext = firstFrame->PresContext();
-  return gfxSize(presContext->AppUnitsToFloatCSSPixels(r.width),
-                 presContext->AppUnitsToFloatCSSPixels(r.height));
+  return gfx::Size(presContext->AppUnitsToFloatCSSPixels(r.width),
+                   presContext->AppUnitsToFloatCSSPixels(r.height));
 }
 
 gfxRect
@@ -204,10 +214,10 @@ nsSVGIntegrationUtils::GetSVGBBoxForNonSVGFrame(nsIFrame* aNonSVGFrame)
   NS_ASSERTION(!aNonSVGFrame->IsFrameOfType(nsIFrame::eSVG),
                "SVG frames should not get here");
   nsIFrame* firstFrame =
-    nsLayoutUtils::GetFirstContinuationOrSpecialSibling(aNonSVGFrame);
+    nsLayoutUtils::FirstContinuationOrIBSplitSibling(aNonSVGFrame);
   // 'r' is in "user space":
   nsRect r = GetPreEffectsVisualOverflowUnion(firstFrame, nullptr, nsRect(),
-                                              GetOffsetToUserSpace(firstFrame));
+                                              GetOffsetToBoundingBox(firstFrame));
   return nsLayoutUtils::RectToGfxRect(r,
            aNonSVGFrame->PresContext()->AppUnitsPerCSSPixel());
 }
@@ -216,7 +226,7 @@ nsSVGIntegrationUtils::GetSVGBBoxForNonSVGFrame(nsIFrame* aNonSVGFrame)
 // continuations. When we're called for a frame with continuations, we're
 // called for each continuation in turn as it's reflowed. However, it isn't
 // until the last continuation is reflowed that this method's
-// GetOffsetToUserSpace() and GetPreEffectsVisualOverflowUnion() calls will
+// GetOffsetToBoundingBox() and GetPreEffectsVisualOverflowUnion() calls will
 // obtain valid border boxes for all the continuations. As a result, we'll
 // end up returning bogus post-filter visual overflow rects for all the prior
 // continuations. Unfortunately, by the time the last continuation is
@@ -226,13 +236,13 @@ nsSVGIntegrationUtils::GetSVGBBoxForNonSVGFrame(nsIFrame* aNonSVGFrame)
 // The reason that we need to pass an override bbox to
 // GetPreEffectsVisualOverflowUnion rather than just letting it call into our
 // GetSVGBBoxForNonSVGFrame method is because we get called by
-// ComputeOutlineAndEffectsRect when it has been called with
+// ComputeEffectsRect when it has been called with
 // aStoreRectProperties set to false. In this case the pre-effects visual
 // overflow rect that it has been passed may be different to that stored on
 // aFrame, resulting in a different bbox.
 //
 // XXXjwatt The pre-effects visual overflow rect passed to
-// ComputeOutlineAndEffectsRect won't include continuation overflows, so
+// ComputeEffectsRect won't include continuation overflows, so
 // for frames with continuation the following filter analysis will likely end
 // up being carried out with a bbox created as if the frame didn't have
 // continuations.
@@ -253,16 +263,15 @@ nsRect
                  "Don't call this on SVG child frames");
 
   nsIFrame* firstFrame =
-    nsLayoutUtils::GetFirstContinuationOrSpecialSibling(aFrame);
+    nsLayoutUtils::FirstContinuationOrIBSplitSibling(aFrame);
   nsSVGEffects::EffectProperties effectProperties =
     nsSVGEffects::GetEffectProperties(firstFrame);
-  nsSVGFilterFrame *filterFrame = effectProperties.mFilter ?
-    effectProperties.mFilter->GetFilterFrame() : nullptr;
-  if (!filterFrame)
+  if (!effectProperties.HasValidFilter()) {
     return aPreEffectsOverflowRect;
+  }
 
   // Create an override bbox - see comment above:
-  nsPoint firstFrameToUserSpace = GetOffsetToUserSpace(firstFrame);
+  nsPoint firstFrameToBoundingBox = GetOffsetToBoundingBox(firstFrame);
   // overrideBBox is in "user space", in _CSS_ pixels:
   // XXX Why are we rounding out to pixel boundaries? We don't do that in
   // GetSVGBBoxForNonSVGFrame, and it doesn't appear to be necessary.
@@ -270,40 +279,38 @@ nsRect
     nsLayoutUtils::RectToGfxRect(
       GetPreEffectsVisualOverflowUnion(firstFrame, aFrame,
                                        aPreEffectsOverflowRect,
-                                       firstFrameToUserSpace),
+                                       firstFrameToBoundingBox),
       aFrame->PresContext()->AppUnitsPerCSSPixel());
   overrideBBox.RoundOut();
 
   nsRect overflowRect =
-    filterFrame->GetPostFilterBounds(firstFrame, &overrideBBox);
+    nsFilterInstance::GetPostFilterBounds(firstFrame, &overrideBBox);
 
   // Return overflowRect relative to aFrame, rather than "user space":
-  return overflowRect - (aFrame->GetOffsetTo(firstFrame) + firstFrameToUserSpace);
+  return overflowRect - (aFrame->GetOffsetTo(firstFrame) + firstFrameToBoundingBox);
 }
 
-nsIntRect
+nsIntRegion
 nsSVGIntegrationUtils::AdjustInvalidAreaForSVGEffects(nsIFrame* aFrame,
                                                       const nsPoint& aToReferenceFrame,
-                                                      const nsIntRect& aInvalidRect)
+                                                      const nsIntRegion& aInvalidRegion)
 {
+  if (aInvalidRegion.IsEmpty()) {
+    return nsIntRect();
+  }
+
   // Don't bother calling GetEffectProperties; the filter property should
   // already have been set up during reflow/ComputeFrameEffectsRect
   nsIFrame* firstFrame =
-    nsLayoutUtils::GetFirstContinuationOrSpecialSibling(aFrame);
-  nsSVGEffects::EffectProperties effectProperties =
-    nsSVGEffects::GetEffectProperties(firstFrame);
-  if (!effectProperties.mFilter)
-    return aInvalidRect;
-
+    nsLayoutUtils::FirstContinuationOrIBSplitSibling(aFrame);
   nsSVGFilterProperty *prop = nsSVGEffects::GetFilterProperty(firstFrame);
-  if (!prop || !prop->IsInObserverList()) {
-    return aInvalidRect;
+  if (!prop || !prop->IsInObserverLists()) {
+    return aInvalidRegion;
   }
 
   int32_t appUnitsPerDevPixel = aFrame->PresContext()->AppUnitsPerDevPixel();
 
-  nsSVGFilterFrame* filterFrame = prop->GetFilterFrame();
-  if (!filterFrame) {
+  if (!prop || !prop->ReferencesValidResources()) {
     // The frame is either not there or not currently available,
     // perhaps because we're in the middle of tearing stuff down.
     // Be conservative, return our visual overflow rect relative
@@ -312,18 +319,18 @@ nsSVGIntegrationUtils::AdjustInvalidAreaForSVGEffects(nsIFrame* aFrame,
     return overflow.ToOutsidePixels(appUnitsPerDevPixel);
   }
 
-  // Convert aInvalidRect into "user space" in app units:
-  nsPoint toUserSpace =
-    aFrame->GetOffsetTo(firstFrame) + GetOffsetToUserSpace(firstFrame);
+  // Convert aInvalidRegion into bounding box frame space in app units:
+  nsPoint toBoundingBox =
+    aFrame->GetOffsetTo(firstFrame) + GetOffsetToBoundingBox(firstFrame);
   // The initial rect was relative to the reference frame, so we need to
   // remove that offset to get a rect relative to the current frame.
-  toUserSpace -= aToReferenceFrame;
-  nsRect preEffectsRect = aInvalidRect.ToAppUnits(appUnitsPerDevPixel) + toUserSpace;
+  toBoundingBox -= aToReferenceFrame;
+  nsRegion preEffectsRegion = aInvalidRegion.ToAppUnits(appUnitsPerDevPixel).MovedBy(toBoundingBox);
 
   // Adjust the dirty area for effects, and shift it back to being relative to
   // the reference frame.
-  nsRect result = filterFrame->GetPostFilterDirtyArea(firstFrame, preEffectsRect) -
-           toUserSpace;
+  nsRegion result = nsFilterInstance::GetPostFilterDirtyArea(firstFrame,
+    preEffectsRegion).MovedBy(-toBoundingBox);
   // Return the result, in pixels relative to the reference frame.
   return result.ToOutsidePixels(appUnitsPerDevPixel);
 }
@@ -335,37 +342,40 @@ nsSVGIntegrationUtils::GetRequiredSourceForInvalidArea(nsIFrame* aFrame,
   // Don't bother calling GetEffectProperties; the filter property should
   // already have been set up during reflow/ComputeFrameEffectsRect
   nsIFrame* firstFrame =
-    nsLayoutUtils::GetFirstContinuationOrSpecialSibling(aFrame);
-  nsSVGFilterFrame* filterFrame =
-    nsSVGEffects::GetFilterFrame(firstFrame);
-  if (!filterFrame)
+    nsLayoutUtils::FirstContinuationOrIBSplitSibling(aFrame);
+  nsSVGFilterProperty *prop = nsSVGEffects::GetFilterProperty(firstFrame);
+  if (!prop || !prop->ReferencesValidResources()) {
     return aDirtyRect;
-  
+  }
+
   // Convert aDirtyRect into "user space" in app units:
   nsPoint toUserSpace =
-    aFrame->GetOffsetTo(firstFrame) + GetOffsetToUserSpace(firstFrame);
+    aFrame->GetOffsetTo(firstFrame) + GetOffsetToBoundingBox(firstFrame);
   nsRect postEffectsRect = aDirtyRect + toUserSpace;
 
   // Return ther result, relative to aFrame, not in user space:
-  return filterFrame->GetPreFilterNeededArea(firstFrame, postEffectsRect) -
-           toUserSpace;
+  return nsFilterInstance::GetPreFilterNeededArea(firstFrame, postEffectsRect).GetBounds()
+    - toUserSpace;
 }
 
 bool
 nsSVGIntegrationUtils::HitTestFrameForEffects(nsIFrame* aFrame, const nsPoint& aPt)
 {
   nsIFrame* firstFrame =
-    nsLayoutUtils::GetFirstContinuationOrSpecialSibling(aFrame);
+    nsLayoutUtils::FirstContinuationOrIBSplitSibling(aFrame);
   // Convert aPt to user space:
   nsPoint toUserSpace;
   if (aFrame->GetStateBits() & NS_FRAME_SVG_LAYOUT) {
+    // XXXmstange Isn't this wrong for svg:use and innerSVG frames?
     toUserSpace = aFrame->GetPosition();
   } else {
     toUserSpace =
-      aFrame->GetOffsetTo(firstFrame) + GetOffsetToUserSpace(firstFrame);
+      aFrame->GetOffsetTo(firstFrame) + GetOffsetToBoundingBox(firstFrame);
   }
   nsPoint pt = aPt + toUserSpace;
-  return nsSVGUtils::HitTestClip(firstFrame, pt);
+  gfxPoint userSpacePt =
+    gfxPoint(pt.x, pt.y) / aFrame->PresContext()->AppUnitsPerCSSPixel();
+  return nsSVGUtils::HitTestClip(firstFrame, userSpacePt);
 }
 
 class RegularFramePaintCallback : public nsSVGFilterPaintCallback
@@ -377,13 +387,22 @@ public:
     : mBuilder(aBuilder), mLayerManager(aManager),
       mOffset(aOffset) {}
 
-  virtual void Paint(nsRenderingContext *aContext, nsIFrame *aTarget,
-                     const nsIntRect* aDirtyRect)
+  virtual DrawResult Paint(gfxContext& aContext, nsIFrame *aTarget,
+                           const gfxMatrix& aTransform,
+                           const nsIntRect* aDirtyRect) override
   {
-    BasicLayerManager* basic = static_cast<BasicLayerManager*>(mLayerManager);
-    basic->SetTarget(aContext->ThebesContext());
-    nsRenderingContext::AutoPushTranslation push(aContext, -mOffset);
-    mLayerManager->EndTransaction(FrameLayerBuilder::DrawThebesLayer, mBuilder);
+    BasicLayerManager* basic = mLayerManager->AsBasicLayerManager();
+    basic->SetTarget(&aContext);
+
+    gfxPoint devPixelOffset =
+      nsLayoutUtils::PointToGfxPoint(-mOffset,
+                                     aTarget->PresContext()->AppUnitsPerDevPixel());
+
+    gfxContextMatrixAutoSaveRestore autoSR(&aContext);
+    aContext.SetMatrix(aContext.CurrentMatrix().Translate(devPixelOffset));
+
+    mLayerManager->EndTransaction(FrameLayerBuilder::DrawPaintedLayer, mBuilder);
+    return DrawResult::SUCCESS;
   }
 
 private:
@@ -392,19 +411,327 @@ private:
   nsPoint mOffset;
 };
 
-void
-nsSVGIntegrationUtils::PaintFramesWithEffects(nsRenderingContext* aCtx,
-                                              nsIFrame* aFrame,
-                                              const nsRect& aDirtyRect,
-                                              nsDisplayListBuilder* aBuilder,
-                                              LayerManager *aLayerManager)
+/**
+ * Returns true if any of the masks is an image mask (and not an SVG mask).
+ */
+static bool
+HasNonSVGMask(const nsTArray<nsSVGMaskFrame*>& aMaskFrames)
+{
+  for (size_t i = 0; i < aMaskFrames.Length() ; i++) {
+    nsSVGMaskFrame *maskFrame = aMaskFrames[i];
+    if (!maskFrame) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+typedef nsSVGIntegrationUtils::PaintFramesParams PaintFramesParams;
+
+/**
+ * Paint css-positioned-mask onto a given target(aMaskDT).
+ */
+static DrawResult
+PaintMaskSurface(const PaintFramesParams& aParams,
+                 DrawTarget* aMaskDT, float aOpacity, nsStyleContext* aSC,
+                 const nsTArray<nsSVGMaskFrame*>& aMaskFrames,
+                 const gfxMatrix& aMaskSurfaceMatrix,
+                 const nsPoint& aOffsetToUserSpace)
+{
+  MOZ_ASSERT(aMaskFrames.Length() > 0);
+  MOZ_ASSERT(aMaskDT->GetFormat() == SurfaceFormat::A8);
+
+  const nsStyleSVGReset *svgReset = aSC->StyleSVGReset();
+  gfxMatrix cssPxToDevPxMatrix =
+    nsSVGIntegrationUtils::GetCSSPxToDevPxMatrix(aParams.frame);
+
+  nsPresContext* presContext = aParams.frame->PresContext();
+  gfxPoint devPixelOffsetToUserSpace =
+    nsLayoutUtils::PointToGfxPoint(aOffsetToUserSpace,
+                                   presContext->AppUnitsPerDevPixel());
+
+  RefPtr<gfxContext> maskContext = gfxContext::CreateOrNull(aMaskDT);
+  MOZ_ASSERT(maskContext);
+  maskContext->SetMatrix(aMaskSurfaceMatrix);
+
+  // Multiple SVG masks interleave with image mask. Paint each layer onto
+  // aMaskDT one at a time.
+  for (int i = aMaskFrames.Length() - 1; i >= 0 ; i--) {
+    nsSVGMaskFrame *maskFrame = aMaskFrames[i];
+
+    CompositionOp compositionOp = (i == int(aMaskFrames.Length() - 1))
+      ? CompositionOp::OP_OVER
+      : nsCSSRendering::GetGFXCompositeMode(svgReset->mMask.mLayers[i].mComposite);
+
+    // maskFrame != nullptr means we get a SVG mask.
+    // maskFrame == nullptr means we get an image mask.
+    if (maskFrame) {
+      Matrix svgMaskMatrix;
+      RefPtr<SourceSurface> svgMask =
+        maskFrame->GetMaskForMaskedFrame(maskContext, aParams.frame,
+                                         cssPxToDevPxMatrix,
+                                         aOpacity,
+                                         &svgMaskMatrix,
+                                         svgReset->mMask.mLayers[i].mMaskMode);
+      if (svgMask) {
+        gfxContextMatrixAutoSaveRestore matRestore(maskContext);
+
+        maskContext->Multiply(ThebesMatrix(svgMaskMatrix));
+        Rect drawRect = IntRectToRect(IntRect(IntPoint(0, 0), svgMask->GetSize()));
+        aMaskDT->MaskSurface(ColorPattern(Color(0.0, 0.0, 0.0, 1.0)), svgMask,
+                            drawRect.TopLeft(),
+                            DrawOptions(1.0, compositionOp));
+      }
+    } else {
+      gfxContextMatrixAutoSaveRestore matRestore(maskContext);
+
+      maskContext->Multiply(gfxMatrix::Translation(-devPixelOffsetToUserSpace));
+      nsRenderingContext rc(maskContext);
+      nsCSSRendering::PaintBGParams  params =
+        nsCSSRendering::PaintBGParams::ForSingleLayer(*presContext,
+                                                      rc, aParams.dirtyRect,
+                                                      aParams.borderArea,
+                                                      aParams.frame,
+                                                      aParams.builder->GetBackgroundPaintFlags() |
+                                                      nsCSSRendering::PAINTBG_MASK_IMAGE,
+                                                      i, compositionOp);
+
+      DrawResult result =
+        nsCSSRendering::PaintBackgroundWithSC(params, aSC,
+                                              *aParams.frame->StyleBorder());
+      if (result != DrawResult::SUCCESS) {
+        return result;
+      }
+    }
+  }
+
+  return DrawResult::SUCCESS;
+}
+
+static DrawResult
+CreateAndPaintMaskSurface(const PaintFramesParams& aParams,
+                          float aOpacity, nsStyleContext* aSC,
+                          const nsTArray<nsSVGMaskFrame*>& aMaskFrames,
+                          const nsPoint& aOffsetToUserSpace,
+                          Matrix& aOutMaskTransform,
+                          RefPtr<SourceSurface>& aOutMaskSurface,
+                          bool& aOpacityApplied)
+{
+  const nsStyleSVGReset *svgReset = aSC->StyleSVGReset();
+  MOZ_ASSERT(aMaskFrames.Length() > 0);
+
+  gfxContext& ctx = aParams.ctx;
+
+  // There is only one SVG mask.
+  if (((aMaskFrames.Length() == 1) && aMaskFrames[0])) {
+    gfxMatrix cssPxToDevPxMatrix =
+    nsSVGIntegrationUtils::GetCSSPxToDevPxMatrix(aParams.frame);
+
+    aOpacityApplied = true;
+    aOutMaskSurface =
+      aMaskFrames[0]->GetMaskForMaskedFrame(&ctx, aParams.frame,
+                                            cssPxToDevPxMatrix, aOpacity,
+                                            &aOutMaskTransform,
+                                            svgReset->mMask.mLayers[0].mMaskMode);
+    return DrawResult::SUCCESS;
+  }
+
+  const IntRect& maskSurfaceRect = aParams.maskRect;
+  if (maskSurfaceRect.IsEmpty()) {
+    return DrawResult::SUCCESS;
+  }
+
+  RefPtr<DrawTarget> maskDT =
+      ctx.GetDrawTarget()->CreateSimilarDrawTarget(maskSurfaceRect.Size(),
+                                                   SurfaceFormat::A8);
+  if (!maskDT || !maskDT->IsValid()) {
+    return DrawResult::TEMPORARY_ERROR;
+  }
+
+  // Set aAppliedOpacity as true only if all mask layers are svg mask.
+  // In this case, we will apply opacity into the final mask surface, so the
+  // caller does not need to apply it again.
+  aOpacityApplied = !HasNonSVGMask(aMaskFrames);
+
+  // Set context's matrix on maskContext, offset by the maskSurfaceRect's
+  // position. This makes sure that we combine the masks in device space.
+  gfxMatrix maskSurfaceMatrix =
+    ctx.CurrentMatrix() * gfxMatrix::Translation(-aParams.maskRect.TopLeft());
+
+  DrawResult result = PaintMaskSurface(aParams, maskDT,
+                                       aOpacityApplied ? aOpacity : 1.0,
+                                       aSC, aMaskFrames, maskSurfaceMatrix,
+                                       aOffsetToUserSpace);
+  if (result != DrawResult::SUCCESS) {
+    return result;
+  }
+
+  aOutMaskTransform = ToMatrix(maskSurfaceMatrix);
+  if (!aOutMaskTransform.Invert()) {
+    return DrawResult::SUCCESS;
+  }
+
+  aOutMaskSurface = maskDT->Snapshot();
+  return DrawResult::SUCCESS;
+}
+
+static bool
+ValidateSVGFrame(nsIFrame* aFrame)
 {
 #ifdef DEBUG
   NS_ASSERTION(!(aFrame->GetStateBits() & NS_FRAME_SVG_LAYOUT) ||
                (NS_SVGDisplayListPaintingEnabled() &&
-                !(aFrame->GetStateBits() & NS_STATE_SVG_NONDISPLAY_CHILD)),
+                !(aFrame->GetStateBits() & NS_FRAME_IS_NONDISPLAY)),
                "Should not use nsSVGIntegrationUtils on this SVG frame");
 #endif
+
+  bool hasSVGLayout = (aFrame->GetStateBits() & NS_FRAME_SVG_LAYOUT);
+  if (hasSVGLayout) {
+#ifdef DEBUG
+    nsISVGChildFrame *svgChildFrame = do_QueryFrame(aFrame);
+    MOZ_ASSERT(svgChildFrame && aFrame->GetContent()->IsSVGElement(),
+               "A non-SVG frame carries NS_FRAME_SVG_LAYOUT flag?");
+#endif
+
+    const nsIContent* content = aFrame->GetContent();
+    if (!static_cast<const nsSVGElement*>(content)->HasValidDimensions()) {
+      // The SVG spec says not to draw _anything_
+      return false;
+    }
+  }
+
+  return true;
+}
+
+/**
+ * Setup transform matrix of a gfx context by a specific frame. Depend on
+ * aClipCtx, this function may clip that context by the visual overflow area
+ * of aFrame.
+ *
+ * @param aFrame is the target frame.
+ * @param aOffsetToBoundingBox returns the offset between the reference frame
+ *        and the bounding box of aFrame.
+ * @oaram aOffsetToUserSpace returns the offset between the reference frame and
+ *        the user space coordinate of aFrame.
+ */
+static void
+SetupContextMatrix(nsIFrame* aFrame, const PaintFramesParams& aParams,
+                   nsPoint& aOffsetToBoundingBox, nsPoint& aOffsetToUserSpace)
+{
+  aOffsetToBoundingBox = aParams.builder->ToReferenceFrame(aFrame) -
+                         nsSVGIntegrationUtils::GetOffsetToBoundingBox(aFrame);
+  if (!aFrame->IsFrameOfType(nsIFrame::eSVG)) {
+    /* Snap the offset if the reference frame is not a SVG frame,
+     * since other frames will be snapped to pixel when rendering. */
+    aOffsetToBoundingBox = nsPoint(
+      aFrame->PresContext()->RoundAppUnitsToNearestDevPixels(aOffsetToBoundingBox.x),
+      aFrame->PresContext()->RoundAppUnitsToNearestDevPixels(aOffsetToBoundingBox.y));
+  }
+
+  // After applying only "aOffsetToBoundingBox", aParams.ctx would have its
+  // origin at the top left corner of frame's bounding box (over all
+  // continuations).
+  // However, SVG painting needs the origin to be located at the origin of the
+  // SVG frame's "user space", i.e. the space in which, for example, the
+  // frame's BBox lives.
+  // SVG geometry frames and foreignObject frames apply their own offsets, so
+  // their position is relative to their user space. So for these frame types,
+  // if we want aCtx to be in user space, we first need to subtract the
+  // frame's position so that SVG painting can later add it again and the
+  // frame is painted in the right place.
+
+  gfxPoint toUserSpaceGfx = nsSVGUtils::FrameSpaceInCSSPxToUserSpaceOffset(aFrame);
+  nsPoint toUserSpace =
+    nsPoint(nsPresContext::CSSPixelsToAppUnits(float(toUserSpaceGfx.x)),
+            nsPresContext::CSSPixelsToAppUnits(float(toUserSpaceGfx.y)));
+
+  aOffsetToUserSpace = aOffsetToBoundingBox - toUserSpace;
+
+#ifdef DEBUG
+  bool hasSVGLayout = (aFrame->GetStateBits() & NS_FRAME_SVG_LAYOUT);
+  NS_ASSERTION(hasSVGLayout || aOffsetToBoundingBox == aOffsetToUserSpace,
+               "For non-SVG frames there shouldn't be any additional offset");
+#endif
+
+  gfxPoint devPixelOffsetToUserSpace =
+    nsLayoutUtils::PointToGfxPoint(aOffsetToUserSpace,
+                                   aFrame->PresContext()->AppUnitsPerDevPixel());
+  gfxContext& context = aParams.ctx;
+  context.SetMatrix(context.CurrentMatrix().Translate(devPixelOffsetToUserSpace));
+}
+
+bool
+nsSVGIntegrationUtils::IsMaskResourceReady(nsIFrame* aFrame)
+{
+  nsIFrame* firstFrame =
+    nsLayoutUtils::FirstContinuationOrIBSplitSibling(aFrame);
+  nsSVGEffects::EffectProperties effectProperties =
+    nsSVGEffects::GetEffectProperties(firstFrame);
+  nsTArray<nsSVGMaskFrame*> maskFrames = effectProperties.GetMaskFrames();
+  const nsStyleSVGReset* svgReset = firstFrame->StyleSVGReset();
+
+  for (uint32_t i = 0; i < maskFrames.Length(); i++) {
+    // Refers to a valid SVG mask.
+    if (maskFrames[i]) {
+      continue;
+    }
+
+    // Refers to an external resource, which is not ready yet.
+    if (!svgReset->mMask.mLayers[i].mImage.IsComplete()) {
+      return false;
+    }
+  }
+
+  // Either all mask resources are ready, or no mask resource is needed.
+  return true;
+}
+
+DrawResult
+nsSVGIntegrationUtils::PaintMask(const PaintFramesParams& aParams)
+{
+  nsSVGUtils::MaskUsage maskUsage;
+  nsSVGUtils::DetermineMaskUsage(aParams.frame, aParams.handleOpacity,
+                                 maskUsage);
+  MOZ_ASSERT(maskUsage.shouldGenerateMaskLayer);
+
+  nsIFrame* frame = aParams.frame;
+  if (!ValidateSVGFrame(frame)) {
+    return DrawResult::SUCCESS;
+  }
+
+  if (maskUsage.opacity == 0.0f) {
+    return DrawResult::SUCCESS;
+  }
+
+  gfxContext& ctx = aParams.ctx;
+
+  gfxContextMatrixAutoSaveRestore matSR(&ctx);
+
+  nsIFrame* firstFrame =
+    nsLayoutUtils::FirstContinuationOrIBSplitSibling(frame);
+  nsSVGEffects::EffectProperties effectProperties =
+    nsSVGEffects::GetEffectProperties(firstFrame);
+  nsTArray<nsSVGMaskFrame *> maskFrames = effectProperties.GetMaskFrames();
+  bool opacityApplied = !HasNonSVGMask(maskFrames);
+
+  nsPoint offsetToBoundingBox;
+  nsPoint offsetToUserSpace;
+  SetupContextMatrix(frame, aParams, offsetToBoundingBox,
+                     offsetToUserSpace);
+
+  return PaintMaskSurface(aParams, ctx.GetDrawTarget(),
+                            opacityApplied ? maskUsage.opacity : 1.0,
+                            firstFrame->StyleContext(), maskFrames,
+                            ctx.CurrentMatrix(), offsetToUserSpace);
+}
+
+DrawResult
+nsSVGIntegrationUtils::PaintMaskAndClipPath(const PaintFramesParams& aParams)
+{
+  MOZ_ASSERT(UsingMaskOrClipPathForFrame(aParams.frame),
+             "Should not use this method when no mask or clipPath effect"
+             "on this frame");
 
   /* SVG defines the following rendering model:
    *
@@ -412,144 +739,228 @@ nsSVGIntegrationUtils::PaintFramesWithEffects(nsRenderingContext* aCtx,
    *  2. Apply filter
    *  3. Apply clipping, masking, group opacity
    *
-   * We follow this, but perform a couple of optimizations:
+   * We handle #3 here and perform a couple of optimizations:
    *
    * + Use cairo's clipPath when representable natively (single object
    *   clip region).
    *
    * + Merge opacity and masking if both used together.
    */
-
-  const nsIContent* content = aFrame->GetContent();
-  bool hasSVGLayout = (aFrame->GetStateBits() & NS_FRAME_SVG_LAYOUT);
-  if (hasSVGLayout) {
-    nsISVGChildFrame *svgChildFrame = do_QueryFrame(aFrame);
-    if (!svgChildFrame || !aFrame->GetContent()->IsSVG()) {
-      NS_ASSERTION(false, "why?");
-      return;
-    }
-    if (!static_cast<const nsSVGElement*>(content)->HasValidDimensions()) {
-      return; // The SVG spec says not to draw _anything_
-    }
+  nsIFrame* frame = aParams.frame;
+  DrawResult result = DrawResult::SUCCESS;
+  if (!ValidateSVGFrame(frame)) {
+    return result;
   }
 
-  float opacity = aFrame->StyleDisplay()->mOpacity;
-  if (opacity == 0.0f) {
-    return;
+  nsSVGUtils::MaskUsage maskUsage;
+  nsSVGUtils::DetermineMaskUsage(aParams.frame, aParams.handleOpacity,
+                                 maskUsage);
+
+  if (maskUsage.opacity == 0.0f) {
+    return DrawResult::SUCCESS;
   }
-  if (opacity != 1.0f &&
-      hasSVGLayout && nsSVGUtils::CanOptimizeOpacity(aFrame)) {
-    opacity = 1.0f;
-  }
+
+  gfxContext& context = aParams.ctx;
+  gfxContextMatrixAutoSaveRestore matrixAutoSaveRestore(&context);
 
   /* Properties are added lazily and may have been removed by a restyle,
      so make sure all applicable ones are set again. */
   nsIFrame* firstFrame =
-    nsLayoutUtils::GetFirstContinuationOrSpecialSibling(aFrame);
+    nsLayoutUtils::FirstContinuationOrIBSplitSibling(frame);
   nsSVGEffects::EffectProperties effectProperties =
     nsSVGEffects::GetEffectProperties(firstFrame);
 
-  bool isOK = true;
+  bool isOK = effectProperties.HasNoFilterOrHasValidFilter();
   nsSVGClipPathFrame *clipPathFrame = effectProperties.GetClipPathFrame(&isOK);
-  nsSVGFilterFrame *filterFrame = effectProperties.GetFilterFrame(&isOK);
-  nsSVGMaskFrame *maskFrame = effectProperties.GetMaskFrame(&isOK);
-  if (!isOK) {
-    return; // Some resource is missing. We shouldn't paint anything.
-  }
 
-  bool isTrivialClip = clipPathFrame ? clipPathFrame->IsTrivial() : true;
+  gfxMatrix cssPxToDevPxMatrix = GetCSSPxToDevPxMatrix(frame);
+  nsTArray<nsSVGMaskFrame*> maskFrames = effectProperties.GetMaskFrames();
 
-  gfxContext* gfx = aCtx->ThebesContext();
-  gfxContextMatrixAutoSaveRestore matrixAutoSaveRestore(gfx);
+  nsPoint offsetToBoundingBox;
+  nsPoint offsetToUserSpace;
 
-  nsPoint firstFrameOffset = GetOffsetToUserSpace(firstFrame);
-  nsPoint offset = aBuilder->ToReferenceFrame(firstFrame) - firstFrameOffset;
-  nsPoint offsetWithoutSVGGeomFramePos = offset;
-  nsPoint svgGeomFramePos;
-  if (aFrame->IsFrameOfType(nsIFrame::eSVGGeometry) ||
-      aFrame->IsSVGText()) {
-    // SVG leaf frames apply their offset themselves, we need to unapply it at
-    // various points below to prevent it being double counted.
-    svgGeomFramePos = aFrame->GetPosition();
-    offsetWithoutSVGGeomFramePos -= svgGeomFramePos;
-  }
+  bool shouldGenerateMask = (maskUsage.opacity != 1.0f ||
+                             maskUsage.shouldGenerateClipMaskLayer ||
+                             maskUsage.shouldGenerateMaskLayer);
 
-  aCtx->Translate(offsetWithoutSVGGeomFramePos);
-
-  gfxMatrix cssPxToDevPxMatrix = GetCSSPxToDevPxMatrix(aFrame);
-
-  bool complexEffects = false;
   /* Check if we need to do additional operations on this child's
    * rendering, which necessitates rendering into another surface. */
-  if (opacity != 1.0f || maskFrame || (clipPathFrame && !isTrivialClip)) {
-    complexEffects = true;
-    gfx->Save();
-    aCtx->IntersectClip(aFrame->GetVisualOverflowRectRelativeToSelf() +
-                        svgGeomFramePos);
-    gfx->PushGroup(gfxASurface::CONTENT_COLOR_ALPHA);
+  if (shouldGenerateMask) {
+    gfxContextMatrixAutoSaveRestore matSR;
+
+    Matrix maskTransform;
+    RefPtr<SourceSurface> maskSurface;
+    bool opacityApplied = false;
+
+    if (maskUsage.shouldGenerateMaskLayer) {
+      matSR.SetContext(&context);
+
+      // For css-mask, we want to generate a mask for each continuation frame,
+      // so we setup context matrix by the position of the current frame,
+      // instead of the first continuation frame.
+      SetupContextMatrix(frame, aParams, offsetToBoundingBox,
+                         offsetToUserSpace);
+      result = CreateAndPaintMaskSurface(aParams, maskUsage.opacity,
+                                         firstFrame->StyleContext(),
+                                         maskFrames, offsetToUserSpace,
+                                         maskTransform, maskSurface,
+                                         opacityApplied);
+      if (!maskSurface) {
+        // Entire surface is clipped out.
+        return result;
+      }
+    }
+
+    if (maskUsage.shouldGenerateClipMaskLayer) {
+      matSR.Restore();
+      matSR.SetContext(&context);
+
+      SetupContextMatrix(firstFrame, aParams, offsetToBoundingBox,
+                         offsetToUserSpace);
+      Matrix clippedMaskTransform;
+      RefPtr<SourceSurface> clipMaskSurface =
+        clipPathFrame->GetClipMask(context, frame, cssPxToDevPxMatrix,
+                                   &clippedMaskTransform, maskSurface,
+                                   maskTransform, &result);
+
+      if (clipMaskSurface) {
+        maskSurface = clipMaskSurface;
+        maskTransform = clippedMaskTransform;
+      } else {
+        // Either entire surface is clipped out, or gfx buffer allocation
+        // failure in nsSVGClipPathFrame::GetClipMask.
+        return result;
+      }
+    }
+
+    // opacity != 1.0f.
+    if (!maskUsage.shouldGenerateClipMaskLayer &&
+        !maskUsage.shouldGenerateMaskLayer) {
+      MOZ_ASSERT(maskUsage.opacity != 1.0f);
+
+      matSR.SetContext(&context);
+      SetupContextMatrix(firstFrame, aParams, offsetToBoundingBox,
+                         offsetToUserSpace);
+    }
+
+    if (aParams.layerManager->GetRoot()->GetContentFlags() & Layer::CONTENT_COMPONENT_ALPHA) {
+      context.PushGroupAndCopyBackground(gfxContentType::COLOR_ALPHA,
+                                         opacityApplied
+                                           ? 1.0
+                                           : maskUsage.opacity,
+                                         maskSurface, maskTransform);
+    } else {
+      context.PushGroupForBlendBack(gfxContentType::COLOR_ALPHA,
+                                    opacityApplied ? 1.0 : maskUsage.opacity,
+                                    maskSurface, maskTransform);
+    }
   }
 
   /* If this frame has only a trivial clipPath, set up cairo's clipping now so
    * we can just do normal painting and get it clipped appropriately.
    */
-  if (clipPathFrame && isTrivialClip) {
-    gfx->Save();
-    clipPathFrame->ClipPaint(aCtx, aFrame, cssPxToDevPxMatrix);
-  }
+  if (maskUsage.shouldApplyClipPath || maskUsage.shouldApplyBasicShape) {
+    gfxContextMatrixAutoSaveRestore matSR(&context);
 
-  /* Paint the child */
-  if (filterFrame) {
-    RegularFramePaintCallback callback(aBuilder, aLayerManager,
-                                       offsetWithoutSVGGeomFramePos);
-    nsRect dirtyRect = aDirtyRect - offset;
-    filterFrame->PaintFilteredFrame(aCtx, aFrame, &callback, &dirtyRect);
-  } else {
-    gfx->SetMatrix(matrixAutoSaveRestore.Matrix());
-    aLayerManager->EndTransaction(FrameLayerBuilder::DrawThebesLayer, aBuilder);
-    aCtx->Translate(offsetWithoutSVGGeomFramePos);
-  }
+    SetupContextMatrix(firstFrame, aParams, offsetToBoundingBox,
+                       offsetToUserSpace);
 
-  if (clipPathFrame && isTrivialClip) {
-    gfx->Restore();
-  }
-
-  /* No more effects, we're done. */
-  if (!complexEffects) {
-    return;
-  }
-
-  gfx->PopGroupToSource();
-
-  nsRefPtr<gfxPattern> maskSurface =
-    maskFrame ? maskFrame->ComputeMaskAlpha(aCtx, aFrame,
-                                            cssPxToDevPxMatrix, opacity) : nullptr;
-
-  nsRefPtr<gfxPattern> clipMaskSurface;
-  if (clipPathFrame && !isTrivialClip) {
-    gfx->PushGroup(gfxASurface::CONTENT_COLOR_ALPHA);
-
-    nsresult rv = clipPathFrame->ClipPaint(aCtx, aFrame, cssPxToDevPxMatrix);
-    clipMaskSurface = gfx->PopGroup();
-
-    if (NS_SUCCEEDED(rv) && clipMaskSurface) {
-      // Still more set after clipping, so clip to another surface
-      if (maskSurface || opacity != 1.0f) {
-        gfx->PushGroup(gfxASurface::CONTENT_COLOR_ALPHA);
-        gfx->Mask(clipMaskSurface);
-        gfx->PopGroupToSource();
-      } else {
-        gfx->Mask(clipMaskSurface);
-      }
+    MOZ_ASSERT(!maskUsage.shouldApplyClipPath ||
+               !maskUsage.shouldApplyBasicShape);
+    if (maskUsage.shouldApplyClipPath) {
+      clipPathFrame->ApplyClipPath(context, frame, cssPxToDevPxMatrix);
+    } else {
+      nsCSSClipPathInstance::ApplyBasicShapeClip(context, frame);
     }
   }
 
-  if (maskSurface) {
-    gfx->Mask(maskSurface);
-  } else if (opacity != 1.0f) {
-    gfx->Paint(opacity);
+  /* Paint the child */
+  context.SetMatrix(matrixAutoSaveRestore.Matrix());
+  BasicLayerManager* basic = aParams.layerManager->AsBasicLayerManager();
+  RefPtr<gfxContext> oldCtx = basic->GetTarget();
+  basic->SetTarget(&context);
+  aParams.layerManager->EndTransaction(FrameLayerBuilder::DrawPaintedLayer,
+                                       aParams.builder);
+  basic->SetTarget(oldCtx);
+
+  if (gfxPrefs::DrawMaskLayer()) {
+    gfxContextAutoSaveRestore saver(&context);
+
+    context.NewPath();
+    gfxRect drawingRect =
+      nsLayoutUtils::RectToGfxRect(aParams.borderArea,
+                                   frame->PresContext()->AppUnitsPerDevPixel());
+    context.Rectangle(drawingRect, true);
+    context.SetColor(Color(0.0, 1.0, 0.0, 1.0));
+    context.Fill();
   }
 
-  gfx->Restore();
+  if (maskUsage.shouldApplyClipPath || maskUsage.shouldApplyBasicShape) {
+    context.PopClip();
+  }
+
+  if (shouldGenerateMask) {
+    context.PopGroupAndBlend();
+  }
+
+  return result;
+}
+
+DrawResult
+nsSVGIntegrationUtils::PaintFilter(const PaintFramesParams& aParams)
+{
+  MOZ_ASSERT(!aParams.builder->IsForGenerateGlyphMask(),
+             "Filter effect is discarded while generating glyph mask.");
+  MOZ_ASSERT(aParams.frame->StyleEffects()->HasFilters(),
+             "Should not use this method when no filter effect on this frame");
+
+  nsIFrame* frame = aParams.frame;
+  if (!ValidateSVGFrame(frame)) {
+    return DrawResult::SUCCESS;
+  }
+
+  float opacity = nsSVGUtils::ComputeOpacity(frame, aParams.handleOpacity);
+  if (opacity == 0.0f) {
+    return DrawResult::SUCCESS;
+  }
+
+  /* Properties are added lazily and may have been removed by a restyle,
+     so make sure all applicable ones are set again. */
+  nsIFrame* firstFrame =
+    nsLayoutUtils::FirstContinuationOrIBSplitSibling(frame);
+  nsSVGEffects::EffectProperties effectProperties =
+    nsSVGEffects::GetEffectProperties(firstFrame);
+
+  if (!effectProperties.HasValidFilter()) {
+    return DrawResult::NOT_READY;
+  }
+
+  gfxContext& context = aParams.ctx;
+  nsPoint offsetToBoundingBox;
+  nsPoint offsetToUserSpace;
+
+  gfxContextAutoSaveRestore autoSR(&context);
+  SetupContextMatrix(firstFrame, aParams, offsetToBoundingBox,
+                     offsetToUserSpace);
+
+  if (opacity != 1.0f) {
+    context.PushGroupForBlendBack(gfxContentType::COLOR_ALPHA, opacity,
+                                  nullptr, Matrix());
+  }
+
+  /* Paint the child and apply filters */
+  RegularFramePaintCallback callback(aParams.builder, aParams.layerManager,
+                                     offsetToUserSpace);
+  nsRegion dirtyRegion = aParams.dirtyRect - offsetToBoundingBox;
+  gfxMatrix tm = nsSVGIntegrationUtils::GetCSSPxToDevPxMatrix(frame);
+  nsFilterInstance::PaintFilteredFrame(frame, context.GetDrawTarget(),
+                                       tm, &callback, &dirtyRegion);
+
+  if (opacity != 1.0f) {
+    context.PopGroupAndBlend();
+  }
+
+  return DrawResult::SUCCESS;
 }
 
 gfxMatrix
@@ -568,25 +979,28 @@ class PaintFrameCallback : public gfxDrawingCallback {
 public:
   PaintFrameCallback(nsIFrame* aFrame,
                      const nsSize aPaintServerSize,
-                     const gfxIntSize aRenderSize)
+                     const IntSize aRenderSize,
+                     uint32_t aFlags)
    : mFrame(aFrame)
    , mPaintServerSize(aPaintServerSize)
    , mRenderSize(aRenderSize)
+   , mFlags (aFlags)
   {}
   virtual bool operator()(gfxContext* aContext,
-                            const gfxRect& aFillRect,
-                            const gfxPattern::GraphicsFilter& aFilter,
-                            const gfxMatrix& aTransform);
+                          const gfxRect& aFillRect,
+                          const SamplingFilter aSamplingFilter,
+                          const gfxMatrix& aTransform) override;
 private:
   nsIFrame* mFrame;
   nsSize mPaintServerSize;
-  gfxIntSize mRenderSize;
+  IntSize mRenderSize;
+  uint32_t mFlags;
 };
 
 bool
 PaintFrameCallback::operator()(gfxContext* aContext,
                                const gfxRect& aFillRect,
-                               const gfxPattern::GraphicsFilter& aFilter,
+                               const SamplingFilter aSamplingFilter,
                                const gfxMatrix& aTransform)
 {
   if (mFrame->GetStateBits() & NS_FRAME_DRAWING_AS_PAINTSERVER)
@@ -594,8 +1008,6 @@ PaintFrameCallback::operator()(gfxContext* aContext,
 
   mFrame->AddStateBits(NS_FRAME_DRAWING_AS_PAINTSERVER);
 
-  nsRenderingContext context;
-  context.Init(mFrame->PresContext()->DeviceContext(), aContext);
   aContext->Save();
 
   // Clip to aFillRect so that we don't paint outside.
@@ -603,15 +1015,19 @@ PaintFrameCallback::operator()(gfxContext* aContext,
   aContext->Rectangle(aFillRect);
   aContext->Clip();
 
-  aContext->Multiply(gfxMatrix(aTransform).Invert());
+  gfxMatrix invmatrix = aTransform;
+  if (!invmatrix.Invert()) {
+    return false;
+  }
+  aContext->Multiply(invmatrix);
 
   // nsLayoutUtils::PaintFrame will anchor its painting at mFrame. But we want
   // to have it anchored at the top left corner of the bounding box of all of
   // mFrame's continuations. So we add a translation transform.
   int32_t appUnitsPerDevPixel = mFrame->PresContext()->AppUnitsPerDevPixel();
-  nsPoint offset = nsSVGIntegrationUtils::GetOffsetToUserSpace(mFrame);
+  nsPoint offset = nsSVGIntegrationUtils::GetOffsetToBoundingBox(mFrame);
   gfxPoint devPxOffset = gfxPoint(offset.x, offset.y) / appUnitsPerDevPixel;
-  aContext->Multiply(gfxMatrix().Translate(devPxOffset));
+  aContext->Multiply(gfxMatrix::Translation(devPxOffset));
 
   gfxSize paintServerSize =
     gfxSize(mPaintServerSize.width, mPaintServerSize.height) /
@@ -621,16 +1037,40 @@ PaintFrameCallback::operator()(gfxContext* aContext,
   // want it to render with mRenderSize, so we need to set up a scale transform.
   gfxFloat scaleX = mRenderSize.width / paintServerSize.width;
   gfxFloat scaleY = mRenderSize.height / paintServerSize.height;
-  gfxMatrix scaleMatrix = gfxMatrix().Scale(scaleX, scaleY);
-  aContext->Multiply(scaleMatrix);
+  aContext->Multiply(gfxMatrix::Scaling(scaleX, scaleY));
 
   // Draw.
   nsRect dirty(-offset.x, -offset.y,
                mPaintServerSize.width, mPaintServerSize.height);
+
+  using PaintFrameFlags = nsLayoutUtils::PaintFrameFlags;
+  PaintFrameFlags flags = PaintFrameFlags::PAINT_IN_TRANSFORM;
+  if (mFlags & nsSVGIntegrationUtils::FLAG_SYNC_DECODE_IMAGES) {
+    flags |= PaintFrameFlags::PAINT_SYNC_DECODE_IMAGES;
+  }
+  nsRenderingContext context(aContext);
   nsLayoutUtils::PaintFrame(&context, mFrame,
                             dirty, NS_RGBA(0, 0, 0, 0),
-                            nsLayoutUtils::PAINT_IN_TRANSFORM |
-                            nsLayoutUtils::PAINT_ALL_CONTINUATIONS);
+                            nsDisplayListBuilderMode::PAINTING,
+                            flags);
+
+  nsIFrame* currentFrame = mFrame;
+   while ((currentFrame = currentFrame->GetNextContinuation()) != nullptr) {
+    offset = currentFrame->GetOffsetToCrossDoc(mFrame);
+    devPxOffset = gfxPoint(offset.x, offset.y) / appUnitsPerDevPixel;
+
+    aContext->Save();
+    aContext->Multiply(gfxMatrix::Scaling(1/scaleX, 1/scaleY));
+    aContext->Multiply(gfxMatrix::Translation(devPxOffset));
+    aContext->Multiply(gfxMatrix::Scaling(scaleX, scaleY));
+
+    nsLayoutUtils::PaintFrame(&context, currentFrame,
+                              dirty - offset, NS_RGBA(0, 0, 0, 0),
+                              nsDisplayListBuilderMode::PAINTING,
+                              flags);
+
+    aContext->Restore();
+  }
 
   aContext->Restore();
 
@@ -639,12 +1079,14 @@ PaintFrameCallback::operator()(gfxContext* aContext,
   return true;
 }
 
-static already_AddRefed<gfxDrawable>
-DrawableFromPaintServer(nsIFrame*         aFrame,
-                        nsIFrame*         aTarget,
-                        const nsSize&     aPaintServerSize,
-                        const gfxIntSize& aRenderSize,
-                        const gfxMatrix&  aContextMatrix)
+/* static */ already_AddRefed<gfxDrawable>
+nsSVGIntegrationUtils::DrawableFromPaintServer(nsIFrame*         aFrame,
+                                               nsIFrame*         aTarget,
+                                               const nsSize&     aPaintServerSize,
+                                               const IntSize& aRenderSize,
+                                               const DrawTarget* aDrawTarget,
+                                               const gfxMatrix&  aContextMatrix,
+                                               uint32_t          aFlags)
 {
   // aPaintServerSize is the size that would be filled when using
   // background-repeat:no-repeat and background-size:auto. For normal background
@@ -662,9 +1104,10 @@ DrawableFromPaintServer(nsIFrame*         aFrame,
     gfxRect overrideBounds(0, 0,
                            aPaintServerSize.width, aPaintServerSize.height);
     overrideBounds.ScaleInverse(aFrame->PresContext()->AppUnitsPerDevPixel());
-    nsRefPtr<gfxPattern> pattern =
-      server->GetPaintServerPattern(aTarget, aContextMatrix,
-                                    &nsStyleSVG::mFill, 1.0, &overrideBounds);
+    RefPtr<gfxPattern> pattern =
+    server->GetPaintServerPattern(aTarget, aDrawTarget,
+                                  aContextMatrix, &nsStyleSVG::mFill, 1.0,
+                                  &overrideBounds);
 
     if (!pattern)
       return nullptr;
@@ -676,45 +1119,24 @@ DrawableFromPaintServer(nsIFrame*         aFrame,
     // pattern size.
     gfxFloat scaleX = overrideBounds.Width() / aRenderSize.width;
     gfxFloat scaleY = overrideBounds.Height() / aRenderSize.height;
-    gfxMatrix scaleMatrix = gfxMatrix().Scale(scaleX, scaleY);
-    pattern->SetMatrix(scaleMatrix.Multiply(pattern->GetMatrix()));
-    nsRefPtr<gfxDrawable> drawable =
+    gfxMatrix scaleMatrix = gfxMatrix::Scaling(scaleX, scaleY);
+    pattern->SetMatrix(scaleMatrix * pattern->GetMatrix());
+    RefPtr<gfxDrawable> drawable =
       new gfxPatternDrawable(pattern, aRenderSize);
     return drawable.forget();
   }
 
+  if (aFrame->IsFrameOfType(nsIFrame::eSVG) &&
+      !static_cast<nsISVGChildFrame*>(do_QueryFrame(aFrame))) {
+    MOZ_ASSERT_UNREACHABLE("We should prevent painting of unpaintable SVG "
+                           "before we get here");
+    return nullptr;
+  }
+
   // We don't want to paint into a surface as long as we don't need to, so we
   // set up a drawing callback.
-  nsRefPtr<gfxDrawingCallback> cb =
-    new PaintFrameCallback(aFrame, aPaintServerSize, aRenderSize);
-  nsRefPtr<gfxDrawable> drawable = new gfxCallbackDrawable(cb, aRenderSize);
+  RefPtr<gfxDrawingCallback> cb =
+    new PaintFrameCallback(aFrame, aPaintServerSize, aRenderSize, aFlags);
+  RefPtr<gfxDrawable> drawable = new gfxCallbackDrawable(cb, aRenderSize);
   return drawable.forget();
-}
-
-/* static */ void
-nsSVGIntegrationUtils::DrawPaintServer(nsRenderingContext* aRenderingContext,
-                                       nsIFrame*            aTarget,
-                                       nsIFrame*            aPaintServer,
-                                       gfxPattern::GraphicsFilter aFilter,
-                                       const nsRect&        aDest,
-                                       const nsRect&        aFill,
-                                       const nsPoint&       aAnchor,
-                                       const nsRect&        aDirty,
-                                       const nsSize&        aPaintServerSize)
-{
-  if (aDest.IsEmpty() || aFill.IsEmpty())
-    return;
-
-  int32_t appUnitsPerDevPixel = aTarget->PresContext()->AppUnitsPerDevPixel();
-  nsRect destSize = aDest - aDest.TopLeft();
-  nsIntSize roundedOut = destSize.ToOutsidePixels(appUnitsPerDevPixel).Size();
-  gfxIntSize imageSize(roundedOut.width, roundedOut.height);
-  nsRefPtr<gfxDrawable> drawable =
-    DrawableFromPaintServer(aPaintServer, aTarget, aPaintServerSize, imageSize,
-                          aRenderingContext->ThebesContext()->CurrentMatrix());
-
-  if (drawable) {
-    nsLayoutUtils::DrawPixelSnapped(aRenderingContext, drawable, aFilter,
-                                    aDest, aFill, aAnchor, aDirty);
-  }
 }

@@ -7,7 +7,6 @@
 #define nsMenuUtilsX_h_
 
 #include "nscore.h"
-#include "nsEvent.h"
 #include "nsMenuBaseX.h"
 
 #import <Cocoa/Cocoa.h>
@@ -27,6 +26,6 @@ namespace nsMenuUtilsX
   NSMenuItem*   GetStandardEditMenuItem(); // returned object is not retained
   bool          NodeIsHiddenOrCollapsed(nsIContent* inContent);
   int           CalculateNativeInsertionPoint(nsMenuObjectX* aParent, nsMenuObjectX* aChild);
-}
+} // namespace nsMenuUtilsX
 
 #endif // nsMenuUtilsX_h_

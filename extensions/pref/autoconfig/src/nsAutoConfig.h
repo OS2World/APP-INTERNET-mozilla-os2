@@ -3,14 +3,18 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+#ifndef nsAutoConfig_h
+#define nsAutoConfig_h
+
 #include "nsIAutoConfig.h"
 #include "nsITimer.h"
 #include "nsIFile.h"
 #include "nsIObserver.h"
-#include "nsNetUtil.h"
+#include "nsIStreamListener.h"
 #include "nsIPrefService.h"
 #include "nsIPrefBranch.h"
 #include "nsWeakReference.h"
+#include "nsString.h"
 
 class nsAutoConfig : public nsIAutoConfig,
                      public nsITimerCallback,
@@ -21,7 +25,7 @@ class nsAutoConfig : public nsIAutoConfig,
 {
     public:
 
-        NS_DECL_ISUPPORTS
+        NS_DECL_THREADSAFE_ISUPPORTS
         NS_DECL_NSIAUTOCONFIG
         NS_DECL_NSIREQUESTOBSERVER
         NS_DECL_NSISTREAMLISTENER
@@ -29,11 +33,11 @@ class nsAutoConfig : public nsIAutoConfig,
         NS_DECL_NSITIMERCALLBACK
 
         nsAutoConfig();
-        virtual ~nsAutoConfig();
         nsresult Init();
   
     protected:
   
+        virtual ~nsAutoConfig();
         nsresult downloadAutoConfig();
         nsresult readOfflineFile();
         nsresult evaluateLocalFile(nsIFile *file);
@@ -46,3 +50,5 @@ class nsAutoConfig : public nsIAutoConfig,
         nsCOMPtr<nsITimer> mTimer;
         nsCString mConfigURL;
 };
+
+#endif

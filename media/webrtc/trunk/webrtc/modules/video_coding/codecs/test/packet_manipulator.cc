@@ -8,10 +8,12 @@
  *  be found in the AUTHORS file in the root of the source tree.
  */
 
-#include "modules/video_coding/codecs/test/packet_manipulator.h"
+#include "webrtc/modules/video_coding/codecs/test/packet_manipulator.h"
 
-#include <cassert>
-#include <cstdio>
+#include <assert.h>
+#include <stdio.h>
+
+#include "webrtc/base/format_macros.h"
 
 namespace webrtc {
 namespace test {
@@ -34,7 +36,6 @@ PacketManipulatorImpl::~PacketManipulatorImpl() {
 
 int PacketManipulatorImpl::ManipulatePackets(
     webrtc::EncodedImage* encoded_image) {
-  assert(encoded_image);
   int nbr_packets_dropped = 0;
   // There's no need to build a copy of the image data since viewing an
   // EncodedImage object, setting the length to a new lower value represents
@@ -45,7 +46,7 @@ int PacketManipulatorImpl::ManipulatePackets(
   packet_reader_->InitializeReading(encoded_image->_buffer,
                                     encoded_image->_length,
                                     config_.packet_size_in_bytes);
-  WebRtc_UWord8* packet = NULL;
+  uint8_t* packet = NULL;
   int nbr_bytes_to_read;
   // keep track of if we've lost any packets, since then we shall loose
   // the remains of the current frame:
@@ -72,7 +73,7 @@ int PacketManipulatorImpl::ManipulatePackets(
     // Must set completeFrame to false to inform the decoder about this:
     encoded_image->_completeFrame = false;
     if (verbose_) {
-      printf("Dropped %d packets for frame %d (frame length: %d)\n",
+      printf("Dropped %d packets for frame %d (frame length: %" PRIuS ")\n",
              nbr_packets_dropped, encoded_image->_timeStamp,
              encoded_image->_length);
     }
@@ -90,7 +91,7 @@ inline double PacketManipulatorImpl::RandomUniform() {
   // get the same behavior as long as we're using a fixed initial seed.
   critsect_->Enter();
   srand(random_seed_);
-  random_seed_ = std::rand();
+  random_seed_ = rand();
   critsect_->Leave();
   return (random_seed_ + 1.0)/(RAND_MAX + 1.0);
 }

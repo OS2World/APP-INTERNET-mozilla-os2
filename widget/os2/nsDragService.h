@@ -8,6 +8,7 @@
 #include "nsBaseDragService.h"
 #include "nsIDragSessionOS2.h"
 
+#define INCL_BASE
 #define INCL_PM
 #include <os2.h>
 
@@ -20,24 +21,22 @@ class nsDragService : public nsBaseDragService, public nsIDragSessionOS2
 {
 public:
   nsDragService();
-  virtual ~nsDragService();
 
   NS_DECL_ISUPPORTS_INHERITED
 
-    // nsIDragService
-  NS_IMETHOD InvokeDragSession (nsIDOMNode* aDOMNode,
-                                nsISupportsArray* aTransferables,
-                                nsIScriptableRegion* aRegion,
-                                uint32_t aActionType);
+  // nsBaseDragService
+  NS_IMETHOD InvokeDragSessionImpl(nsISupportsArray* aTransferables,
+                                   nsIScriptableRegion* aRegion,
+                                   uint32_t aActionType);
+
+  // nsIDragSession
   NS_IMETHOD StartDragSession();
   NS_IMETHOD EndDragSession(bool aDoneDrag);
-
-    // nsIDragSession
   NS_IMETHOD GetNumDropItems(uint32_t* aNumDropItems);
   NS_IMETHOD GetData(nsITransferable* aTransferable, uint32_t aItemIndex);
   NS_IMETHOD IsDataFlavorSupported(const char* aDataFlavor, bool* _retval);
 
-    // nsIDragSessionOS2
+  // nsIDragSessionOS2
   NS_IMETHOD DragOverMsg(PDRAGINFO pdinfo, MRESULT& mr, uint32_t* dragFlags);
   NS_IMETHOD GetDragoverResult(MRESULT& mr);
   NS_IMETHOD DragLeaveMsg(PDRAGINFO pdinfo, uint32_t* dragFlags);
@@ -48,7 +47,9 @@ public:
                                uint32_t* dragFlags);
 
 protected:
-    // nsIDragSessionOS2
+  virtual ~nsDragService();
+
+  // nsIDragSessionOS2
   NS_IMETHOD NativeDragEnter(PDRAGINFO pdinfo);
   NS_IMETHOD NativeDrop(PDRAGINFO pdinfo, HWND hwnd, bool* rendering);
   NS_IMETHOD NativeRenderComplete(PDRAGTRANSFER pdxfer, USHORT usResult);

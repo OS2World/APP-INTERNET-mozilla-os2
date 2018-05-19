@@ -5,29 +5,25 @@
 
 /* This parsing code originally lived in xpfe/components/directory/ - bbaetz */
 
-#include "mozilla/Util.h"
+#include "mozilla/ArrayUtils.h"
 
 #include "prprf.h"
 
 #include "nsDirIndexParser.h"
-#include "nsReadableUtils.h"
-#include "nsDirIndex.h"
 #include "nsEscape.h"
-#include "nsIServiceManager.h"
 #include "nsIInputStream.h"
-#include "nsIChannel.h"
-#include "nsIURI.h"
 #include "nsCRT.h"
-#include "nsIPrefService.h"
-#include "nsIPrefBranch.h"
-#include "nsIPrefLocalizedString.h"
+#include "mozilla/dom/FallbackEncoding.h"
+#include "nsITextToSubURI.h"
+#include "nsIDirIndex.h"
+#include "nsServiceManagerUtils.h"
 
 using namespace mozilla;
 
-NS_IMPL_ISUPPORTS3(nsDirIndexParser,
-                   nsIRequestObserver,
-                   nsIStreamListener,
-                   nsIDirIndexParser)
+NS_IMPL_ISUPPORTS(nsDirIndexParser,
+                  nsIRequestObserver,
+                  nsIStreamListener,
+                  nsIDirIndexParser)
 
 nsDirIndexParser::nsDirIndexParser() {
 }
@@ -36,25 +32,8 @@ nsresult
 nsDirIndexParser::Init() {
   mLineStart = 0;
   mHasDescription = false;
-  mFormat = nullptr;
-
-  // get default charset to be used for directory listings (fallback to
-  // ISO-8859-1 if pref is unavailable).
-  NS_NAMED_LITERAL_CSTRING(kFallbackEncoding, "ISO-8859-1");
-  nsXPIDLString defCharset;
-  nsCOMPtr<nsIPrefBranch> prefs(do_GetService(NS_PREFSERVICE_CONTRACTID));
-  if (prefs) {
-    nsCOMPtr<nsIPrefLocalizedString> prefVal;
-    prefs->GetComplexValue("intl.charset.default",
-                           NS_GET_IID(nsIPrefLocalizedString),
-                           getter_AddRefs(prefVal));
-    if (prefVal)
-      prefVal->ToString(getter_Copies(defCharset));
-  }
-  if (!defCharset.IsEmpty())
-    LossyCopyUTF16toASCII(defCharset, mEncoding); // charset labels are always ASCII
-  else
-    mEncoding.Assign(kFallbackEncoding);
+  mFormat[0] = -1;
+  mozilla::dom::FallbackEncoding::FromLocale(mEncoding);
  
   nsresult rv;
   // XXX not threadsafe
@@ -67,7 +46,6 @@ nsDirIndexParser::Init() {
 }
 
 nsDirIndexParser::~nsDirIndexParser() {
-  delete[] mFormat;
   // XXX not threadsafe
   if (--gRefCntParser == 0) {
     NS_IF_RELEASE(gTextToSubURI);
@@ -143,42 +121,15 @@ nsrefcnt nsDirIndexParser::gRefCntParser = 0;
 nsITextToSubURI *nsDirIndexParser::gTextToSubURI;
 
 nsresult
-nsDirIndexParser::ParseFormat(const char* aFormatStr) {
+nsDirIndexParser::ParseFormat(const char* aFormatStr)
+{
   // Parse a "200" format line, and remember the fields and their
   // ordering in mFormat. Multiple 200 lines stomp on each other.
+  unsigned int formatNum = 0;
+  mFormat[0] = -1;
 
-  // Lets find out how many elements we have.
-  // easier to do this then realloc
-  const char* pos = aFormatStr;
-  unsigned int num = 0;
   do {
-    while (*pos && nsCRT::IsAsciiSpace(PRUnichar(*pos)))
-      ++pos;
-    
-    ++num;
-    // There are a maximum of six allowed header fields (doubled plus
-    // terminator, just in case) -- Bug 443299
-    if (num > (2 * ArrayLength(gFieldTable)))
-      return NS_ERROR_UNEXPECTED;
-
-    if (! *pos)
-      break;
-
-    while (*pos && !nsCRT::IsAsciiSpace(PRUnichar(*pos)))
-      ++pos;
-
-  } while (*pos);
-
-  delete[] mFormat;
-  mFormat = new int[num+1];
-  // Prevent NULL Deref - Bug 443299 
-  if (mFormat == nullptr)
-    return NS_ERROR_OUT_OF_MEMORY;
-  mFormat[num] = -1;
-  
-  int formatNum=0;
-  do {
-    while (*aFormatStr && nsCRT::IsAsciiSpace(PRUnichar(*aFormatStr)))
+    while (*aFormatStr && nsCRT::IsAsciiSpace(char16_t(*aFormatStr)))
       ++aFormatStr;
     
     if (! *aFormatStr)
@@ -186,7 +137,7 @@ nsDirIndexParser::ParseFormat(const char* aFormatStr) {
 
     nsAutoCString name;
     int32_t     len = 0;
-    while (aFormatStr[len] && !nsCRT::IsAsciiSpace(PRUnichar(aFormatStr[len])))
+    while (aFormatStr[len] && !nsCRT::IsAsciiSpace(char16_t(aFormatStr[len])))
       ++len;
     name.SetCapacity(len + 1);
     name.Append(aFormatStr, len);
@@ -202,58 +153,79 @@ nsDirIndexParser::ParseFormat(const char* aFormatStr) {
     for (Field* i = gFieldTable; i->mName; ++i) {
       if (name.EqualsIgnoreCase(i->mName)) {
         mFormat[formatNum] = i->mType;
-        ++formatNum;
+        mFormat[++formatNum] = -1;
         break;
       }
     }
 
-  } while (*aFormatStr);
+  } while (*aFormatStr && (formatNum < (ArrayLength(mFormat)-1)));
   
   return NS_OK;
 }
 
 nsresult
-nsDirIndexParser::ParseData(nsIDirIndex *aIdx, char* aDataStr) {
+nsDirIndexParser::ParseData(nsIDirIndex *aIdx, char* aDataStr, int32_t aLineLen)
+{
   // Parse a "201" data line, using the field ordering specified in
   // mFormat.
 
-  if (!mFormat) {
+  if(mFormat[0] == -1) {
     // Ignore if we haven't seen a format yet.
     return NS_OK;
   }
 
   nsresult rv = NS_OK;
-
   nsAutoCString filename;
+  int32_t lineLen = aLineLen;
 
   for (int32_t i = 0; mFormat[i] != -1; ++i) {
-    // If we've exhausted the data before we run out of fields, just
-    // bail.
-    if (! *aDataStr)
-      break;
+    // If we've exhausted the data before we run out of fields, just bail.
+    if (!*aDataStr || (lineLen < 1)) {
+      return NS_OK;
+    }
 
-    while (*aDataStr && nsCRT::IsAsciiSpace(*aDataStr))
+    while ((lineLen > 0) && nsCRT::IsAsciiSpace(*aDataStr)) {
       ++aDataStr;
+      --lineLen;
+    }
+
+    if (lineLen < 1) {
+      // invalid format, bail
+      return NS_OK;
+    }
 
     char    *value = aDataStr;
-
     if (*aDataStr == '"' || *aDataStr == '\'') {
       // it's a quoted string. snarf everything up to the next quote character
       const char quotechar = *(aDataStr++);
+      lineLen--;
       ++value;
-      while (*aDataStr && *aDataStr != quotechar)
+      while ((lineLen > 0) && *aDataStr != quotechar) {
         ++aDataStr;
-      *aDataStr++ = '\0';
+        --lineLen;
+      }
+      if (lineLen > 0) {
+        *aDataStr++ = '\0';
+        --lineLen;
+      }
 
-      if (! aDataStr) {
-        NS_WARNING("quoted value not terminated");
+      if (!lineLen) {
+        // invalid format, bail
+        return NS_OK;
       }
     } else {
       // it's unquoted. snarf until we see whitespace.
       value = aDataStr;
-      while (*aDataStr && (!nsCRT::IsAsciiSpace(*aDataStr)))
+      while ((lineLen > 0) && (!nsCRT::IsAsciiSpace(*aDataStr))) {
         ++aDataStr;
-      *aDataStr++ = '\0';
+        --lineLen;
+      }
+      if (lineLen > 0) {
+        *aDataStr++ = '\0';
+        --lineLen;
+      }
+      // even if we ran out of line length here, there's still a trailing zero
+      // byte afterwards
     }
 
     fieldType t = fieldType(mFormat[i]);
@@ -267,7 +239,7 @@ nsDirIndexParser::ParseData(nsIDirIndex *aIdx, char* aDataStr) {
       nsAutoString entryuri;
       
       if (gTextToSubURI) {
-        PRUnichar   *result = nullptr;
+        char16_t   *result = nullptr;
         if (NS_SUCCEEDED(rv = gTextToSubURI->UnEscapeAndConvert(mEncoding.get(), filename.get(),
                                                                 &result)) && (result)) {
           if (*result) {
@@ -276,7 +248,7 @@ nsDirIndexParser::ParseData(nsIDirIndex *aIdx, char* aDataStr) {
               aIdx->SetDescription(result);
             success = true;
           }
-          NS_Free(result);
+          free(result);
         } else {
           NS_WARNING("UnEscapeAndConvert error");
         }
@@ -354,7 +326,7 @@ nsDirIndexParser::OnDataAvailable(nsIRequest *aRequest, nsISupports *aCtxt,
   
   // Ensure that our mBuf has capacity to hold the data we're about to
   // read.
-  if (!mBuf.SetLength(len + aCount, fallible_t()))
+  if (!mBuf.SetLength(len + aCount, fallible))
     return NS_ERROR_OUT_OF_MEMORY;
 
   // Now read the data into our buffer.
@@ -383,7 +355,7 @@ nsDirIndexParser::ProcessData(nsIRequest *aRequest, nsISupports *aCtxt) {
     
     int32_t             eol = mBuf.FindCharInSet("\n\r", mLineStart);
     if (eol < 0)        break;
-    mBuf.SetCharAt(PRUnichar('\0'), eol);
+    mBuf.SetCharAt(char16_t('\0'), eol);
     
     const char  *line = mBuf.get() + mLineStart;
     
@@ -425,7 +397,7 @@ nsDirIndexParser::ProcessData(nsIRequest *aRequest, nsISupports *aCtxt) {
             if (NS_FAILED(rv))
               return rv;
             
-            rv = ParseData(idx, ((char *)buf) + 4);
+            rv = ParseData(idx, ((char *)buf) + 4, lineLen - 4);
             if (NS_FAILED(rv)) {
               return rv;
             }

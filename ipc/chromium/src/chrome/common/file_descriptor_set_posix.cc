@@ -1,3 +1,5 @@
+/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
+/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 // Copyright (c) 2006-2008 The Chromium Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
@@ -17,7 +19,7 @@ FileDescriptorSet::~FileDescriptorSet() {
   if (consumed_descriptor_highwater_ == descriptors_.size())
     return;
 
-  LOG(WARNING) << "FileDescriptorSet destroyed with unconsumed descriptors";
+  CHROMIUM_LOG(WARNING) << "FileDescriptorSet destroyed with unconsumed descriptors";
   // We close all the descriptors where the close flag is set. If this
   // message should have been transmitted, then closing those with close
   // flags set mirrors the expected behaviour.

@@ -7,11 +7,14 @@
 #ifndef gc_Barrier_h
 #define gc_Barrier_h
 
-#include "jsapi.h"
+#include "NamespaceImports.h"
 
 #include "gc/Heap.h"
-#include "js/HashTable.h"
+#include "gc/StoreBuffer.h"
+#include "js/HeapAPI.h"
+#include "js/Id.h"
 #include "js/RootingAPI.h"
+#include "js/Value.h"
 
 /*
  * A write barrier is a mechanism used by incremental or generation GCs to
@@ -21,7 +24,7 @@
  *   - writes to object properties
  *   - writes to array slots
  *   - writes to fields like JSObject::shape_ that we trace through
- *   - writes to fields in private data, like JSGenerator::obj
+ *   - writes to fields in private data
  *   - writes to non-markable fields like JSObject::private that point to
  *     markable data
  * The last category is the trickiest. Even though the private pointers does not
@@ -90,10 +93,38 @@
  * value0. E.g., see JSObject::writeBarrierPre, which is used if obj->field is
  * a JSObject*. It takes value0 as a parameter.
  *
+ *                                READ-BARRIER
+ *
+ * Incremental GC requires that weak pointers have read barriers. The problem
+ * happens when, during an incremental GC, some code reads a weak pointer and
+ * writes it somewhere on the heap that has been marked black in a previous
+ * slice. Since the weak pointer will not otherwise be marked and will be swept
+ * and finalized in the last slice, this will leave the pointer just written
+ * dangling after the GC. To solve this, we immediately mark black all weak
+ * pointers that get read between slices so that it is safe to store them in an
+ * already marked part of the heap, e.g. in Rooted.
+ *
  *                                POST-BARRIER
  *
- * These are not yet implemented. Once we get generational GC, they will allow
- * us to keep track of pointers from non-nursery space into the nursery.
+ * For generational GC, we want to be able to quickly collect the nursery in a
+ * minor collection.  Part of the way this is achieved is to only mark the
+ * nursery itself; tenured things, which may form the majority of the heap, are
+ * not traced through or marked.  This leads to the problem of what to do about
+ * tenured objects that have pointers into the nursery: if such things are not
+ * marked, they may be discarded while there are still live objects which
+ * reference them. The solution is to maintain information about these pointers,
+ * and mark their targets when we start a minor collection.
+ *
+ * The pointers can be thought of as edges in object graph, and the set of edges
+ * from the tenured generation into the nursery is know as the remembered set.
+ * Post barriers are used to track this remembered set.
+ *
+ * Whenever a slot which could contain such a pointer is written, we use a write
+ * barrier to check if the edge created is in the remembered set, and if so we
+ * insert it into the store buffer, which is the collector's representation of
+ * the remembered set.  This means than when we come to do a minor collection we
+ * can examine the contents of the store buffer and mark any edge targets that
+ * are in the nursery.
  *
  *                            IMPLEMENTATION DETAILS
  *
@@ -101,124 +132,650 @@
  * call, this file contains a bunch of C++ classes and templates that use
  * operator overloading to take care of barriers automatically. In many cases,
  * all that's necessary to make some field be barriered is to replace
- *     Type *field;
+ *     Type* field;
  * with
- *     HeapPtr<Type> field;
- * There are also special classes HeapValue and HeapId, which barrier js::Value
- * and jsid, respectively.
+ *     GCPtr<Type> field;
  *
- * One additional note: not all object writes need to be barriered. Writes to
- * newly allocated objects do not need a pre-barrier.  In these cases, we use
+ * One additional note: not all object writes need to be pre-barriered. Writes
+ * to newly allocated objects do not need a pre-barrier. In these cases, we use
  * the "obj->field.init(value)" method instead of "obj->field = value". We use
  * the init naming idiom in many places to signify that a field is being
  * assigned for the first time.
+ *
+ * This file implements four classes, illustrated here:
+ *
+ * BarrieredBase             base class of all barriers
+ *  |  |
+ *  | WriteBarrieredBase     base class which provides common write operations
+ *  |  |  |  |  |
+ *  |  |  |  | PreBarriered  provides pre-barriers only
+ *  |  |  |  |
+ *  |  |  | GCPtr            provides pre- and post-barriers
+ *  |  |  |
+ *  |  | HeapPtr             provides pre- and post-barriers; is relocatable
+ *  |  |                     and deletable for use inside C++ managed memory
+ *  |  |
+ *  | HeapSlot               similar to GCPtr, but tailored to slots storage
+ *  |
+ * ReadBarrieredBase         base class which provides common read operations
+ *  |
+ * ReadBarriered             provides read barriers only
+ *
+ *
+ * The implementation of the barrier logic is implemented on T::writeBarrier.*,
+ * via:
+ *
+ * WriteBarrieredBase<T>::pre
+ *  -> InternalBarrierMethods<T*>::preBarrier
+ *      -> T::writeBarrierPre
+ *  -> InternalBarrierMethods<Value>::preBarrier
+ *  -> InternalBarrierMethods<jsid>::preBarrier
+ *      -> InternalBarrierMethods<T*>::preBarrier
+ *          -> T::writeBarrierPre
+ *
+ * GCPtr<T>::post and HeapPtr<T>::post
+ *  -> InternalBarrierMethods<T*>::postBarrier
+ *      -> T::writeBarrierPost
+ *  -> InternalBarrierMethods<Value>::postBarrier
+ *      -> StoreBuffer::put
+ *
+ * These classes are designed to be used by the internals of the JS engine.
+ * Barriers designed to be used externally are provided in js/RootingAPI.h.
+ * These external barriers call into the same post-barrier implementations at
+ * InternalBarrierMethods<T>::post via an indirect call to Heap(.+)Barrier.
+ *
+ * These clases are designed to be used to wrap GC thing pointers or values that
+ * act like them (i.e. JS::Value and jsid).  It is possible to use them for
+ * other types by supplying the necessary barrier implementations but this
+ * is not usually necessary and should be done with caution.
  */
+
+class JSAtom;
+struct JSCompartment;
+class JSFlatString;
+class JSLinearString;
+
+namespace JS {
+class Symbol;
+} // namespace JS
 
 namespace js {
 
-template<class T, typename Unioned = uintptr_t>
-class EncapsulatedPtr
+class AccessorShape;
+class ArrayObject;
+class ArgumentsObject;
+class ArrayBufferObjectMaybeShared;
+class ArrayBufferObject;
+class ArrayBufferViewObject;
+class SharedArrayBufferObject;
+class BaseShape;
+class DebugEnvironmentProxy;
+class GlobalObject;
+class LazyScript;
+class ModuleObject;
+class ModuleEnvironmentObject;
+class ModuleNamespaceObject;
+class NativeObject;
+class PlainObject;
+class PropertyName;
+class SavedFrame;
+class EnvironmentObject;
+class ScriptSourceObject;
+class Shape;
+class UnownedBaseShape;
+class ObjectGroup;
+
+namespace jit {
+class JitCode;
+} // namespace jit
+
+#ifdef DEBUG
+// Barriers can't be triggered during backend Ion compilation, which may run on
+// a helper thread.
+bool
+CurrentThreadIsIonCompiling();
+
+bool
+CurrentThreadIsIonCompilingSafeForMinorGC();
+
+bool
+CurrentThreadIsGCSweeping();
+
+bool
+IsMarkedBlack(NativeObject* obj);
+#endif
+
+namespace gc {
+
+// Marking.h depends on these barrier definitions, so we need a separate
+// entry point for marking to implement the pre-barrier.
+void MarkValueForBarrier(JSTracer* trc, Value* v, const char* name);
+void MarkIdForBarrier(JSTracer* trc, jsid* idp, const char* name);
+
+} // namespace gc
+
+template <typename T>
+struct InternalBarrierMethods {};
+
+template <typename T>
+struct InternalBarrierMethods<T*>
 {
-  protected:
-    union {
-        T *value;
-        Unioned other;
-    };
+    static bool isMarkable(T* v) { return v != nullptr; }
 
-  public:
-    EncapsulatedPtr() : value(NULL) {}
-    EncapsulatedPtr(T *v) : value(v) {}
-    explicit EncapsulatedPtr(const EncapsulatedPtr<T> &v) : value(v.value) {}
+    static bool isMarkableTaggedPointer(T* v) { return !IsNullTaggedPointer(v); }
 
-    ~EncapsulatedPtr() { pre(); }
+    static void preBarrier(T* v) { T::writeBarrierPre(v); }
 
-    /* Use to set the pointer to NULL. */
-    void clear() {
-        pre();
-        value = NULL;
-    }
+    static void postBarrier(T** vp, T* prev, T* next) { T::writeBarrierPost(vp, prev, next); }
 
-    EncapsulatedPtr<T, Unioned> &operator=(T *v) {
-        pre();
-        JS_ASSERT(!IsPoisonedPtr<T>(v));
-        value = v;
-        return *this;
-    }
-
-    EncapsulatedPtr<T, Unioned> &operator=(const EncapsulatedPtr<T> &v) {
-        pre();
-        JS_ASSERT(!IsPoisonedPtr<T>(v.value));
-        value = v.value;
-        return *this;
-    }
-
-    /* Use this if the automatic coercion to T* isn't working. */
-    T *get() const { return value; }
-
-    /*
-     * Use these if you want to change the value without invoking the barrier.
-     * Obviously this is dangerous unless you know the barrier is not needed.
-     */
-    T **unsafeGet() { return &value; }
-    void unsafeSet(T *v) { value = v; }
-
-    Unioned *unsafeGetUnioned() { return &other; }
-
-    T &operator*() const { return *value; }
-    T *operator->() const { return value; }
-
-    operator T*() const { return value; }
-
-  protected:
-    void pre();
+    static void readBarrier(T* v) { T::readBarrier(v); }
 };
 
-template <class T, class Unioned = uintptr_t>
-class HeapPtr : public EncapsulatedPtr<T, Unioned>
+template <typename S> struct PreBarrierFunctor : public VoidDefaultAdaptor<S> {
+    template <typename T> void operator()(T* t);
+};
+
+template <typename S> struct ReadBarrierFunctor : public VoidDefaultAdaptor<S> {
+    template <typename T> void operator()(T* t);
+};
+
+template <>
+struct InternalBarrierMethods<Value>
 {
+    static bool isMarkable(const Value& v) { return v.isMarkable(); }
+    static bool isMarkableTaggedPointer(const Value& v) { return isMarkable(v); }
+
+    static void preBarrier(const Value& v) {
+        DispatchTyped(PreBarrierFunctor<Value>(), v);
+    }
+
+    static void postBarrier(Value* vp, const Value& prev, const Value& next) {
+        MOZ_ASSERT(!CurrentThreadIsIonCompiling());
+        MOZ_ASSERT(vp);
+
+        // If the target needs an entry, add it.
+        js::gc::StoreBuffer* sb;
+        if (next.isObject() && (sb = reinterpret_cast<gc::Cell*>(&next.toObject())->storeBuffer())) {
+            // If we know that the prev has already inserted an entry, we can
+            // skip doing the lookup to add the new entry. Note that we cannot
+            // safely assert the presence of the entry because it may have been
+            // added via a different store buffer.
+            if (prev.isObject() && reinterpret_cast<gc::Cell*>(&prev.toObject())->storeBuffer())
+                return;
+            sb->putValue(vp);
+            return;
+        }
+        // Remove the prev entry if the new value does not need it.
+        if (prev.isObject() && (sb = reinterpret_cast<gc::Cell*>(&prev.toObject())->storeBuffer()))
+            sb->unputValue(vp);
+    }
+
+    static void readBarrier(const Value& v) {
+        DispatchTyped(ReadBarrierFunctor<Value>(), v);
+    }
+};
+
+template <>
+struct InternalBarrierMethods<jsid>
+{
+    static bool isMarkable(jsid id) { return JSID_IS_GCTHING(id); }
+    static bool isMarkableTaggedPointer(jsid id) { return isMarkable(id); }
+
+    static void preBarrier(jsid id) { DispatchTyped(PreBarrierFunctor<jsid>(), id); }
+    static void postBarrier(jsid* idp, jsid prev, jsid next) {}
+};
+
+// Barrier classes can use Mixins to add methods to a set of barrier
+// instantiations, to make the barriered thing look and feel more like the
+// thing itself.
+template <typename T>
+class BarrieredBaseMixins {};
+
+// Base class of all barrier types.
+template <typename T>
+class BarrieredBase : public BarrieredBaseMixins<T>
+{
+  protected:
+    // BarrieredBase is not directly instantiable.
+    explicit BarrieredBase(const T& v) : value(v) {}
+
+    // Storage for all barrier classes. |value| must be a GC thing reference
+    // type: either a direct pointer to a GC thing or a supported tagged
+    // pointer that can reference GC things, such as JS::Value or jsid. Nested
+    // barrier types are NOT supported. See assertTypeConstraints.
+    T value;
+
   public:
-    HeapPtr() : EncapsulatedPtr<T>(NULL) {}
-    explicit HeapPtr(T *v) : EncapsulatedPtr<T>(v) { post(); }
-    explicit HeapPtr(const HeapPtr<T> &v)
-      : EncapsulatedPtr<T>(v) { post(); }
+    // Note: this is public because C++ cannot friend to a specific template instantiation.
+    // Friending to the generic template leads to a number of unintended consequences, including
+    // template resolution ambiguity and a circular dependency with Tracing.h.
+    T* unsafeUnbarrieredForTracing() { return &value; }
+};
 
-    void init(T *v) {
-        JS_ASSERT(!IsPoisonedPtr<T>(v));
-        this->value = v;
-        post();
-    }
+// Base class for barriered pointer types that intercept only writes.
+template <class T>
+class WriteBarrieredBase : public BarrieredBase<T>
+{
+  protected:
+    // WriteBarrieredBase is not directly instantiable.
+    explicit WriteBarrieredBase(const T& v) : BarrieredBase<T>(v) {}
 
-    HeapPtr<T, Unioned> &operator=(T *v) {
-        this->pre();
-        JS_ASSERT(!IsPoisonedPtr<T>(v));
-        this->value = v;
-        post();
-        return *this;
-    }
+  public:
+    DECLARE_POINTER_COMPARISON_OPS(T);
+    DECLARE_POINTER_CONSTREF_OPS(T);
 
-    HeapPtr<T, Unioned> &operator=(const HeapPtr<T> &v) {
-        this->pre();
-        JS_ASSERT(!IsPoisonedPtr<T>(v.value));
-        this->value = v.value;
-        post();
-        return *this;
-    }
+    // Use this if the automatic coercion to T isn't working.
+    const T& get() const { return this->value; }
+
+    // Use this if you want to change the value without invoking barriers.
+    // Obviously this is dangerous unless you know the barrier is not needed.
+    void unsafeSet(const T& v) { this->value = v; }
+
+    // For users who need to manually barrier the raw types.
+    static void writeBarrierPre(const T& v) { InternalBarrierMethods<T>::preBarrier(v); }
 
   protected:
-    void post() { T::writeBarrierPost(this->value, (void *)&this->value); }
-
-    /* Make this friend so it can access pre() and post(). */
-    template<class T1, class T2>
-    friend inline void
-    BarrieredSetPair(Zone *zone,
-                     HeapPtr<T1> &v1, T1 *val1,
-                     HeapPtr<T2> &v2, T2 *val2);
+    void pre() { InternalBarrierMethods<T>::preBarrier(this->value); }
+    void post(const T& prev, const T& next) {
+        InternalBarrierMethods<T>::postBarrier(&this->value, prev, next);
+    }
 };
 
 /*
- * FixedHeapPtr is designed for one very narrow case: replacing immutable raw
- * pointers to GC-managed things, implicitly converting to a handle type for
- * ease of use.  Pointers encapsulated by this type must:
+ * PreBarriered only automatically handles pre-barriers. Post-barriers must be
+ * manually implemented when using this class. GCPtr and HeapPtr should be used
+ * in all cases that do not require explicit low-level control of moving
+ * behavior, e.g. for HashMap keys.
+ */
+template <class T>
+class PreBarriered : public WriteBarrieredBase<T>
+{
+  public:
+    PreBarriered() : WriteBarrieredBase<T>(JS::GCPolicy<T>::initial()) {}
+    /*
+     * Allow implicit construction for use in generic contexts, such as
+     * DebuggerWeakMap::markKeys.
+     */
+    MOZ_IMPLICIT PreBarriered(const T& v) : WriteBarrieredBase<T>(v) {}
+    explicit PreBarriered(const PreBarriered<T>& v) : WriteBarrieredBase<T>(v.value) {}
+    ~PreBarriered() { this->pre(); }
+
+    void init(const T& v) {
+        this->value = v;
+    }
+
+    /* Use to set the pointer to nullptr. */
+    void clear() {
+        this->pre();
+        this->value = nullptr;
+    }
+
+    DECLARE_POINTER_ASSIGN_OPS(PreBarriered, T);
+
+  private:
+    void set(const T& v) {
+        this->pre();
+        this->value = v;
+    }
+};
+
+/*
+ * A pre- and post-barriered heap pointer, for use inside the JS engine.
+ *
+ * It must only be stored in memory that has GC lifetime. GCPtr must not be
+ * used in contexts where it may be implicitly moved or deleted, e.g. most
+ * containers.
+ *
+ * The post-barriers implemented by this class are faster than those
+ * implemented by js::HeapPtr<T> or JS::Heap<T> at the cost of not
+ * automatically handling deletion or movement.
+ */
+template <class T>
+class GCPtr : public WriteBarrieredBase<T>
+{
+  public:
+    GCPtr() : WriteBarrieredBase<T>(JS::GCPolicy<T>::initial()) {}
+    explicit GCPtr(const T& v) : WriteBarrieredBase<T>(v) {
+        this->post(JS::GCPolicy<T>::initial(), v);
+    }
+    explicit GCPtr(const GCPtr<T>& v) : WriteBarrieredBase<T>(v) {
+        this->post(JS::GCPolicy<T>::initial(), v);
+    }
+#ifdef DEBUG
+    ~GCPtr() {
+        // No prebarrier necessary as this only happens when we are sweeping or
+        // after we have just collected the nursery.  Note that the wrapped
+        // pointer may already have been freed by this point.
+        MOZ_ASSERT(CurrentThreadIsGCSweeping());
+        Poison(this, JS_FREED_HEAP_PTR_PATTERN, sizeof(*this));
+    }
+#endif
+
+    void init(const T& v) {
+        this->value = v;
+        this->post(JS::GCPolicy<T>::initial(), v);
+    }
+
+    DECLARE_POINTER_ASSIGN_OPS(GCPtr, T);
+
+    T unbarrieredGet() const {
+        return this->value;
+    }
+
+  private:
+    void set(const T& v) {
+        this->pre();
+        T tmp = this->value;
+        this->value = v;
+        this->post(tmp, this->value);
+    }
+
+    /*
+     * Unlike HeapPtr<T>, GCPtr<T> must be managed with GC lifetimes.
+     * Specifically, the memory used by the pointer itself must be live until
+     * at least the next minor GC. For that reason, move semantics are invalid
+     * and are deleted here. Please note that not all containers support move
+     * semantics, so this does not completely prevent invalid uses.
+     */
+    GCPtr(GCPtr<T>&&) = delete;
+    GCPtr<T>& operator=(GCPtr<T>&&) = delete;
+};
+
+/*
+ * A pre- and post-barriered heap pointer, for use inside the JS engine. These
+ * heap pointers can be stored in C++ containers like GCVector and GCHashMap.
+ *
+ * The GC sometimes keeps pointers to pointers to GC things --- for example, to
+ * track references into the nursery. However, C++ containers like GCVector and
+ * GCHashMap usually reserve the right to relocate their elements any time
+ * they're modified, invalidating all pointers to the elements. HeapPtr
+ * has a move constructor which knows how to keep the GC up to date if it is
+ * moved to a new location.
+ *
+ * However, because of this additional communication with the GC, HeapPtr
+ * is somewhat slower, so it should only be used in contexts where this ability
+ * is necessary.
+ *
+ * Obviously, JSObjects, JSStrings, and the like get tenured and compacted, so
+ * whatever pointers they contain get relocated, in the sense used here.
+ * However, since the GC itself is moving those values, it takes care of its
+ * internal pointers to those pointers itself. HeapPtr is only necessary
+ * when the relocation would otherwise occur without the GC's knowledge.
+ */
+template <class T>
+class HeapPtr : public WriteBarrieredBase<T>
+{
+  public:
+    HeapPtr() : WriteBarrieredBase<T>(JS::GCPolicy<T>::initial()) {}
+
+    // Implicitly adding barriers is a reasonable default.
+    MOZ_IMPLICIT HeapPtr(const T& v) : WriteBarrieredBase<T>(v) {
+        this->post(JS::GCPolicy<T>::initial(), this->value);
+    }
+
+    /*
+     * For HeapPtr, move semantics are equivalent to copy semantics. In
+     * C++, a copy constructor taking const-ref is the way to get a single
+     * function that will be used for both lvalue and rvalue copies, so we can
+     * simply omit the rvalue variant.
+     */
+    MOZ_IMPLICIT HeapPtr(const HeapPtr<T>& v) : WriteBarrieredBase<T>(v) {
+        this->post(JS::GCPolicy<T>::initial(), this->value);
+    }
+
+    ~HeapPtr() {
+        this->pre();
+        this->post(this->value, JS::GCPolicy<T>::initial());
+    }
+
+    void init(const T& v) {
+        this->value = v;
+        this->post(JS::GCPolicy<T>::initial(), this->value);
+    }
+
+    DECLARE_POINTER_ASSIGN_OPS(HeapPtr, T);
+
+    /* Make this friend so it can access pre() and post(). */
+    template <class T1, class T2>
+    friend inline void
+    BarrieredSetPair(Zone* zone,
+                     HeapPtr<T1*>& v1, T1* val1,
+                     HeapPtr<T2*>& v2, T2* val2);
+
+  protected:
+    void set(const T& v) {
+        this->pre();
+        postBarrieredSet(v);
+    }
+
+    void postBarrieredSet(const T& v) {
+        T tmp = this->value;
+        this->value = v;
+        this->post(tmp, this->value);
+    }
+};
+
+// Base class for barriered pointer types that intercept reads and writes.
+template <typename T>
+class ReadBarrieredBase : public BarrieredBase<T>
+{
+  protected:
+    // ReadBarrieredBase is not directly instantiable.
+    explicit ReadBarrieredBase(const T& v) : BarrieredBase<T>(v) {}
+
+  protected:
+    void read() const { InternalBarrierMethods<T>::readBarrier(this->value); }
+    void post(const T& prev, const T& next) {
+        InternalBarrierMethods<T>::postBarrier(&this->value, prev, next);
+    }
+};
+
+// Incremental GC requires that weak pointers have read barriers. See the block
+// comment at the top of Barrier.h for a complete discussion of why.
+//
+// Note that this class also has post-barriers, so is safe to use with nursery
+// pointers. However, when used as a hashtable key, care must still be taken to
+// insert manual post-barriers on the table for rekeying if the key is based in
+// any way on the address of the object.
+template <typename T>
+class ReadBarriered : public ReadBarrieredBase<T>
+{
+  public:
+    ReadBarriered() : ReadBarrieredBase<T>(JS::GCPolicy<T>::initial()) {}
+
+    // It is okay to add barriers implicitly.
+    MOZ_IMPLICIT ReadBarriered(const T& v) : ReadBarrieredBase<T>(v) {
+        this->post(JS::GCPolicy<T>::initial(), v);
+    }
+
+    // Copy is creating a new edge, so we must read barrier the source edge.
+    explicit ReadBarriered(const ReadBarriered& v) : ReadBarrieredBase<T>(v) {
+        this->post(JS::GCPolicy<T>::initial(), v.get());
+    }
+
+    // Move retains the lifetime status of the source edge, so does not fire
+    // the read barrier of the defunct edge.
+    ReadBarriered(ReadBarriered&& v)
+      : ReadBarrieredBase<T>(mozilla::Move(v))
+    {
+        this->post(JS::GCPolicy<T>::initial(), v.value);
+    }
+
+    ~ReadBarriered() {
+        this->post(this->value, JS::GCPolicy<T>::initial());
+    }
+
+    ReadBarriered& operator=(const ReadBarriered& v) {
+        T prior = this->value;
+        this->value = v.value;
+        this->post(prior, v.value);
+        return *this;
+    }
+
+    const T get() const {
+        if (!InternalBarrierMethods<T>::isMarkable(this->value))
+            return JS::GCPolicy<T>::initial();
+        this->read();
+        return this->value;
+    }
+
+    const T unbarrieredGet() const {
+        return this->value;
+    }
+
+    explicit operator bool() const {
+        return bool(this->value);
+    }
+
+    operator const T() const { return get(); }
+
+    const T operator->() const { return get(); }
+
+    T* unsafeGet() { return &this->value; }
+    T const* unsafeGet() const { return &this->value; }
+
+    void set(const T& v)
+    {
+        T tmp = this->value;
+        this->value = v;
+        this->post(tmp, v);
+    }
+};
+
+// A WeakRef pointer does not hold its target live and is automatically nulled
+// out when the GC discovers that it is not reachable from any other path.
+template <typename T>
+using WeakRef = ReadBarriered<T>;
+
+// Add Value operations to all Barrier types. Note, this must be defined before
+// HeapSlot for HeapSlot's base to get these operations.
+template <>
+class BarrieredBaseMixins<JS::Value> : public ValueOperations<WriteBarrieredBase<JS::Value>>
+{};
+
+// A pre- and post-barriered Value that is specialized to be aware that it
+// resides in a slots or elements vector. This allows it to be relocated in
+// memory, but with substantially less overhead than a HeapPtr.
+class HeapSlot : public WriteBarrieredBase<Value>
+{
+  public:
+    enum Kind {
+        Slot = 0,
+        Element = 1
+    };
+
+    explicit HeapSlot() = delete;
+
+    explicit HeapSlot(NativeObject* obj, Kind kind, uint32_t slot, const Value& v)
+      : WriteBarrieredBase<Value>(v)
+    {
+        post(obj, kind, slot, v);
+    }
+
+    explicit HeapSlot(NativeObject* obj, Kind kind, uint32_t slot, const HeapSlot& s)
+      : WriteBarrieredBase<Value>(s.value)
+    {
+        post(obj, kind, slot, s);
+    }
+
+    ~HeapSlot() {
+        pre();
+    }
+
+    void init(NativeObject* owner, Kind kind, uint32_t slot, const Value& v) {
+        value = v;
+        post(owner, kind, slot, v);
+    }
+
+#ifdef DEBUG
+    bool preconditionForSet(NativeObject* owner, Kind kind, uint32_t slot) const;
+    bool preconditionForWriteBarrierPost(NativeObject* obj, Kind kind, uint32_t slot,
+                                         const Value& target) const;
+#endif
+
+    void set(NativeObject* owner, Kind kind, uint32_t slot, const Value& v) {
+        MOZ_ASSERT(preconditionForSet(owner, kind, slot));
+        pre();
+        value = v;
+        post(owner, kind, slot, v);
+    }
+
+    /* For users who need to manually barrier the raw types. */
+    static void writeBarrierPost(NativeObject* owner, Kind kind, uint32_t slot, const Value& target) {
+        reinterpret_cast<HeapSlot*>(const_cast<Value*>(&target))->post(owner, kind, slot, target);
+    }
+
+  private:
+    void post(NativeObject* owner, Kind kind, uint32_t slot, const Value& target) {
+        MOZ_ASSERT(preconditionForWriteBarrierPost(owner, kind, slot, target));
+        if (this->value.isObject()) {
+            gc::Cell* cell = reinterpret_cast<gc::Cell*>(&this->value.toObject());
+            if (cell->storeBuffer())
+                cell->storeBuffer()->putSlot(owner, kind, slot, 1);
+        }
+    }
+};
+
+class HeapSlotArray
+{
+    HeapSlot* array;
+
+    // Whether writes may be performed to the slots in this array. This helps
+    // to control how object elements which may be copy on write are used.
+#ifdef DEBUG
+    bool allowWrite_;
+#endif
+
+  public:
+    explicit HeapSlotArray(HeapSlot* array, bool allowWrite)
+      : array(array)
+#ifdef DEBUG
+      , allowWrite_(allowWrite)
+#endif
+    {}
+
+    operator const Value*() const {
+        JS_STATIC_ASSERT(sizeof(GCPtr<Value>) == sizeof(Value));
+        JS_STATIC_ASSERT(sizeof(HeapSlot) == sizeof(Value));
+        return reinterpret_cast<const Value*>(array);
+    }
+    operator HeapSlot*() const { MOZ_ASSERT(allowWrite()); return array; }
+
+    HeapSlotArray operator +(int offset) const { return HeapSlotArray(array + offset, allowWrite()); }
+    HeapSlotArray operator +(uint32_t offset) const { return HeapSlotArray(array + offset, allowWrite()); }
+
+  private:
+    bool allowWrite() const {
+#ifdef DEBUG
+        return allowWrite_;
+#else
+        return true;
+#endif
+    }
+};
+
+/*
+ * This is a hack for RegExpStatics::updateFromMatch. It allows us to do two
+ * barriers with only one branch to check if we're in an incremental GC.
+ */
+template <class T1, class T2>
+static inline void
+BarrieredSetPair(Zone* zone,
+                 HeapPtr<T1*>& v1, T1* val1,
+                 HeapPtr<T2*>& v2, T2* val2)
+{
+    if (T1::needWriteBarrierPre(zone)) {
+        v1.pre();
+        v2.pre();
+    }
+    v1.postBarrieredSet(val1);
+    v2.postBarrieredSet(val2);
+}
+
+/*
+ * ImmutableTenuredPtr is designed for one very narrow case: replacing
+ * immutable raw pointers to GC-managed things, implicitly converting to a
+ * handle type for ease of use. Pointers encapsulated by this type must:
  *
  *   be immutable (no incremental write barriers),
  *   never point into the nursery (no generational write barriers), and
@@ -227,436 +784,182 @@ class HeapPtr : public EncapsulatedPtr<T, Unioned>
  * In short: you *really* need to know what you're doing before you use this
  * class!
  */
-template <class T>
-class FixedHeapPtr
+template <typename T>
+class ImmutableTenuredPtr
 {
-    T *value;
+    T value;
 
   public:
-    operator T*() const { return value; }
-    T * operator->() const { return value; }
+    operator T() const { return value; }
+    T operator->() const { return value; }
 
-    operator Handle<T*>() const {
-        return Handle<T*>::fromMarkedLocation(&value);
+    operator Handle<T>() const {
+        return Handle<T>::fromMarkedLocation(&value);
     }
 
-    void init(T *ptr) {
+    void init(T ptr) {
+        MOZ_ASSERT(ptr->isTenured());
         value = ptr;
     }
+
+    T get() const { return value; }
+    const T* address() { return &value; }
+};
+
+template <typename T>
+struct MovableCellHasher<PreBarriered<T>>
+{
+    using Key = PreBarriered<T>;
+    using Lookup = T;
+
+    static bool hasHash(const Lookup& l) { return MovableCellHasher<T>::hasHash(l); }
+    static bool ensureHash(const Lookup& l) { return MovableCellHasher<T>::ensureHash(l); }
+    static HashNumber hash(const Lookup& l) { return MovableCellHasher<T>::hash(l); }
+    static bool match(const Key& k, const Lookup& l) { return MovableCellHasher<T>::match(k, l); }
+    static void rekey(Key& k, const Key& newKey) { k.unsafeSet(newKey); }
+};
+
+template <typename T>
+struct MovableCellHasher<HeapPtr<T>>
+{
+    using Key = HeapPtr<T>;
+    using Lookup = T;
+
+    static bool hasHash(const Lookup& l) { return MovableCellHasher<T>::hasHash(l); }
+    static bool ensureHash(const Lookup& l) { return MovableCellHasher<T>::ensureHash(l); }
+    static HashNumber hash(const Lookup& l) { return MovableCellHasher<T>::hash(l); }
+    static bool match(const Key& k, const Lookup& l) { return MovableCellHasher<T>::match(k, l); }
+    static void rekey(Key& k, const Key& newKey) { k.unsafeSet(newKey); }
+};
+
+template <typename T>
+struct MovableCellHasher<ReadBarriered<T>>
+{
+    using Key = ReadBarriered<T>;
+    using Lookup = T;
+
+    static bool hasHash(const Lookup& l) { return MovableCellHasher<T>::hasHash(l); }
+    static bool ensureHash(const Lookup& l) { return MovableCellHasher<T>::ensureHash(l); }
+    static HashNumber hash(const Lookup& l) { return MovableCellHasher<T>::hash(l); }
+    static bool match(const Key& k, const Lookup& l) {
+        return MovableCellHasher<T>::match(k.unbarrieredGet(), l);
+    }
+    static void rekey(Key& k, const Key& newKey) { k.unsafeSet(newKey); }
+};
+
+/* Useful for hashtables with a GCPtr as key. */
+template <class T>
+struct GCPtrHasher
+{
+    typedef GCPtr<T> Key;
+    typedef T Lookup;
+
+    static HashNumber hash(Lookup obj) { return DefaultHasher<T>::hash(obj); }
+    static bool match(const Key& k, Lookup l) { return k.get() == l; }
+    static void rekey(Key& k, const Key& newKey) { k.unsafeSet(newKey); }
+};
+
+/* Specialized hashing policy for GCPtrs. */
+template <class T>
+struct DefaultHasher<GCPtr<T>> : GCPtrHasher<T> {};
+
+template <class T>
+struct PreBarrieredHasher
+{
+    typedef PreBarriered<T> Key;
+    typedef T Lookup;
+
+    static HashNumber hash(Lookup obj) { return DefaultHasher<T>::hash(obj); }
+    static bool match(const Key& k, Lookup l) { return k.get() == l; }
+    static void rekey(Key& k, const Key& newKey) { k.unsafeSet(newKey); }
 };
 
 template <class T>
-class RelocatablePtr : public EncapsulatedPtr<T>
+struct DefaultHasher<PreBarriered<T>> : PreBarrieredHasher<T> { };
+
+/* Useful for hashtables with a ReadBarriered as key. */
+template <class T>
+struct ReadBarrieredHasher
 {
-  public:
-    RelocatablePtr() : EncapsulatedPtr<T>(NULL) {}
-    explicit RelocatablePtr(T *v) : EncapsulatedPtr<T>(v) {
-        if (v)
-            post();
-    }
-    RelocatablePtr(const RelocatablePtr<T> &v) : EncapsulatedPtr<T>(v) {
-        if (this->value)
-            post();
-    }
+    typedef ReadBarriered<T> Key;
+    typedef T Lookup;
 
-    ~RelocatablePtr() {
-        if (this->value)
-            relocate(this->value->runtime());
-    }
-
-    RelocatablePtr<T> &operator=(T *v) {
-        this->pre();
-        JS_ASSERT(!IsPoisonedPtr<T>(v));
-        if (v) {
-            this->value = v;
-            post();
-        } else if (this->value) {
-            JSRuntime *rt = this->value->runtime();
-            this->value = v;
-            relocate(rt);
-        }
-        return *this;
-    }
-
-    RelocatablePtr<T> &operator=(const RelocatablePtr<T> &v) {
-        this->pre();
-        JS_ASSERT(!IsPoisonedPtr<T>(v.value));
-        if (v.value) {
-            this->value = v.value;
-            post();
-        } else if (this->value) {
-            JSRuntime *rt = this->value->runtime();
-            this->value = v;
-            relocate(rt);
-        }
-        return *this;
-    }
-
-  protected:
-    inline void post();
-    inline void relocate(JSRuntime *rt);
+    static HashNumber hash(Lookup obj) { return DefaultHasher<T>::hash(obj); }
+    static bool match(const Key& k, Lookup l) { return k.unbarrieredGet() == l; }
+    static void rekey(Key& k, const Key& newKey) { k.set(newKey.unbarrieredGet()); }
 };
 
-/*
- * This is a hack for RegExpStatics::updateFromMatch. It allows us to do two
- * barriers with only one branch to check if we're in an incremental GC.
- */
-template<class T1, class T2>
-static inline void
-BarrieredSetPair(Zone *zone,
-                 HeapPtr<T1> &v1, T1 *val1,
-                 HeapPtr<T2> &v2, T2 *val2)
-{
-    if (T1::needWriteBarrierPre(zone)) {
-        v1.pre();
-        v2.pre();
-    }
-    v1.unsafeSet(val1);
-    v2.unsafeSet(val2);
-    v1.post();
-    v2.post();
-}
+/* Specialized hashing policy for ReadBarriereds. */
+template <class T>
+struct DefaultHasher<ReadBarriered<T>> : ReadBarrieredHasher<T> { };
 
+class ArrayObject;
+class ArrayBufferObject;
+class GlobalObject;
+class Scope;
+class ScriptSourceObject;
 class Shape;
 class BaseShape;
-namespace types { struct TypeObject; }
+class UnownedBaseShape;
+class WasmInstanceObject;
+class WasmTableObject;
+namespace jit {
+class JitCode;
+} // namespace jit
+
+typedef PreBarriered<JSObject*> PreBarrieredObject;
+typedef PreBarriered<JSScript*> PreBarrieredScript;
+typedef PreBarriered<jit::JitCode*> PreBarrieredJitCode;
+typedef PreBarriered<JSString*> PreBarrieredString;
+typedef PreBarriered<JSAtom*> PreBarrieredAtom;
+
+typedef GCPtr<NativeObject*> GCPtrNativeObject;
+typedef GCPtr<ArrayObject*> GCPtrArrayObject;
+typedef GCPtr<ArrayBufferObjectMaybeShared*> GCPtrArrayBufferObjectMaybeShared;
+typedef GCPtr<ArrayBufferObject*> GCPtrArrayBufferObject;
+typedef GCPtr<BaseShape*> GCPtrBaseShape;
+typedef GCPtr<JSAtom*> GCPtrAtom;
+typedef GCPtr<JSFlatString*> GCPtrFlatString;
+typedef GCPtr<JSFunction*> GCPtrFunction;
+typedef GCPtr<JSLinearString*> GCPtrLinearString;
+typedef GCPtr<JSObject*> GCPtrObject;
+typedef GCPtr<JSScript*> GCPtrScript;
+typedef GCPtr<JSString*> GCPtrString;
+typedef GCPtr<ModuleObject*> GCPtrModuleObject;
+typedef GCPtr<ModuleEnvironmentObject*> GCPtrModuleEnvironmentObject;
+typedef GCPtr<ModuleNamespaceObject*> GCPtrModuleNamespaceObject;
+typedef GCPtr<PlainObject*> GCPtrPlainObject;
+typedef GCPtr<PropertyName*> GCPtrPropertyName;
+typedef GCPtr<Shape*> GCPtrShape;
+typedef GCPtr<UnownedBaseShape*> GCPtrUnownedBaseShape;
+typedef GCPtr<jit::JitCode*> GCPtrJitCode;
+typedef GCPtr<ObjectGroup*> GCPtrObjectGroup;
+typedef GCPtr<Scope*> GCPtrScope;
+
+typedef PreBarriered<Value> PreBarrieredValue;
+typedef GCPtr<Value> GCPtrValue;
+
+typedef PreBarriered<jsid> PreBarrieredId;
+typedef GCPtr<jsid> GCPtrId;
+
+typedef ImmutableTenuredPtr<PropertyName*> ImmutablePropertyNamePtr;
+typedef ImmutableTenuredPtr<JS::Symbol*> ImmutableSymbolPtr;
+
+typedef ReadBarriered<DebugEnvironmentProxy*> ReadBarrieredDebugEnvironmentProxy;
+typedef ReadBarriered<GlobalObject*> ReadBarrieredGlobalObject;
+typedef ReadBarriered<JSObject*> ReadBarrieredObject;
+typedef ReadBarriered<JSFunction*> ReadBarrieredFunction;
+typedef ReadBarriered<JSScript*> ReadBarrieredScript;
+typedef ReadBarriered<ScriptSourceObject*> ReadBarrieredScriptSourceObject;
+typedef ReadBarriered<Shape*> ReadBarrieredShape;
+typedef ReadBarriered<jit::JitCode*> ReadBarrieredJitCode;
+typedef ReadBarriered<ObjectGroup*> ReadBarrieredObjectGroup;
+typedef ReadBarriered<JS::Symbol*> ReadBarrieredSymbol;
+typedef ReadBarriered<WasmInstanceObject*> ReadBarrieredWasmInstanceObject;
+typedef ReadBarriered<WasmTableObject*> ReadBarrieredWasmTableObject;
+
+typedef ReadBarriered<Value> ReadBarrieredValue;
 
-typedef EncapsulatedPtr<JSObject> EncapsulatedPtrObject;
-typedef EncapsulatedPtr<JSScript> EncapsulatedPtrScript;
-
-typedef RelocatablePtr<JSObject> RelocatablePtrObject;
-typedef RelocatablePtr<JSScript> RelocatablePtrScript;
-
-typedef HeapPtr<JSObject> HeapPtrObject;
-typedef HeapPtr<JSFunction> HeapPtrFunction;
-typedef HeapPtr<JSString> HeapPtrString;
-typedef HeapPtr<PropertyName> HeapPtrPropertyName;
-typedef HeapPtr<JSScript> HeapPtrScript;
-typedef HeapPtr<Shape> HeapPtrShape;
-typedef HeapPtr<BaseShape> HeapPtrBaseShape;
-typedef HeapPtr<types::TypeObject> HeapPtrTypeObject;
-
-/* Useful for hashtables with a HeapPtr as key. */
-template<class T>
-struct HeapPtrHasher
-{
-    typedef HeapPtr<T> Key;
-    typedef T *Lookup;
-
-    static HashNumber hash(Lookup obj) { return DefaultHasher<T *>::hash(obj); }
-    static bool match(const Key &k, Lookup l) { return k.get() == l; }
-};
-
-/* Specialized hashing policy for HeapPtrs. */
-template <class T>
-struct DefaultHasher< HeapPtr<T> > : HeapPtrHasher<T> { };
-
-template<class T>
-struct EncapsulatedPtrHasher
-{
-    typedef EncapsulatedPtr<T> Key;
-    typedef T *Lookup;
-
-    static HashNumber hash(Lookup obj) { return DefaultHasher<T *>::hash(obj); }
-    static bool match(const Key &k, Lookup l) { return k.get() == l; }
-};
-
-template <class T>
-struct DefaultHasher< EncapsulatedPtr<T> > : EncapsulatedPtrHasher<T> { };
-
-class EncapsulatedValue : public ValueOperations<EncapsulatedValue>
-{
-  protected:
-    Value value;
-
-    /*
-     * Ensure that EncapsulatedValue is not constructable, except by our
-     * implementations.
-     */
-    EncapsulatedValue() MOZ_DELETE;
-
-  public:
-    EncapsulatedValue(const Value &v) : value(v) {
-        JS_ASSERT(!IsPoisonedValue(v));
-    }
-    EncapsulatedValue(const EncapsulatedValue &v) : value(v) {
-        JS_ASSERT(!IsPoisonedValue(v));
-    }
-    inline ~EncapsulatedValue();
-
-    inline void init(const Value &v);
-    inline void init(JSRuntime *rt, const Value &v);
-
-    inline EncapsulatedValue &operator=(const Value &v);
-    inline EncapsulatedValue &operator=(const EncapsulatedValue &v);
-
-    bool operator==(const EncapsulatedValue &v) const { return value == v.value; }
-    bool operator!=(const EncapsulatedValue &v) const { return value != v.value; }
-
-    const Value &get() const { return value; }
-    Value *unsafeGet() { return &value; }
-    operator const Value &() const { return value; }
-
-    JSGCTraceKind gcKind() const { return value.gcKind(); }
-
-    uint64_t asRawBits() const { return value.asRawBits(); }
-
-    static inline void writeBarrierPre(const Value &v);
-    static inline void writeBarrierPre(Zone *zone, const Value &v);
-
-  protected:
-    inline void pre();
-    inline void pre(Zone *zone);
-
-    static inline JSRuntime *runtime(const Value &v) {
-        JS_ASSERT(v.isMarkable());
-        return static_cast<js::gc::Cell *>(v.toGCThing())->runtime();
-    }
-
-  private:
-    friend class ValueOperations<EncapsulatedValue>;
-    const Value * extract() const { return &value; }
-};
-
-class HeapValue : public EncapsulatedValue
-{
-  public:
-    explicit inline HeapValue();
-    explicit inline HeapValue(const Value &v);
-    explicit inline HeapValue(const HeapValue &v);
-    inline ~HeapValue();
-
-    inline void init(const Value &v);
-    inline void init(JSRuntime *rt, const Value &v);
-
-    inline HeapValue &operator=(const Value &v);
-    inline HeapValue &operator=(const HeapValue &v);
-
-    /*
-     * This is a faster version of operator=. Normally, operator= has to
-     * determine the compartment of the value before it can decide whether to do
-     * the barrier. If you already know the compartment, it's faster to pass it
-     * in.
-     */
-    inline void set(Zone *zone, const Value &v);
-
-    static inline void writeBarrierPost(const Value &v, Value *addr);
-    static inline void writeBarrierPost(JSRuntime *rt, const Value &v, Value *addr);
-
-  private:
-    inline void post();
-    inline void post(JSRuntime *rt);
-};
-
-class RelocatableValue : public EncapsulatedValue
-{
-  public:
-    explicit inline RelocatableValue();
-    explicit inline RelocatableValue(const Value &v);
-    inline RelocatableValue(const RelocatableValue &v);
-    inline ~RelocatableValue();
-
-    inline RelocatableValue &operator=(const Value &v);
-    inline RelocatableValue &operator=(const RelocatableValue &v);
-
-  private:
-    inline void post();
-    inline void relocate(JSRuntime *rt);
-};
-
-class HeapSlot : public EncapsulatedValue
-{
-    /*
-     * Operator= is not valid for HeapSlot because is must take the object and
-     * slot offset to provide to the post/generational barrier.
-     */
-    inline HeapSlot &operator=(const Value &v) MOZ_DELETE;
-    inline HeapSlot &operator=(const HeapValue &v) MOZ_DELETE;
-    inline HeapSlot &operator=(const HeapSlot &v) MOZ_DELETE;
-
-  public:
-    enum Kind {
-        Slot,
-        Element
-    };
-
-    explicit inline HeapSlot() MOZ_DELETE;
-    explicit inline HeapSlot(JSObject *obj, Kind kind, uint32_t slot, const Value &v);
-    explicit inline HeapSlot(JSObject *obj, Kind kind, uint32_t slot, const HeapSlot &v);
-    inline ~HeapSlot();
-
-    inline void init(JSObject *owner, Kind kind, uint32_t slot, const Value &v);
-    inline void init(JSRuntime *rt, JSObject *owner, Kind kind, uint32_t slot, const Value &v);
-
-    inline void set(JSObject *owner, Kind kind, uint32_t slot, const Value &v);
-    inline void set(Zone *zone, JSObject *owner, Kind kind, uint32_t slot, const Value &v);
-
-    static inline void writeBarrierPost(JSObject *obj, Kind kind, uint32_t slot);
-    static inline void writeBarrierPost(JSRuntime *rt, JSObject *obj, Kind kind, uint32_t slot);
-
-  private:
-    inline void post(JSObject *owner, Kind kind, uint32_t slot);
-    inline void post(JSRuntime *rt, JSObject *owner, Kind kind, uint32_t slot);
-};
-
-/*
- * NOTE: This is a placeholder for bug 619558.
- *
- * Run a post write barrier that encompasses multiple contiguous slots in a
- * single step.
- */
-inline void
-DenseRangeWriteBarrierPost(JSRuntime *rt, JSObject *obj, uint32_t start, uint32_t count);
-
-static inline const Value *
-Valueify(const EncapsulatedValue *array)
-{
-    JS_STATIC_ASSERT(sizeof(HeapValue) == sizeof(Value));
-    JS_STATIC_ASSERT(sizeof(HeapSlot) == sizeof(Value));
-    return (const Value *)array;
-}
-
-static inline HeapValue *
-HeapValueify(Value *v)
-{
-    JS_STATIC_ASSERT(sizeof(HeapValue) == sizeof(Value));
-    JS_STATIC_ASSERT(sizeof(HeapSlot) == sizeof(Value));
-    return (HeapValue *)v;
-}
-
-class HeapSlotArray
-{
-    HeapSlot *array;
-
-  public:
-    HeapSlotArray(HeapSlot *array) : array(array) {}
-
-    operator const Value *() const { return Valueify(array); }
-    operator HeapSlot *() const { return array; }
-
-    HeapSlotArray operator +(int offset) const { return HeapSlotArray(array + offset); }
-    HeapSlotArray operator +(uint32_t offset) const { return HeapSlotArray(array + offset); }
-};
-
-class EncapsulatedId
-{
-  protected:
-    jsid value;
-
-  private:
-    EncapsulatedId(const EncapsulatedId &v) MOZ_DELETE;
-
-  public:
-    explicit EncapsulatedId() : value(JSID_VOID) {}
-    explicit EncapsulatedId(jsid id) : value(id) {}
-    ~EncapsulatedId();
-
-    inline EncapsulatedId &operator=(const EncapsulatedId &v);
-
-    bool operator==(jsid id) const { return value == id; }
-    bool operator!=(jsid id) const { return value != id; }
-
-    jsid get() const { return value; }
-    jsid *unsafeGet() { return &value; }
-    operator jsid() const { return value; }
-
-  protected:
-    inline void pre();
-};
-
-class RelocatableId : public EncapsulatedId
-{
-  public:
-    explicit RelocatableId() : EncapsulatedId() {}
-    explicit inline RelocatableId(jsid id) : EncapsulatedId(id) {}
-    inline ~RelocatableId();
-
-    inline RelocatableId &operator=(jsid id);
-    inline RelocatableId &operator=(const RelocatableId &v);
-};
-
-class HeapId : public EncapsulatedId
-{
-  public:
-    explicit HeapId() : EncapsulatedId() {}
-    explicit inline HeapId(jsid id);
-    inline ~HeapId();
-
-    inline void init(jsid id);
-
-    inline HeapId &operator=(jsid id);
-    inline HeapId &operator=(const HeapId &v);
-
-  private:
-    inline void post();
-
-    HeapId(const HeapId &v) MOZ_DELETE;
-};
-
-/*
- * Incremental GC requires that weak pointers have read barriers. This is mostly
- * an issue for empty shapes stored in JSCompartment. The problem happens when,
- * during an incremental GC, some JS code stores one of the compartment's empty
- * shapes into an object already marked black. Normally, this would not be a
- * problem, because the empty shape would have been part of the initial snapshot
- * when the GC started. However, since this is a weak pointer, it isn't. So we
- * may collect the empty shape even though a live object points to it. To fix
- * this, we mark these empty shapes black whenever they get read out.
- */
-template<class T>
-class ReadBarriered
-{
-    T *value;
-
-  public:
-    ReadBarriered() : value(NULL) {}
-    ReadBarriered(T *value) : value(value) {}
-    ReadBarriered(const Rooted<T*> &rooted) : value(rooted) {}
-
-    T *get() const {
-        if (!value)
-            return NULL;
-        T::readBarrier(value);
-        return value;
-    }
-
-    operator T*() const { return get(); }
-
-    T &operator*() const { return *get(); }
-    T *operator->() const { return get(); }
-
-    T **unsafeGet() { return &value; }
-    T * const * unsafeGet() const { return &value; }
-
-    void set(T *v) { value = v; }
-
-    operator bool() { return !!value; }
-};
-
-class ReadBarrieredValue
-{
-    Value value;
-
-  public:
-    ReadBarrieredValue() : value(UndefinedValue()) {}
-    ReadBarrieredValue(const Value &value) : value(value) {}
-
-    inline const Value &get() const;
-    Value *unsafeGet() { return &value; }
-    inline operator const Value &() const;
-
-    inline JSObject &toObject() const;
-};
-
-namespace tl {
-
-template <class T> struct IsRelocatableHeapType<HeapPtr<T> >
-                                                    { static const bool result = false; };
-template <> struct IsRelocatableHeapType<HeapSlot>  { static const bool result = false; };
-template <> struct IsRelocatableHeapType<HeapValue> { static const bool result = false; };
-template <> struct IsRelocatableHeapType<HeapId>    { static const bool result = false; };
-
-} /* namespace tl */
 } /* namespace js */
 
 #endif /* gc_Barrier_h */

@@ -13,11 +13,13 @@ self.onmessage = function(msg) {
   self.onmessage = function(msg) {
     log("ignored message "+JSON.stringify(msg.data));
   };
-  let isDebugBuild = msg.data;
+  let { isDebugBuild, umask } = msg.data;
   try {
     test_name();
     test_xul();
     test_debugBuildWorkerThread(isDebugBuild);
+    test_umaskWorkerThread(umask);
+    test_bits();
   } catch (x) {
     log("Catching error: " + x);
     log("Stack: " + x.stack);
@@ -51,6 +53,13 @@ function test_debugBuildWorkerThread(isDebugBuild) {
   is(isDebugBuild, !!OS.Constants.Sys.DEBUG, "OS.Constants.Sys.DEBUG is set properly on worker thread");
 }
 
+// Test that OS.Constants.Sys.umask is set properly in ChromeWorker thread
+function test_umaskWorkerThread(umask) {
+  is(umask, OS.Constants.Sys.umask,
+     "OS.Constants.Sys.umask is set properly on worker thread: " +
+     ("0000"+umask.toString(8)).slice(-4));
+}
+
 // Test that OS.Constants.Path.libxul lets us open libxul
 function test_xul() {
   let lib;
@@ -65,4 +74,9 @@ function test_xul() {
     lib.close();
   }
   ok(true, "test_xul: opened libxul successfully");
+}
+
+// Check if the value of OS.Constants.Sys.bits is 32 or 64
+function test_bits(){
+  is(OS.Constants.Sys.bits, ctypes.int.ptr.size * 8, "OS.Constants.Sys.bits is either 32 or 64");
 }

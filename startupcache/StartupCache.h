@@ -8,14 +8,19 @@
 
 #include "nsClassHashtable.h"
 #include "nsComponentManagerUtils.h"
+#include "nsTArray.h"
 #include "nsZipArchive.h"
 #include "nsIStartupCache.h"
 #include "nsITimer.h"
+#include "nsIMemoryReporter.h"
 #include "nsIObserverService.h"
 #include "nsIObserver.h"
 #include "nsIOutputStream.h"
 #include "nsIFile.h"
 #include "mozilla/Attributes.h"
+#include "mozilla/MemoryReporting.h"
+#include "mozilla/StaticPtr.h"
+#include "mozilla/UniquePtr.h"
 
 /**
  * The StartupCache is a persistent cache of simple key-value pairs,
@@ -23,7 +28,7 @@
  * arbitrary data, passed as a (char*, size) tuple. 
  *
  * Clients should use the GetSingleton() static method to access the cache. It 
- * will be available from the end of XPCOM init (NS_InitXPCOM3 in nsXPComInit.cpp), 
+ * will be available from the end of XPCOM init (NS_InitXPCOM3 in XPCOMInit.cpp), 
  * until XPCOM shutdown begins. The GetSingleton() method will return null if the cache
  * is unavailable. The cache is only provided for libxul builds --
  * it will fail to link in non-libxul builds. The XPCOM interface is provided
@@ -63,50 +68,52 @@
  * provide some convenience in writing out data.
  */
 
-class nsIMemoryReporter;
-
 namespace mozilla {
+
 namespace scache {
 
-struct CacheEntry 
+struct CacheEntry
 {
-  nsAutoArrayPtr<char> data;
+  UniquePtr<char[]> data;
   uint32_t size;
 
-  CacheEntry() : data(nullptr), size(0) { }
+  CacheEntry() : size(0) { }
 
   // Takes possession of buf
-  CacheEntry(char* buf, uint32_t len) : data(buf), size(len) { }
+  CacheEntry(UniquePtr<char[]> buf, uint32_t len) : data(Move(buf)), size(len) { }
 
   ~CacheEntry()
   {
   }
 
-  size_t SizeOfExcludingThis(nsMallocSizeOfFun mallocSizeOf) {
-    return mallocSizeOf(data);
+  size_t SizeOfIncludingThis(mozilla::MallocSizeOf mallocSizeOf) {
+    return mallocSizeOf(this) + mallocSizeOf(data.get());
   }
 };
 
 // We don't want to refcount StartupCache, and ObserverService wants to
 // refcount its listeners, so we'll let it refcount this instead.
-class StartupCacheListener MOZ_FINAL : public nsIObserver
+class StartupCacheListener final : public nsIObserver
 {
-  NS_DECL_ISUPPORTS
+  ~StartupCacheListener() {}
+  NS_DECL_THREADSAFE_ISUPPORTS
   NS_DECL_NSIOBSERVER
 };
 
-class StartupCache
+class StartupCache : public nsIMemoryReporter
 {
 
 friend class StartupCacheListener;
 friend class StartupCacheWrapper;
-                                
+
 public:
+  NS_DECL_THREADSAFE_ISUPPORTS
+  NS_DECL_NSIMEMORYREPORTER
 
   // StartupCache methods. See above comments for a more detailed description.
 
-  // Returns a buffer that was previously stored, caller takes ownership. 
-  nsresult GetBuffer(const char* id, char** outbuf, uint32_t* length);
+  // Returns a buffer that was previously stored, caller takes ownership.
+  nsresult GetBuffer(const char* id, UniquePtr<char[]>* outbuf, uint32_t* length);
 
   // Stores a buffer. Caller keeps ownership, we make a copy.
   nsresult PutBuffer(const char* id, const char* inbuf, uint32_t length);
@@ -129,13 +136,13 @@ public:
 
   // This measures all the heap memory used by the StartupCache, i.e. it
   // excludes the mapping.
-  size_t HeapSizeOfIncludingThis(nsMallocSizeOfFun mallocSizeOf);
+  size_t HeapSizeOfIncludingThis(mozilla::MallocSizeOf mallocSizeOf) const;
 
   size_t SizeOfMapping();
 
 private:
   StartupCache();
-  ~StartupCache();
+  virtual ~StartupCache();
 
   enum TelemetrifyAge {
     IGNORE_AGE = 0,
@@ -153,40 +160,35 @@ private:
   static void WriteTimeout(nsITimer *aTimer, void *aClosure);
   static void ThreadedWrite(void *aClosure);
 
-  static size_t SizeOfEntryExcludingThis(const nsACString& key,
-                                         const nsAutoPtr<CacheEntry>& data,
-                                         nsMallocSizeOfFun mallocSizeOf,
-                                         void *);
-
   nsClassHashtable<nsCStringHashKey, CacheEntry> mTable;
-  nsRefPtr<nsZipArchive> mArchive;
+  nsTArray<nsCString> mPendingWrites;
+  RefPtr<nsZipArchive> mArchive;
   nsCOMPtr<nsIFile> mFile;
-  
+
   nsCOMPtr<nsIObserverService> mObserverService;
-  nsRefPtr<StartupCacheListener> mListener;
+  RefPtr<StartupCacheListener> mListener;
   nsCOMPtr<nsITimer> mTimer;
 
   bool mStartupWriteInitiated;
 
-  static StartupCache *gStartupCache;
+  static StaticRefPtr<StartupCache> gStartupCache;
   static bool gShutdownInitiated;
   static bool gIgnoreDiskCache;
   PRThread *mWriteThread;
 #ifdef DEBUG
   nsTHashtable<nsISupportsHashKey> mWriteObjectMap;
 #endif
-
-  nsIMemoryReporter* mMappingMemoryReporter;
-  nsIMemoryReporter* mDataMemoryReporter;
 };
 
 // This debug outputstream attempts to detect if clients are writing multiple
 // references to the same object. We only support that if that object
 // is a singleton.
 #ifdef DEBUG
-class StartupCacheDebugOutputStream MOZ_FINAL
+class StartupCacheDebugOutputStream final
   : public nsIObjectOutputStream
-{  
+{
+  ~StartupCacheDebugOutputStream() {}
+
   NS_DECL_ISUPPORTS
   NS_DECL_NSIOBJECTOUTPUTSTREAM
 
@@ -210,10 +212,12 @@ class StartupCacheDebugOutputStream MOZ_FINAL
       {0xb5, 0x77, 0xf9, 0x23, 0x57, 0xed, 0xa8, 0x84}}
 // contract id: "@mozilla.org/startupcache/cache;1"
 
-class StartupCacheWrapper MOZ_FINAL
+class StartupCacheWrapper final
   : public nsIStartupCache
 {
-  NS_DECL_ISUPPORTS
+  ~StartupCacheWrapper() {}
+
+  NS_DECL_THREADSAFE_ISUPPORTS
   NS_DECL_NSISTARTUPCACHE
 
   static StartupCacheWrapper* GetSingleton();
@@ -222,4 +226,5 @@ class StartupCacheWrapper MOZ_FINAL
 
 } // namespace scache
 } // namespace mozilla
+
 #endif //StartupCache_h_

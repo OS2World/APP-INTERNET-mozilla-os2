@@ -11,6 +11,10 @@
 
 #include "plerror.h"
 
+#ifdef XP_UNIX
+#include <sys/socket.h>  /* SO_REUSEPORT */
+#endif
+
 static PRFileDesc *err = NULL;
 static PRBool failed = PR_FALSE;
 
@@ -39,8 +43,8 @@ int main(int argc, char **argv)
         "PR_SockOpt_Linger",          /* linger on close if data present */
         "PR_SockOpt_Reuseaddr",       /* allow local address reuse */
         "PR_SockOpt_Keepalive",       /* keep connections alive */
-        "PR_SockOpt_RecvBufferSize",  /* send buffer size */
-        "PR_SockOpt_SendBufferSize",  /* receive buffer size */
+        "PR_SockOpt_RecvBufferSize",  /* receive buffer size */
+        "PR_SockOpt_SendBufferSize",  /* send buffer size */
 
         "PR_SockOpt_IpTimeToLive",    /* time to live */
         "PR_SockOpt_IpTypeOfService", /* type of service and precedence */
@@ -54,6 +58,7 @@ int main(int argc, char **argv)
         "PR_SockOpt_NoDelay",         /* don't delay send to coalesce packets */
         "PR_SockOpt_MaxSegment",      /* maximum segment size */
         "PR_SockOpt_Broadcast",       /* Enable broadcast */
+        "PR_SockOpt_Reuseport",       /* allow local address & port reuse */
         "PR_SockOpt_Last"
     };
 
@@ -129,6 +134,11 @@ int main(int argc, char **argv)
                     fd = udp; 
                     data.value.broadcast = PR_TRUE;         
                     break;    
+#endif
+#ifdef SO_REUSEPORT
+                case PR_SockOpt_Reuseport:
+                    data.value.reuse_port = PR_TRUE;
+                    break;
 #endif
                 default: continue;
             }

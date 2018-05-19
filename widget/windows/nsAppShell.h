@@ -8,7 +8,9 @@
 
 #include "nsBaseAppShell.h"
 #include <windows.h>
+#include <vector>
 #include "mozilla/TimeStamp.h"
+#include "mozilla/Mutex.h"
 
 // The maximum time we allow before forcing a native event callback.
 // In seconds.
@@ -21,15 +23,20 @@ class nsAppShell : public nsBaseAppShell
 {
 public:
   nsAppShell() :
-    mEventWnd(NULL),
-    mNativeCallbackPending(false)
+    mEventWnd(nullptr),
+    mNativeCallbackPending(false),
+    mLastNativeEventScheduledMutex("nsAppShell::mLastNativeEventScheduledMutex")
   {}
   typedef mozilla::TimeStamp TimeStamp;
+  typedef mozilla::Mutex Mutex;
 
   nsresult Init();
   void DoProcessMoreGeckoEvents();
 
   static UINT GetTaskbarButtonCreatedMessage();
+
+  NS_IMETHOD AfterProcessNextEvent(nsIThreadInternal* thread,
+                                   bool eventWasProcessed) final;
 
 protected:
   NS_IMETHOD Run();
@@ -43,7 +50,10 @@ protected:
 protected:
   HWND mEventWnd;
   bool mNativeCallbackPending;
+
+  Mutex mLastNativeEventScheduledMutex;
   TimeStamp mLastNativeEventScheduled;
+  std::vector<MSG> mMsgsToRepost;
 };
 
 #endif // nsAppShell_h__

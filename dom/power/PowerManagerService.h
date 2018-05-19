@@ -1,4 +1,5 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
+/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
+/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -9,10 +10,12 @@
 #include "nsDataHashtable.h"
 #include "nsHashKeys.h"
 #include "nsTArray.h"
+#include "nsIDOMWakeLockListener.h"
 #include "nsIPowerManagerService.h"
 #include "mozilla/Observer.h"
 #include "Types.h"
 #include "mozilla/StaticPtr.h"
+#include "mozilla/dom/WakeLock.h"
 
 namespace mozilla {
 namespace dom {
@@ -29,12 +32,16 @@ public:
   NS_DECL_ISUPPORTS
   NS_DECL_NSIPOWERMANAGERSERVICE
 
+  PowerManagerService()
+    : mWatchdogTimeoutSecs(0)
+  {}
+
   static already_AddRefed<PowerManagerService> GetInstance();
 
   void Init();
 
   // Implement WakeLockObserver
-  void Notify(const hal::WakeLockInformation& aWakeLockInfo);
+  void Notify(const hal::WakeLockInformation& aWakeLockInfo) override;
 
   /**
    * Acquire a wake lock on behalf of a given process (aContentParent).
@@ -48,9 +55,13 @@ public:
    *  - The /given/ process shows up in WakeLockInfo::lockingProcesses.
    *
    */
-  already_AddRefed<nsIDOMMozWakeLock>
+  already_AddRefed<WakeLock>
   NewWakeLockOnBehalfOfProcess(const nsAString& aTopic,
                                ContentParent* aContentParent);
+
+  already_AddRefed<WakeLock>
+  NewWakeLock(const nsAString& aTopic, nsPIDOMWindowInner* aWindow,
+              mozilla::ErrorResult& aRv);
 
 private:
 
@@ -63,7 +74,7 @@ private:
 
   static StaticRefPtr<PowerManagerService> sSingleton;
 
-  nsTArray<nsCOMPtr<nsIDOMMozWakeLockListener> > mWakeLockListeners;
+  nsTArray<nsCOMPtr<nsIDOMMozWakeLockListener>> mWakeLockListeners;
   
   int32_t mWatchdogTimeoutSecs;
 };

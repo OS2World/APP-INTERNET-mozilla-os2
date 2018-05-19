@@ -1,11 +1,11 @@
 /* Tests various aspects of nsIResumableChannel in combination with HTTP */
 
-const Cc = Components.classes;
-const Ci = Components.interfaces;
-const Cu = Components.utils;
-const Cr = Components.results;
-
 Cu.import("resource://testing-common/httpd.js");
+Cu.import("resource://gre/modules/NetUtil.jsm");
+
+XPCOMUtils.defineLazyGetter(this, "URL", function() {
+  return "http://localhost:" + httpserver.identity.primaryPort;
+});
 
 var httpserver = null;
 
@@ -15,9 +15,7 @@ const NS_ERROR_NOT_RESUMABLE = 0x804b0019;
 const rangeBody = "Body of the range request handler.\r\n";
 
 function make_channel(url, callback, ctx) {
-  var ios = Cc["@mozilla.org/network/io-service;1"].
-            getService(Ci.nsIIOService);
-  return ios.newChannel(url, "", null);
+  return NetUtil.newChannel({uri: url, loadUsingSystemPrincipal: true});
 }
 
 function AuthPrompt2() {
@@ -90,9 +88,9 @@ function run_test() {
     dump("*** entity id = " + entityID + "\n");
 
     // Try a non-resumable URL (responds with 200)
-    var chan = make_channel("http://localhost:4444/");
+    var chan = make_channel(URL);
     chan.nsIResumableChannel.resumeAt(1, entityID);
-    chan.asyncOpen(new ChannelListener(try_resume, null, CL_EXPECT_FAILURE), null);
+    chan.asyncOpen2(new ChannelListener(try_resume, null, CL_EXPECT_FAILURE));
   }
 
   function try_resume(request, data, ctx) {
@@ -100,9 +98,9 @@ function run_test() {
     do_check_eq(request.status, NS_ERROR_NOT_RESUMABLE);
 
     // Try a successful resume
-    var chan = make_channel("http://localhost:4444/range");
+    var chan = make_channel(URL + "/range");
     chan.nsIResumableChannel.resumeAt(1, entityID);
-    chan.asyncOpen(new ChannelListener(try_resume_zero, null), null);
+    chan.asyncOpen2(new ChannelListener(try_resume_zero, null));
   }
 
   function try_resume_zero(request, data, ctx) {
@@ -111,10 +109,10 @@ function run_test() {
     do_check_eq(data, rangeBody.substring(1));
 
     // Try a server which doesn't support range requests
-    var chan = make_channel("http://localhost:4444/acceptranges");
+    var chan = make_channel(URL + "/acceptranges");
     chan.nsIResumableChannel.resumeAt(0, entityID);
     chan.nsIHttpChannel.setRequestHeader("X-Range-Type", "none", false);
-    chan.asyncOpen(new ChannelListener(try_no_range, null, CL_EXPECT_FAILURE), null);
+    chan.asyncOpen2(new ChannelListener(try_no_range, null, CL_EXPECT_FAILURE));
   }
 
   function try_no_range(request, data, ctx) {
@@ -123,10 +121,10 @@ function run_test() {
     do_check_eq(request.status, NS_ERROR_NOT_RESUMABLE);
 
     // Try a server which supports "bytes" range requests
-    var chan = make_channel("http://localhost:4444/acceptranges");
+    var chan = make_channel(URL + "/acceptranges");
     chan.nsIResumableChannel.resumeAt(0, entityID);
     chan.nsIHttpChannel.setRequestHeader("X-Range-Type", "bytes", false);
-    chan.asyncOpen(new ChannelListener(try_bytes_range, null), null);
+    chan.asyncOpen2(new ChannelListener(try_bytes_range, null));
   }
 
   function try_bytes_range(request, data, ctx) {
@@ -135,10 +133,10 @@ function run_test() {
     do_check_eq(data, rangeBody);
 
     // Try a server which supports "foo" and "bar" range requests
-    var chan = make_channel("http://localhost:4444/acceptranges");
+    var chan = make_channel(URL + "/acceptranges");
     chan.nsIResumableChannel.resumeAt(0, entityID);
     chan.nsIHttpChannel.setRequestHeader("X-Range-Type", "foo, bar", false);
-    chan.asyncOpen(new ChannelListener(try_foo_bar_range, null, CL_EXPECT_FAILURE), null);
+    chan.asyncOpen2(new ChannelListener(try_foo_bar_range, null, CL_EXPECT_FAILURE));
   }
 
   function try_foo_bar_range(request, data, ctx) {
@@ -147,10 +145,10 @@ function run_test() {
     do_check_eq(request.status, NS_ERROR_NOT_RESUMABLE);
 
     // Try a server which supports "foobar" range requests
-    var chan = make_channel("http://localhost:4444/acceptranges");
+    var chan = make_channel(URL + "/acceptranges");
     chan.nsIResumableChannel.resumeAt(0, entityID);
     chan.nsIHttpChannel.setRequestHeader("X-Range-Type", "foobar", false);
-    chan.asyncOpen(new ChannelListener(try_foobar_range, null, CL_EXPECT_FAILURE), null);
+    chan.asyncOpen2(new ChannelListener(try_foobar_range, null, CL_EXPECT_FAILURE));
   }
 
   function try_foobar_range(request, data, ctx) {
@@ -159,10 +157,10 @@ function run_test() {
     do_check_eq(request.status, NS_ERROR_NOT_RESUMABLE);
 
     // Try a server which supports "bytes" and "foobar" range requests
-    var chan = make_channel("http://localhost:4444/acceptranges");
+    var chan = make_channel(URL + "/acceptranges");
     chan.nsIResumableChannel.resumeAt(0, entityID);
     chan.nsIHttpChannel.setRequestHeader("X-Range-Type", "bytes, foobar", false);
-    chan.asyncOpen(new ChannelListener(try_bytes_foobar_range, null), null);
+    chan.asyncOpen2(new ChannelListener(try_bytes_foobar_range, null));
   }
 
   function try_bytes_foobar_range(request, data, ctx) {
@@ -171,10 +169,10 @@ function run_test() {
     do_check_eq(data, rangeBody);
 
     // Try a server which supports "bytesfoo" and "bar" range requests
-    var chan = make_channel("http://localhost:4444/acceptranges");
+    var chan = make_channel(URL + "/acceptranges");
     chan.nsIResumableChannel.resumeAt(0, entityID);
     chan.nsIHttpChannel.setRequestHeader("X-Range-Type", "bytesfoo, bar", false);
-    chan.asyncOpen(new ChannelListener(try_bytesfoo_bar_range, null, CL_EXPECT_FAILURE), null);
+    chan.asyncOpen2(new ChannelListener(try_bytesfoo_bar_range, null, CL_EXPECT_FAILURE));
   }
 
   function try_bytesfoo_bar_range(request, data, ctx) {
@@ -183,9 +181,9 @@ function run_test() {
     do_check_eq(request.status, NS_ERROR_NOT_RESUMABLE);
 
     // Try a server which doesn't send Accept-Ranges header at all
-    var chan = make_channel("http://localhost:4444/acceptranges");
+    var chan = make_channel(URL + "/acceptranges");
     chan.nsIResumableChannel.resumeAt(0, entityID);
-    chan.asyncOpen(new ChannelListener(try_no_accept_ranges, null), null);
+    chan.asyncOpen2(new ChannelListener(try_no_accept_ranges, null));
   }
 
   function try_no_accept_ranges(request, data, ctx) {
@@ -194,10 +192,10 @@ function run_test() {
     do_check_eq(data, rangeBody);
 
     // Try a successful suspend/resume from 0
-    var chan = make_channel("http://localhost:4444/range");
+    var chan = make_channel(URL + "/range");
     chan.nsIResumableChannel.resumeAt(0, entityID);
-    chan.asyncOpen(new ChannelListener(try_suspend_resume, null,
-                                       CL_SUSPEND | CL_EXPECT_3S_DELAY), null);
+    chan.asyncOpen2(new ChannelListener(try_suspend_resume, null,
+                                       CL_SUSPEND | CL_EXPECT_3S_DELAY));
   }
 
   function try_suspend_resume(request, data, ctx) {
@@ -206,9 +204,9 @@ function run_test() {
     do_check_eq(data, rangeBody);
 
     // Try a successful resume from 0
-    var chan = make_channel("http://localhost:4444/range");
+    var chan = make_channel(URL + "/range");
     chan.nsIResumableChannel.resumeAt(0, entityID);
-    chan.asyncOpen(new ChannelListener(success, null), null);
+    chan.asyncOpen2(new ChannelListener(success, null));
   }
 
   function success(request, data, ctx) {
@@ -219,10 +217,10 @@ function run_test() {
 
     // Authentication (no password; working resume)
     // (should not give us any data)
-    var chan = make_channel("http://localhost:4444/range");
+    var chan = make_channel(URL + "/range");
     chan.nsIResumableChannel.resumeAt(1, entityID);
     chan.nsIHttpChannel.setRequestHeader("X-Need-Auth", "true", false);
-    chan.asyncOpen(new ChannelListener(test_auth_nopw, null, CL_EXPECT_FAILURE), null);
+    chan.asyncOpen2(new ChannelListener(test_auth_nopw, null, CL_EXPECT_FAILURE));
   }
 
   function test_auth_nopw(request, data, ctx) {
@@ -231,10 +229,11 @@ function run_test() {
     do_check_eq(request.status, NS_ERROR_ENTITY_CHANGED);
 
     // Authentication + not working resume
-    var chan = make_channel("http://guest:guest@localhost:4444/auth");
+    var chan = make_channel("http://guest:guest@localhost:" +
+                            httpserver.identity.primaryPort + "/auth");
     chan.nsIResumableChannel.resumeAt(1, entityID);
     chan.notificationCallbacks = new Requestor();
-    chan.asyncOpen(new ChannelListener(test_auth, null, CL_EXPECT_FAILURE), null);
+    chan.asyncOpen2(new ChannelListener(test_auth, null, CL_EXPECT_FAILURE));
   }
   function test_auth(request, data, ctx) {
     dump("*** test_auth()\n");
@@ -242,11 +241,12 @@ function run_test() {
     do_check_true(request.nsIHttpChannel.responseStatus < 300);
 
     // Authentication + working resume
-    var chan = make_channel("http://guest:guest@localhost:4444/range");
+    var chan = make_channel("http://guest:guest@localhost:" +
+                            httpserver.identity.primaryPort + "/range");
     chan.nsIResumableChannel.resumeAt(1, entityID);
     chan.notificationCallbacks = new Requestor();
     chan.nsIHttpChannel.setRequestHeader("X-Need-Auth", "true", false);
-    chan.asyncOpen(new ChannelListener(test_auth_resume, null), null);
+    chan.asyncOpen2(new ChannelListener(test_auth_resume, null));
   }
 
   function test_auth_resume(request, data, ctx) {
@@ -255,10 +255,10 @@ function run_test() {
     do_check_true(request.nsIHttpChannel.requestSucceeded);
 
     // 404 page (same content length as real content)
-    var chan = make_channel("http://localhost:4444/range");
+    var chan = make_channel(URL + "/range");
     chan.nsIResumableChannel.resumeAt(1, entityID);
     chan.nsIHttpChannel.setRequestHeader("X-Want-404", "true", false);
-    chan.asyncOpen(new ChannelListener(test_404, null, CL_EXPECT_FAILURE), null);
+    chan.asyncOpen2(new ChannelListener(test_404, null, CL_EXPECT_FAILURE));
   }
 
   function test_404(request, data, ctx) {
@@ -267,9 +267,9 @@ function run_test() {
     do_check_eq(request.nsIHttpChannel.responseStatus, 404);
 
     // 416 Requested Range Not Satisfiable
-    var chan = make_channel("http://localhost:4444/range");
+    var chan = make_channel(URL + "/range");
     chan.nsIResumableChannel.resumeAt(1000, entityID);
-    chan.asyncOpen(new ChannelListener(test_416, null, CL_EXPECT_FAILURE), null);
+    chan.asyncOpen2(new ChannelListener(test_416, null, CL_EXPECT_FAILURE));
   }
 
   function test_416(request, data, ctx) {
@@ -278,10 +278,10 @@ function run_test() {
     do_check_eq(request.nsIHttpChannel.responseStatus, 416);
 
     // Redirect + successful resume
-    var chan = make_channel("http://localhost:4444/redir");
-    chan.nsIHttpChannel.setRequestHeader("X-Redir-To", "http://localhost:4444/range", false);
+    var chan = make_channel(URL + "/redir");
+    chan.nsIHttpChannel.setRequestHeader("X-Redir-To", URL + "/range", false);
     chan.nsIResumableChannel.resumeAt(1, entityID);
-    chan.asyncOpen(new ChannelListener(test_redir_resume, null), null);
+    chan.asyncOpen2(new ChannelListener(test_redir_resume, null));
   }
 
   function test_redir_resume(request, data, ctx) {
@@ -291,10 +291,10 @@ function run_test() {
     do_check_eq(request.nsIHttpChannel.responseStatus, 206);
 
     // Redirect + failed resume
-    var chan = make_channel("http://localhost:4444/redir");
-    chan.nsIHttpChannel.setRequestHeader("X-Redir-To", "http://localhost:4444/", false);
+    var chan = make_channel(URL + "/redir");
+    chan.nsIHttpChannel.setRequestHeader("X-Redir-To", URL + "/", false);
     chan.nsIResumableChannel.resumeAt(1, entityID);
-    chan.asyncOpen(new ChannelListener(test_redir_noresume, null, CL_EXPECT_FAILURE), null);
+    chan.asyncOpen2(new ChannelListener(test_redir_noresume, null, CL_EXPECT_FAILURE));
   }
 
   function test_redir_noresume(request, data, ctx) {
@@ -304,9 +304,9 @@ function run_test() {
     httpserver.stop(do_test_finished);
   }
 
-  httpserver.start(4444);
-  var chan = make_channel("http://localhost:4444/range");
-  chan.asyncOpen(new ChannelListener(get_entity_id, null), null);
+  httpserver.start(-1);
+  var chan = make_channel(URL + "/range");
+  chan.asyncOpen2(new ChannelListener(get_entity_id, null));
   do_test_pending();
 }
 

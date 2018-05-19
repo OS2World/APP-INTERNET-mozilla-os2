@@ -23,7 +23,7 @@ namespace layers {
  * Constructor and Destructor
  */
 Nv3DVUtils::Nv3DVUtils()
-  : m3DVStreaming (NULL)
+  : m3DVStreaming (nullptr)
 {
 }
 
@@ -39,7 +39,7 @@ Nv3DVUtils::~Nv3DVUtils()
 #endif
 // Uncomment these to enable spurious warnings.
 //#define WARNING(str) NS_WARNING(str)
-//#define WARN_IF_FALSE(b, str) NS_WARN_IF_FALSE(b, str)
+//#define WARN_IF_FALSE(b, str) NS_WARNING_ASSERTION(b, str)
 #define WARNING(str)
 #define WARN_IF_FALSE(b, str)
 
@@ -60,14 +60,14 @@ Nv3DVUtils::Initialize()
   /*
    * Create the COM object. If we fail at any stage, just return
    */
-  HRESULT hr = CoCreateInstance(CLSID_NV3DVStreaming, NULL, CLSCTX_INPROC_SERVER, IID_INV3DVStreaming, (void**)(getter_AddRefs(m3DVStreaming)));
+  HRESULT hr = CoCreateInstance(CLSID_NV3DVStreaming, nullptr, CLSCTX_INPROC_SERVER, IID_INV3DVStreaming, (void**)(getter_AddRefs(m3DVStreaming)));
   if (FAILED(hr) || !m3DVStreaming) {
     WARNING("Nv3DVStreaming CoCreateInstance failed (disabled).");
     return;
   }
 
   /*
-   * Initialize the object. Note that m3DVStreaming cannot be NULL at this point.
+   * Initialize the object. Note that m3DVStreaming cannot be nullptr at this point.
    */
   bool bRetVal = m3DVStreaming->Nv3DVInitialize();
 
@@ -79,7 +79,7 @@ Nv3DVUtils::Initialize()
 
 /**
  * Release resources used by the COM Object, and then release 
- * the COM Object (nsRefPtr gets released by setting to NULL) 
+ * the COM Object (nsRefPtr gets released by setting to nullptr) 
  *
  */
 void
@@ -98,7 +98,7 @@ void
 Nv3DVUtils::SetDeviceInfo(IUnknown *devUnknown)
 {
   if (!devUnknown) {
-    WARNING("D3D Device Pointer (IUnknown) is NULL.\n");
+    WARNING("D3D Device Pointer (IUnknown) is nullptr.\n");
     return;
   }
 

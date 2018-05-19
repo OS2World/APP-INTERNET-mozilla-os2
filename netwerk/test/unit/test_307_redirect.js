@@ -1,18 +1,22 @@
-const Cc = Components.classes;
-const Ci = Components.interfaces;
-const Cu = Components.utils;
-const Cr = Components.results;
-
 Cu.import("resource://testing-common/httpd.js");
+Cu.import("resource://gre/modules/NetUtil.jsm");
+
+XPCOMUtils.defineLazyGetter(this, "URL", function() {
+  return "http://localhost:" + httpserver.identity.primaryPort;
+});
+
+XPCOMUtils.defineLazyGetter(this, "uri", function() {
+  return URL + "/redirect";
+});
+
+XPCOMUtils.defineLazyGetter(this, "noRedirectURI", function() {
+  return URL + "/content";
+});
 
 var httpserver = null;
-var uri = "http://localhost:4444/redirect";
-var noRedirectURI = "http://localhost:4444/content";
 
 function make_channel(url) {
-  var ios = Cc["@mozilla.org/network/io-service;1"].
-            getService(Ci.nsIIOService);
-  return ios.newChannel(url, "", null);
+  return NetUtil.newChannel({uri: url, loadUsingSystemPrincipal: true});
 }
 
 const requestBody = "request body";
@@ -41,7 +45,7 @@ function noRedirectStreamObserver(request, buffer)
   chan.QueryInterface(Ci.nsIUploadChannel).setUploadStream(uploadStream,
                                                            "text/plain",
                                                            -1);
-  chan.asyncOpen(new ChannelListener(noHeaderStreamObserver, null), null);
+  chan.asyncOpen2(new ChannelListener(noHeaderStreamObserver, null));
 }
 
 function noHeaderStreamObserver(request, buffer)
@@ -55,7 +59,7 @@ function noHeaderStreamObserver(request, buffer)
       requestBody;
   uploadStream.setData(streamBody, streamBody.length);
   chan.QueryInterface(Ci.nsIUploadChannel).setUploadStream(uploadStream, "", -1);
-  chan.asyncOpen(new ChannelListener(headerStreamObserver, null), null);
+  chan.asyncOpen2(new ChannelListener(headerStreamObserver, null));
 }
 
 function headerStreamObserver(request, buffer)
@@ -69,7 +73,7 @@ function run_test()
   httpserver = new HttpServer();
   httpserver.registerPathHandler("/redirect", redirectHandler);
   httpserver.registerPathHandler("/content", contentHandler);
-  httpserver.start(4444);
+  httpserver.start(-1);
 
   var prefs = Cc["@mozilla.org/preferences-service;1"]
                 .getService(Components.interfaces.nsIPrefBranch);
@@ -82,6 +86,6 @@ function run_test()
   chan.QueryInterface(Ci.nsIUploadChannel).setUploadStream(uploadStream,
                                                            "text/plain",
                                                            -1);
-  chan.asyncOpen(new ChannelListener(noRedirectStreamObserver, null), null);
+  chan.asyncOpen2(new ChannelListener(noRedirectStreamObserver, null));
   do_test_pending();
 }

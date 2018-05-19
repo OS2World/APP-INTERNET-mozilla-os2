@@ -10,25 +10,27 @@
   'targets': [
     {
       'target_name': 'PCM16B',
-      'type': '<(library)',
+      'type': 'static_library',
+      'dependencies': [
+        'audio_encoder_interface',
+        'G711',
+      ],
       'include_dirs': [
         'include',
+        '<(webrtc_root)',
       ],
       'direct_dependent_settings': {
         'include_dirs': [
           'include',
+          '<(webrtc_root)',
         ],
       },
       'sources': [
+        'include/audio_encoder_pcm16b.h',
         'include/pcm16b.h',
+        'audio_encoder_pcm16b.cc',
         'pcm16b.c',
       ],
     },
   ], # targets
 }
-
-# Local Variables:
-# tab-width:2
-# indent-tabs-mode:nil
-# End:
-# vim: set expandtab tabstop=2 shiftwidth=2:

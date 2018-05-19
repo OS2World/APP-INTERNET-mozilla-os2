@@ -1,14 +1,5 @@
-﻿// ***************************************************************************
-// *
-// * Copyright (C) 2012 International Business Machines
-// * Corporation and others.  All Rights Reserved.
-// * Tool: org.unicode.cldr.icu.NewLdml2IcuConverter
-// * Source File: <path>/common/main/ewo.xml
-// *
-// ***************************************************************************
-/**
- *  ICU <specials> source: <path>/xml/main/ewo.xml
- */
+﻿// © 2016 and later: Unicode, Inc. and others.
+// License & terms of use: http://www.unicode.org/copyright.html#License
 ewo{
     Currencies{
         AED{
@@ -205,7 +196,7 @@ ewo{
         }
         UGX{
             "UGX",
-            "Silíŋ yá Ugandá (1966-1987)",
+            "Silíŋ yá Ugandá (1966–1987)",
         }
         USD{
             "US$",
@@ -225,6 +216,10 @@ ewo{
         }
         ZMK{
             "ZMK",
+            "Kwatsa yá Zambí (1968–2012)",
+        }
+        ZMW{
+            "ZMW",
             "Kwatsa yá Zambí",
         }
         ZWD{
@@ -232,5 +227,5 @@ ewo{
             "Dolár yá Zimbabwé",
         }
     }
-    Version{"2.0.77.46"}
+    Version{"2.1.27.40"}
 }

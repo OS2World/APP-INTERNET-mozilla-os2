@@ -1,11 +1,11 @@
-#filter substitution
 prefix=@prefix@
+exec_prefix=@exec_prefix@
 libdir=@libdir@
 includedir=@includedir@
 
 Name: SpiderMonkey @MOZILLA_VERSION@
 Description: The Mozilla library for JavaScript
 Version: @MOZILLA_VERSION@
-Requires.private: @NSPR_PKGCONF_CHECK@
-Libs: -L${libdir} -l@LIBRARY_NAME@
-Cflags: -include ${includedir}/@LIBRARY_NAME@/js/RequiredDefines.h -I${includedir}/@LIBRARY_NAME@
+@PKGCONF_REQUIRES_PRIVATE@
+Libs: -L${libdir} -l@JS_LIBRARY_NAME@
+Cflags: -include ${includedir}/@JS_LIBRARY_NAME@/js/RequiredDefines.h -I${includedir}/@JS_LIBRARY_NAME@

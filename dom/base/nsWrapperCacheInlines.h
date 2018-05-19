@@ -1,4 +1,5 @@
-/* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 4 -*- */
+/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
+/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -7,14 +8,16 @@
 #define nsWrapperCacheInline_h___
 
 #include "nsWrapperCache.h"
-#include "xpcpublic.h"
-#include "jsapi.h"
+#include "js/GCAPI.h"
+#include "js/TracingAPI.h"
 
 inline JSObject*
 nsWrapperCache::GetWrapper() const
 {
     JSObject* obj = GetWrapperPreserveColor();
-    xpc_UnmarkGrayObject(obj);
+    if (obj) {
+      JS::ExposeObjectToActiveJS(obj);
+    }
     return obj;
 }
 
@@ -22,35 +25,32 @@ inline bool
 nsWrapperCache::IsBlack()
 {
   JSObject* o = GetWrapperPreserveColor();
-  return o && !xpc_IsGrayGCThing(o);
+  return o && !JS::ObjectIsMarkedGray(o);
 }
 
 static void
-SearchGray(void* aGCThing, const char* aName, void* aClosure)
+SearchGray(JS::GCCellPtr aGCThing, const char* aName, void* aClosure)
 {
   bool* hasGrayObjects = static_cast<bool*>(aClosure);
-  if (!*hasGrayObjects && aGCThing && xpc_IsGrayGCThing(aGCThing)) {
+  if (!*hasGrayObjects && aGCThing && JS::GCThingIsMarkedGray(aGCThing)) {
     *hasGrayObjects = true;
   }
 }
 
 inline bool
-nsWrapperCache::IsBlackAndDoesNotNeedTracing(nsISupports* aThis)
+nsWrapperCache::HasNothingToTrace(nsISupports* aThis)
 {
-  if (IsBlack()) {
-    nsXPCOMCycleCollectionParticipant* participant = nullptr;
-    CallQueryInterface(aThis, &participant);
-    bool hasGrayObjects = false;
-    participant->Trace(aThis, TraceCallbackFunc(SearchGray), &hasGrayObjects);
-    return !hasGrayObjects;
-  }
-  return false;
+  nsXPCOMCycleCollectionParticipant* participant = nullptr;
+  CallQueryInterface(aThis, &participant);
+  bool hasGrayObjects = false;
+  participant->Trace(aThis, TraceCallbackFunc(SearchGray), &hasGrayObjects);
+  return !hasGrayObjects;
 }
 
-inline void
-nsWrapperCache::TraceWrapperJSObject(JSTracer* aTrc, const char* aName)
+inline bool
+nsWrapperCache::IsBlackAndDoesNotNeedTracing(nsISupports* aThis)
 {
-  JS_CallHeapObjectTracer(aTrc, &mWrapper, aName);
+  return IsBlack() && HasNothingToTrace(aThis);
 }
 
 #endif /* nsWrapperCache_h___ */

@@ -24,6 +24,7 @@
 #include "nsITimer.h"
 #include "nsString.h"
 
+#include "mozIDOMWindow.h"
 #include "mozStorageHelper.h"
 #include "nsAutoPtr.h"
 #include "nsCOMArray.h"
@@ -31,16 +32,17 @@
 typedef int16_t DownloadState;
 typedef int16_t DownloadType;
 
+class nsIArray;
 class nsDownload;
 
 #ifdef DOWNLOAD_SCANNER
 #include "nsDownloadScanner.h"
 #endif
 
-class nsDownloadManager : public nsIDownloadManager,
-                          public nsINavHistoryObserver,
-                          public nsIObserver,
-                          public nsSupportsWeakReference
+class nsDownloadManager final : public nsIDownloadManager,
+                                public nsINavHistoryObserver,
+                                public nsIObserver,
+                                public nsSupportsWeakReference
 {
 public:
   NS_DECL_ISUPPORTS
@@ -52,7 +54,6 @@ public:
 
   static nsDownloadManager *GetSingleton();
 
-  virtual ~nsDownloadManager();
   nsDownloadManager()
 #ifdef DOWNLOAD_SCANNER
     : mScanner(nullptr)
@@ -61,6 +62,8 @@ public:
   }
 
 protected:
+  virtual ~nsDownloadManager();
+
   nsresult InitDB();
   nsresult InitFileDB();
   void CloseAllDBs();
@@ -188,10 +191,10 @@ protected:
 
   void ConfirmCancelDownloads(int32_t aCount,
                               nsISupportsPRBool *aCancelDownloads,
-                              const PRUnichar *aTitle,
-                              const PRUnichar *aCancelMessageMultiple,
-                              const PRUnichar *aCancelMessageSingle,
-                              const PRUnichar *aDontCancelButton);
+                              const char16_t *aTitle,
+                              const char16_t *aCancelMessageMultiple,
+                              const char16_t *aCancelMessageSingle,
+                              const char16_t *aDontCancelButton);
 
   int32_t GetRetentionBehavior();
 
@@ -242,6 +245,7 @@ private:
   nsresult ResumeAllDownloads(nsCOMArray<nsDownload>& aDownloads, bool aResumeAll);
   nsresult RemoveDownloadsForURI(mozIStorageStatement* aStatement, nsIURI *aURI);
 
+  bool mUseJSTransfer;
   nsCOMArray<nsIDownloadProgressListener> mListeners;
   nsCOMArray<nsIDownloadProgressListener> mPrivacyAwareListeners;
   nsCOMPtr<nsIStringBundle> mBundle;
@@ -261,7 +265,7 @@ private:
   friend class nsDownload;
 };
 
-class nsDownload : public nsIDownload
+class nsDownload final : public nsIDownload
 {
 public:
   NS_DECL_NSIWEBPROGRESSLISTENER
@@ -271,7 +275,6 @@ public:
   NS_DECL_ISUPPORTS
 
   nsDownload();
-  virtual ~nsDownload();
 
   /**
    * This method MUST be called when changing states on a download.  It will
@@ -281,6 +284,8 @@ public:
   nsresult SetState(DownloadState aState);
 
 protected:
+  virtual ~nsDownload();
+
   /**
    * Finish up the download by breaking reference cycles and clearing unneeded
    * data. Additionally, the download removes itself from the download
@@ -302,6 +307,11 @@ protected:
    * dummy target and renaming the temporary.
    */
   nsresult MoveTempToTarget();
+
+  /**
+   * Set the target file permissions to be appropriate.
+   */
+  nsresult FixTargetPermissions();
 
   /**
    * Update the start time which also implies the last update time is the same.
@@ -361,7 +371,7 @@ protected:
    * Fail a download because of a failure status and prompt the provided
    * message or use a generic download failure message if nullptr.
    */
-  nsresult FailDownload(nsresult aStatus, const PRUnichar *aMessage);
+  nsresult FailDownload(nsresult aStatus, const char16_t *aMessage);
 
   /**
    * Opens the downloaded file with the appropriate application, which is
@@ -420,6 +430,23 @@ private:
    */
   enum AutoResume { DONT_RESUME, AUTO_RESUME };
   AutoResume mAutoResume;
+
+  /**
+   * Stores the SHA-256 hash associated with the downloaded file.
+   */
+  nsCString mHash;
+
+  /**
+   * Stores the certificate chains in an nsIArray of nsIX509CertList of
+   * nsIX509Cert, if this binary is signed.
+   */
+  nsCOMPtr<nsIArray> mSignatureInfo;
+
+  /**
+   * Stores the redirects that led to this download in an nsIArray of
+   * nsIPrincipal.
+   */
+  nsCOMPtr<nsIArray> mRedirects;
 
   friend class nsDownloadManager;
 };

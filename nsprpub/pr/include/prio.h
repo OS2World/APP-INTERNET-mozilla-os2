@@ -183,7 +183,7 @@ union PRNetAddr {
         PRIPv6Addr ip;                  /* the actual 128 bits of address */
         PRUint32 scope_id;              /* set of interfaces for a scope */
     } ipv6;
-#if defined(XP_UNIX) || defined(XP_OS2)
+#if defined(XP_UNIX) || defined(XP_OS2) || defined(XP_WIN)
     struct {                            /* Unix domain socket address */
 #if defined(XP_OS2) && !defined(TCPV40HDRS)
         PRUint8 len;
@@ -216,8 +216,8 @@ typedef enum PRSockOption
     PR_SockOpt_Linger,          /* linger on close if data present */
     PR_SockOpt_Reuseaddr,       /* allow local address reuse */
     PR_SockOpt_Keepalive,       /* keep connections alive */
-    PR_SockOpt_RecvBufferSize,  /* send buffer size */
-    PR_SockOpt_SendBufferSize,  /* receive buffer size */
+    PR_SockOpt_RecvBufferSize,  /* receive buffer size */
+    PR_SockOpt_SendBufferSize,  /* send buffer size */
 
     PR_SockOpt_IpTimeToLive,    /* time to live */
     PR_SockOpt_IpTypeOfService, /* type of service and precedence */
@@ -231,6 +231,8 @@ typedef enum PRSockOption
     PR_SockOpt_NoDelay,         /* don't delay send to coalesce packets */
     PR_SockOpt_MaxSegment,      /* maximum segment size */
     PR_SockOpt_Broadcast,       /* enable broadcast */
+    PR_SockOpt_Reuseport,       /* allow local address & port reuse on
+                                 * platforms that support it */
     PR_SockOpt_Last
 } PRSockOption;
 
@@ -254,6 +256,8 @@ typedef struct PRSocketOptionData
         PRUintn tos;                /* IP type of service and precedence */
         PRBool non_blocking;        /* Non-blocking (network) I/O */
         PRBool reuse_addr;          /* Allow local address reuse */
+        PRBool reuse_port;          /* Allow local address & port reuse on
+                                     * platforms that support it */
         PRBool keep_alive;          /* Keep connections alive */
         PRBool mcast_loopback;      /* IP multicast loopback */
         PRBool no_delay;            /* Don't delay send to coalesce packets */
@@ -1873,6 +1877,19 @@ NSPR_API(void *) PR_MemMap(
 NSPR_API(PRStatus) PR_MemUnmap(void *addr, PRUint32 len);
 
 NSPR_API(PRStatus) PR_CloseFileMap(PRFileMap *fmap);
+
+/*
+ * Synchronously flush the given memory-mapped address range of the given open
+ * file to disk. The function does not return until all modified data have
+ * been written to disk.
+ *
+ * On some platforms, the function will call PR_Sync(fd) internally if it is
+ * necessary for flushing modified data to disk synchronously.
+ */
+NSPR_API(PRStatus) PR_SyncMemMap(
+    PRFileDesc *fd,
+    void *addr,
+    PRUint32 len);
 
 /*
  ******************************************************************

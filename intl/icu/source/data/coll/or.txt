@@ -1,20 +1,17 @@
-﻿// ***************************************************************************
-// *
-// * Copyright (C) 2012 International Business Machines
-// * Corporation and others.  All Rights Reserved.
-// * Tool: com.ibm.icu.dev.tool.cldr.LDML2ICUConverter.java
-// * Source File:<path>/common/collation/or.xml
-// *
-// ***************************************************************************
-/**
- *  ICU <specials> source: <path>/xml/collation/or.xml
- */
+﻿// © 2016 and later: Unicode, Inc. and others.
+// License & terms of use: http://www.unicode.org/copyright.html#License
 or{
-    Version{"2.0.50.38"}
+    Version{"2.1.19.14"}
     collations{
         standard{
-            Sequence{" [normalization on ]&ଔ<ଁ<ଂ<ଃ&ହ<କ୍ଷ&ଯ<<ୟ"}
-            Version{"22.1.1"}
+            Sequence{
+                "[normalization on]"
+                "[reorder Orya Deva Beng Guru Gujr Taml Telu Knda Mlym Sinh]"
+                "&ଔ<ଁ<ଂ<ଃ"
+                "&ହ<କ୍ଷ"
+                "&ଯ<<ୟ"
+            }
+            Version{"30.0.3"}
         }
     }
 }

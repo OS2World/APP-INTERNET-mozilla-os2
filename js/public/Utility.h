@@ -8,21 +8,23 @@
 #define js_Utility_h
 
 #include "mozilla/Assertions.h"
+#include "mozilla/Atomics.h"
 #include "mozilla/Attributes.h"
 #include "mozilla/Compiler.h"
+#include "mozilla/Move.h"
 #include "mozilla/Scoped.h"
+#include "mozilla/TemplateLib.h"
+#include "mozilla/UniquePtr.h"
 
 #include <stdlib.h>
 #include <string.h>
 
 #ifdef JS_OOM_DO_BACKTRACES
-#include <stdio.h>
 #include <execinfo.h>
+#include <stdio.h>
 #endif
 
 #include "jstypes.h"
-
-#include "js/TemplateLib.h"
 
 /* The public JS engine namespace. */
 namespace JS {}
@@ -33,48 +35,11 @@ namespace mozilla {}
 /* The private JS engine namespace. */
 namespace js {}
 
-/*
- * Pattern used to overwrite freed memory. If you are accessing an object with
- * this pattern, you probably have a dangling pointer.
- */
-#define JS_FREE_PATTERN 0xDA
-
-#define JS_ASSERT(expr)           MOZ_ASSERT(expr)
-#define JS_ASSERT_IF(cond, expr)  MOZ_ASSERT_IF(cond, expr)
-#define JS_NOT_REACHED(reason)    MOZ_NOT_REACHED(reason)
-#define JS_ALWAYS_TRUE(expr)      MOZ_ALWAYS_TRUE(expr)
-#define JS_ALWAYS_FALSE(expr)     MOZ_ALWAYS_FALSE(expr)
-
-#ifdef DEBUG
-# ifdef JS_THREADSAFE
-#  define JS_THREADSAFE_ASSERT(expr) JS_ASSERT(expr)
-# else
-#  define JS_THREADSAFE_ASSERT(expr) ((void) 0)
-# endif
-#else
-# define JS_THREADSAFE_ASSERT(expr) ((void) 0)
-#endif
-
-#if defined(DEBUG)
-# define JS_DIAGNOSTICS_ASSERT(expr) MOZ_ASSERT(expr)
-#elif defined(JS_CRASH_DIAGNOSTICS)
-# define JS_DIAGNOSTICS_ASSERT(expr) do { if (!(expr)) MOZ_CRASH(); } while(0)
-#else
-# define JS_DIAGNOSTICS_ASSERT(expr) ((void) 0)
-#endif
-
-#define JS_STATIC_ASSERT(cond)           MOZ_STATIC_ASSERT(cond, "JS_STATIC_ASSERT")
+#define JS_STATIC_ASSERT(cond)           static_assert(cond, "JS_STATIC_ASSERT")
 #define JS_STATIC_ASSERT_IF(cond, expr)  MOZ_STATIC_ASSERT_IF(cond, expr, "JS_STATIC_ASSERT_IF")
 
-extern MOZ_NORETURN JS_PUBLIC_API(void)
-JS_Assert(const char *s, const char *file, int ln);
-
-/*
- * Abort the process in a non-graceful manner. This will cause a core file,
- * call to the debugger or other moral equivalent as well as causing the
- * entire process to stop.
- */
-extern JS_PUBLIC_API(void) JS_Abort(void);
+extern MOZ_NORETURN MOZ_COLD JS_PUBLIC_API(void)
+JS_Assert(const char* s, const char* file, int ln);
 
 /*
  * Custom allocator support for SpiderMonkey
@@ -82,286 +47,222 @@ extern JS_PUBLIC_API(void) JS_Abort(void);
 #if defined JS_USE_CUSTOM_ALLOCATOR
 # include "jscustomallocator.h"
 #else
-# ifdef DEBUG
+
+namespace js {
+namespace oom {
+
 /*
- * In order to test OOM conditions, when the testing function
- * oomAfterAllocations COUNT is passed, we fail continuously after the NUM'th
- * allocation from now.
+ * To make testing OOM in certain helper threads more effective,
+ * allow restricting the OOM testing to a certain helper thread
+ * type. This allows us to fail e.g. in off-thread script parsing
+ * without causing an OOM in the main thread first.
  */
-extern JS_PUBLIC_DATA(uint32_t) OOM_maxAllocations; /* set in builtins/TestingFunctions.cpp */
-extern JS_PUBLIC_DATA(uint32_t) OOM_counter; /* data race, who cares. */
+enum ThreadType {
+    THREAD_TYPE_NONE = 0,       // 0
+    THREAD_TYPE_MAIN,           // 1
+    THREAD_TYPE_ASMJS,          // 2
+    THREAD_TYPE_ION,            // 3
+    THREAD_TYPE_PARSE,          // 4
+    THREAD_TYPE_COMPRESS,       // 5
+    THREAD_TYPE_GCHELPER,       // 6
+    THREAD_TYPE_GCPARALLEL,     // 7
+    THREAD_TYPE_PROMISE_TASK,   // 8
+    THREAD_TYPE_MAX             // Used to check shell function arguments
+};
 
-#ifdef JS_OOM_DO_BACKTRACES
-#define JS_OOM_BACKTRACE_SIZE 32
-static JS_ALWAYS_INLINE void
-PrintBacktrace()
+/*
+ * Getter/Setter functions to encapsulate mozilla::ThreadLocal,
+ * implementation is in jsutil.cpp.
+ */
+# if defined(DEBUG) || defined(JS_OOM_BREAKPOINT)
+extern bool InitThreadType(void);
+extern void SetThreadType(ThreadType);
+extern JS_FRIEND_API(uint32_t) GetThreadType(void);
+# else
+inline bool InitThreadType(void) { return true; }
+inline void SetThreadType(ThreadType t) {};
+inline uint32_t GetThreadType(void) { return 0; }
+# endif
+
+} /* namespace oom */
+} /* namespace js */
+
+# if defined(DEBUG) || defined(JS_OOM_BREAKPOINT)
+
+#ifdef JS_OOM_BREAKPOINT
+static MOZ_NEVER_INLINE void js_failedAllocBreakpoint() { asm(""); }
+#define JS_OOM_CALL_BP_FUNC() js_failedAllocBreakpoint()
+#else
+#define JS_OOM_CALL_BP_FUNC() do {} while(0)
+#endif
+
+namespace js {
+namespace oom {
+
+/*
+ * Out of memory testing support.  We provide various testing functions to
+ * simulate OOM conditions and so we can test that they are handled correctly.
+ */
+
+extern JS_PUBLIC_DATA(uint32_t) targetThread;
+extern JS_PUBLIC_DATA(uint64_t) maxAllocations;
+extern JS_PUBLIC_DATA(uint64_t) counter;
+extern JS_PUBLIC_DATA(bool) failAlways;
+
+extern void
+SimulateOOMAfter(uint64_t allocations, uint32_t thread, bool always);
+
+extern void
+ResetSimulatedOOM();
+
+inline bool
+IsThreadSimulatingOOM()
 {
-    void* OOM_trace[JS_OOM_BACKTRACE_SIZE];
-    char** OOM_traceSymbols = NULL;
-    int32_t OOM_traceSize = 0;
-    int32_t OOM_traceIdx = 0;
-    OOM_traceSize = backtrace(OOM_trace, JS_OOM_BACKTRACE_SIZE);
-    OOM_traceSymbols = backtrace_symbols(OOM_trace, OOM_traceSize);
-
-    if (!OOM_traceSymbols)
-        return;
-
-    for (OOM_traceIdx = 0; OOM_traceIdx < OOM_traceSize; ++OOM_traceIdx) {
-        fprintf(stderr, "#%d %s\n", OOM_traceIdx, OOM_traceSymbols[OOM_traceIdx]);
-    }
-
-    free(OOM_traceSymbols);
+    return js::oom::targetThread && js::oom::targetThread == js::oom::GetThreadType();
 }
 
-#define JS_OOM_EMIT_BACKTRACE() \
-    do {\
-        fprintf(stderr, "Forcing artificial memory allocation function failure:\n");\
-	PrintBacktrace();\
+inline bool
+IsSimulatedOOMAllocation()
+{
+    return IsThreadSimulatingOOM() &&
+           (counter == maxAllocations || (counter > maxAllocations && failAlways));
+}
+
+inline bool
+ShouldFailWithOOM()
+{
+    if (!IsThreadSimulatingOOM())
+        return false;
+
+    counter++;
+    if (IsSimulatedOOMAllocation()) {
+        JS_OOM_CALL_BP_FUNC();
+        return true;
+    }
+    return false;
+}
+
+inline bool
+HadSimulatedOOM() {
+    return counter >= maxAllocations;
+}
+
+} /* namespace oom */
+} /* namespace js */
+
+#  define JS_OOM_POSSIBLY_FAIL()                                              \
+    do {                                                                      \
+        if (js::oom::ShouldFailWithOOM())                                     \
+            return nullptr;                                                   \
     } while (0)
+
+#  define JS_OOM_POSSIBLY_FAIL_BOOL()                                         \
+    do {                                                                      \
+        if (js::oom::ShouldFailWithOOM())                                     \
+            return false;                                                     \
+    } while (0)
+
 # else
-#  define JS_OOM_EMIT_BACKTRACE() do {} while(0)
-#endif /* JS_OOM_DO_BACKTRACES */
 
-#  define JS_OOM_POSSIBLY_FAIL() \
-    do \
-    { \
-        if (++OOM_counter > OOM_maxAllocations) { \
-            JS_OOM_EMIT_BACKTRACE();\
-            return NULL; \
-        } \
-    } while (0)
-
-#  define JS_OOM_POSSIBLY_FAIL_REPORT(cx) \
-    do \
-    { \
-        if (++OOM_counter > OOM_maxAllocations) { \
-            JS_OOM_EMIT_BACKTRACE();\
-            js_ReportOutOfMemory(cx);\
-            return NULL; \
-        } \
-    } while (0)
-
-# else
 #  define JS_OOM_POSSIBLY_FAIL() do {} while(0)
-#  define JS_OOM_POSSIBLY_FAIL_REPORT(cx) do {} while(0)
-# endif /* DEBUG */
+#  define JS_OOM_POSSIBLY_FAIL_BOOL() do {} while(0)
+namespace js {
+namespace oom {
+static inline bool IsSimulatedOOMAllocation() { return false; }
+static inline bool ShouldFailWithOOM() { return false; }
+} /* namespace oom */
+} /* namespace js */
 
-static JS_INLINE void* js_malloc(size_t bytes)
+# endif /* DEBUG || JS_OOM_BREAKPOINT */
+
+namespace js {
+
+/* Disable OOM testing in sections which are not OOM safe. */
+struct MOZ_RAII JS_PUBLIC_DATA(AutoEnterOOMUnsafeRegion)
+{
+    MOZ_NORETURN MOZ_COLD void crash(const char* reason);
+    MOZ_NORETURN MOZ_COLD void crash(size_t size, const char* reason);
+
+    using AnnotateOOMAllocationSizeCallback = void(*)(size_t);
+    static AnnotateOOMAllocationSizeCallback annotateOOMSizeCallback;
+    static void setAnnotateOOMAllocationSizeCallback(AnnotateOOMAllocationSizeCallback callback) {
+        annotateOOMSizeCallback = callback;
+    }
+
+#if defined(DEBUG) || defined(JS_OOM_BREAKPOINT)
+    AutoEnterOOMUnsafeRegion()
+      : oomEnabled_(oom::IsThreadSimulatingOOM() && oom::maxAllocations != UINT64_MAX),
+        oomAfter_(0)
+    {
+        if (oomEnabled_) {
+            MOZ_ALWAYS_TRUE(owner_.compareExchange(nullptr, this));
+            oomAfter_ = int64_t(oom::maxAllocations) - int64_t(oom::counter);
+            oom::maxAllocations = UINT64_MAX;
+        }
+    }
+
+    ~AutoEnterOOMUnsafeRegion() {
+        if (oomEnabled_) {
+            MOZ_ASSERT(oom::maxAllocations == UINT64_MAX);
+            int64_t maxAllocations = int64_t(oom::counter) + oomAfter_;
+            MOZ_ASSERT(maxAllocations >= 0,
+                       "alloc count + oom limit exceeds range, your oom limit is probably too large");
+            oom::maxAllocations = uint64_t(maxAllocations);
+            MOZ_ALWAYS_TRUE(owner_.compareExchange(this, nullptr));
+        }
+    }
+
+  private:
+    // Used to catch concurrent use from other threads.
+    static mozilla::Atomic<AutoEnterOOMUnsafeRegion*> owner_;
+
+    bool oomEnabled_;
+    int64_t oomAfter_;
+#endif
+};
+
+} /* namespace js */
+
+static inline void* js_malloc(size_t bytes)
 {
     JS_OOM_POSSIBLY_FAIL();
     return malloc(bytes);
 }
 
-static JS_INLINE void* js_calloc(size_t bytes)
+static inline void* js_calloc(size_t bytes)
 {
     JS_OOM_POSSIBLY_FAIL();
     return calloc(bytes, 1);
 }
 
-static JS_INLINE void* js_calloc(size_t nmemb, size_t size)
+static inline void* js_calloc(size_t nmemb, size_t size)
 {
     JS_OOM_POSSIBLY_FAIL();
     return calloc(nmemb, size);
 }
 
-static JS_INLINE void* js_realloc(void* p, size_t bytes)
+static inline void* js_realloc(void* p, size_t bytes)
 {
+    // realloc() with zero size is not portable, as some implementations may
+    // return nullptr on success and free |p| for this.  We assume nullptr
+    // indicates failure and that |p| is still valid.
+    MOZ_ASSERT(bytes != 0);
+
     JS_OOM_POSSIBLY_FAIL();
     return realloc(p, bytes);
 }
 
-static JS_INLINE void js_free(void* p)
+static inline void js_free(void* p)
 {
     free(p);
 }
+
+static inline char* js_strdup(const char* s)
+{
+    JS_OOM_POSSIBLY_FAIL();
+    return strdup(s);
+}
 #endif/* JS_USE_CUSTOM_ALLOCATOR */
-
-JS_BEGIN_EXTERN_C
-
-/*
- * Replace bit-scanning code sequences with CPU-specific instructions to
- * speedup calculations of ceiling/floor log2.
- *
- * With GCC 3.4 or later we can use __builtin_clz for that, see bug 327129.
- *
- * SWS: Added MSVC intrinsic bitscan support.  See bugs 349364 and 356856.
- */
-#if defined(_WIN32) && (_MSC_VER >= 1300) && (defined(_M_IX86) || defined(_M_AMD64) || defined(_M_X64))
-
-unsigned char _BitScanForward(unsigned long * Index, unsigned long Mask);
-unsigned char _BitScanReverse(unsigned long * Index, unsigned long Mask);
-# pragma intrinsic(_BitScanForward,_BitScanReverse)
-
-__forceinline static int
-__BitScanForward32(unsigned int val)
-{
-    unsigned long idx;
-
-    _BitScanForward(&idx, (unsigned long)val);
-    return (int)idx;
-}
-__forceinline static int
-__BitScanReverse32(unsigned int val)
-{
-    unsigned long idx;
-
-    _BitScanReverse(&idx, (unsigned long)val);
-    return (int)(31-idx);
-}
-# define js_bitscan_ctz32(val)  __BitScanForward32(val)
-# define js_bitscan_clz32(val)  __BitScanReverse32(val)
-
-#if defined(_M_AMD64) || defined(_M_X64)
-unsigned char _BitScanForward64(unsigned long * Index, unsigned __int64 Mask);
-unsigned char _BitScanReverse64(unsigned long * Index, unsigned __int64 Mask);
-# pragma intrinsic(_BitScanForward64,_BitScanReverse64)
-#endif
-
-__forceinline static int
-__BitScanForward64(unsigned __int64 val)
-{
-#if defined(_M_AMD64) || defined(_M_X64)
-    unsigned long idx;
-
-    _BitScanForward64(&idx, val);
-    return (int)idx;
-#else
-    uint32_t lo = (uint32_t)val;
-    uint32_t hi = (uint32_t)(val >> 32);
-    return lo != 0 ?
-           js_bitscan_ctz32(lo) :
-           32 + js_bitscan_ctz32(hi);
-#endif
-}
-__forceinline static int
-__BitScanReverse64(unsigned __int64 val)
-{
-#if defined(_M_AMD64) || defined(_M_X64)
-    unsigned long idx;
-
-    _BitScanReverse64(&idx, val);
-    return (int)(63-idx);
-#else
-    uint32_t lo = (uint32_t)val;
-    uint32_t hi = (uint32_t)(val >> 32);
-    return hi != 0 ?
-           js_bitscan_clz32(hi) :
-           32 + js_bitscan_clz32(lo);
-#endif
-}
-# define js_bitscan_ctz64(val)  __BitScanForward64(val)
-# define js_bitscan_clz64(val)  __BitScanReverse64(val)
-#elif MOZ_IS_GCC
-
-#if MOZ_GCC_VERSION_AT_LEAST(3, 4, 0)
-# define USE_BUILTIN_CTZ
-#endif
-
-#elif defined(__clang__)
-
-#if __has_builtin(__builtin_ctz)
-# define USE_BUILTIN_CTZ
-#endif
-
-#endif
-
-#if defined(USE_BUILTIN_CTZ)
-
-JS_STATIC_ASSERT(sizeof(unsigned int) == sizeof(uint32_t));
-# define js_bitscan_ctz32(val)  __builtin_ctz(val)
-# define js_bitscan_clz32(val)  __builtin_clz(val)
-
-JS_STATIC_ASSERT(sizeof(unsigned long long) == sizeof(uint64_t));
-# define js_bitscan_ctz64(val)  __builtin_ctzll(val)
-# define js_bitscan_clz64(val)  __builtin_clzll(val)
-
-# undef USE_BUILTIN_CTZ
-
-#endif
-
-/*
-** Macro version of JS_CeilingLog2: Compute the log of the least power of
-** 2 greater than or equal to _n. The result is returned in _log2.
-*/
-/*
- * Use intrinsic function or count-leading-zeros to calculate ceil(log2(_n)).
- * The macro checks for "n <= 1" and not "n != 0" as js_bitscan_clz32(0) is
- * undefined.
- */
-# define JS_CEILING_LOG2(_log2,_n)                                            \
-    JS_BEGIN_MACRO                                                            \
-        unsigned int j_ = (unsigned int)(_n);                                 \
-        (_log2) = (j_ <= 1 ? 0 : 32 - js_bitscan_clz32(j_ - 1));              \
-    JS_END_MACRO
-
-/*
-** Macro version of JS_FloorLog2: Compute the log of the greatest power of
-** 2 less than or equal to _n. The result is returned in _log2.
-**
-** This is equivalent to finding the highest set bit in the word.
-*/
-/*
- * Use js_bitscan_clz32 or count-leading-zeros to calculate floor(log2(_n)).
- * Since js_bitscan_clz32(0) is undefined, the macro set the loweset bit to 1
- * to ensure 0 result when _n == 0.
- */
-# define JS_FLOOR_LOG2(_log2,_n)                                              \
-    JS_BEGIN_MACRO                                                            \
-        (_log2) = 31 - js_bitscan_clz32(((unsigned int)(_n)) | 1);            \
-    JS_END_MACRO
-
-#if JS_BYTES_PER_WORD == 4
-#  define js_FloorLog2wImpl(n)                                                \
-    ((size_t)(JS_BITS_PER_WORD - 1 - js_bitscan_clz32(n)))
-#elif JS_BYTES_PER_WORD == 8
-#  define js_FloorLog2wImpl(n)                                                \
-    ((size_t)(JS_BITS_PER_WORD - 1 - js_bitscan_clz64(n)))
-#else
-# error "NOT SUPPORTED"
-#endif
-
-JS_END_EXTERN_C
-
-/*
- * Internal function.
- * Compute the log of the least power of 2 greater than or equal to n. This is
- * a version of JS_CeilingLog2 that operates on unsigned integers with
- * CPU-dependant size.
- */
-#define JS_CEILING_LOG2W(n) ((n) <= 1 ? 0 : 1 + JS_FLOOR_LOG2W((n) - 1))
-
-/*
- * Internal function.
- * Compute the log of the greatest power of 2 less than or equal to n.
- * This is a version of JS_FloorLog2 that operates on unsigned integers with
- * CPU-dependant size and requires that n != 0.
- */
-static MOZ_ALWAYS_INLINE size_t
-JS_FLOOR_LOG2W(size_t n)
-{
-    JS_ASSERT(n != 0);
-    return js_FloorLog2wImpl(n);
-}
-
-/*
- * JS_ROTATE_LEFT32
- *
- * There is no rotate operation in the C Language so the construct (a << 4) |
- * (a >> 28) is used instead. Most compilers convert this to a rotate
- * instruction but some versions of MSVC don't without a little help.  To get
- * MSVC to generate a rotate instruction, we have to use the _rotl intrinsic
- * and use a pragma to make _rotl inline.
- *
- * MSVC in VS2005 will do an inline rotate instruction on the above construct.
- */
-#if defined(_MSC_VER) && (defined(_M_IX86) || defined(_M_AMD64) || \
-    defined(_M_X64))
-#include <stdlib.h>
-#pragma intrinsic(_rotl)
-#define JS_ROTATE_LEFT32(a, bits) _rotl(a, bits)
-#else
-#define JS_ROTATE_LEFT32(a, bits) (((a) << (bits)) | ((a) >> (32 - (bits))))
-#endif
 
 #include <new>
 
@@ -392,7 +293,7 @@ JS_FLOOR_LOG2W(size_t n)
  *   general SpiderMonkey idiom that a JSContext-taking function reports its
  *   own errors.)
  *
- * - Otherwise, use js_malloc/js_realloc/js_calloc/js_free/js_new
+ * - Otherwise, use js_malloc/js_realloc/js_calloc/js_new
  *
  * Deallocation:
  *
@@ -407,138 +308,137 @@ JS_FLOOR_LOG2W(size_t n)
  *   on another thread.
  */
 
-#define JS_NEW_BODY(allocator, t, parms)                                       \
-    void *memory = allocator(sizeof(t));                                       \
-    return memory ? new(memory) t parms : NULL;
-
 /*
- * Given a class which should provide 'new' methods, add
- * JS_DECLARE_NEW_METHODS (see JSContext for a usage example). This
- * adds news with up to 12 parameters. Add more versions of new below if
- * you need more than 12 parameters.
+ * Given a class which should provide a 'new' method, add
+ * JS_DECLARE_NEW_METHODS (see js::MallocProvider for an example).
  *
  * Note: Do not add a ; at the end of a use of JS_DECLARE_NEW_METHODS,
  * or the build will break.
  */
-#define JS_DECLARE_NEW_METHODS(NEWNAME, ALLOCATOR, QUALIFIERS)\
-    template <class T>\
-    QUALIFIERS T *NEWNAME() {\
-        JS_NEW_BODY(ALLOCATOR, T, ())\
-    }\
-\
-    template <class T, class P1>\
-    QUALIFIERS T *NEWNAME(P1 p1) {\
-        JS_NEW_BODY(ALLOCATOR, T, (p1))\
-    }\
-\
-    template <class T, class P1, class P2>\
-    QUALIFIERS T *NEWNAME(P1 p1, P2 p2) {\
-        JS_NEW_BODY(ALLOCATOR, T, (p1, p2))\
-    }\
-\
-    template <class T, class P1, class P2, class P3>\
-    QUALIFIERS T *NEWNAME(P1 p1, P2 p2, P3 p3) {\
-        JS_NEW_BODY(ALLOCATOR, T, (p1, p2, p3))\
-    }\
-\
-    template <class T, class P1, class P2, class P3, class P4>\
-    QUALIFIERS T *NEWNAME(P1 p1, P2 p2, P3 p3, P4 p4) {\
-        JS_NEW_BODY(ALLOCATOR, T, (p1, p2, p3, p4))\
-    }\
-\
-    template <class T, class P1, class P2, class P3, class P4, class P5>\
-    QUALIFIERS T *NEWNAME(P1 p1, P2 p2, P3 p3, P4 p4, P5 p5) {\
-        JS_NEW_BODY(ALLOCATOR, T, (p1, p2, p3, p4, p5))\
-    }\
-\
-    template <class T, class P1, class P2, class P3, class P4, class P5, class P6>\
-    QUALIFIERS T *NEWNAME(P1 p1, P2 p2, P3 p3, P4 p4, P5 p5, P6 p6) {\
-        JS_NEW_BODY(ALLOCATOR, T, (p1, p2, p3, p4, p5, p6))\
-    }\
-\
-    template <class T, class P1, class P2, class P3, class P4, class P5, class P6, class P7>\
-    QUALIFIERS T *NEWNAME(P1 p1, P2 p2, P3 p3, P4 p4, P5 p5, P6 p6, P7 p7) {\
-        JS_NEW_BODY(ALLOCATOR, T, (p1, p2, p3, p4, p5, p6, p7))\
-    }\
-\
-    template <class T, class P1, class P2, class P3, class P4, class P5, class P6, class P7, class P8>\
-    QUALIFIERS T *NEWNAME(P1 p1, P2 p2, P3 p3, P4 p4, P5 p5, P6 p6, P7 p7, P8 p8) {\
-        JS_NEW_BODY(ALLOCATOR, T, (p1, p2, p3, p4, p5, p6, p7, p8))\
-    }\
-\
-    template <class T, class P1, class P2, class P3, class P4, class P5, class P6, class P7, class P8, class P9>\
-    QUALIFIERS T *NEWNAME(P1 p1, P2 p2, P3 p3, P4 p4, P5 p5, P6 p6, P7 p7, P8 p8, P9 p9) {\
-        JS_NEW_BODY(ALLOCATOR, T, (p1, p2, p3, p4, p5, p6, p7, p8, p9))\
-    }\
-\
-    template <class T, class P1, class P2, class P3, class P4, class P5, class P6, class P7, class P8, class P9, class P10>\
-    QUALIFIERS T *NEWNAME(P1 p1, P2 p2, P3 p3, P4 p4, P5 p5, P6 p6, P7 p7, P8 p8, P9 p9, P10 p10) {\
-        JS_NEW_BODY(ALLOCATOR, T, (p1, p2, p3, p4, p5, p6, p7, p8, p9, p10))\
-    }\
-\
-    template <class T, class P1, class P2, class P3, class P4, class P5, class P6, class P7, class P8, class P9, class P10, class P11>\
-    QUALIFIERS T *NEWNAME(P1 p1, P2 p2, P3 p3, P4 p4, P5 p5, P6 p6, P7 p7, P8 p8, P9 p9, P10 p10, P11 p11) {\
-        JS_NEW_BODY(ALLOCATOR, T, (p1, p2, p3, p4, p5, p6, p7, p8, p9, p10, p11))\
-    }\
-\
-    template <class T, class P1, class P2, class P3, class P4, class P5, class P6, class P7, class P8, class P9, class P10, class P11, class P12>\
-    QUALIFIERS T *NEWNAME(P1 p1, P2 p2, P3 p3, P4 p4, P5 p5, P6 p6, P7 p7, P8 p8, P9 p9, P10 p10, P11 p11, P12 p12) {\
-        JS_NEW_BODY(ALLOCATOR, T, (p1, p2, p3, p4, p5, p6, p7, p8, p9, p10, p11, p12))\
-    }\
+#define JS_DECLARE_NEW_METHODS(NEWNAME, ALLOCATOR, QUALIFIERS) \
+    template <class T, typename... Args> \
+    QUALIFIERS T * \
+    NEWNAME(Args&&... args) MOZ_HEAP_ALLOCATOR { \
+        void* memory = ALLOCATOR(sizeof(T)); \
+        return MOZ_LIKELY(memory) \
+            ? new(memory) T(mozilla::Forward<Args>(args)...) \
+            : nullptr; \
+    }
 
-JS_DECLARE_NEW_METHODS(js_new, js_malloc, static JS_ALWAYS_INLINE)
+/*
+ * Given a class which should provide 'make' methods, add
+ * JS_DECLARE_MAKE_METHODS (see js::MallocProvider for an example).  This
+ * method is functionally the same as JS_DECLARE_NEW_METHODS: it just declares
+ * methods that return mozilla::UniquePtr instances that will singly-manage
+ * ownership of the created object.
+ *
+ * Note: Do not add a ; at the end of a use of JS_DECLARE_MAKE_METHODS,
+ * or the build will break.
+ */
+#define JS_DECLARE_MAKE_METHODS(MAKENAME, NEWNAME, QUALIFIERS)\
+    template <class T, typename... Args> \
+    QUALIFIERS mozilla::UniquePtr<T, JS::DeletePolicy<T>> \
+    MAKENAME(Args&&... args) MOZ_HEAP_ALLOCATOR { \
+        T* ptr = NEWNAME<T>(mozilla::Forward<Args>(args)...); \
+        return mozilla::UniquePtr<T, JS::DeletePolicy<T>>(ptr); \
+    }
+
+JS_DECLARE_NEW_METHODS(js_new, js_malloc, static MOZ_ALWAYS_INLINE)
+
+namespace js {
+
+/*
+ * Calculate the number of bytes needed to allocate |numElems| contiguous
+ * instances of type |T|.  Return false if the calculation overflowed.
+ */
+template <typename T>
+MOZ_MUST_USE inline bool
+CalculateAllocSize(size_t numElems, size_t* bytesOut)
+{
+    *bytesOut = numElems * sizeof(T);
+    return (numElems & mozilla::tl::MulOverflowMask<sizeof(T)>::value) == 0;
+}
+
+/*
+ * Calculate the number of bytes needed to allocate a single instance of type
+ * |T| followed by |numExtra| contiguous instances of type |Extra|.  Return
+ * false if the calculation overflowed.
+ */
+template <typename T, typename Extra>
+MOZ_MUST_USE inline bool
+CalculateAllocSizeWithExtra(size_t numExtra, size_t* bytesOut)
+{
+    *bytesOut = sizeof(T) + numExtra * sizeof(Extra);
+    return (numExtra & mozilla::tl::MulOverflowMask<sizeof(Extra)>::value) == 0 &&
+           *bytesOut >= sizeof(T);
+}
+
+} /* namespace js */
 
 template <class T>
-static JS_ALWAYS_INLINE void
-js_delete(T *p)
+static MOZ_ALWAYS_INLINE void
+js_delete(const T* p)
 {
     if (p) {
         p->~T();
-        js_free(p);
+        js_free(const_cast<T*>(p));
     }
 }
 
 template<class T>
-static JS_ALWAYS_INLINE void
-js_delete_poison(T *p)
+static MOZ_ALWAYS_INLINE void
+js_delete_poison(const T* p)
 {
     if (p) {
         p->~T();
-        memset(p, 0x3B, sizeof(T));
-        js_free(p);
+        memset(const_cast<T*>(p), 0x3B, sizeof(T));
+        js_free(const_cast<T*>(p));
     }
 }
 
 template <class T>
-static JS_ALWAYS_INLINE T *
+static MOZ_ALWAYS_INLINE T*
 js_pod_malloc()
 {
-    return (T *)js_malloc(sizeof(T));
+    return static_cast<T*>(js_malloc(sizeof(T)));
 }
 
 template <class T>
-static JS_ALWAYS_INLINE T *
+static MOZ_ALWAYS_INLINE T*
 js_pod_calloc()
 {
-    return (T *)js_calloc(sizeof(T));
+    return static_cast<T*>(js_calloc(sizeof(T)));
 }
 
 template <class T>
-static JS_ALWAYS_INLINE T *
+static MOZ_ALWAYS_INLINE T*
 js_pod_malloc(size_t numElems)
 {
-    if (numElems & js::tl::MulOverflowMask<sizeof(T)>::result)
-        return NULL;
-    return (T *)js_malloc(numElems * sizeof(T));
+    size_t bytes;
+    if (MOZ_UNLIKELY(!js::CalculateAllocSize<T>(numElems, &bytes)))
+        return nullptr;
+    return static_cast<T*>(js_malloc(bytes));
 }
 
 template <class T>
-static JS_ALWAYS_INLINE T *
+static MOZ_ALWAYS_INLINE T*
 js_pod_calloc(size_t numElems)
 {
-    if (numElems & js::tl::MulOverflowMask<sizeof(T)>::result)
-        return NULL;
-    return (T *)js_calloc(numElems * sizeof(T));
+    size_t bytes;
+    if (MOZ_UNLIKELY(!js::CalculateAllocSize<T>(numElems, &bytes)))
+        return nullptr;
+    return static_cast<T*>(js_calloc(bytes));
+}
+
+template <class T>
+static MOZ_ALWAYS_INLINE T*
+js_pod_realloc(T* prior, size_t oldSize, size_t newSize)
+{
+    MOZ_ASSERT(!(oldSize & mozilla::tl::MulOverflowMask<sizeof(T)>::value));
+    size_t bytes;
+    if (MOZ_UNLIKELY(!js::CalculateAllocSize<T>(newSize, &bytes)))
+        return nullptr;
+    return static_cast<T*>(js_realloc(prior, bytes));
 }
 
 namespace js {
@@ -547,7 +447,7 @@ template<typename T>
 struct ScopedFreePtrTraits
 {
     typedef T* type;
-    static T* empty() { return NULL; }
+    static T* empty() { return nullptr; }
     static void release(T* ptr) { js_free(ptr); }
 };
 SCOPED_TEMPLATE(ScopedJSFreePtr, ScopedFreePtrTraits)
@@ -555,189 +455,50 @@ SCOPED_TEMPLATE(ScopedJSFreePtr, ScopedFreePtrTraits)
 template <typename T>
 struct ScopedDeletePtrTraits : public ScopedFreePtrTraits<T>
 {
-    static void release(T *ptr) { js_delete(ptr); }
+    static void release(T* ptr) { js_delete(ptr); }
 };
 SCOPED_TEMPLATE(ScopedJSDeletePtr, ScopedDeletePtrTraits)
 
 template <typename T>
 struct ScopedReleasePtrTraits : public ScopedFreePtrTraits<T>
 {
-    static void release(T *ptr) { if (ptr) ptr->release(); }
+    static void release(T* ptr) { if (ptr) ptr->release(); }
 };
 SCOPED_TEMPLATE(ScopedReleasePtr, ScopedReleasePtrTraits)
 
 } /* namespace js */
 
+namespace JS {
+
+template<typename T>
+struct DeletePolicy
+{
+    constexpr DeletePolicy() {}
+
+    template<typename U>
+    MOZ_IMPLICIT DeletePolicy(DeletePolicy<U> other,
+                              typename mozilla::EnableIf<mozilla::IsConvertible<U*, T*>::value,
+                                                         int>::Type dummy = 0)
+    {}
+
+    void operator()(const T* ptr) {
+        js_delete(const_cast<T*>(ptr));
+    }
+};
+
+struct FreePolicy
+{
+    void operator()(const void* ptr) {
+        js_free(const_cast<void*>(ptr));
+    }
+};
+
+typedef mozilla::UniquePtr<char[], JS::FreePolicy> UniqueChars;
+typedef mozilla::UniquePtr<char16_t[], JS::FreePolicy> UniqueTwoByteChars;
+
+} // namespace JS
+
 namespace js {
-
-/*
- * "Move" References
- *
- * Some types can be copied much more efficiently if we know the original's
- * value need not be preserved --- that is, if we are doing a "move", not a
- * "copy". For example, if we have:
- *
- *   Vector<T> u;
- *   Vector<T> v(u);
- *
- * the constructor for v must apply a copy constructor to each element of u ---
- * taking time linear in the length of u. However, if we know we will not need u
- * any more once v has been initialized, then we could initialize v very
- * efficiently simply by stealing u's dynamically allocated buffer and giving it
- * to v --- a constant-time operation, regardless of the size of u.
- *
- * Moves often appear in container implementations. For example, when we append
- * to a vector, we may need to resize its buffer. This entails moving each of
- * its extant elements from the old, smaller buffer to the new, larger buffer.
- * But once the elements have been migrated, we're just going to throw away the
- * old buffer; we don't care if they still have their values. So if the vector's
- * element type can implement "move" more efficiently than "copy", the vector
- * resizing should by all means use a "move" operation. Hash tables also need to
- * be resized.
- *
- * The details of the optimization, and whether it's worth applying, vary from
- * one type to the next. And while some constructor calls are moves, many really
- * are copies, and can't be optimized this way. So we need:
- *
- * 1) a way for a particular invocation of a copy constructor to say that it's
- *    really a move, and that the value of the original isn't important
- *    afterwards (althought it must still be safe to destroy); and
- *
- * 2) a way for a type (like Vector) to announce that it can be moved more
- *    efficiently than it can be copied, and provide an implementation of that
- *    move operation.
- *
- * The Move(T &) function takes a reference to a T, and returns an MoveRef<T>
- * referring to the same value; that's 1). An MoveRef<T> is simply a reference
- * to a T, annotated to say that a copy constructor applied to it may move that
- * T, instead of copying it. Finally, a constructor that accepts an MoveRef<T>
- * should perform a more efficient move, instead of a copy, providing 2).
- *
- * So, where we might define a copy constructor for a class C like this:
- *
- *   C(const C &rhs) { ... copy rhs to this ... }
- *
- * we would declare a move constructor like this:
- *
- *   C(MoveRef<C> rhs) { ... move rhs to this ... }
- *
- * And where we might perform a copy like this:
- *
- *   C c2(c1);
- *
- * we would perform a move like this:
- *
- *   C c2(Move(c1))
- *
- * Note that MoveRef<T> implicitly converts to T &, so you can pass an
- * MoveRef<T> to an ordinary copy constructor for a type that doesn't support a
- * special move constructor, and you'll just get a copy. This means that
- * templates can use Move whenever they know they won't use the original value
- * any more, even if they're not sure whether the type at hand has a specialized
- * move constructor. If it doesn't, the MoveRef<T> will just convert to a T &,
- * and the ordinary copy constructor will apply.
- *
- * A class with a move constructor can also provide a move assignment operator,
- * which runs this's destructor, and then applies the move constructor to
- * *this's memory. A typical definition:
- *
- *   C &operator=(MoveRef<C> rhs) {
- *     this->~C();
- *     new(this) C(rhs);
- *     return *this;
- *   }
- *
- * With that in place, one can write move assignments like this:
- *
- *   c2 = Move(c1);
- *
- * This destroys c1, moves c1's value to c2, and leaves c1 in an undefined but
- * destructible state.
- *
- * This header file defines MoveRef and Move in the js namespace. It's up to
- * individual containers to annotate moves as such, by calling Move; and it's up
- * to individual types to define move constructors.
- *
- * One hint: if you're writing a move constructor where the type has members
- * that should be moved themselves, it's much nicer to write this:
- *
- *   C(MoveRef<C> c) : x(c->x), y(c->y) { }
- *
- * than the equivalent:
- *
- *   C(MoveRef<C> c) { new(&x) X(c->x); new(&y) Y(c->y); }
- *
- * especially since GNU C++ fails to notice that this does indeed initialize x
- * and y, which may matter if they're const.
- */
-template<typename T>
-class MoveRef {
-  public:
-    typedef T Referent;
-    explicit MoveRef(T &t) : pointer(&t) { }
-    T &operator*()  const { return *pointer; }
-    T *operator->() const { return  pointer; }
-    operator T& ()   const { return *pointer; }
-  private:
-    T *pointer;
-};
-
-template<typename T>
-MoveRef<T> Move(T &t) { return MoveRef<T>(t); }
-
-template<typename T>
-MoveRef<T> Move(const T &t) { return MoveRef<T>(const_cast<T &>(t)); }
-
-/* Useful for implementing containers that assert non-reentrancy */
-class ReentrancyGuard
-{
-    /* ReentrancyGuard is not copyable. */
-    ReentrancyGuard(const ReentrancyGuard &);
-    void operator=(const ReentrancyGuard &);
-
-#ifdef DEBUG
-    bool &entered;
-#endif
-  public:
-    template <class T>
-#ifdef DEBUG
-    ReentrancyGuard(T &obj)
-      : entered(obj.entered)
-#else
-    ReentrancyGuard(T &/*obj*/)
-#endif
-    {
-#ifdef DEBUG
-        JS_ASSERT(!entered);
-        entered = true;
-#endif
-    }
-    ~ReentrancyGuard()
-    {
-#ifdef DEBUG
-        entered = false;
-#endif
-    }
-};
-
-template <class T>
-JS_ALWAYS_INLINE static void
-Swap(T &t, T &u)
-{
-    T tmp(Move(t));
-    t = Move(u);
-    u = Move(tmp);
-}
-
-/*
- * Round x up to the nearest power of 2.  This function assumes that the most
- * significant bit of x is not set, which would lead to overflow.
- */
-JS_ALWAYS_INLINE size_t
-RoundUpPow2(size_t x)
-{
-    return size_t(1) << JS_CEILING_LOG2W(x);
-}
 
 /* Integral types for all hash functions. */
 typedef uint32_t HashNumber;
@@ -772,7 +533,7 @@ ScrambleHashCode(HashNumber h)
      *
      * So we use Fibonacci hashing, as described in Knuth, The Art of Computer
      * Programming, 6.4. This mixes all the bits of the input hash code h.
-     * 
+     *
      * The value of goldenRatio is taken from the hex
      * expansion of the golden ratio, which starts 1.9E3779B9....
      * This value is especially good if values with consecutive hash codes
@@ -786,45 +547,6 @@ ScrambleHashCode(HashNumber h)
 
 } /* namespace js */
 
-namespace JS {
-
-/*
- * Methods for poisoning GC heap pointer words and checking for poisoned words.
- * These are in this file for use in Value methods and so forth.
- *
- * If the moving GC hazard analysis is in use and detects a non-rooted stack
- * pointer to a GC thing, one byte of that pointer is poisoned to refer to an
- * invalid location. For both 32 bit and 64 bit systems, the fourth byte of the
- * pointer is overwritten, to reduce the likelihood of accidentally changing
- * a live integer value.
- */
-
-inline void PoisonPtr(void *v)
-{
-#if defined(JSGC_ROOT_ANALYSIS) && defined(DEBUG)
-    uint8_t *ptr = (uint8_t *) v + 3;
-    *ptr = JS_FREE_PATTERN;
-#endif
-}
-
-template <typename T>
-inline bool IsPoisonedPtr(T *v)
-{
-#if defined(JSGC_ROOT_ANALYSIS) && defined(DEBUG)
-    uint32_t mask = uintptr_t(v) & 0xff000000;
-    return mask == uint32_t(JS_FREE_PATTERN << 24);
-#else
-    return false;
-#endif
-}
-
-}
-
-/*
- * This is SpiderMonkey's equivalent to |nsMallocSizeOfFun|.
- */
-typedef size_t(*JSMallocSizeOfFun)(const void *p);
-
 /* sixgill annotation defines */
 #ifndef HAVE_STATIC_ANNOTATIONS
 # define HAVE_STATIC_ANNOTATIONS
@@ -835,22 +557,10 @@ typedef size_t(*JSMallocSizeOfFun)(const void *p);
 #  define STATIC_POSTCONDITION_ASSUME(COND) __attribute__((postcondition_assume(#COND)))
 #  define STATIC_INVARIANT(COND)            __attribute__((invariant(#COND)))
 #  define STATIC_INVARIANT_ASSUME(COND)     __attribute__((invariant_assume(#COND)))
-#  define STATIC_PASTE2(X,Y) X ## Y
-#  define STATIC_PASTE1(X,Y) STATIC_PASTE2(X,Y)
-#  define STATIC_ASSERT(COND)                        \
-  JS_BEGIN_MACRO                                     \
-    __attribute__((assert_static(#COND), unused))    \
-    int STATIC_PASTE1(assert_static_, __COUNTER__);  \
-  JS_END_MACRO
 #  define STATIC_ASSUME(COND)                        \
   JS_BEGIN_MACRO                                     \
     __attribute__((assume_static(#COND), unused))    \
     int STATIC_PASTE1(assume_static_, __COUNTER__);  \
-  JS_END_MACRO
-#  define STATIC_ASSERT_RUNTIME(COND)                       \
-  JS_BEGIN_MACRO                                            \
-    __attribute__((assert_static_runtime(#COND), unused))   \
-    int STATIC_PASTE1(assert_static_runtime_, __COUNTER__); \
   JS_END_MACRO
 # else /* XGILL_PLUGIN */
 #  define STATIC_PRECONDITION(COND)          /* nothing */
@@ -859,9 +569,7 @@ typedef size_t(*JSMallocSizeOfFun)(const void *p);
 #  define STATIC_POSTCONDITION_ASSUME(COND)  /* nothing */
 #  define STATIC_INVARIANT(COND)             /* nothing */
 #  define STATIC_INVARIANT_ASSUME(COND)      /* nothing */
-#  define STATIC_ASSERT(COND)          JS_BEGIN_MACRO /* nothing */ JS_END_MACRO
 #  define STATIC_ASSUME(COND)          JS_BEGIN_MACRO /* nothing */ JS_END_MACRO
-#  define STATIC_ASSERT_RUNTIME(COND)  JS_BEGIN_MACRO /* nothing */ JS_END_MACRO
 # endif /* XGILL_PLUGIN */
 # define STATIC_SKIP_INFERENCE STATIC_INVARIANT(skip_inference())
 #endif /* HAVE_STATIC_ANNOTATIONS */

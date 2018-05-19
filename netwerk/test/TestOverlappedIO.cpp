@@ -10,6 +10,8 @@
 #include <windows.h>
 #endif
 #ifdef OS2
+#define INCL_BASE
+#define INCL_PM
 #include <os2.h>
 #endif
 
@@ -29,12 +31,8 @@
 #include "nsCOMPtr.h"
 #include "nsIByteArrayInputStream.h"
 
-#if defined(PR_LOGGING)
 static PRLogModuleInfo *gTestSocketIOLog;
-#define LOG(args) PR_LOG(gTestSocketIOLog, PR_LOG_DEBUG, args)
-#else
-#define LOG(args)
-#endif
+#define LOG(args) MOZ_LOG(gTestSocketIOLog, mozilla::LogLevel::Debug, args)
 
 static NS_DEFINE_CID(kSocketTransportServiceCID, NS_SOCKETTRANSPORTSERVICE_CID);
 static NS_DEFINE_CID(kEventQueueServiceCID, NS_EVENTQUEUESERVICE_CID);
@@ -60,9 +58,9 @@ public:
     NS_DECL_NSISTREAMLISTENER
 };
 
-NS_IMPL_ISUPPORTS2(TestListener,
-                   nsIRequestObserver,
-                   nsIStreamListener);
+NS_IMPL_ISUPPORTS(TestListener,
+                  nsIRequestObserver,
+                  nsIStreamListener);
 
 NS_IMETHODIMP
 TestListener::OnStartRequest(nsIRequest* request, nsISupports* context)
@@ -125,9 +123,9 @@ protected:
     uint32_t mRequestCount;
 };
 
-NS_IMPL_ISUPPORTS2(TestProvider,
-                   nsIStreamProvider,
-                   nsIRequestObserver)
+NS_IMPL_ISUPPORTS(TestProvider,
+                  nsIStreamProvider,
+                  nsIRequestObserver)
 
 TestProvider::TestProvider(char *data)
 {
@@ -236,9 +234,7 @@ main(int argc, char* argv[])
 
     signal(SIGSEGV, sighandler);
 
-#if defined(PR_LOGGING)
     gTestSocketIOLog = PR_NewLogModule("TestSocketIO");
-#endif
 
     if (argc < 3)
         usage(argv);

@@ -2,7 +2,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-const stateBackup = ss.getBrowserState();
+const stateBackup = JSON.parse(ss.getBrowserState());
 const testState = {
   windows: [{
     tabs: [
@@ -42,12 +42,12 @@ function test() {
   /** Test for Bug 615394 - Session Restore should notify when it is beginning and ending a restore **/
   waitForExplicitFinish();
   // Preemptively extend the timeout to prevent [orange]
-  requestLongerTimeout(2);
+  requestLongerTimeout(4);
   runNextTest();
 }
 
 
-let tests = [
+var tests = [
   test_setTabState,
   test_duplicateTab,
   test_undoCloseTab,
@@ -61,20 +61,22 @@ function runNextTest() {
     // Enumerate windows and close everything but our primary window. We can't
     // use waitForFocus() because apparently it's buggy. See bug 599253.
     var windowsEnum = Services.wm.getEnumerator("navigator:browser");
+    let closeWinPromises = [];
     while (windowsEnum.hasMoreElements()) {
       var currentWindow = windowsEnum.getNext();
       if (currentWindow != window) {
-        currentWindow.close();
+        closeWinPromises.push(BrowserTestUtils.closeWindow(currentWindow));
       }
     }
 
-    let currentTest = tests.shift();
-    info("prepping for " + currentTest.name);
-    waitForBrowserState(testState, currentTest);
+    Promise.all(closeWinPromises).then(() => {
+      let currentTest = tests.shift();
+      info("prepping for " + currentTest.name);
+      waitForBrowserState(testState, currentTest);
+    });
   }
   else {
-    ss.setBrowserState(stateBackup);
-    finish();
+    waitForBrowserState(stateBackup, finish);
   }
 }
 
@@ -129,9 +131,8 @@ function test_duplicateTab() {
     busyEventCount++;
   }
 
-  // duplicateTab is "synchronous" in tab creation. Since restoreHistory is called
-  // via setTimeout, newTab will be assigned before the SSWindowStateReady event
   function onSSWindowStateReady(aEvent) {
+    newTab = gBrowser.tabs[2];
     readyEventCount++;
     is(ss.getTabValue(newTab, "foo"), "bar");
     ss.setTabValue(newTab, "baz", "qux");
@@ -170,9 +171,8 @@ function test_undoCloseTab() {
     busyEventCount++;
   }
 
-  // undoCloseTab is "synchronous" in tab creation. Since restoreHistory is called
-  // via setTimeout, reopenedTab will be assigned before the SSWindowStateReady event
   function onSSWindowStateReady(aEvent) {
+    reopenedTab = gBrowser.tabs[1];
     readyEventCount++;
     is(ss.getTabValue(reopenedTab, "foo"), "bar");
     ss.setTabValue(reopenedTab, "baz", "qux");
@@ -287,7 +287,8 @@ function test_setBrowserState() {
 
   waitForBrowserState(lameMultiWindowState, function() {
     let checkedWindows = 0;
-    for each (let [id, winEvents] in Iterator(windowEvents)) {
+    for (let id of Object.keys(windowEvents)) {
+      let winEvents = windowEvents[id];
       is(winEvents.busyEventCount, 1,
          "[test_setBrowserState] window" + id + " busy event count correct");
       is(winEvents.readyEventCount, 1,
@@ -318,16 +319,18 @@ function test_undoCloseWindow() {
 
   waitForBrowserState(lameMultiWindowState, function() {
     // Close the window which isn't window
-    newWindow.close();
-    reopenedWindow = ss.undoCloseWindow(0);
-    reopenedWindow.addEventListener("SSWindowStateBusy", onSSWindowStateBusy, false);
-    reopenedWindow.addEventListener("SSWindowStateReady", onSSWindowStateReady, false);
+    BrowserTestUtils.closeWindow(newWindow).then(() => {
+      // Now give it time to close
+      reopenedWindow = ss.undoCloseWindow(0);
+      reopenedWindow.addEventListener("SSWindowStateBusy", onSSWindowStateBusy, false);
+      reopenedWindow.addEventListener("SSWindowStateReady", onSSWindowStateReady, false);
 
-    reopenedWindow.addEventListener("load", function() {
-      reopenedWindow.removeEventListener("load", arguments.callee, false);
+      reopenedWindow.addEventListener("load", function() {
+        reopenedWindow.removeEventListener("load", arguments.callee, false);
 
-      reopenedWindow.gBrowser.tabContainer.addEventListener("SSTabRestored", onSSTabRestored, false);
-    }, false);
+        reopenedWindow.gBrowser.tabContainer.addEventListener("SSTabRestored", onSSTabRestored, false);
+      }, false);
+    });
   });
 
   let busyEventCount = 0,
@@ -353,8 +356,6 @@ function test_undoCloseWindow() {
     reopenedWindow.removeEventListener("SSWindowStateReady", onSSWindowStateReady, false);
     reopenedWindow.gBrowser.tabContainer.removeEventListener("SSTabRestored", onSSTabRestored, false);
 
-    reopenedWindow.close();
-
-    runNextTest();
+    BrowserTestUtils.closeWindow(reopenedWindow).then(runNextTest);
   }
 }

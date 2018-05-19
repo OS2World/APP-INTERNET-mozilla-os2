@@ -11,8 +11,9 @@
 #ifndef WEBRTC_MODULES_VIDEO_RENDER_MAIN_SOURCE_VIDEO_RENDER_FRAMES_H_  // NOLINT
 #define WEBRTC_MODULES_VIDEO_RENDER_MAIN_SOURCE_VIDEO_RENDER_FRAMES_H_  // NOLINT
 
+#include <list>
+
 #include "webrtc/modules/video_render/include/video_render.h"
-#include "system_wrappers/interface/list_wrapper.h"
 
 namespace webrtc {
 
@@ -20,25 +21,21 @@ namespace webrtc {
 class VideoRenderFrames {
  public:
   VideoRenderFrames();
-  ~VideoRenderFrames();
 
   // Add a frame to the render queue
-  WebRtc_Word32 AddFrame(I420VideoFrame* new_frame);
+  int32_t AddFrame(const I420VideoFrame& new_frame);
 
-  // Get a frame for rendering, if it's time to render.
-  I420VideoFrame* FrameToRender();
-
-  // Return an old frame
-  WebRtc_Word32 ReturnFrame(I420VideoFrame* old_frame);
+  // Get a frame for rendering, or a zero-size frame if it's not time to render.
+  I420VideoFrame FrameToRender();
 
   // Releases all frames
-  WebRtc_Word32 ReleaseAllFrames();
+  int32_t ReleaseAllFrames();
 
   // Returns the number of ms to next frame to render
-  WebRtc_UWord32 TimeToNextFrameRelease();
+  uint32_t TimeToNextFrameRelease();
 
   // Sets estimates delay in renderer
-  WebRtc_Word32 SetRenderDelay(const WebRtc_UWord32 render_delay);
+  int32_t SetRenderDelay(const uint32_t render_delay);
 
  private:
   // 10 seconds for 30 fps.
@@ -49,12 +46,10 @@ class VideoRenderFrames {
   enum { KFutureRenderTimestampMS = 10000 };
 
   // Sorted list with framed to be rendered, oldest first.
-  ListWrapper incoming_frames_;
-  // Empty frames.
-  ListWrapper empty_frames_;
+  std::list<I420VideoFrame> incoming_frames_;
 
   // Estimated delay from a frame is released until it's rendered.
-  WebRtc_UWord32 render_delay_ms_;
+  uint32_t render_delay_ms_;
 };
 
 }  // namespace webrtc

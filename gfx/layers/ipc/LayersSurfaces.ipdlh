@@ -2,114 +2,139 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-include protocol PGrallocBuffer;
-
-include "gfxipc/ShadowLayerUtils.h";
-
-using gfx3DMatrix;
-using gfxIntSize;
-using gfxPoint;
-using gfxRGBA;
-using nsIntPoint;
-using nsIntRect;
-using nsIntRegion;
-using nsIntSize;
-using mozilla::gfxContentType;
-using mozilla::GraphicsFilterType;
-using mozilla::layers::FrameMetrics;
-using mozilla::layers::MagicGrallocBufferHandle;
-using mozilla::layers::SurfaceDescriptorX11;
-using mozilla::null_t;
-using mozilla::WindowsHandle;
-using mozilla::gl::SharedTextureHandle;
-using mozilla::gl::GLContext::SharedTextureShareType;
-using mozilla::gfx::SurfaceStreamHandle;
+using struct gfxPoint from "gfxPoint.h";
+using nsIntRegion from "nsRegion.h";
+using struct mozilla::layers::SurfaceDescriptorX11 from "gfxipc/ShadowLayerUtils.h";
+using mozilla::StereoMode from "ImageTypes.h";
+using mozilla::YUVColorSpace from "ImageTypes.h";
+using struct mozilla::null_t from "ipc/IPCMessageUtils.h";
+using mozilla::WindowsHandle from "ipc/IPCMessageUtils.h";
+using mozilla::gfx::SurfaceFormat from "mozilla/gfx/Types.h";
+using mozilla::gfx::IntRect from "mozilla/gfx/Rect.h";
+using mozilla::gfx::IntSize from "mozilla/gfx/Point.h";
+using gfxImageFormat from "gfxTypes.h";
+using struct mozilla::layers::GonkNativeHandle from "mozilla/layers/GonkNativeHandleUtils.h";
 
 namespace mozilla {
 namespace layers {
 
-union MaybeMagicGrallocBufferHandle {
-  MagicGrallocBufferHandle;
+union OverlayHandle {
+  int32_t;
+  GonkNativeHandle;
   null_t;
+};
+
+struct OverlaySource {
+  OverlayHandle handle;
+  IntSize size;
+};
+
+struct SurfaceDescriptorD3D9 {
+  // IDirect3DTexture9*
+  uintptr_t texture;
+};
+
+struct SurfaceDescriptorFileMapping {
+  WindowsHandle handle;
+  SurfaceFormat format;
+  IntSize size;
+};
+
+struct SurfaceDescriptorDIB {
+  // gfxWindowsSurface*
+  uintptr_t surface;
 };
 
 struct SurfaceDescriptorD3D10 {
   WindowsHandle handle;
+  SurfaceFormat format;
+  IntSize size;
+};
+
+struct SurfaceDescriptorDXGIYCbCr {
+  WindowsHandle handleY;
+  WindowsHandle handleCb;
+  WindowsHandle handleCr;
+  IntSize size;
+  IntSize sizeY;
+  IntSize sizeCbCr;
+};
+
+struct SurfaceDescriptorMacIOSurface {
+  uint32_t surfaceId;
+  double scaleFactor;
+  bool isOpaque;
+};
+
+struct SurfaceTextureDescriptor {
+  uintptr_t surfTex;
+  IntSize size;
+};
+
+struct EGLImageDescriptor {
+  uintptr_t image; // `EGLImage` is a `void*`.
+  uintptr_t fence;
+  IntSize size;
   bool hasAlpha;
 };
 
-struct SharedTextureDescriptor {
-  SharedTextureShareType shareType;
-  SharedTextureHandle handle;
-  nsIntSize size;
-  bool inverted;
+struct SurfaceDescriptorSharedGLTexture {
+  uint32_t texture;
+  uint32_t target;
+  uintptr_t fence;
+  IntSize size;
+  bool hasAlpha;
 };
 
-struct SurfaceDescriptorGralloc {
-  PGrallocBuffer buffer;
-  /**
-   * android::GraphicBuffer has a size information. But there are cases
-   * that GraphicBuffer's size and actual video's size are different.
-   * Extra size member is necessary. See Bug 850566.
-   */
-  nsIntSize size;
-
-  /**
-   * We can have one source producing gralloc buffers and sharing them
-   * with another source that may also produce its own gralloc buffers.
-   * This happens for camera preview buffers sent to video code.  When
-   * that happens, the producer can mark the buffer as "external" to
-   * prevent its consumer from mistakenly freeing the buffer.
-   */
-  bool external;
-
-  /**
-   * This gralloc buffer will be treated as if the RB bytes are swapped.
-   * This is useful for rendering using Cairo/Thebes, because there is no
-   * BGRX Android pixel format, and so we have to do byte swapping.
-   *
-   * For example, if the GraphicBuffer has an Android pixel format of
-   * PIXEL_FORMAT_RGBA_8888 and isRBSwapped is true, when it is sampled
-   * (for example, with GL), a BGRA shader should be used.
-   */
-  bool isRBSwapped;
+struct SurfaceDescriptorGPUVideo {
+  uint64_t handle;
 };
 
-struct SurfaceStreamDescriptor {
-  SurfaceStreamHandle handle;
-  bool yflip;
+struct RGBDescriptor {
+  IntSize size;
+  SurfaceFormat format;
+  bool hasIntermediateBuffer;
 };
 
-struct YCbCrImage {
-  Shmem data;
-  uint64_t owner;
+struct YCbCrDescriptor {
+  IntSize ySize;
+  IntSize cbCrSize;
+  uint32_t yOffset;
+  uint32_t cbOffset;
+  uint32_t crOffset;
+  StereoMode stereoMode;
+  YUVColorSpace yUVColorSpace;
+  bool hasIntermediateBuffer;
 };
 
-// XXX remove RGBImage (see bug 847914)
-struct RGBImage {
-  Shmem data;
-  nsIntRect picture;
-  uint32_t rgbFormat;
-  uint64_t owner;
+union BufferDescriptor {
+  RGBDescriptor;
+  YCbCrDescriptor;
 };
 
-struct MemoryImage {
-  uintptr_t data;
-  gfxIntSize size;
-  uint32_t stride;
-  uint32_t format;
+union MemoryOrShmem {
+  uintptr_t;
+  Shmem;
+};
+
+struct SurfaceDescriptorBuffer {
+  BufferDescriptor desc;
+  MemoryOrShmem data;
 };
 
 union SurfaceDescriptor {
-  Shmem;
+  SurfaceDescriptorBuffer;
+  SurfaceDescriptorD3D9;
+  SurfaceDescriptorDIB;
   SurfaceDescriptorD3D10;
-  SurfaceDescriptorGralloc;
+  SurfaceDescriptorFileMapping;
+  SurfaceDescriptorDXGIYCbCr;
   SurfaceDescriptorX11;
-  YCbCrImage;
-  RGBImage;
-  SharedTextureDescriptor;
-  SurfaceStreamDescriptor;
-  MemoryImage;
+  SurfaceTextureDescriptor;
+  EGLImageDescriptor;
+  SurfaceDescriptorMacIOSurface;
+  SurfaceDescriptorSharedGLTexture;
+  SurfaceDescriptorGPUVideo;
   null_t;
 };
 

@@ -1,4 +1,5 @@
-/* vim:set ts=2 sw=2 et cindent: */
+/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
+/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -11,7 +12,7 @@
 
 static const char kAsciiData[] = "Hello World";
 
-static const PRUnichar kUnicodeData[] =
+static const char16_t kUnicodeData[] =
   {'H','e','l','l','o',' ','W','o','r','l','d','\0'};
 
 static bool test_basic_1()
@@ -49,7 +50,7 @@ static bool test_basic_1()
         NS_ERROR("unexpected result");
         return false;
       }
-    NS_Free(clone);
+    free(clone);
 
     nsCStringContainer temp;
     NS_CStringContainerInit(temp);
@@ -78,9 +79,9 @@ static bool test_basic_2()
     nsStringContainer s;
     NS_StringContainerInit(s);
 
-    const PRUnichar *ptr;
+    const char16_t *ptr;
     uint32_t len;
-    PRUnichar *clone;
+    char16_t *clone;
 
     NS_StringGetData(s, &ptr);
     if (ptr == nullptr || *ptr != '\0')
@@ -108,7 +109,7 @@ static bool test_basic_2()
         NS_ERROR("unexpected result");
         return false;
       }
-    NS_Free(clone);
+    free(clone);
 
     nsStringContainer temp;
     NS_StringContainerInit(temp);
@@ -177,12 +178,12 @@ static void ReplaceSubstring( nsACString& str,
                               const nsACString& matchVal,
                               const nsACString& newVal )
   {
-    const char* sp, *mp, *np;
-    uint32_t sl, ml, nl;
-
-    sl = NS_CStringGetData(str, &sp);
-    ml = NS_CStringGetData(matchVal, &mp);
-    nl = NS_CStringGetData(newVal, &np);
+    const char* sp;
+    const char* mp;
+    const char* np;
+    uint32_t sl = NS_CStringGetData(str, &sp);
+    uint32_t ml = NS_CStringGetData(matchVal, &mp);
+    uint32_t nl = NS_CStringGetData(newVal, &np);
 
     for (const char* iter = sp; iter <= sp + sl - ml; ++iter)
       {
@@ -264,7 +265,7 @@ static bool test_replace()
     return true;
   }
 
-static const char* kWhitespace="\b\t\r\n ";
+static const char* kWhitespace="\f\t\r\n ";
 
 static void
 CompressWhitespace(nsACString &str)
@@ -480,12 +481,12 @@ static bool test_stripchars()
 {
   nsCString test(kAsciiData);
   test.StripChars("ld");
-  if (!test.Equals("Heo Wor"))
+  if (!test.EqualsLiteral("Heo Wor"))
     return false;
 
   test.Assign(kAsciiData);
   test.StripWhitespace();
-  if (!test.Equals("HelloWorld"))
+  if (!test.EqualsLiteral("HelloWorld"))
     return false;
 
   return true;
@@ -504,13 +505,13 @@ static bool test_trim()
   test2.Trim(kWS, true, false);
   test3.Trim(kWS, false, true);
 
-  if (!test1.Equals("Testing..."))
+  if (!test1.EqualsLiteral("Testing..."))
     return false;
 
-  if (!test2.Equals("Testing...\n\r"))
+  if (!test2.EqualsLiteral("Testing...\n\r"))
     return false;
 
-  if (!test3.Equals(" \n\tTesting..."))
+  if (!test3.EqualsLiteral(" \n\tTesting..."))
     return false;
 
   return true;
@@ -557,7 +558,7 @@ static bool test_compressws()
 {
   nsString check(NS_LITERAL_STRING(" \tTesting  \n\t1\n 2 3\n "));
   CompressWhitespace(check);
-  return check.Equals(NS_LITERAL_STRING("Testing 1 2 3"));
+  return check.EqualsLiteral("Testing 1 2 3");
 }
 
 static bool test_comparisons()

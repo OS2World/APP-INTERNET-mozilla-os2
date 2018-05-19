@@ -7,6 +7,7 @@
 #include <stdio.h>
 #include <gtk/gtk.h>
 #include <unistd.h>
+#include "mozilla/Sprintf.h"
 #include "progressui.h"
 #include "readstrings.h"
 #include "errors.h"
@@ -71,7 +72,7 @@ ShowProgressUI()
     return 0;
 
   char ini_path[PATH_MAX];
-  snprintf(ini_path, sizeof(ini_path), "%s.ini", sProgramPath);
+  SprintfLiteral(ini_path, "%s.ini", sProgramPath);
 
   StringTable strings;
   if (ReadStrings(ini_path, &strings) != OK)
@@ -83,10 +84,10 @@ ShowProgressUI()
 
   static GdkPixbuf *pixbuf;
   char icon_path[PATH_MAX];
-  snprintf(icon_path, sizeof(icon_path), "%s.png", sProgramPath);
+  SprintfLiteral(icon_path, "%s.png", sProgramPath);
 
   g_signal_connect(G_OBJECT(sWin), "delete_event",
-                   G_CALLBACK(OnDeleteEvent), NULL);
+                   G_CALLBACK(OnDeleteEvent), nullptr);
 
   gtk_window_set_title(GTK_WINDOW(sWin), strings.title);
   gtk_window_set_type_hint(GTK_WINDOW(sWin), GDK_WINDOW_TYPE_HINT_DIALOG);
@@ -94,7 +95,7 @@ ShowProgressUI()
   gtk_window_set_resizable(GTK_WINDOW(sWin), FALSE);
   gtk_window_set_decorated(GTK_WINDOW(sWin), TRUE);
   gtk_window_set_deletable(GTK_WINDOW(sWin),FALSE);
-  pixbuf = gdk_pixbuf_new_from_file (icon_path, NULL);
+  pixbuf = gdk_pixbuf_new_from_file (icon_path, nullptr);
   gtk_window_set_icon(GTK_WINDOW(sWin), pixbuf);
   g_object_unref(pixbuf);
 
@@ -106,7 +107,7 @@ ShowProgressUI()
   gtk_box_pack_start(GTK_BOX(vbox), sLabel, FALSE, FALSE, 0);
   gtk_box_pack_start(GTK_BOX(vbox), sProgressBar, TRUE, TRUE, 0);
 
-  sTimerID = g_timeout_add(TIMER_INTERVAL, UpdateDialog, NULL);
+  sTimerID = g_timeout_add(TIMER_INTERVAL, UpdateDialog, nullptr);
 
   gtk_container_set_border_width(GTK_CONTAINER(sWin), 10);
   gtk_container_add(GTK_CONTAINER(sWin), vbox);

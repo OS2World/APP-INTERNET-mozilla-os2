@@ -24,13 +24,12 @@
 #include "nsITimer.h"
 #include "nsISimpleEnumerator.h"
 #include "nsCOMArray.h"
-#include "nsAutoPtr.h"
-#include "nsICharsetConverterManager.h"
 #include "nsBaseFilePicker.h"
 #include "nsString.h"
 #include "nsdefs.h"
 #include <commdlg.h>
 #include <shobjidl.h>
+#undef LogSeverity // SetupAPI.h #defines this as DWORD
 
 class nsILoadContext;
 
@@ -57,14 +56,14 @@ class nsFilePicker :
   public IFileDialogEvents,
   public nsBaseWinFilePicker
 {
-public:
-  nsFilePicker(); 
   virtual ~nsFilePicker();
+public:
+  nsFilePicker();
 
-  NS_IMETHOD Init(nsIDOMWindow *aParent, const nsAString& aTitle, int16_t aMode);
-                  
+  NS_IMETHOD Init(mozIDOMWindowProxy *aParent, const nsAString& aTitle, int16_t aMode);
+
   NS_DECL_ISUPPORTS
-  
+
   // IUnknown's QueryInterface
   STDMETHODIMP QueryInterface(REFIID refiid, void** ppvResult);
 
@@ -74,8 +73,8 @@ public:
   NS_IMETHOD GetFile(nsIFile * *aFile);
   NS_IMETHOD GetFileURL(nsIURI * *aFileURL);
   NS_IMETHOD GetFiles(nsISimpleEnumerator **aFiles);
-  NS_IMETHOD Show(int16_t *aReturnVal); 
-  NS_IMETHOD ShowW(int16_t *aReturnVal); 
+  NS_IMETHOD Show(int16_t *aReturnVal);
+  NS_IMETHOD ShowW(int16_t *aReturnVal);
   NS_IMETHOD AppendFilter(const nsAString& aTitle, const nsAString& aFilter);
 
   // IFileDialogEvents
@@ -95,10 +94,10 @@ protected:
 
   /* method from nsBaseFilePicker */
   virtual void InitNative(nsIWidget *aParent,
-                          const nsAString& aTitle,
-                          int16_t aMode);
-  static void GetQualifiedPath(const PRUnichar *aInPath, nsString &aOutPath);
+                          const nsAString& aTitle);
+  static void GetQualifiedPath(const wchar_t *aInPath, nsString &aOutPath);
   void GetFilterListArray(nsString& aFilterList);
+  static bool GetFileNameWrapper(OPENFILENAMEW* ofn, PickerType aType);
   bool FilePickerWrapper(OPENFILENAMEW* ofn, PickerType aType);
   bool ShowXPFolderPicker(const nsString& aInitialDir);
   bool ShowXPFilePicker(const nsString& aInitialDir);
@@ -118,14 +117,13 @@ protected:
   nsCOMPtr<nsILoadContext> mLoadContext;
   nsCOMPtr<nsIWidget>    mParentWidget;
   nsString               mTitle;
-  int16_t                mMode;
   nsCString              mFile;
   nsString               mFilterList;
   int16_t                mSelectedType;
   nsCOMArray<nsIFile>    mFiles;
   static char            mLastUsedDirectory[];
   nsString               mUnicodeFile;
-  static PRUnichar      *mLastUsedUnicodeDirectory;
+  static char16_t      *mLastUsedUnicodeDirectory;
   HWND                   mDlgWnd;
 
   class ComDlgFilterSpec
@@ -133,7 +131,7 @@ protected:
   public:
     ComDlgFilterSpec() {}
     ~ComDlgFilterSpec() {}
-    
+
     const uint32_t Length() {
       return mSpecList.Length();
     }
@@ -145,11 +143,11 @@ protected:
     const COMDLG_FILTERSPEC* get() {
       return mSpecList.Elements();
     }
-    
+
     void Append(const nsAString& aTitle, const nsAString& aFilter);
   private:
-    nsAutoTArray<COMDLG_FILTERSPEC, 1> mSpecList;
-    nsAutoTArray<nsString, 2> mStrings;
+    AutoTArray<COMDLG_FILTERSPEC, 1> mSpecList;
+    AutoTArray<nsString, 2> mStrings;
   };
 
   ComDlgFilterSpec       mComFilterList;

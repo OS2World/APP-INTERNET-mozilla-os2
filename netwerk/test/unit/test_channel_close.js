@@ -1,9 +1,9 @@
-const Cc = Components.classes;
-const Ci = Components.interfaces;
-const Cu = Components.utils;
-const Cr = Components.results;
-
 Cu.import("resource://testing-common/httpd.js");
+Cu.import("resource://gre/modules/NetUtil.jsm");
+
+XPCOMUtils.defineLazyGetter(this, "URL", function() {
+  return "http://localhost:" + httpserver.identity.primaryPort;
+});
 
 var httpserver = new HttpServer();
 var testpath = "/simple";
@@ -13,33 +13,32 @@ var live_channels = [];
 
 function run_test() {
   httpserver.registerPathHandler(testpath, serverHandler);
-  httpserver.start(4444);
+  httpserver.start(-1);
 
   var local_channel;
 
   // Opened channel that has no remaining references on shutdown
   local_channel = setupChannel(testpath);
-  local_channel.asyncOpen(
-      new ChannelListener(checkRequest, local_channel), null);
+  local_channel.asyncOpen2(new ChannelListener(checkRequest, local_channel));
 
   // Opened channel that has no remaining references after being opened
-  setupChannel(testpath).asyncOpen(
-      new ChannelListener(function() {}, null), null);
+  setupChannel(testpath).asyncOpen2(new ChannelListener(function() {}, null));
   
   // Unopened channel that has remaining references on shutdown
   live_channels.push(setupChannel(testpath));
 
   // Opened channel that has remaining references on shutdown
   live_channels.push(setupChannel(testpath));
-  live_channels[1].asyncOpen(
-      new ChannelListener(checkRequestFinish, live_channels[1]), null);
+  live_channels[1].asyncOpen2(new ChannelListener(checkRequestFinish, live_channels[1]));
 
   do_test_pending();
 }
 
 function setupChannel(path) {
-  var ios = Cc["@mozilla.org/network/io-service;1"].getService(Ci.nsIIOService);
-  var chan = ios.newChannel("http://localhost:4444" + path, "", null);
+  var chan = NetUtil.newChannel({
+    uri: URL + path,
+    loadUsingSystemPrincipal: true
+  });
   chan.QueryInterface(Ci.nsIHttpChannel);
   chan.requestMethod = "GET";
   return chan;

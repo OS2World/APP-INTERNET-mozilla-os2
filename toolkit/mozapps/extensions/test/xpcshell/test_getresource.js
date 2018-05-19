@@ -75,18 +75,19 @@ function run_test() {
           do_check_true(false);
         }
 
-        AddonManager.getInstallForFile(do_get_addon("test_getresource"), function(aInstall) {
+        AddonManager.getInstallForFile(do_get_addon("test_getresource"),
+            callback_soon(function(aInstall_2) {
           do_check_false(a1.hasResource("icon.png"));
-          do_check_true(aInstall.addon.hasResource("icon.png"));
+          do_check_true(aInstall_2.addon.hasResource("icon.png"));
 
           restartManager();
 
           AddonManager.getAddonByID("addon1@tests.mozilla.org", function(newa1) {
             do_check_eq(newa1, null);
 
-            do_test_finished();
+            do_execute_soon(do_test_finished);
           });
-        });
+        }));
       });
     });
   });

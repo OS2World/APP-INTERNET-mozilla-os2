@@ -21,14 +21,10 @@
 #include "nsAppShell.h"
 #include "TaskbarPreviewButton.h"
 #include "WinUtils.h"
-#include "gfxWindowsPlatform.h"
 
-#include <nsIBaseWindow.h>
-#include <nsICanvasRenderingContextInternal.h>
-#include "mozilla/dom/CanvasRenderingContext2D.h"
-#include <imgIContainer.h>
-#include <nsIDocShell.h>
-
+#include "mozilla/dom/HTMLCanvasElement.h"
+#include "mozilla/gfx/2D.h"
+#include "mozilla/gfx/DataSurfaceHelpers.h"
 #include "mozilla/Telemetry.h"
 
 // Defined in dwmapi in a header that needs a higher numbered _WINNT #define
@@ -37,53 +33,8 @@
 namespace mozilla {
 namespace widget {
 
-namespace {
-
-// Shared by all TaskbarPreviews to avoid the expensive creation process.
-// Manually refcounted (see gInstCount) by the ctor and dtor of TaskbarPreview.
-// This is done because static constructors aren't allowed for perf reasons.
-dom::CanvasRenderingContext2D* gCtx = NULL;
-// Used in tracking the number of previews. Used in freeing
-// the static 2d rendering context on shutdown.
-uint32_t gInstCount = 0;
-
-/* Helper method to lazily create a canvas rendering context and associate a given
- * surface with it.
- *
- * @param shell The docShell used by the canvas context for text settings and other
- *              misc things.
- * @param surface The gfxSurface backing the context
- * @param width The width of the given surface
- * @param height The height of the given surface
- */
-nsresult
-GetRenderingContext(nsIDocShell *shell, gfxASurface *surface,
-                    uint32_t width, uint32_t height) {
-  if (!gCtx) {
-    // create the canvas rendering context
-    Telemetry::Accumulate(Telemetry::CANVAS_2D_USED, 1);
-    gCtx = new mozilla::dom::CanvasRenderingContext2D();
-    NS_ADDREF(gCtx);
-  }
-
-  // Set the surface we'll use to render.
-  return gCtx->InitializeWithSurface(shell, surface, width, height);
-}
-
-/* Helper method for freeing surface resources associated with the rendering context.
- */
-void
-ResetRenderingContext() {
-  if (!gCtx)
-    return;
-
-  if (NS_FAILED(gCtx->Reset())) {
-    NS_RELEASE(gCtx);
-    gCtx = nullptr;
-  }
-}
-
-}
+///////////////////////////////////////////////////////////////////////////////
+// TaskbarPreview
 
 TaskbarPreview::TaskbarPreview(ITaskbarList4 *aTaskbar, nsITaskbarPreviewController *aController, HWND aHWND, nsIDocShell *aShell)
   : mTaskbar(aTaskbar),
@@ -93,9 +44,7 @@ TaskbarPreview::TaskbarPreview(ITaskbarList4 *aTaskbar, nsITaskbarPreviewControl
     mDocShell(do_GetWeakReference(aShell))
 {
   // TaskbarPreview may outlive the WinTaskbar that created it
-  ::CoInitialize(NULL);
-
-  gInstCount++;
+  ::CoInitialize(nullptr);
 
   WindowHook &hook = GetWindowHook();
   hook.AddMonitor(WM_DESTROY, MainWindowHook, this);
@@ -110,10 +59,7 @@ TaskbarPreview::~TaskbarPreview() {
   NS_ASSERTION(!mWnd, "TaskbarPreview::DetachFromNSWindow was not called before destruction");
 
   // Make sure to release before potentially uninitializing COM
-  mTaskbar = NULL;
-
-  if (--gInstCount == 0)
-    NS_IF_RELEASE(gCtx);
+  mTaskbar = nullptr;
 
   ::CoUninitialize();
 }
@@ -170,7 +116,7 @@ TaskbarPreview::SetActive(bool active) {
   if (active)
     sActivePreview = this;
   else if (sActivePreview == this)
-    sActivePreview = NULL;
+    sActivePreview = nullptr;
 
   return CanMakeTaskbarCalls() ? ShowActive(active) : NS_OK;
 }
@@ -184,14 +130,14 @@ TaskbarPreview::GetActive(bool *active) {
 NS_IMETHODIMP
 TaskbarPreview::Invalidate() {
   if (!mVisible)
-    return NS_ERROR_FAILURE;
+    return NS_OK;
 
   // DWM Composition is required for previews
   if (!nsUXThemeData::CheckForCompositor())
     return NS_OK;
 
   HWND previewWindow = PreviewWindow();
-  return FAILED(nsUXThemeData::dwmInvalidateIconicBitmapsPtr(previewWindow))
+  return FAILED(WinUtils::dwmInvalidateIconicBitmapsPtr(previewWindow))
        ? NS_ERROR_FAILURE
        : NS_OK;
 }
@@ -229,6 +175,11 @@ TaskbarPreview::Enable() {
 
 nsresult
 TaskbarPreview::Disable() {
+  if (!IsWindowAvailable()) {
+    // Window is already destroyed
+    return NS_OK;
+  }
+
   WindowHook &hook = GetWindowHook();
   (void) hook.RemoveMonitor(nsAppShell::GetTaskbarButtonCreatedMessage(), MainWindowHook, this);
 
@@ -250,7 +201,7 @@ void
 TaskbarPreview::DetachFromNSWindow() {
   WindowHook &hook = GetWindowHook();
   hook.RemoveMonitor(WM_DESTROY, MainWindowHook, this);
-  mWnd = NULL;
+  mWnd = nullptr;
 }
 
 LRESULT
@@ -292,9 +243,9 @@ TaskbarPreview::WndProc(UINT nMsg, WPARAM wParam, LPARAM lParam) {
           break;
 
         double scale = nsIWidget::DefaultScaleOverride();
-        if (scale <= 0.0)
-          scale = gfxWindowsPlatform::GetPlatform()->GetDPIScale();
-
+        if (scale <= 0.0) {
+          scale = WinUtils::LogToPhysFactor(PreviewWindow());
+        }
         DrawBitmap(NSToIntRound(scale * width), NSToIntRound(scale * height), true);
       }
       break;
@@ -331,13 +282,13 @@ TaskbarPreview::GetWindowHook() {
 void
 TaskbarPreview::EnableCustomDrawing(HWND aHWND, bool aEnable) {
   BOOL enabled = aEnable;
-  nsUXThemeData::dwmSetWindowAttributePtr(
+  WinUtils::dwmSetWindowAttributePtr(
       aHWND,
       DWMWA_FORCE_ICONIC_REPRESENTATION,
       &enabled,
       sizeof(enabled));
 
-  nsUXThemeData::dwmSetWindowAttributePtr(
+  WinUtils::dwmSetWindowAttributePtr(
       aHWND,
       DWMWA_HAS_ICONIC_BITMAP,
       &enabled,
@@ -357,37 +308,89 @@ TaskbarPreview::UpdateTooltip() {
 void
 TaskbarPreview::DrawBitmap(uint32_t width, uint32_t height, bool isPreview) {
   nsresult rv;
-  nsRefPtr<gfxWindowsSurface> surface = new gfxWindowsSurface(gfxIntSize(width, height), gfxASurface::ImageFormatARGB32);
-
-  nsCOMPtr<nsIDocShell> shell = do_QueryReferent(mDocShell);
-
-  if (!shell)
+  nsCOMPtr<nsITaskbarPreviewCallback> callback =
+    do_CreateInstance("@mozilla.org/widget/taskbar-preview-callback;1", &rv);
+  if (NS_FAILED(rv)) {
     return;
+  }
 
-  rv = GetRenderingContext(shell, surface, width, height);
-  if (NS_FAILED(rv))
-    return;
+  ((TaskbarPreviewCallback*)callback.get())->SetPreview(this);
 
-  bool drawFrame = false;
-  if (isPreview)
-    rv = mController->DrawPreview(gCtx, &drawFrame);
-  else
-    rv = mController->DrawThumbnail(gCtx, width, height, &drawFrame);
+  if (isPreview) {
+    ((TaskbarPreviewCallback*)callback.get())->SetIsPreview();
+    mController->RequestPreview(callback);
+  } else {
+    mController->RequestThumbnail(callback, width, height);
+  }
+}
 
-  if (NS_FAILED(rv))
-    return;
+///////////////////////////////////////////////////////////////////////////////
+// TaskbarPreviewCallback
 
-  HDC hDC = surface->GetDC();
+NS_IMPL_ISUPPORTS(TaskbarPreviewCallback, nsITaskbarPreviewCallback)
+
+/* void done (in nsISupports aCanvas, in boolean aDrawBorder); */
+NS_IMETHODIMP
+TaskbarPreviewCallback::Done(nsISupports *aCanvas, bool aDrawBorder) {
+  // We create and destroy TaskbarTabPreviews from front end code in response
+  // to TabOpen and TabClose events. Each TaskbarTabPreview creates and owns a
+  // proxy HWND which it hands to Windows as a tab identifier. When a tab
+  // closes, TaskbarTabPreview Disable() method is called by front end, which
+  // destroys the proxy window and clears mProxyWindow which is the HWND
+  // returned from PreviewWindow(). So, since this is async, we should check to
+  // be sure the tab is still alive before doing all this gfx work and making
+  // dwm calls. To accomplish this we check the result of PreviewWindow().
+  if (!aCanvas || !mPreview || !mPreview->PreviewWindow() ||
+      !mPreview->IsWindowAvailable()) {
+    return NS_ERROR_FAILURE;
+  }
+
+  nsCOMPtr<nsIDOMHTMLCanvasElement> domcanvas(do_QueryInterface(aCanvas));
+  dom::HTMLCanvasElement * canvas = ((dom::HTMLCanvasElement*)domcanvas.get());
+  if (!canvas) {
+    return NS_ERROR_FAILURE;
+  }
+
+  RefPtr<gfx::SourceSurface> source = canvas->GetSurfaceSnapshot();
+  if (!source) {
+    return NS_ERROR_FAILURE;
+  }
+  RefPtr<gfxWindowsSurface> target = new gfxWindowsSurface(source->GetSize(),
+                                                           gfx::SurfaceFormat::A8R8G8B8_UINT32);
+  if (!target) {
+    return NS_ERROR_FAILURE;
+  }
+
+  RefPtr<gfx::DataSourceSurface> srcSurface = source->GetDataSurface();
+  RefPtr<gfxImageSurface> imageSurface = target->GetAsImageSurface();
+  if (!srcSurface || !imageSurface) {
+    return NS_ERROR_FAILURE;
+  }
+
+  gfx::DataSourceSurface::MappedSurface sourceMap;
+  srcSurface->Map(gfx::DataSourceSurface::READ, &sourceMap);
+  mozilla::gfx::CopySurfaceDataToPackedArray(sourceMap.mData,
+                                             imageSurface->Data(),
+                                             srcSurface->GetSize(),
+                                             sourceMap.mStride,
+                                             BytesPerPixel(srcSurface->GetFormat()));
+  srcSurface->Unmap();
+
+  HDC hDC = target->GetDC();
   HBITMAP hBitmap = (HBITMAP)GetCurrentObject(hDC, OBJ_BITMAP);
 
-  DWORD flags = drawFrame ? DWM_SIT_DISPLAYFRAME : 0;
+  DWORD flags = aDrawBorder ? DWM_SIT_DISPLAYFRAME : 0;
   POINT pptClient = { 0, 0 };
-  if (isPreview)
-    nsUXThemeData::dwmSetIconicLivePreviewBitmapPtr(PreviewWindow(), hBitmap, &pptClient, flags);
-  else
-    nsUXThemeData::dwmSetIconicThumbnailPtr(PreviewWindow(), hBitmap, flags);
-
-  ResetRenderingContext();
+  HRESULT hr;
+  if (!mIsThumbnail) {
+    hr = WinUtils::dwmSetIconicLivePreviewBitmapPtr(mPreview->PreviewWindow(),
+                                                    hBitmap, &pptClient, flags);
+  } else {
+    hr = WinUtils::dwmSetIconicThumbnailPtr(mPreview->PreviewWindow(),
+                                            hBitmap, flags);
+  }
+  MOZ_ASSERT(SUCCEEDED(hr));
+  return NS_OK;
 }
 
 /* static */
@@ -407,7 +410,7 @@ TaskbarPreview::MainWindowHook(void *aContext,
   if (nMsg == WM_DESTROY) {
     // nsWindow is being destroyed
     // We can't really do anything at this point including removing hooks
-    preview->mWnd = NULL;
+    return false;
   } else {
     nsWindow *window = WinUtils::GetNSWindowPtr(preview->mWnd);
     if (window) {

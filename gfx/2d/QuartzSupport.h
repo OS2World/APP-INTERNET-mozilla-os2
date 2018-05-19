@@ -14,18 +14,19 @@
 #include "gfxTypes.h"
 #include "mozilla/RefPtr.h"
 #include "mozilla/gfx/MacIOSurface.h"
+#include "nsError.h"
 
 // Get the system color space.
 CGColorSpaceRef CreateSystemColorSpace();
 
 // Manages a CARenderer
-struct _CGLPBufferObject;
 struct _CGLContextObject;
 
 enum AllowOfflineRendererEnum { ALLOW_OFFLINE_RENDERER, DISALLOW_OFFLINE_RENDERER };
 
 class nsCARenderer : public mozilla::RefCounted<nsCARenderer> {
 public:
+  MOZ_DECLARE_REFCOUNTED_TYPENAME(nsCARenderer)
   nsCARenderer() : mCARenderer(nullptr), mWrapperCALayer(nullptr), mFBOTexture(0),
                    mOpenGLContext(nullptr), mCGImage(nullptr), mCGData(nullptr),
                    mIOSurface(nullptr), mFBO(0), mIOTexture(0),
@@ -51,7 +52,7 @@ public:
    * is attached then an internal pixel buffer will be
    * used.
    */
-  void AttachIOSurface(mozilla::RefPtr<MacIOSurface> aSurface);
+  void AttachIOSurface(MacIOSurface *aSurface);
   IOSurfaceID GetIOSurfaceID();
   // aX, aY, aWidth and aHeight are in "display pixels".  Multiply by
   // surf->GetContentsScaleFactor() to get device pixels.
@@ -83,23 +84,14 @@ private:
   _CGLContextObject        *mOpenGLContext;
   CGImageRef                mCGImage;
   void                     *mCGData;
-  mozilla::RefPtr<MacIOSurface> mIOSurface;
+  RefPtr<MacIOSurface> mIOSurface;
   uint32_t                  mFBO;
   uint32_t                  mIOTexture;
-  uint32_t                  mUnsupportedWidth;
-  uint32_t                  mUnsupportedHeight;
+  int                       mUnsupportedWidth;
+  int                       mUnsupportedHeight;
   AllowOfflineRendererEnum  mAllowOfflineRenderer;
   double                    mContentsScaleFactor;
 };
-
-enum CGContextType {
-  CG_CONTEXT_TYPE_UNKNOWN = 0,
-  // These are found by inspection, it's possible they could be changed
-  CG_CONTEXT_TYPE_BITMAP = 4,
-  CG_CONTEXT_TYPE_IOSURFACE = 8
-};
-
-CGContextType GetContextType(CGContextRef ref);
 
 #endif // XP_MACOSX
 #endif // nsCoreAnimationSupport_h__

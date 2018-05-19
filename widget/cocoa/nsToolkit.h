@@ -7,7 +7,6 @@
 #define nsToolkit_h_
 
 #include "nscore.h"
-#include "nsCocoaFeatures.h"
 
 #import <Carbon/Carbon.h>
 #import <Cocoa/Cocoa.h>
@@ -32,13 +31,13 @@ public:
   static nsresult    SwizzleMethods(Class aClass, SEL orgMethod, SEL posedMethod,
                                     bool classMethods = false);
 
-protected:
-
-  nsresult           RegisterForSleepWakeNotifcations();
-  void               RemoveSleepWakeNotifcations();
-
   void               RegisterForAllProcessMouseEvents();
   void               UnregisterAllProcessMouseEventHandlers();
+
+protected:
+
+  nsresult           RegisterForSleepWakeNotifications();
+  void               RemoveSleepWakeNotifications();
 
 protected:
 

@@ -1,5 +1,4 @@
-/* vim:ts=2:sts=2:sw=2:
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 "use strict";
@@ -79,9 +78,9 @@ Assert.prototype = {
       if ('operator' in e) {
         message += [
           " -",
-          source(e.expected),
+          source(e.actual),
           e.operator,
-          source(e.actual)
+          source(e.expected)
         ].join(" ");
       }
     }
@@ -90,6 +89,7 @@ Assert.prototype = {
   },
   pass: function pass(message) {
     this._log.pass(message);
+    return true;
   },
   error: function error(e) {
     this._log.exception(e);
@@ -102,10 +102,11 @@ Assert.prototype = {
         message: message,
         operator: "=="
       });
+      return false;
     }
-    else {
-      this.pass(message);
-    }
+
+    this.pass(message);
+    return true;
   },
 
   /**
@@ -116,15 +117,16 @@ Assert.prototype = {
   equal: function equal(actual, expected, message) {
     if (actual == expected) {
       this.pass(message);
+      return true;
     }
-    else {
-      this.fail({
-        actual: actual,
-        expected: expected,
-        message: message,
-        operator: "=="
-      });
-    }
+
+    this.fail({
+      actual: actual,
+      expected: expected,
+      message: message,
+      operator: "=="
+    });
+    return false;
   },
 
   /**
@@ -136,15 +138,16 @@ Assert.prototype = {
   notEqual: function notEqual(actual, expected, message) {
     if (actual != expected) {
       this.pass(message);
+      return true;
     }
-    else {
-      this.fail({
-        actual: actual,
-        expected: expected,
-        message: message,
-        operator: "!=",
-      });
-    }
+
+    this.fail({
+      actual: actual,
+      expected: expected,
+      message: message,
+      operator: "!=",
+    });
+    return false;
   },
 
   /**
@@ -155,15 +158,16 @@ Assert.prototype = {
    deepEqual: function deepEqual(actual, expected, message) {
     if (isDeepEqual(actual, expected)) {
       this.pass(message);
+      return true;
     }
-    else {
-      this.fail({
-        actual: actual,
-        expected: expected,
-        message: message,
-        operator: "deepEqual"
-      });
-    }
+
+    this.fail({
+      actual: actual,
+      expected: expected,
+      message: message,
+      operator: "deepEqual"
+    });
+    return false;
   },
 
   /**
@@ -175,15 +179,16 @@ Assert.prototype = {
   notDeepEqual: function notDeepEqual(actual, expected, message) {
     if (!isDeepEqual(actual, expected)) {
       this.pass(message);
+      return true;
     }
-    else {
-      this.fail({
-        actual: actual,
-        expected: expected,
-        message: message,
-        operator: "notDeepEqual"
-      });
-    }
+
+    this.fail({
+      actual: actual,
+      expected: expected,
+      message: message,
+      operator: "notDeepEqual"
+    });
+    return false;
   },
 
   /**
@@ -195,15 +200,16 @@ Assert.prototype = {
   strictEqual: function strictEqual(actual, expected, message) {
     if (actual === expected) {
       this.pass(message);
+      return true;
     }
-    else {
-      this.fail({
-        actual: actual,
-        expected: expected,
-        message: message,
-        operator: "==="
-      });
-    }
+
+    this.fail({
+      actual: actual,
+      expected: expected,
+      message: message,
+      operator: "==="
+    });
+    return false;
   },
 
   /**
@@ -215,15 +221,16 @@ Assert.prototype = {
   notStrictEqual: function notStrictEqual(actual, expected, message) {
     if (actual !== expected) {
       this.pass(message);
+      return true;
     }
-    else {
-      this.fail({
-        actual: actual,
-        expected: expected,
-        message: message,
-        operator: "!=="
-      })
-    }
+
+    this.fail({
+      actual: actual,
+      expected: expected,
+      message: message,
+      operator: "!=="
+    });
+    return false;
   },
 
   /**
@@ -276,35 +283,36 @@ Assert.prototype = {
     if (threw && (isUndefined(Error) ||
                  // If passed `Error` is RegExp using it's test method to
                  // assert thrown exception message.
-                 (isRegExp(Error) && Error.test(exception.message)) ||
+                 (isRegExp(Error) && (Error.test(exception.message) || Error.test(exception.toString()))) ||
                  // If passed `Error` is a constructor function testing if
                  // thrown exception is an instance of it.
                  (isFunction(Error) && instanceOf(exception, Error))))
     {
       this.pass(message);
+      return true;
     }
 
     // Otherwise we report assertion failure.
-    else {
-      let failure = {
-        message: message,
-        operator: "throws"
-      };
+    let failure = {
+      message: message,
+      operator: "matches"
+    };
 
-      if (exception)
-        failure.actual = exception;
-
-      if (Error)
-        failure.expected = Error;
-
-      this.fail(failure);
+    if (exception) {
+      failure.actual = exception.message || exception.toString();
     }
+
+    if (Error) {
+      failure.expected = Error.toString();
+    }
+
+    this.fail(failure);
+    return false;
   }
 };
 exports.Assert = Assert;
 
 function isDeepEqual(actual, expected) {
-
   // 7.1. All identical values are equivalent, as determined by ===.
   if (actual === expected) {
     return true;

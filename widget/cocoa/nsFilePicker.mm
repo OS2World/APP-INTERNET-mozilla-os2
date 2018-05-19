@@ -15,7 +15,6 @@
 #include "nsIURL.h"
 #include "nsArrayEnumerator.h"
 #include "nsIStringBundle.h"
-#include "nsCocoaFeatures.h"
 #include "nsCocoaUtils.h"
 #include "mozilla/Preferences.h"
 
@@ -45,7 +44,7 @@ const char kShowHiddenFilesPref[] = "filepicker.showHiddenFiles";
 - (void) menuChangedItem:(NSNotification*)aSender;
 @end
 
-NS_IMPL_ISUPPORTS1(nsFilePicker, nsIFilePicker)
+NS_IMPL_ISUPPORTS(nsFilePicker, nsIFilePicker)
 
 // We never want to call the secret show hidden files API unless the pref
 // has been set. Once the pref has been set we always need to call it even
@@ -92,8 +91,7 @@ static void SetShowHiddenFileState(NSSavePanel* panel)
 }
 
 nsFilePicker::nsFilePicker()
-: mMode(0)
-, mSelectedTypeIndex(0)
+: mSelectedTypeIndex(0)
 {
 }
 
@@ -102,11 +100,9 @@ nsFilePicker::~nsFilePicker()
 }
 
 void
-nsFilePicker::InitNative(nsIWidget *aParent, const nsAString& aTitle,
-                         int16_t aMode)
+nsFilePicker::InitNative(nsIWidget *aParent, const nsAString& aTitle)
 {
   mTitle = aTitle;
-  mMode = aMode;
 }
 
 NSView* nsFilePicker::GetAccessoryView()
@@ -124,10 +120,10 @@ NSView* nsFilePicker::GetAccessoryView()
   nsresult rv = sbs->CreateBundle("chrome://global/locale/filepicker.properties", getter_AddRefs(bundle));
   if (NS_SUCCEEDED(rv)) {
     nsXPIDLString locaLabel;
-    bundle->GetStringFromName(NS_LITERAL_STRING("formatLabel").get(),
-			      getter_Copies(locaLabel));
+    bundle->GetStringFromName(u"formatLabel", getter_Copies(locaLabel));
     if (locaLabel) {
-      label = [NSString stringWithCharacters:locaLabel.get() length:locaLabel.Length()];
+      label = [NSString stringWithCharacters:reinterpret_cast<const unichar*>(locaLabel.get())
+                                      length:locaLabel.Length()];
     }
   }
 
@@ -151,11 +147,11 @@ NSView* nsFilePicker::GetAccessoryView()
     NSString *titleString;
     if (currentTitle.IsEmpty()) {
       const nsString& currentFilter = mFilters[i];
-      titleString = [[NSString alloc] initWithCharacters:currentFilter.get()
+      titleString = [[NSString alloc] initWithCharacters:reinterpret_cast<const unichar*>(currentFilter.get())
                                                   length:currentFilter.Length()];
     }
     else {
-      titleString = [[NSString alloc] initWithCharacters:currentTitle.get()
+      titleString = [[NSString alloc] initWithCharacters:reinterpret_cast<const unichar*>(currentTitle.get())
                                                   length:currentTitle.Length()];
     }
     [popupButton addItemWithTitle:titleString];
@@ -321,7 +317,7 @@ nsFilePicker::GetLocalFiles(const nsString& inTitle, bool inAllowMultiple, nsCOM
   }
 
   if (theDir) {
-    [thePanel setDirectoryURL:[[NSURL alloc] initFileURLWithPath:theDir isDirectory:YES]];
+    [thePanel setDirectoryURL:[NSURL fileURLWithPath:theDir isDirectory:YES]];
   }
 
   int result;
@@ -414,7 +410,7 @@ nsFilePicker::GetLocalFolder(const nsString& inTitle, nsIFile** outFile)
   // set up default directory
   NSString *theDir = PanelDefaultDirectory();
   if (theDir) {
-    [thePanel setDirectoryURL:[[NSURL alloc] initFileURLWithPath:theDir isDirectory:YES]];
+    [thePanel setDirectoryURL:[NSURL fileURLWithPath:theDir isDirectory:YES]];
   }
   nsCocoaUtils::PrepareForNativeAppModalDialog();
   int result = [thePanel runModal];
@@ -462,10 +458,27 @@ nsFilePicker::PutLocalFile(const nsString& inTitle, const nsString& inDefaultNam
   // set up default file name
   NSString* defaultFilename = [NSString stringWithCharacters:(const unichar*)inDefaultName.get() length:inDefaultName.Length()];
 
+  // set up allowed types; this prevents the extension from being selected
+  // use the UTI for the file type to allow alternate extensions (e.g., jpg vs. jpeg)
+  NSString* extension = defaultFilename.pathExtension;
+  if (extension.length != 0) {
+    CFStringRef type = UTTypeCreatePreferredIdentifierForTag(kUTTagClassFilenameExtension, (CFStringRef)extension, NULL);
+
+    if (type) {
+      thePanel.allowedFileTypes = @[(NSString*)type];
+      CFRelease(type);
+    } else {
+      // if there's no UTI for the file extension, use the extension itself.
+      thePanel.allowedFileTypes = @[extension];
+    }
+  }
+  // Allow users to change the extension.
+  thePanel.allowsOtherFileTypes = YES;
+
   // set up default directory
   NSString *theDir = PanelDefaultDirectory();
   if (theDir) {
-    [thePanel setDirectoryURL:[[NSURL alloc] initFileURLWithPath:theDir isDirectory:YES]];
+    [thePanel setDirectoryURL:[NSURL fileURLWithPath:theDir isDirectory:YES]];
   }
 
   // load the panel
@@ -530,8 +543,8 @@ nsFilePicker::GetFilterList()
   // The extensions in filterWide are in the format "*.ext" but are expected
   // in the format "ext" by NSOpenPanel. So we need to filter some characters.
   NSMutableString* filterString = [[[NSMutableString alloc] initWithString:
-                                    [NSString stringWithCharacters:filterWide.get()
-				              length:filterWide.Length()]] autorelease];
+                                    [NSString stringWithCharacters:reinterpret_cast<const unichar*>(filterWide.get())
+                                                            length:filterWide.Length()]] autorelease];
   NSCharacterSet *set = [NSCharacterSet characterSetWithCharactersInString:@". *"];
   NSRange range = [filterString rangeOfCharacterFromSet:set];
   while (range.length) {
@@ -554,6 +567,10 @@ nsFilePicker::SetDialogTitle(const nsString& inTitle, id aPanel)
 
   [aPanel setTitle:[NSString stringWithCharacters:(const unichar*)inTitle.get() length:inTitle.Length()]];
 
+  if (!mOkButtonLabel.IsEmpty()) {
+    [aPanel setPrompt:[NSString stringWithCharacters:(const unichar*)mOkButtonLabel.get() length:mOkButtonLabel.Length()]];
+  }
+
   NS_OBJC_END_TRY_ABORT_BLOCK;
 } 
 
@@ -568,7 +585,8 @@ nsFilePicker::PanelDefaultDirectory()
   if (mDisplayDirectory) {
     nsAutoString pathStr;
     mDisplayDirectory->GetPath(pathStr);
-    directory = [[[NSString alloc] initWithCharacters:pathStr.get() length:pathStr.Length()] autorelease];
+    directory = [[[NSString alloc] initWithCharacters:reinterpret_cast<const unichar*>(pathStr.get())
+                                               length:pathStr.Length()] autorelease];
   }
   return directory;
 

@@ -4,7 +4,7 @@
 // Test that the permissionmanager 'added', 'changed', 'deleted', and 'cleared'
 // notifications behave as expected.
 
-let test_generator = do_run_test();
+var test_generator = do_run_test();
 
 function run_test() {
   do_test_pending();
@@ -20,12 +20,13 @@ function do_run_test() {
   // Set up a profile.
   let profile = do_get_profile();
 
-  let pm = Services.permissions;
+  let pm = Services.perms;
   let now = Number(Date.now());
   let permType = "test/expiration-perm";
-  let principal = Components.classes["@mozilla.org/scriptsecuritymanager;1"]
-                    .getService(Ci.nsIScriptSecurityManager)
-                    .getNoAppCodebasePrincipal(NetUtil.newURI("http://example.com"));
+  let ssm = Cc["@mozilla.org/scriptsecuritymanager;1"]
+              .getService(Ci.nsIScriptSecurityManager);
+  let uri = NetUtil.newURI("http://example.com");
+  let principal = ssm.createCodebasePrincipal(uri, {});
 
   let observer = new permission_observer(test_generator, now, permType);
   Services.obs.addObserver(observer, "perm-changed", false);
@@ -68,7 +69,7 @@ function do_run_test() {
 function permission_observer(generator, now, type) {
   // Set up our observer object.
   this.generator = generator;
-  this.pm = Services.permissions;
+  this.pm = Services.perms;
   this.now = now;
   this.type = type;
   this.adds = 0;
@@ -125,7 +126,7 @@ permission_observer.prototype = {
     } else if (data == "cleared") {
       // only clear once: at the end
       do_check_false(this.cleared);
-      do_check_eq(do_count_enumerator(Services.permissions.enumerator), 0);
+      do_check_eq(do_count_enumerator(Services.perms.enumerator), 0);
       this.cleared = true;
 
     } else {

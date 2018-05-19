@@ -8,12 +8,12 @@
  *  be found in the AUTHORS file in the root of the source tree.
  */
 
-#include "gtest/gtest.h"
+#include "testing/gtest/include/gtest/gtest.h"
+#include "webrtc/base/scoped_ptr.h"
 #include "webrtc/common_video/interface/i420_video_frame.h"
 #include "webrtc/common_video/interface/video_image.h"
 #include "webrtc/common_video/libyuv/include/webrtc_libyuv.h"
 #include "webrtc/modules/video_coding/codecs/vp8/include/vp8.h"
-#include "webrtc/system_wrappers/interface/scoped_ptr.h"
 #include "webrtc/system_wrappers/interface/tick_util.h"
 #include "webrtc/test/testsupport/fileutils.h"
 #include "webrtc/test/testsupport/metrics/video_metrics.h"
@@ -25,16 +25,16 @@ class Vp8SequenceCoderEncodeCallback : public webrtc::EncodedImageCallback {
       : encoded_file_(encoded_file),
         encoded_bytes_(0) {}
   ~Vp8SequenceCoderEncodeCallback();
-  int Encoded(webrtc::EncodedImage& encoded_image,
+  int Encoded(const webrtc::EncodedImage& encoded_image,
               const webrtc::CodecSpecificInfo* codecSpecificInfo,
               const webrtc::RTPFragmentationHeader*);
   // Returns the encoded image.
   webrtc::EncodedImage encoded_image() { return encoded_image_; }
-  int encoded_bytes() { return encoded_bytes_; }
+  size_t encoded_bytes() { return encoded_bytes_; }
  private:
   webrtc::EncodedImage encoded_image_;
   FILE* encoded_file_;
-  int encoded_bytes_;
+  size_t encoded_bytes_;
 };
 
 Vp8SequenceCoderEncodeCallback::~Vp8SequenceCoderEncodeCallback() {
@@ -42,7 +42,7 @@ Vp8SequenceCoderEncodeCallback::~Vp8SequenceCoderEncodeCallback() {
   encoded_image_._buffer = NULL;
 }
 int Vp8SequenceCoderEncodeCallback::Encoded(
-    webrtc::EncodedImage& encoded_image,
+    const webrtc::EncodedImage& encoded_image,
     const webrtc::CodecSpecificInfo* codecSpecificInfo,
     const webrtc::RTPFragmentationHeader* fragmentation) {
   if (encoded_image_._size < encoded_image._size) {
@@ -80,7 +80,7 @@ int Vp8SequenceCoderDecodeCallback::Decoded(webrtc::I420VideoFrame& image) {
   return 0;
 }
 
-int SequenceCoder(webrtc::test::CommandLineParser parser) {
+int SequenceCoder(webrtc::test::CommandLineParser& parser) {
   int width = strtol((parser.GetFlag("w")).c_str(), NULL, 10);
   int height = strtol((parser.GetFlag("h")).c_str(), NULL, 10);
   int framerate = strtol((parser.GetFlag("f")).c_str(), NULL, 10);
@@ -141,14 +141,10 @@ int SequenceCoder(webrtc::test::CommandLineParser parser) {
   }
   EXPECT_EQ(0, decoder->InitDecode(&inst, 1));
   webrtc::I420VideoFrame input_frame;
-  unsigned int length = webrtc::CalcBufferSize(webrtc::kI420, width, height);
-  webrtc::scoped_array<uint8_t> frame_buffer(new uint8_t[length]);
+  size_t length = webrtc::CalcBufferSize(webrtc::kI420, width, height);
+  rtc::scoped_ptr<uint8_t[]> frame_buffer(new uint8_t[length]);
 
-  int half_height = (height + 1) / 2;
   int half_width = (width + 1) / 2;
-  int size_y = width * height;
-  int size_uv = half_width * half_height;
-
   // Set and register callbacks.
   Vp8SequenceCoderEncodeCallback encoder_callback(encoded_file);
   encoder->RegisterEncodeCompleteCallback(&encoder_callback);
@@ -159,17 +155,14 @@ int SequenceCoder(webrtc::test::CommandLineParser parser) {
   int64_t starttime = webrtc::TickTime::MillisecondTimestamp();
   int frame_cnt = 1;
   int frames_processed = 0;
+  input_frame.CreateEmptyFrame(width, height, width, half_width, half_width);
   while (!feof(input_file) &&
       (num_frames == -1 || frames_processed < num_frames)) {
      if (fread(frame_buffer.get(), 1, length, input_file) != length)
       continue;
     if (frame_cnt >= start_frame) {
-      input_frame.CreateFrame(size_y, frame_buffer.get(),
-                                  size_uv, frame_buffer.get() + size_y,
-                                  size_uv, frame_buffer.get() + size_y +
-                                  size_uv,
-                                  width, height,
-                                  width, half_width, half_width);
+      webrtc::ConvertToI420(webrtc::kI420, frame_buffer.get(), 0, 0, width,
+                            height, 0, webrtc::kVideoRotation_0, &input_frame);
       encoder->Encode(input_frame, NULL, NULL);
       decoder->Decode(encoder_callback.encoded_image(), false, NULL);
       ++frames_processed;
@@ -181,9 +174,8 @@ int SequenceCoder(webrtc::test::CommandLineParser parser) {
   int64_t totalExecutionTime = endtime - starttime;
   printf("Total execution time: %.2lf ms\n",
          static_cast<double>(totalExecutionTime));
-  int sum_enc_bytes = encoder_callback.encoded_bytes();
-  double actual_bit_rate =  8.0 * sum_enc_bytes /
-      (frame_cnt / inst.maxFramerate);
+  double actual_bit_rate =
+      8.0 * encoder_callback.encoded_bytes() / (frame_cnt / inst.maxFramerate);
   printf("Actual bitrate: %f kbps\n", actual_bit_rate / 1000);
   webrtc::test::QualityMetricsResult psnr_result, ssim_result;
   EXPECT_EQ(0, webrtc::test::I420MetricsFromFiles(
@@ -219,6 +211,7 @@ int main(int argc, char** argv) {
 
   // Init the parser and set the usage message.
   parser.Init(argc, argv);
+  parser.SetUsageMessage(usage);
 
   // Reset flags.
   parser.SetFlag("w", "352");
@@ -232,6 +225,7 @@ int main(int argc, char** argv) {
                  webrtc::test::OutputPath() + "vp8_encoded.vp8");
   parser.SetFlag("input_file", webrtc::test::ResourcePath("foreman_cif",
                                                           "yuv"));
+  parser.SetFlag("help", "false");
 
   parser.ProcessFlags();
   if (parser.GetFlag("help") == "true") {

@@ -4,35 +4,39 @@
 
 import hashlib
 import mozlog
-import socket
+import logging
 import os
+import posixpath
 import re
 import struct
 import StringIO
 import zlib
 
-from Zeroconf import Zeroconf, ServiceBrowser
 from functools import wraps
+
 
 class DMError(Exception):
     "generic devicemanager exception."
 
-    def __init__(self, msg= '', fatal = False):
+    def __init__(self, msg='', fatal=False):
         self.msg = msg
         self.fatal = fatal
 
     def __str__(self):
         return self.msg
 
+
 def abstractmethod(method):
     line = method.func_code.co_firstlineno
     filename = method.func_code.co_filename
+
     @wraps(method)
     def not_implemented(*args, **kwargs):
         raise NotImplementedError('Abstract method %s at File "%s", line %s '
-                                   'should be implemented by a concrete class' %
-                                   (repr(method), filename, line))
+                                  'should be implemented by a concrete class' %
+                                  (repr(method), filename, line))
     return not_implemented
+
 
 class DeviceManager(object):
     """
@@ -46,11 +50,36 @@ class DeviceManager(object):
     """
 
     _logcatNeedsRoot = True
+    default_timeout = 300
+    short_timeout = 30
 
-    def __init__(self, logLevel=mozlog.ERROR):
-        self._logger = mozlog.getLogger("DeviceManager")
+    def __init__(self, logLevel=None, deviceRoot=None):
+        try:
+            self._logger = mozlog.get_default_logger(component="mozdevice")
+            if not self._logger:  # no global structured logger, fall back to reg logging
+                self._logger = mozlog.unstructured.getLogger("mozdevice")
+                if logLevel is not None:
+                    self._logger.setLevel(logLevel)
+        except AttributeError:
+            # Structured logging doesn't work on Python 2.6
+            self._logger = None
         self._logLevel = logLevel
-        self._logger.setLevel(logLevel)
+        self._remoteIsWin = None
+        self._isDeviceRootSetup = False
+        self._deviceRoot = deviceRoot
+
+    def _log(self, data):
+        """
+        This helper function is called by ProcessHandler to log
+        the output produced by processes
+        """
+        self._logger.debug(data)
+
+    @property
+    def remoteIsWin(self):
+        if self._remoteIsWin is None:
+            self._remoteIsWin = self.getInfo("os")["os"][0] == "windows"
+        return self._remoteIsWin
 
     @property
     def logLevel(self):
@@ -63,17 +92,17 @@ class DeviceManager(object):
 
     @property
     def debug(self):
-        self._logger.warn("dm.debug is deprecated. Use logLevel.")
-        levels = {mozlog.DEBUG: 5, mozlog.INFO: 3, mozlog.WARNING: 2,
-                  mozlog.ERROR: 1, mozlog.CRITICAL: 0}
+        self._logger.warning("dm.debug is deprecated. Use logLevel.")
+        levels = {logging.DEBUG: 5, logging.INFO: 3, logging.WARNING: 2,
+                  logging.ERROR: 1, logging.CRITICAL: 0}
         return levels[self.logLevel]
 
     @debug.setter
     def debug_setter(self, newDebug):
-        self._logger.warn("dm.debug is deprecated. Use logLevel.")
-        newDebug = 5 if newDebug > 5 else newDebug # truncate >=5 to 5
-        levels = {5: mozlog.DEBUG, 3: mozlog.INFO, 2: mozlog.WARNING,
-                  1: mozlog.ERROR, 0: mozlog.CRITICAL}
+        self._logger.warning("dm.debug is deprecated. Use logLevel.")
+        newDebug = 5 if newDebug > 5 else newDebug  # truncate >=5 to 5
+        levels = {5: logging.DEBUG, 3: logging.INFO, 2: logging.WARNING,
+                  1: logging.ERROR, 0: logging.CRITICAL}
         self.logLevel = levels[newDebug]
 
     @abstractmethod
@@ -86,10 +115,12 @@ class DeviceManager(object):
           - `os` - name of the os
           - `id` - unique id of the device
           - `uptime` - uptime of the device
-          - `uptimemillis` - uptime of the device in milliseconds (NOT supported on all implementations)
+          - `uptimemillis` - uptime of the device in milliseconds
+            (NOT supported on all implementations)
           - `systime` - system time of the device
           - `screen` - screen resolution
           - `memory` - memory stats
+          - `memtotal` - total memory available on the device, for example 927208 kB
           - `process` - list of running processes (same as ps)
           - `disk` - total, free, available bytes on disk
           - `power` - power status (charge, battery temp)
@@ -110,7 +141,8 @@ class DeviceManager(object):
         """
         for interface in interfaces:
             match = re.match(r"%s: ip (\S+)" % interface,
-                             self.shellCheckOutput(['ifconfig', interface]))
+                             self.shellCheckOutput(['ifconfig', interface],
+                                                   timeout=self.short_timeout))
             if match:
                 return match.group(1)
 
@@ -118,22 +150,28 @@ class DeviceManager(object):
         """
         Clears the logcat file making it easier to view specific events.
         """
-        #TODO: spawn this off in a separate thread/process so we can collect all the logcat information
+        # TODO: spawn this off in a separate thread/process so we can collect all
+        # the logcat information
 
-        # Right now this is just clearing the logcat so we can only see what happens after this call.
-        self.shellCheckOutput(['/system/bin/logcat', '-c'], root=self._logcatNeedsRoot)
+        # Right now this is just clearing the logcat so we can only see what
+        # happens after this call.
+        self.shellCheckOutput(['/system/bin/logcat', '-c'], root=self._logcatNeedsRoot,
+                              timeout=self.short_timeout)
 
     def getLogcat(self, filterSpecs=["dalvikvm:I", "ConnectivityService:S",
-                                      "WifiMonitor:S", "WifiStateTracker:S",
-                                      "wpa_supplicant:S", "NetworkStateTracker:S"],
+                                     "WifiMonitor:S", "WifiStateTracker:S",
+                                     "wpa_supplicant:S", "NetworkStateTracker:S"],
                   format="time",
                   filterOutRegexps=[]):
         """
-        Returns the contents of the logcat file as a list of strings
+        Returns the contents of the logcat file as a list of
+        '\n' terminated strings
         """
         cmdline = ["/system/bin/logcat", "-v", format, "-d"] + filterSpecs
-        lines = self.shellCheckOutput(cmdline,
-                                      root=self._logcatNeedsRoot).split('\r')
+        output = self.shellCheckOutput(cmdline,
+                                       root=self._logcatNeedsRoot,
+                                       timeout=self.short_timeout)
+        lines = output.replace('\r\n', '\n').splitlines(True)
 
         for regex in filterOutRegexps:
             lines = [line for line in lines if not re.search(regex, line)]
@@ -156,7 +194,7 @@ class DeviceManager(object):
         with open(filename, 'w') as pngfile:
             # newer versions of screencap can write directly to a png, but some
             # older versions can't
-            tempScreenshotFile = self.getDeviceRoot() + "/ss-dm.tmp"
+            tempScreenshotFile = self.deviceRoot + "/ss-dm.tmp"
             self.shellCheckOutput(["sh", "-c", "%s > %s" %
                                    (screencap, tempScreenshotFile)],
                                   root=True)
@@ -168,21 +206,25 @@ class DeviceManager(object):
             self.removeFile(tempScreenshotFile)
 
     @abstractmethod
-    def pushFile(self, localFilename, remoteFilename, retryLimit=1):
+    def pushFile(self, localFilename, remoteFilename, retryLimit=1, createDir=True):
         """
         Copies localname from the host to destname on the device.
         """
 
     @abstractmethod
-    def pushDir(self, localDirname, remoteDirname, retryLimit=1):
+    def pushDir(self, localDirname, remoteDirname, retryLimit=1, timeout=None):
         """
         Push local directory from host to remote directory on the device,
         """
 
     @abstractmethod
-    def pullFile(self, remoteFilename):
+    def pullFile(self, remoteFilename, offset=None, length=None):
         """
         Returns contents of remoteFile using the "pull" command.
+
+        :param remoteFilename: Path to file to pull from remote device.
+        :param offset: Offset in bytes from which to begin reading (optional)
+        :param length: Number of bytes to read (optional)
         """
 
     @abstractmethod
@@ -217,8 +259,8 @@ class DeviceManager(object):
                 if (parts[1] == ""):
                     remoteRoot = remoteDirname
                 remoteName = remoteRoot + '/' + f
-                if (self.validateFile(remoteName, os.path.join(root, f)) <> True):
-                        return False
+                if (self.validateFile(remoteName, os.path.join(root, f)) is not True):
+                    return False
         return True
 
     @abstractmethod
@@ -234,16 +276,15 @@ class DeviceManager(object):
         WARNING: does not create last part of the path. For example, if asked to
         create `/mnt/sdcard/foo/bar/baz`, it will only create `/mnt/sdcard/foo/bar`
         """
-        dirParts = filename.rsplit('/', 1)
-        if not self.dirExists(dirParts[0]):
+        filename = posixpath.normpath(filename)
+        containing = posixpath.dirname(filename)
+        if not self.dirExists(containing):
             parts = filename.split('/')
-            name = ""
-            for part in parts:
-                if part is parts[-1]:
-                    break
+            name = "/" if not self.remoteIsWin else parts.pop(0)
+            for part in parts[:-1]:
                 if part != "":
-                    name += '/' + part
-                    self.mkDir(name) # mkDir will check previous existence
+                    name = posixpath.join(name, part)
+                    self.mkDir(name)  # mkDir will check previous existence
 
     @abstractmethod
     def dirExists(self, dirpath):
@@ -254,7 +295,8 @@ class DeviceManager(object):
     @abstractmethod
     def fileExists(self, filepath):
         """
-        Return whether filepath exists and is a file on the device file system.
+        Return whether filepath exists on the device file system,
+        regardless of file type.
         """
 
     @abstractmethod
@@ -278,60 +320,57 @@ class DeviceManager(object):
         """
 
     @abstractmethod
+    def moveTree(self, source, destination):
+        """
+        Does a move of the file or directory on the device.
+
+       :param source: Path to the original file or directory
+       :param destination: Path to the destination file or directory
+        """
+
+    @abstractmethod
+    def copyTree(self, source, destination):
+        """
+        Does a copy of the file or directory on the device.
+
+       :param source: Path to the original file or directory
+       :param destination: Path to the destination file or directory
+        """
+
+    @abstractmethod
     def chmodDir(self, remoteDirname, mask="777"):
         """
         Recursively changes file permissions in a directory.
         """
 
+    @property
+    def deviceRoot(self):
+        """
+        The device root on the device filesystem for putting temporary
+        testing files.
+        """
+        # derive deviceroot value if not set
+        if not self._deviceRoot or not self._isDeviceRootSetup:
+            self._deviceRoot = self._setupDeviceRoot(self._deviceRoot)
+            self._isDeviceRootSetup = True
+
+        return self._deviceRoot
+
     @abstractmethod
+    def _setupDeviceRoot(self):
+        """
+        Sets up and returns a device root location that can be written to by tests.
+        """
+
     def getDeviceRoot(self):
         """
-        Gets the device root for the testing area on the device.
+        Get the device root on the device filesystem for putting temporary
+        testing files.
 
-        For all devices we will use / type slashes and depend on the device-agent
-        to sort those out.  The agent will return us the device location where we
-        should store things, we will then create our /tests structure relative to
-        that returned path.
-
-        Structure on the device is as follows:
-
-        ::
-
-          /tests
-              /<fennec>|<firefox>  --> approot
-              /profile
-              /xpcshell
-              /reftest
-              /mochitest
+        .. deprecated:: 0.38
+          Use the :py:attr:`deviceRoot` property instead.
         """
-
-    @abstractmethod
-    def getAppRoot(self, packageName=None):
-        """
-        Returns the app root directory.
-
-        E.g /tests/fennec or /tests/firefox
-        """
-        # TODO Support org.mozilla.firefox and B2G
-
-    def getTestRoot(self, harnessName):
-        """
-        Gets the directory location on the device for a specific test type.
-
-        :param harnessName: one of: "xpcshell", "reftest", "mochitest"
-        """
-
-        devroot = self.getDeviceRoot()
-        if (devroot == None):
-            return None
-
-        if (re.search('xpcshell', harnessName, re.I)):
-            self.testRoot = devroot + '/xpcshell'
-        elif (re.search('?(i)reftest', harnessName)):
-            self.testRoot = devroot + '/reftest'
-        elif (re.search('?(i)mochitest', harnessName)):
-            self.testRoot = devroot + '/mochitest'
-        return self.testRoot
+        return self.deviceRoot
 
     @abstractmethod
     def getTempDir(self):
@@ -345,7 +384,7 @@ class DeviceManager(object):
         """
         Executes shell command on device and returns exit code.
 
-        :param cmd: Command string to execute
+        :param cmd: Commandline list to execute
         :param outputfile: File to store output
         :param env: Environment to pass to exec command
         :param cwd: Directory to execute command from
@@ -355,19 +394,24 @@ class DeviceManager(object):
 
     def shellCheckOutput(self, cmd, env=None, cwd=None, timeout=None, root=False):
         """
-        Executes shell command on device and returns output as a string.
+        Executes shell command on device and returns output as a string. Raises if
+        the return code is non-zero.
 
+        :param cmd: Commandline list to execute
         :param env: Environment to pass to exec command
         :param cwd: Directory to execute command from
         :param timeout: specified in seconds, defaults to 'default_timeout'
         :param root: Specifies whether command requires root privileges
+        :raises: DMError
         """
         buf = StringIO.StringIO()
         retval = self.shell(cmd, buf, env=env, cwd=cwd, timeout=timeout, root=root)
         output = str(buf.getvalue()[0:-1]).rstrip()
         buf.close()
         if retval != 0:
-            raise DMError("Non-zero return code for command: %s (output: '%s', retval: '%s')" % (cmd, output, retval))
+            raise DMError(
+                "Non-zero return code for command: %s "
+                "(output: '%s', retval: '%s')" % (cmd, output, retval))
         return output
 
     @abstractmethod
@@ -378,21 +422,23 @@ class DeviceManager(object):
         Format of tuples is (processId, processName, userId)
         """
 
-    def processExist(self, processName):
+    def processInfo(self, processName):
         """
-        Returns True if process with name processName is running on device.
+        Returns information on the process with processName.
+        Information on process is in tuple format: (pid, process path, user)
+        If a process with the specified name does not exist this function will return None.
         """
         if not isinstance(processName, basestring):
             raise TypeError("Process name %s is not a string" % processName)
 
-        pid = None
+        processInfo = None
 
-        #filter out extra spaces
+        # filter out extra spaces
         parts = filter(lambda x: x != '', processName.split(' '))
         processName = ' '.join(parts)
 
-        #filter out the quoted env string if it exists
-        #ex: '"name=value;name2=value2;etc=..." process args' -> 'process args'
+        # filter out the quoted env string if it exists
+        # ex: '"name=value;name2=value2;etc=..." process args' -> 'process args'
         parts = processName.split('"')
         if (len(parts) > 2):
             processName = ' '.join(parts[2:]).strip()
@@ -408,26 +454,38 @@ class DeviceManager(object):
         for proc in procList:
             procName = proc[1].split('/')[-1]
             if (procName == app):
-                pid = proc[0]
+                processInfo = proc
                 break
-        return pid
+        return processInfo
 
+    def processExist(self, processName):
+        """
+        Returns True if process with name processName is running on device.
+        """
+        processInfo = self.processInfo(processName)
+        if processInfo:
+            return processInfo[0]
 
     @abstractmethod
-    def killProcess(self, processName, forceKill=False):
+    def killProcess(self, processName, sig=None):
         """
-        Kills the process named processName. If forceKill is True, process is
-        killed regardless of state.
+        Kills the process named processName. If sig is not None, process is
+        killed with the specified signal.
+
+        :param processName: path or name of the process to kill
+        :param sig: signal to pass into the kill command (optional)
         """
 
     @abstractmethod
-    def reboot(self, ipAddr=None, port=30000):
+    def reboot(self, wait=False, ipAddr=None):
         """
         Reboots the device.
 
-        Some implementations may optionally support waiting for a TCP callback from
-        the device once it has restarted before returning, but this is not
-        guaranteed.
+        :param wait: block on device to come back up before returning
+        :param ipAddr: if specified, try to make the device connect to this
+                       specific IP address after rebooting (only works with
+                       SUT; if None, we try to determine a reasonable address
+                       ourselves)
         """
 
     @abstractmethod
@@ -436,7 +494,8 @@ class DeviceManager(object):
         Installs an application onto the device.
 
         :param appBundlePath: path to the application bundle on the device
-        :param destPath: destination directory of where application should be installed to (optional)
+        :param destPath: destination directory of where application should be
+                         installed to (optional)
         """
 
     @abstractmethod
@@ -458,21 +517,21 @@ class DeviceManager(object):
         """
 
     @abstractmethod
-    def updateApp(self, appBundlePath, processName=None, destPath=None, ipAddr=None, port=30000):
+    def updateApp(self, appBundlePath, processName=None, destPath=None,
+                  wait=False, ipAddr=None):
         """
-        Updates the application on the device.
+        Updates the application on the device and reboots.
 
         :param appBundlePath: path to the application bundle on the device
         :param processName: used to end the process if the applicaiton is
                             currently running (optional)
         :param destPath: Destination directory to where the application should
                          be installed (optional)
-        :param ipAddr: IP address to await a callback ping to let us know that
-                       the device has updated properly (defaults to current
-                       IP)
-        :param port: port to await a callback ping to let us know that the
-                     device has updated properly defaults to 30000, and counts
-                     up from there if it finds a conflict
+        :param wait: block on device to come back up before returning
+        :param ipAddr: if specified, try to make the device connect to this
+                       specific IP address after rebooting (only works with
+                       SUT; if None and wait is True, we try to determine a
+                       reasonable address ourselves)
         """
 
     @staticmethod
@@ -482,15 +541,19 @@ class DeviceManager(object):
         """
         # Based on: http://code.activestate.com/recipes/577443-write-a-png-image-in-native-python/
         width_byte_4 = width * 4
-        raw_data = b"".join(b'\x00' + buf[span:span + width_byte_4] for span in range(0, (height - 1) * width * 4, width_byte_4))
+        raw_data = b"".join(b'\x00' + buf[span:span + width_byte_4]
+                            for span in range(0, (height - 1) * width * 4, width_byte_4))
+
         def png_pack(png_tag, data):
             chunk_head = png_tag + data
-            return struct.pack("!I", len(data)) + chunk_head + struct.pack("!I", 0xFFFFFFFF & zlib.crc32(chunk_head))
+            return struct.pack("!I", len(data)) \
+                + chunk_head \
+                + struct.pack("!I", 0xFFFFFFFF & zlib.crc32(chunk_head))
         return b"".join([
-                b'\x89PNG\r\n\x1a\n',
-                png_pack(b'IHDR', struct.pack("!2I5B", width, height, 8, 6, 0, 0, 0)),
-                png_pack(b'IDAT', zlib.compress(raw_data, 9)),
-                png_pack(b'IEND', b'')])
+            b'\x89PNG\r\n\x1a\n',
+            png_pack(b'IHDR', struct.pack("!2I5B", width, height, 8, 6, 0, 0, 0)),
+            png_pack(b'IDAT', zlib.compress(raw_data, 9)),
+            png_pack(b'IEND', b'')])
 
     @abstractmethod
     def _getRemoteHash(self, filename):
@@ -504,7 +567,7 @@ class DeviceManager(object):
         Return the MD5 sum of a file on the host.
         """
         f = open(filename, 'rb')
-        if (f == None):
+        if f is None:
             return None
 
         try:
@@ -533,7 +596,7 @@ class DeviceManager(object):
             arg.replace('&', '\&')
 
             needsQuoting = False
-            for char in [ ' ', '(', ')', '"', '&' ]:
+            for char in [' ', '(', ')', '"', '&']:
                 if arg.find(char) >= 0:
                     needsQuoting = True
                     break
@@ -545,64 +608,6 @@ class DeviceManager(object):
         return " ".join(quotedCmd)
 
 
-class NetworkTools:
-    def __init__(self):
-        pass
-
-    # Utilities to get the local ip address
-    def getInterfaceIp(self, ifname):
-        if os.name != "nt":
-            import fcntl
-            import struct
-            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            return socket.inet_ntoa(fcntl.ioctl(
-                                    s.fileno(),
-                                    0x8915,  # SIOCGIFADDR
-                                    struct.pack('256s', ifname[:15])
-                                    )[20:24])
-        else:
-            return None
-
-    def getLanIp(self):
-        try:
-            ip = socket.gethostbyname(socket.gethostname())
-        except socket.gaierror:
-            ip = socket.gethostbyname(socket.gethostname() + ".local") # for Mac OS X
-        if (ip is None or ip.startswith("127.")) and os.name != "nt":
-            interfaces = ["eth0","eth1","eth2","wlan0","wlan1","wifi0","ath0","ath1","ppp0"]
-            for ifname in interfaces:
-                try:
-                    ip = self.getInterfaceIp(ifname)
-                    break
-                except IOError:
-                    pass
-        return ip
-
-    # Gets an open port starting with the seed by incrementing by 1 each time
-    def findOpenPort(self, ip, seed):
-        try:
-            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            connected = False
-            if isinstance(seed, basestring):
-                seed = int(seed)
-            maxportnum = seed + 5000 # We will try at most 5000 ports to find an open one
-            while not connected:
-                try:
-                    s.bind((ip, seed))
-                    connected = True
-                    s.close()
-                    break
-                except:
-                    if seed > maxportnum:
-                        self._logger.error("Automation Error: Could not find open port after checking 5000 ports")
-                        raise
-                seed += 1
-        except:
-            self._logger.error("Automation Error: Socket error trying to find open port")
-
-        return seed
-
 def _pop_last_line(file_obj):
     """
     Utility function to get the last line from a file (shared between ADB and
@@ -613,20 +618,20 @@ def _pop_last_line(file_obj):
     file_obj.seek(0, 2)
     length = file_obj.tell() + 1
     while bytes_from_end < length:
-        file_obj.seek((-1)*bytes_from_end, 2)
+        file_obj.seek((-1) * bytes_from_end, 2)
         data = file_obj.read()
 
-        if bytes_from_end == length-1 and len(data) == 0: # no data, return None
+        if bytes_from_end == length - 1 and len(data) == 0:  # no data, return None
             return None
 
-        if data[0] == '\n' or bytes_from_end == length-1:
+        if data[0] == '\n' or bytes_from_end == length - 1:
             # found the last line, which should have the return value
             if data[0] == '\n':
                 data = data[1:]
 
             # truncate off the return code line
             file_obj.truncate(length - bytes_from_end)
-            file_obj.seek(0,2)
+            file_obj.seek(0, 2)
             file_obj.write('\0')
 
             return data
@@ -635,14 +640,16 @@ def _pop_last_line(file_obj):
 
     return None
 
+
 class ZeroconfListener(object):
+
     def __init__(self, hwid, evt):
         self.hwid = hwid
         self.evt = evt
 
     # Format is 'SUTAgent [hwid:015d2bc2825ff206] [ip:10_242_29_221]._sutagent._tcp.local.'
     def addService(self, zeroconf, type, name):
-        #print "Found _sutagent service broadcast:", name
+        # print "Found _sutagent service broadcast:", name
         if not name.startswith("SUTAgent"):
             return
 

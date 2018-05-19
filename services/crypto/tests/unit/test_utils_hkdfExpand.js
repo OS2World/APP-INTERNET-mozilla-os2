@@ -8,7 +8,7 @@ Cu.import("resource://services-crypto/utils.js");
 
 // Test case 1
 
-let tc1 = {
+var tc1 = {
    IKM:  "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b",
    salt: "000102030405060708090a0b0c",
    info: "f0f1f2f3f4f5f6f7f8f9",
@@ -22,7 +22,7 @@ let tc1 = {
 
 // Test case 2
 
-let tc2 = {
+var tc2 = {
    IKM:  "000102030405060708090a0b0c0d0e0f" +
          "101112131415161718191a1b1c1d1e1f" +
          "202122232425262728292a2b2c2d2e2f" +
@@ -51,7 +51,7 @@ let tc2 = {
 
 // Test case 3
 
-let tc3 = {
+var tc3 = {
    IKM:  "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b",
    salt: "",
    info: "",
@@ -93,16 +93,28 @@ function expand_hex(prk, info, len) {
   return CommonUtils.bytesAsHex(CryptoUtils.hkdfExpand(prk, info, len));
 }
 
+function hkdf_hex(ikm, salt, info, len) {
+  ikm = _hexToString(ikm);
+  if (salt)
+    salt = _hexToString(salt);
+  info = _hexToString(info);
+  return CommonUtils.bytesAsHex(CryptoUtils.hkdf(ikm, salt, info, len));
+}
+
 function run_test() {
   _("Verifying Test Case 1");
   do_check_eq(extract_hex(tc1.salt, tc1.IKM), tc1.PRK);
   do_check_eq(expand_hex(tc1.PRK, tc1.info, tc1.L), tc1.OKM);
+  do_check_eq(hkdf_hex(tc1.IKM, tc1.salt, tc1.info, tc1.L), tc1.OKM);
 
   _("Verifying Test Case 2");
   do_check_eq(extract_hex(tc2.salt, tc2.IKM), tc2.PRK);
   do_check_eq(expand_hex(tc2.PRK, tc2.info, tc2.L), tc2.OKM);
+  do_check_eq(hkdf_hex(tc2.IKM, tc2.salt, tc2.info, tc2.L), tc2.OKM);
 
   _("Verifying Test Case 3");
   do_check_eq(extract_hex(tc3.salt, tc3.IKM), tc3.PRK);
   do_check_eq(expand_hex(tc3.PRK, tc3.info, tc3.L), tc3.OKM);
+  do_check_eq(hkdf_hex(tc3.IKM, tc3.salt, tc3.info, tc3.L), tc3.OKM);
+  do_check_eq(hkdf_hex(tc3.IKM, undefined, tc3.info, tc3.L), tc3.OKM);
 }

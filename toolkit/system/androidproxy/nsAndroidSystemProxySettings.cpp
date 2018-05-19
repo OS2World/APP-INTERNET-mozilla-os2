@@ -3,15 +3,13 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#include "nsNetUtil.h"
 #include "nsIURI.h"
 
-#include "mozilla/Util.h"
 #include "nsISystemProxySettings.h"
 #include "nsIServiceManager.h"
 #include "mozilla/ModuleUtils.h"
 #include "nsPrintfCString.h"
-#include "nsNetUtil.h"
+#include "nsNetCID.h"
 #include "nsISupportsPrimitives.h"
 #include "nsIURI.h"
 
@@ -20,17 +18,17 @@
 class nsAndroidSystemProxySettings : public nsISystemProxySettings
 {
 public:
-    NS_DECL_ISUPPORTS
+    NS_DECL_THREADSAFE_ISUPPORTS
     NS_DECL_NSISYSTEMPROXYSETTINGS
 
     nsAndroidSystemProxySettings() {};
     nsresult Init();
 
 private:
-    ~nsAndroidSystemProxySettings() {};
+    virtual ~nsAndroidSystemProxySettings() {}
 };
 
-NS_IMPL_THREADSAFE_ISUPPORTS1(nsAndroidSystemProxySettings, nsISystemProxySettings)
+NS_IMPL_ISUPPORTS(nsAndroidSystemProxySettings, nsISystemProxySettings)
 
 NS_IMETHODIMP
 nsAndroidSystemProxySettings::GetMainThreadOnly(bool *aMainThreadOnly)
@@ -73,13 +71,13 @@ NS_DEFINE_NAMED_CID(NS_ANDROIDSYSTEMPROXYSERVICE_CID);
 void test() {};
 
 static const mozilla::Module::CIDEntry kSysProxyCIDs[] = {
-    { &kNS_ANDROIDSYSTEMPROXYSERVICE_CID, false, NULL, nsAndroidSystemProxySettingsConstructor },
-    { NULL }
+    { &kNS_ANDROIDSYSTEMPROXYSERVICE_CID, false, nullptr, nsAndroidSystemProxySettingsConstructor },
+    { nullptr }
 };
 
 static const mozilla::Module::ContractIDEntry kSysProxyContracts[] = {
     { NS_SYSTEMPROXYSETTINGS_CONTRACTID, &kNS_ANDROIDSYSTEMPROXYSERVICE_CID },
-    { NULL }
+    { nullptr }
 };
 
 static const mozilla::Module kSysProxyModule = {

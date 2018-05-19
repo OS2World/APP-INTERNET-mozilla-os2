@@ -4,12 +4,8 @@
 // I've also shoehorned in a test that ENSURE_CALLED_BEFORE_CONNECT works as
 // expected: see comments that start with ENSURE_CALLED_BEFORE_CONNECT:
 
-const Cc = Components.classes;
-const Ci = Components.interfaces;
-const Cu = Components.utils;
-const Cr = Components.results;
-
 Cu.import("resource://testing-common/httpd.js");
+Cu.import("resource://gre/modules/NetUtil.jsm");
 
 var ios = Components.classes["@mozilla.org/network/io-service;1"]
                     .getService(Components.interfaces.nsIIOService);
@@ -77,8 +73,8 @@ var listener = {
 };
 
 function makeChan(url) {
-  var chan = ios.newChannel(url, null, null)
-                .QueryInterface(Components.interfaces.nsIHttpChannel);
+  var chan = NetUtil.newChannel({uri: url, loadUsingSystemPrincipal: true})
+                    .QueryInterface(Components.interfaces.nsIHttpChannel);
 
   // ENSURE_CALLED_BEFORE_CONNECT: set original value
   var uri = ios.newURI("http://site1.com", null, null);
@@ -90,19 +86,20 @@ function makeChan(url) {
 var httpserv = null;
 
 function execute_test() {
-  var chan = makeChan("http://localhost:4444/failtest");
+  var chan = makeChan("http://localhost:" +
+                      httpserv.identity.primaryPort + "/failtest");
 
   var obs = Components.classes["@mozilla.org/observer-service;1"].getService();
   obs = obs.QueryInterface(Components.interfaces.nsIObserverService);
   obs.addObserver(observer, "http-on-modify-request", false);
 
-  chan.asyncOpen(listener, null);
+  chan.asyncOpen2(listener);
 }
 
 function run_test() {
   httpserv = new HttpServer();
   httpserv.registerPathHandler("/failtest", failtest);
-  httpserv.start(4444);
+  httpserv.start(-1);
 
   execute_test();
 

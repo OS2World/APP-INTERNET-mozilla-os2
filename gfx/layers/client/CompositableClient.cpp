@@ -4,17 +4,61 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "mozilla/layers/CompositableClient.h"
-#include "mozilla/layers/TextureClient.h"
-#include "mozilla/layers/TextureClientOGL.h"
-#include "mozilla/layers/LayerTransactionChild.h"
+#include <stdint.h>                     // for uint64_t, uint32_t
+#include "gfxPlatform.h"                // for gfxPlatform
+#include "mozilla/layers/CompositableChild.h"
 #include "mozilla/layers/CompositableForwarder.h"
+#include "mozilla/layers/ImageBridgeChild.h"
+#include "mozilla/layers/TextureClient.h"  // for TextureClient, etc
+#include "mozilla/layers/TextureClientOGL.h"
+#include "mozilla/mozalloc.h"           // for operator delete, etc
+#include "mozilla/layers/PCompositableChild.h"
+#include "mozilla/layers/TextureClientRecycleAllocator.h"
 #ifdef XP_WIN
+#include "gfxWindowsPlatform.h"         // for gfxWindowsPlatform
 #include "mozilla/layers/TextureD3D11.h"
-#include "gfxWindowsPlatform.h"
+#include "mozilla/layers/TextureD3D9.h"
 #endif
+#include "gfxUtils.h"
+#include "IPDLActor.h"
 
 namespace mozilla {
 namespace layers {
+
+using namespace mozilla::gfx;
+
+void
+CompositableClient::InitIPDLActor(PCompositableChild* aActor, uint64_t aAsyncID)
+{
+  MOZ_ASSERT(aActor);
+
+  mForwarder->AssertInForwarderThread();
+
+  mCompositableChild = static_cast<CompositableChild*>(aActor);
+  mCompositableChild->Init(this, aAsyncID);
+}
+
+/* static */ RefPtr<CompositableClient>
+CompositableClient::FromIPDLActor(PCompositableChild* aActor)
+{
+  MOZ_ASSERT(aActor);
+
+  RefPtr<CompositableClient> client = static_cast<CompositableChild*>(aActor)->GetCompositableClient();
+  if (!client) {
+    return nullptr;
+  }
+
+  client->mForwarder->AssertInForwarderThread();
+  return client;
+}
+
+CompositableClient::CompositableClient(CompositableForwarder* aForwarder,
+                                       TextureFlags aTextureFlags)
+: mForwarder(aForwarder)
+, mTextureFlags(aTextureFlags)
+{
+  MOZ_COUNT_CTOR(CompositableClient);
+}
 
 CompositableClient::~CompositableClient()
 {
@@ -28,26 +72,31 @@ CompositableClient::GetCompositorBackendType() const
   return mForwarder->GetCompositorBackendType();
 }
 
-void
-CompositableClient::SetIPDLActor(CompositableChild* aChild)
-{
-  mCompositableChild = aChild;
-}
-
-CompositableChild*
+PCompositableChild*
 CompositableClient::GetIPDLActor() const
 {
   return mCompositableChild;
 }
 
 bool
-CompositableClient::Connect()
+CompositableClient::Connect(ImageContainer* aImageContainer)
 {
+  MOZ_ASSERT(!mCompositableChild);
   if (!GetForwarder() || GetIPDLActor()) {
     return false;
   }
-  GetForwarder()->Connect(this);
+
+  GetForwarder()->AssertInForwarderThread();
+  GetForwarder()->Connect(this, aImageContainer);
   return true;
+}
+
+bool
+CompositableClient::IsConnected() const
+{
+  // CanSend() is only reliable in the same thread as the IPDL channel.
+  mForwarder->AssertInForwarderThread();
+  return mCompositableChild && mCompositableChild->IsConnected();
 }
 
 void
@@ -56,7 +105,16 @@ CompositableClient::Destroy()
   if (!mCompositableChild) {
     return;
   }
-  mCompositableChild->Destroy();
+
+  if (mTextureClientRecycler) {
+    mTextureClientRecycler->Destroy();
+  }
+
+  // Take away our IPDL's actor reference back to us.
+  mCompositableChild->RevokeCompositableClient();
+
+  // Schedule the IPDL actor to be destroyed on the forwarder's thread.
+  mForwarder->Destroy(mCompositableChild);
   mCompositableChild = nullptr;
 }
 
@@ -69,68 +127,147 @@ CompositableClient::GetAsyncID() const
   return 0; // zero is always an invalid async ID
 }
 
-
-void
-CompositableChild::Destroy()
+already_AddRefed<TextureClient>
+CompositableClient::CreateBufferTextureClient(gfx::SurfaceFormat aFormat,
+                                              gfx::IntSize aSize,
+                                              gfx::BackendType aMoz2DBackend,
+                                              TextureFlags aTextureFlags)
 {
-  Send__delete__(this);
+  return TextureClient::CreateForRawBufferAccess(GetForwarder(),
+                                                 aFormat, aSize, aMoz2DBackend,
+                                                 aTextureFlags | mTextureFlags);
 }
 
-TemporaryRef<TextureClient>
-CompositableClient::CreateTextureClient(TextureClientType aTextureClientType)
+already_AddRefed<TextureClient>
+CompositableClient::CreateTextureClientForDrawing(gfx::SurfaceFormat aFormat,
+                                                  gfx::IntSize aSize,
+                                                  BackendSelector aSelector,
+                                                  TextureFlags aTextureFlags,
+                                                  TextureAllocationFlags aAllocFlags)
 {
-  MOZ_ASSERT(GetForwarder(), "Can't create a texture client if the compositable is not connected to the compositor.");
-  LayersBackend parentBackend = GetForwarder()->GetCompositorBackendType();
-  RefPtr<TextureClient> result;
+  return TextureClient::CreateForDrawing(GetForwarder(),
+                                         aFormat, aSize, aSelector,
+                                         aTextureFlags | mTextureFlags,
+                                         aAllocFlags);
+}
 
-  switch (aTextureClientType) {
-  case TEXTURE_SHARED_GL:
-    if (parentBackend == LAYERS_OPENGL) {
-      result = new TextureClientSharedOGL(GetForwarder(), GetTextureInfo());
-    }
-     break;
-  case TEXTURE_SHARED_GL_EXTERNAL:
-    if (parentBackend == LAYERS_OPENGL) {
-      result = new TextureClientSharedOGLExternal(GetForwarder(), GetTextureInfo());
-    }
-    break;
-  case TEXTURE_STREAM_GL:
-    if (parentBackend == LAYERS_OPENGL) {
-      result = new TextureClientStreamOGL(GetForwarder(), GetTextureInfo());
-    }
-    break;
-  case TEXTURE_YCBCR:
-    if (parentBackend == LAYERS_OPENGL || parentBackend == LAYERS_D3D11) {
-      result = new TextureClientShmemYCbCr(GetForwarder(), GetTextureInfo());
-    }
-    break;
-  case TEXTURE_CONTENT:
-#ifdef XP_WIN
-    if (parentBackend == LAYERS_D3D11 && gfxWindowsPlatform::GetPlatform()->GetD2DDevice()) {
-      result = new TextureClientD3D11(GetForwarder(), GetTextureInfo());
-      break;
-    }
-#endif
-     // fall through to TEXTURE_SHMEM
-  case TEXTURE_SHMEM:
-    result = new TextureClientShmem(GetForwarder(), GetTextureInfo());
-    break;
-  default:
-    MOZ_ASSERT(false, "Unhandled texture client type");
+already_AddRefed<TextureClient>
+CompositableClient::CreateTextureClientFromSurface(gfx::SourceSurface* aSurface,
+                                                   BackendSelector aSelector,
+                                                   TextureFlags aTextureFlags,
+                                                   TextureAllocationFlags aAllocFlags)
+{
+  return TextureClient::CreateFromSurface(GetForwarder(),
+                                          aSurface,
+                                          aSelector,
+                                          aTextureFlags | mTextureFlags,
+                                          aAllocFlags);
+}
+
+bool
+CompositableClient::AddTextureClient(TextureClient* aClient)
+{
+  if(!aClient) {
+    return false;
+  }
+  aClient->SetAddedToCompositableClient();
+  return aClient->InitIPDLActor(mForwarder);
+}
+
+void
+CompositableClient::ClearCachedResources()
+{
+  if (mTextureClientRecycler) {
+    mTextureClientRecycler->ShrinkToMinimumSize();
+  }
+}
+
+void
+CompositableClient::HandleMemoryPressure()
+{
+  if (mTextureClientRecycler) {
+    mTextureClientRecycler->ShrinkToMinimumSize();
+  }
+}
+
+void
+CompositableClient::RemoveTexture(TextureClient* aTexture)
+{
+  mForwarder->RemoveTextureFromCompositable(this, aTexture);
+}
+
+TextureClientRecycleAllocator*
+CompositableClient::GetTextureClientRecycler()
+{
+  if (mTextureClientRecycler) {
+    return mTextureClientRecycler;
   }
 
-  // If we couldn't create an appropriate texture client,
-  // then return nullptr so the caller can chose another
-  // type.
-  if (!result) {
+  if (!mForwarder) {
     return nullptr;
   }
 
-  MOZ_ASSERT(result->SupportsType(aTextureClientType),
-             "Created the wrong texture client?");
-  result->SetFlags(GetTextureInfo().mTextureFlags);
+  if(!mForwarder->GetTextureForwarder()->UsesImageBridge()) {
+    MOZ_ASSERT(NS_IsMainThread());
+    mTextureClientRecycler = new layers::TextureClientRecycleAllocator(mForwarder);
+    return mTextureClientRecycler;
+  }
 
-  return result.forget();
+  // Handle a case that mForwarder is ImageBridge
+
+  if (InImageBridgeChildThread()) {
+    mTextureClientRecycler = new layers::TextureClientRecycleAllocator(mForwarder);
+    return mTextureClientRecycler;
+  }
+
+  ReentrantMonitor barrier("CompositableClient::GetTextureClientRecycler");
+  ReentrantMonitorAutoEnter mainThreadAutoMon(barrier);
+  bool done = false;
+
+  RefPtr<Runnable> runnable =
+    NS_NewRunnableFunction([&]() {
+      if (!mTextureClientRecycler) {
+        mTextureClientRecycler = new layers::TextureClientRecycleAllocator(mForwarder);
+      }
+      ReentrantMonitorAutoEnter childThreadAutoMon(barrier);
+      done = true;
+      barrier.NotifyAll();
+    });
+
+  ImageBridgeChild::GetSingleton()->GetMessageLoop()->PostTask(runnable.forget());
+
+  // should stop the thread until done.
+  while (!done) {
+    barrier.Wait();
+  }
+
+  return mTextureClientRecycler;
+}
+
+void
+CompositableClient::DumpTextureClient(std::stringstream& aStream,
+                                      TextureClient* aTexture,
+                                      TextureDumpMode aCompress)
+{
+  if (!aTexture) {
+    return;
+  }
+  RefPtr<gfx::DataSourceSurface> dSurf = aTexture->GetAsSurface();
+  if (!dSurf) {
+    return;
+  }
+  if (aCompress == TextureDumpMode::Compress) {
+    aStream << gfxUtils::GetAsLZ4Base64Str(dSurf).get();
+  } else {
+    aStream << gfxUtils::GetAsDataURI(dSurf).get();
+  }
+}
+
+AutoRemoveTexture::~AutoRemoveTexture()
+{
+  if (mCompositable && mTexture && mCompositable->IsConnected()) {
+    mCompositable->RemoveTexture(mTexture);
+  }
 }
 
 } // namespace layers

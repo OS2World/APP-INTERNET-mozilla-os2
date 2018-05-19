@@ -1,17 +1,5 @@
-﻿// ***************************************************************************
-// *
-// * Copyright (C) 2012 International Business Machines
-// * Corporation and others.  All Rights Reserved.
-// * Tool: com.ibm.icu.dev.tool.cldr.LDML2ICUConverter.java
-// * Source File:<path>/icu-config.xml & build.xml
-// *
-// ***************************************************************************
-/**
- * validSubLocale of "root"
- */
+﻿// © 2016 and later: Unicode, Inc. and others.
+// License & terms of use: http://www.unicode.org/copyright.html#License
 pt{
-    /**
-     * so genrb doesn't issue warnings
-     */
-    ___{""}
+    Version{"2.1.19.14"}
 }

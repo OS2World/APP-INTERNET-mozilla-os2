@@ -37,7 +37,7 @@
 #include "google_breakpad/processor/call_stack.h"
 #include "google_breakpad/processor/memory_region.h"
 #include "google_breakpad/processor/stack_frame_cpu.h"
-#include "common/logging.h"
+#include "processor/logging.h"
 #include "processor/stackwalker_sparc.h"
 
 namespace google_breakpad {
@@ -72,7 +72,8 @@ StackFrame* StackwalkerSPARC::GetContextFrame() {
 }
 
 
-StackFrame* StackwalkerSPARC::GetCallerFrame(const CallStack* stack) {
+StackFrame* StackwalkerSPARC::GetCallerFrame(const CallStack* stack,
+                                             bool stack_scan_allowed) {
   if (!memory_ || !stack) {
     BPLOG(ERROR) << "Can't get caller frame without memory or stack";
     return NULL;

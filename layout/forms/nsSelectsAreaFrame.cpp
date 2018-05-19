@@ -3,22 +3,21 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 #include "nsSelectsAreaFrame.h"
-#include "nsCOMPtr.h"
-#include "nsIDOMHTMLOptionElement.h"
 #include "nsIContent.h"
 #include "nsListControlFrame.h"
 #include "nsDisplayList.h"
+#include "WritingModes.h"
 
-nsIFrame*
-NS_NewSelectsAreaFrame(nsIPresShell* aShell, nsStyleContext* aContext, uint32_t aFlags)
+using namespace mozilla;
+
+nsContainerFrame*
+NS_NewSelectsAreaFrame(nsIPresShell* aShell, nsStyleContext* aContext, nsFrameState aFlags)
 {
   nsSelectsAreaFrame* it = new (aShell) nsSelectsAreaFrame(aContext);
 
-  if (it) {
-    // We need NS_BLOCK_FLOAT_MGR to ensure that the options inside the select
-    // aren't expanded by right floats outside the select.
-    it->SetFlags(aFlags | NS_BLOCK_FLOAT_MGR);
-  }
+  // We need NS_BLOCK_FLOAT_MGR to ensure that the options inside the select
+  // aren't expanded by right floats outside the select.
+  it->AddStateBits(aFlags | NS_BLOCK_FLOAT_MGR);
 
   return it;
 }
@@ -40,7 +39,10 @@ public:
                               nsIFrame* aFrame, nsDisplayList* aList)
     : nsDisplayWrapList(aBuilder, aFrame, aList) {}
   virtual void HitTest(nsDisplayListBuilder* aBuilder, const nsRect& aRect,
-                       HitTestState* aState, nsTArray<nsIFrame*> *aOutFrames);
+                       HitTestState* aState, nsTArray<nsIFrame*> *aOutFrames) override;
+  virtual bool ShouldFlattenAway(nsDisplayListBuilder* aBuilder) override {
+    return false;
+  }
   NS_DISPLAY_DECL_NAME("OptionEventGrabber", TYPE_OPTION_EVENT_GRABBER)
 };
 
@@ -54,7 +56,7 @@ void nsDisplayOptionEventGrabber::HitTest(nsDisplayListBuilder* aBuilder,
     nsIFrame* selectedFrame = outFrames.ElementAt(i);
     while (selectedFrame &&
            !(selectedFrame->GetContent() &&
-             selectedFrame->GetContent()->IsHTML(nsGkAtoms::option))) {
+             selectedFrame->GetContent()->IsHTMLElement(nsGkAtoms::option))) {
       selectedFrame = selectedFrame->GetParent();
     }
     if (selectedFrame) {
@@ -104,7 +106,7 @@ public:
   }
 #endif
 
-  virtual nsRect GetBounds(nsDisplayListBuilder* aBuilder, bool* aSnap) {
+  virtual nsRect GetBounds(nsDisplayListBuilder* aBuilder, bool* aSnap) override {
     *aSnap = false;
     // override bounds because the list item focus ring may extend outside
     // the nsSelectsAreaFrame
@@ -113,10 +115,11 @@ public:
            listFrame->GetOffsetToCrossDoc(ReferenceFrame());
   }
   virtual void Paint(nsDisplayListBuilder* aBuilder,
-                     nsRenderingContext* aCtx) {
+                     nsRenderingContext* aCtx) override {
     nsListControlFrame* listFrame = GetEnclosingListFrame(Frame());
     // listFrame must be non-null or we wouldn't get called.
-    listFrame->PaintFocus(*aCtx, aBuilder->ToReferenceFrame(listFrame));
+    listFrame->PaintFocus(aCtx->GetDrawTarget(),
+                          aBuilder->ToReferenceFrame(listFrame));
   }
   NS_DISPLAY_DECL_NAME("ListFocus", TYPE_LIST_FOCUS)
 };
@@ -155,50 +158,49 @@ nsSelectsAreaFrame::BuildDisplayListInternal(nsDisplayListBuilder*   aBuilder,
   }
 }
 
-NS_IMETHODIMP 
+void
 nsSelectsAreaFrame::Reflow(nsPresContext*           aPresContext, 
-                           nsHTMLReflowMetrics&     aDesiredSize,
-                           const nsHTMLReflowState& aReflowState, 
+                           ReflowOutput&     aDesiredSize,
+                           const ReflowInput& aReflowInput, 
                            nsReflowStatus&          aStatus)
 {
   nsListControlFrame* list = GetEnclosingListFrame(this);
   NS_ASSERTION(list,
                "Must have an nsListControlFrame!  Frame constructor is "
                "broken");
-  
+
   bool isInDropdownMode = list->IsInDropDownMode();
-  
+
   // See similar logic in nsListControlFrame::Reflow and
   // nsListControlFrame::ReflowAsDropdown.  We need to match it here.
-  nscoord oldHeight;
+  WritingMode wm = aReflowInput.GetWritingMode();
+  nscoord oldBSize;
   if (isInDropdownMode) {
-    // Store the height now in case it changes during
+    // Store the block size now in case it changes during
     // nsBlockFrame::Reflow for some odd reason.
     if (!(GetStateBits() & NS_FRAME_FIRST_REFLOW)) {
-      oldHeight = GetSize().height;
+      oldBSize = BSize(wm);
     } else {
-      oldHeight = NS_UNCONSTRAINEDSIZE;
+      oldBSize = NS_UNCONSTRAINEDSIZE;
     }
   }
-  
-  nsresult rv = nsBlockFrame::Reflow(aPresContext, aDesiredSize,
-                                    aReflowState, aStatus);
-  NS_ENSURE_SUCCESS(rv, rv);
 
-  // Check whether we need to suppress scrollbar updates.  We want to do that if
-  // we're in a possible first pass and our height of a row has changed.
+  nsBlockFrame::Reflow(aPresContext, aDesiredSize, aReflowInput, aStatus);
+
+  // Check whether we need to suppress scrollbar updates.  We want to do
+  // that if we're in a possible first pass and our block size of a row
+  // has changed.
   if (list->MightNeedSecondPass()) {
-    nscoord newHeightOfARow = list->CalcHeightOfARow();
-    // We'll need a second pass if our height of a row changed.  For
-    // comboboxes, we'll also need it if our height changed.  If we're going
-    // to do a second pass, suppress scrollbar updates for this pass.
-    if (newHeightOfARow != mHeightOfARow ||
-        (isInDropdownMode && (oldHeight != aDesiredSize.height ||
-                              oldHeight != GetSize().height))) {
-      mHeightOfARow = newHeightOfARow;
+    nscoord newBSizeOfARow = list->CalcBSizeOfARow();
+    // We'll need a second pass if our block size of a row changed.  For
+    // comboboxes, we'll also need it if our block size changed.  If
+    // we're going to do a second pass, suppress scrollbar updates for
+    // this pass.
+    if (newBSizeOfARow != mBSizeOfARow ||
+        (isInDropdownMode && (oldBSize != aDesiredSize.BSize(wm) ||
+                              oldBSize != BSize(wm)))) {
+      mBSizeOfARow = newBSizeOfARow;
       list->SetSuppressScrollbarUpdate(true);
     }
   }
-
-  return rv;
 }

@@ -14,13 +14,14 @@
  * limitations under the License.
  */
 
-#ifndef _UI_KEYBOARD_H
-#define _UI_KEYBOARD_H
+#ifndef _ANDROIDFW_KEYBOARD_H
+#define _ANDROIDFW_KEYBOARD_H
 
 #include "Input.h"
+#include "InputDevice.h"
 #include <utils/Errors.h>
-#include "String8.h"
-#include "PropertyMap.h"
+#include <utils/String8.h>
+#include <utils/PropertyMap.h>
 
 namespace android {
 
@@ -42,10 +43,10 @@ class KeyCharacterMap;
 class KeyMap {
 public:
     String8 keyLayoutFile;
-    KeyLayoutMap* keyLayoutMap;
+    sp<KeyLayoutMap> keyLayoutMap;
 
     String8 keyCharacterMapFile;
-    KeyCharacterMap* keyCharacterMap;
+    sp<KeyCharacterMap> keyCharacterMap;
 
     KeyMap();
     ~KeyMap();
@@ -104,6 +105,8 @@ extern int32_t getAxisByLabel(const char* label);
  */
 extern const char* getAxisLabel(int32_t axisId);
 
+extern int32_t getLedByLabel(const char* label);
+
 /**
  * Updates a meta state field when a key is pressed or released.
  */
@@ -116,4 +119,4 @@ extern bool isMetaKey(int32_t keyCode);
 
 } // namespace android
 
-#endif // _UI_KEYBOARD_H
+#endif // _ANDROIDFW_KEYBOARD_H

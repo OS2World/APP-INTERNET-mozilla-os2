@@ -14,16 +14,18 @@
 #include "nsThreadUtils.h"
 #include "nsISupportsPriority.h"
 #include "nsCacheUtils.h"
+#include "prtime.h"
 #include <time.h>
 
 using namespace mozilla;
 
-class nsBlockOnBackgroundThreadEvent : public nsRunnable {
+class nsBlockOnBackgroundThreadEvent : public Runnable {
 public:
   nsBlockOnBackgroundThreadEvent() {}
-  NS_IMETHOD Run()
+  NS_IMETHOD Run() override
   {
     MutexAutoLock lock(nsDeleteDir::gInstance->mLock);
+    nsDeleteDir::gInstance->mNotified = true;
     nsDeleteDir::gInstance->mCondVar.Notify();
     return NS_OK;
   }
@@ -35,6 +37,7 @@ nsDeleteDir * nsDeleteDir::gInstance = nullptr;
 nsDeleteDir::nsDeleteDir()
   : mLock("nsDeleteDir.mLock"),
     mCondVar(mLock, "nsDeleteDir.mCondVar"),
+    mNotified(false),
     mShutdownPending(false),
     mStopDeleting(false)
 {
@@ -77,10 +80,10 @@ nsDeleteDir::Shutdown(bool finishDeleting)
     for (int32_t i = gInstance->mTimers.Count(); i > 0; i--) {
       nsCOMPtr<nsITimer> timer = gInstance->mTimers[i-1];
       gInstance->mTimers.RemoveObjectAt(i-1);
-      timer->Cancel();
 
       nsCOMArray<nsIFile> *arg;
       timer->GetClosure((reinterpret_cast<void**>(&arg)));
+      timer->Cancel();
 
       if (finishDeleting)
         dirsToRemove.AppendObjects(*arg);
@@ -100,8 +103,11 @@ nsDeleteDir::Shutdown(bool finishDeleting)
         return NS_ERROR_UNEXPECTED;
       }
 
-      rv = gInstance->mCondVar.Wait();
-      thread->Shutdown();
+      gInstance->mNotified = false;
+      while (!gInstance->mNotified) {
+        gInstance->mCondVar.Wait();
+      }
+      nsShutdownThread::BlockingShutdown(thread);
     }
   }
 
@@ -303,13 +309,6 @@ nsDeleteDir::RemoveOldTrashes(nsIFile *cacheDir)
     return NS_ERROR_NOT_INITIALIZED;
 
   nsresult rv;
-
-  static bool firstRun = true;
-
-  if (!firstRun)
-    return NS_OK;
-
-  firstRun = false;
 
   nsCOMPtr<nsIFile> trash;
   rv = GetTrashDir(cacheDir, &trash);

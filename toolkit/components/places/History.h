@@ -1,6 +1,6 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * vim: sw=2 ts=2 et lcs=trail\:.,tab\:>~ :
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
+/* vim: set ts=8 sts=2 et sw=2 tw=80: */
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
@@ -8,6 +8,7 @@
 #define mozilla_places_History_h_
 
 #include "mozilla/IHistory.h"
+#include "mozilla/MemoryReporting.h"
 #include "mozilla/Mutex.h"
 #include "mozIAsyncHistory.h"
 #include "nsIDownloadHistory.h"
@@ -19,6 +20,7 @@
 #include "nsURIHashKey.h"
 #include "nsTObserverArray.h"
 #include "nsDeque.h"
+#include "nsIMemoryReporter.h"
 #include "nsIObserver.h"
 #include "mozIStorageConnection.h"
 
@@ -26,31 +28,40 @@ namespace mozilla {
 namespace places {
 
 struct VisitData;
+class ConcurrentStatementsHolder;
 
 #define NS_HISTORYSERVICE_CID \
   {0x0937a705, 0x91a6, 0x417a, {0x82, 0x92, 0xb2, 0x2e, 0xb1, 0x0d, 0xa8, 0x6c}}
 
-// Max size of History::mRecentlyVisitedURIs
-#define RECENTLY_VISITED_URI_SIZE 8
+// Initial size of mRecentlyVisitedURIs.
+#define RECENTLY_VISITED_URIS_SIZE 64
+// Microseconds after which a visit can be expired from mRecentlyVisitedURIs.
+// When an URI is reloaded we only take into account the first visit to it, and
+// ignore any subsequent visits, if they happen before this time has elapsed.
+// A commonly found case is to reload a page every 5 minutes, so we pick a time
+// larger than that.
+#define RECENTLY_VISITED_URIS_MAX_AGE 6 * 60 * PR_USEC_PER_SEC
 
-class History : public IHistory
-              , public nsIDownloadHistory
-              , public mozIAsyncHistory
-              , public nsIObserver
+class History final : public IHistory
+                    , public nsIDownloadHistory
+                    , public mozIAsyncHistory
+                    , public nsIObserver
+                    , public nsIMemoryReporter
 {
 public:
-  NS_DECL_ISUPPORTS
+  NS_DECL_THREADSAFE_ISUPPORTS
   NS_DECL_IHISTORY
   NS_DECL_NSIDOWNLOADHISTORY
   NS_DECL_MOZIASYNCHISTORY
   NS_DECL_NSIOBSERVER
+  NS_DECL_NSIMEMORYREPORTER
 
   History();
 
   /**
    * Obtains the statement to use to check if a URI is visited or not.
    */
-  mozIStorageAsyncStatement* GetIsVisitedStatement();
+  nsresult GetIsVisitedStatement(mozIStorageCompletionCallback* aCallback);
 
   /**
    * Adds an entry in moz_places with the data in aVisitData.
@@ -58,7 +69,7 @@ public:
    * @param aVisitData
    *        The visit data to use to populate a new row in moz_places.
    */
-  nsresult InsertPlace(const VisitData& aVisitData);
+  nsresult InsertPlace(VisitData& aVisitData);
 
   /**
    * Updates an entry in moz_places with the data in aVisitData.
@@ -82,7 +93,7 @@ public:
    * Get the number of bytes of memory this History object is using,
    * including sizeof(*this))
    */
-  size_t SizeOfIncludingThis(nsMallocSizeOfFun aMallocSizeOf);
+  size_t SizeOfIncludingThis(mozilla::MallocSizeOf aMallocSizeOf);
 
   /**
    * Obtains a pointer to this service.
@@ -128,6 +139,8 @@ public:
 private:
   virtual ~History();
 
+  void InitMemoryReporter();
+
   /**
    * Obtains a read-write database connection.
    */
@@ -138,21 +151,9 @@ private:
    * GetDBConn(), so never use it directly, or, if you really need, always
    * invoke GetDBConn() before.
    */
-  nsRefPtr<mozilla::places::Database> mDB;
+  RefPtr<mozilla::places::Database> mDB;
 
-  /**
-   * A read-only database connection used for checking if a URI is visited.
-   *
-   * @note this should only be accessed by GetIsVisistedStatement and Shutdown.
-   */
-  nsCOMPtr<mozIStorageConnection> mReadOnlyDBConn;
-
-  /**
-   * An asynchronous statement to query if a URI is visited or not.
-   *
-   * @note this should only be accessed by GetIsVisistedStatement and Shutdown.
-   */
-  nsCOMPtr<mozIStorageAsyncStatement> mIsVisitedStatement;
+  RefPtr<ConcurrentStatementsHolder> mConcurrentStatementsHolder;
 
   /**
    * Remove any memory references to tasks and do not take on any more.
@@ -175,7 +176,7 @@ private:
   class KeyClass : public nsURIHashKey
   {
   public:
-    KeyClass(const nsIURI* aURI)
+    explicit KeyClass(const nsIURI* aURI)
     : nsURIHashKey(aURI)
     {
     }
@@ -184,28 +185,36 @@ private:
     {
       NS_NOTREACHED("Do not call me!");
     }
+    size_t SizeOfExcludingThis(mozilla::MallocSizeOf aMallocSizeOf) const
+    {
+      return array.ShallowSizeOfExcludingThis(aMallocSizeOf);
+    }
     ObserverArray array;
   };
-
-  /**
-   * Helper function for nsTHashtable::SizeOfExcludingThis call in
-   * SizeOfIncludingThis().
-   */
-  static size_t SizeOfEntryExcludingThis(KeyClass* aEntry,
-                                         nsMallocSizeOfFun aMallocSizeOf,
-                                         void*);
 
   nsTHashtable<KeyClass> mObservers;
 
   /**
-   * mRecentlyVisitedURIs remembers URIs which are recently added to the DB,
-   * to avoid saving these locations repeatedly in a short period.
+   * mRecentlyVisitedURIs remembers URIs which have been recently added to
+   * history, to avoid saving these locations repeatedly in a short period.
    */
-  typedef nsAutoTArray<nsCOMPtr<nsIURI>, RECENTLY_VISITED_URI_SIZE>
-          RecentlyVisitedArray;
-  RecentlyVisitedArray mRecentlyVisitedURIs;
-  RecentlyVisitedArray::index_type mRecentlyVisitedURIsNextIndex;
-
+  class RecentURIKey : public nsURIHashKey
+  {
+  public:
+    explicit RecentURIKey(const nsIURI* aURI) : nsURIHashKey(aURI)
+    {
+    }
+    RecentURIKey(const RecentURIKey& aOther) : nsURIHashKey(aOther)
+    {
+      NS_NOTREACHED("Do not call me!");
+    }
+    MOZ_INIT_OUTSIDE_CTOR PRTime time;
+  };
+  nsTHashtable<RecentURIKey> mRecentlyVisitedURIs;
+  /**
+   * Whether aURI has been visited "recently".
+   * See RECENTLY_VISITED_URIS_MAX_AGE.
+   */
   bool IsRecentlyVisitedURI(nsIURI* aURI);
 };
 

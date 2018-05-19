@@ -17,7 +17,7 @@
 #include "nsIRollupListener.h"
 #include "nsIScreenManager.h"
 #include "nsIWidgetListener.h"
-#include "nsOS2Uni.h"
+#include "nsNativeCharsetUtils.h"
 
 //-----------------------------------------------------------------------------
 // External Variables (in nsWindow.cpp)
@@ -39,6 +39,8 @@ extern uint32_t            gOS2Flags;
   #define DEBUGFOCUS(what)
 #endif
 
+using namespace mozilla;
+
 //=============================================================================
 //  os2FrameWindow Setup
 //=============================================================================
@@ -55,7 +57,7 @@ os2FrameWindow::os2FrameWindow(nsWindow* aOwner)
   mChromeHidden     = false;
   mNeedActivation   = false;
   mPrevFrameProc    = 0;
-  mFrameBounds      = nsIntRect(0, 0, 0, 0);
+  mFrameBounds      = LayoutDeviceIntRect(0, 0, 0, 0);
 }
 
 //-----------------------------------------------------------------------------
@@ -75,7 +77,7 @@ os2FrameWindow::~os2FrameWindow()
 
 HWND os2FrameWindow::CreateFrameWindow(nsWindow* aParent,
                                        HWND aParentWnd,
-                                       const nsIntRect& aRect,
+                                       const LayoutDeviceIntRect& aRect,
                                        nsWindowType aWindowType,
                                        nsBorderStyle aBorderStyle)
 {
@@ -113,8 +115,8 @@ HWND os2FrameWindow::CreateFrameWindow(nsWindow* aParent,
   // will be truncated (toplevel windows will still display correctly).
   RECTL rcl = {0, 0, aRect.width, aRect.height};
   WinCalcFrameRect(mFrameWnd, &rcl, FALSE);
-  mFrameBounds = nsIntRect(aRect.x, aRect.y,
-                           rcl.xRight-rcl.xLeft, rcl.yTop-rcl.yBottom);
+  mFrameBounds = LayoutDeviceIntRect(aRect.x, aRect.y,
+                                     rcl.xRight-rcl.xLeft, rcl.yTop-rcl.yBottom);
 
   // Move & resize the frame.
   int32_t pmY = WinQuerySysValue(HWND_DESKTOP, SV_CYSCREEN)
@@ -262,7 +264,7 @@ void os2FrameWindow::SetWindowListVisibility(bool aState)
 //  Window Positioning
 //=============================================================================
 
-nsresult os2FrameWindow::GetBounds(nsIntRect& aRect)
+nsresult os2FrameWindow::GetBounds(LayoutDeviceIntRect& aRect)
 {
   aRect = mFrameBounds;
   return NS_OK;
@@ -330,9 +332,9 @@ void os2FrameWindow::ActivateTopLevelWidget()
 // already occurred.  It only performs these actions when the frame is in
 // fullscreen mode or saved window positions are being restored at startup.
 
-nsresult os2FrameWindow::SetSizeMode(int32_t aMode)
+nsresult os2FrameWindow::SetSizeMode(nsSizeMode aMode)
 {
-  int32_t previousMode = mOwner->SizeMode();
+  nsSizeMode previousMode = mOwner->SizeMode();
 
   // save the new state
   nsresult rv = mOwner->nsBaseWidget::SetSizeMode(aMode);
@@ -377,6 +379,26 @@ nsresult os2FrameWindow::SetSizeMode(int32_t aMode)
     case nsSizeMode_Fullscreen:
     default:
       break;
+  }
+
+  return NS_OK;
+}
+
+//-----------------------------------------------------------------------------
+// Go full screen
+
+nsresult os2FrameWindow::MakeFullScreen(bool aFullScreen, nsIScreen* aScreen)
+{
+  // Will call hide chrome, reposition window. Note this will
+  // also cache dimensions for restoration, so it should only
+  // be called once per fullscreen request.
+  nsresult rv = mOwner->nsBaseWidget::MakeFullScreen(aFullScreen, aScreen);
+  if (!NS_SUCCEEDED(rv)) {
+    return rv;
+  }
+
+  if (mOwner->mWidgetListener) {
+    mOwner->mWidgetListener->FullscreenChanged(aFullScreen);
   }
 
   return NS_OK;
@@ -430,7 +452,7 @@ nsresult os2FrameWindow::HideWindowChrome(bool aShouldHide)
 
 nsresult os2FrameWindow::SetTitle(const nsAString& aTitle)
 {
-  PRUnichar* uchtemp = ToNewUnicode(aTitle);
+  char16_t* uchtemp = ToNewUnicode(aTitle);
   for (uint32_t i = 0; i < aTitle.Length(); i++) {
     switch (uchtemp[i]) {
       case 0x2018:
@@ -447,20 +469,19 @@ nsresult os2FrameWindow::SetTitle(const nsAString& aTitle)
     }
   }
 
-  nsAutoCharBuffer title;
-  int32_t titleLength;
-  WideCharToMultiByte(0, uchtemp, aTitle.Length(), title, titleLength);
-  if (titleLength > MAX_TITLEBAR_LENGTH) {
-    title[MAX_TITLEBAR_LENGTH] = '\0';
+  nsAutoCString title;
+  NS_CopyUnicodeToNative(nsDependentString(uchtemp, aTitle.Length()), title);
+  if (title.Length() > MAX_TITLEBAR_LENGTH) {
+    title.Truncate(MAX_TITLEBAR_LENGTH);
   }
-  WinSetWindowText(mFrameWnd, title.Elements());
+  WinSetWindowText(mFrameWnd, title.get());
 
   // If the chrome is hidden, set the text of the titlebar directly
   if (mChromeHidden) {
-    WinSetWindowText(mTitleBar, title.Elements());
+    WinSetWindowText(mTitleBar, title.get());
   }
 
-  nsMemory::Free(uchtemp);
+  free(uchtemp);
   return NS_OK;
 }
 
@@ -594,7 +615,7 @@ MRESULT EXPENTRY fnwpFrame(HWND hwnd, ULONG msg, MPARAM mp1, MPARAM mp2)
         msg == WM_BUTTON3DOWN) {
       // Rollup if the event is outside the popup
       if (!nsWindow::EventIsInsideWindow((nsWindow*)rollupWidget.get())) {
-        rollupListener->Rollup(UINT32_MAX, nullptr);
+        rollupListener->Rollup(UINT32_MAX, true, nullptr, nullptr);
       }
     }
   }
@@ -656,21 +677,63 @@ MRESULT os2FrameWindow::ProcessFrameMessage(ULONG msg, MPARAM mp1, MPARAM mp2)
      // on the icon won't restore it, the sysmenu will have the wrong
      // items, and/or the minmax button will have the wrong buttons.
 
-    case WM_ADJUSTWINDOWPOS:
-      if (mChromeHidden && ((PSWP)mp1)->fl & SWP_MINIMIZE) {
+    case WM_ADJUSTWINDOWPOS: {
+      PSWP pSwp = (PSWP)mp1;
+      if (mChromeHidden && pSwp->fl & SWP_MINIMIZE) {
         WinSetParent(mTitleBar, mFrameWnd, TRUE);
         WinSetParent(mSysMenu, mFrameWnd, TRUE);
         WinSetParent(mMinMax, mFrameWnd, TRUE);
       }
-      break;
 
-    case WM_ADJUSTFRAMEPOS:
-      if (mChromeHidden && ((PSWP)mp1)->fl & SWP_RESTORE) {
+      if (pSwp->fl & SWP_ZORDER ||
+          pSwp->fl & (SWP_ACTIVATE | SWP_SHOW)) {
+        // For some reason, when the window is first created and shown, the
+        // SWP_ZORDER flag is not set by PM so we miss the initial
+        // nsWidgetListener::ZLevelChanged notification that sets the first
+        // top-level window of the application. It seems that SWP_ACTIVATE and
+        // SWP_SHOW are set in such a case, so react on them too (assuming
+        // HWND_TOP).
+        HWND hwndAfter = pSwp->fl & SWP_ZORDER ? pSwp->hwndInsertBehind : HWND_TOP;
+
+        nsWindow *aboveWindow = 0;
+        nsWindowZ placement;
+
+        if (hwndAfter == HWND_BOTTOM)
+          placement = nsWindowZBottom;
+        else if (hwndAfter == HWND_TOP)
+          placement = nsWindowZTop;
+        else {
+          placement = nsWindowZRelative;
+          aboveWindow = nsWindow::GetNSWindowPtr(hwndAfter);
+        }
+
+        if (mOwner->mWidgetListener) {
+          nsCOMPtr<nsIWidget> actualBelow = nullptr;
+          if (mOwner->mWidgetListener->ZLevelChanged(false, &placement,
+                                                     aboveWindow, getter_AddRefs(actualBelow))) {
+            pSwp->fl |= SWP_ZORDER;
+            if (placement == nsWindowZBottom)
+              pSwp->hwndInsertBehind = HWND_BOTTOM;
+            else if (placement == nsWindowZTop)
+              pSwp->hwndInsertBehind = HWND_TOP;
+            else {
+              pSwp->hwndInsertBehind = (HWND)actualBelow->GetNativeData(NS_NATIVE_WINDOW);
+            }
+          }
+        }
+      }
+      break;
+    }
+
+    case WM_ADJUSTFRAMEPOS: {
+      PSWP pSwp = (PSWP)mp1;
+      if (mChromeHidden && (pSwp->fl & SWP_RESTORE)) {
         WinSetParent(mTitleBar, HWND_OBJECT, TRUE);
         WinSetParent(mSysMenu, HWND_OBJECT, TRUE);
         WinSetParent(mMinMax, HWND_OBJECT, TRUE);
       }
       break;
+    }
 
     case WM_DESTROY:
       DEBUGFOCUS(frame WM_DESTROY);

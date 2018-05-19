@@ -13,6 +13,7 @@
 <div id="mm" style="width:25.4mm; height:25.4mm; background:orange;">mm</div>
 <div id="cm" style="width:2.54cm; height:2.54cm; background:purple;">cm</div>
 <div id="in" style="width:1in; height:1in; background:magenta;">in</div>
+<div id="q" style="width:101.6q; height:101.6q; background:blue;">q</div>
 
 <div id="mozmm" style="width:25.4mozmm; height:25.4mozmm; background:cyan;">mozmm</div>
 
@@ -37,28 +38,36 @@ function checkPixelRelativeUnits() {
   check("mm", 96);
   check("cm", 96);
   check("in", 96);
+  check("q", 96);
 }
 
 checkPixelRelativeUnits();
 
-SpecialPowers.setIntPref("layout.css.dpi", dpi = 96);
+SimpleTest.waitForExplicitFinish();
 
-var mozmm = document.getElementById("mozmm");
-var mozmmSize = mozmm.getBoundingClientRect().width;
-is(Math.round(mozmmSize), Math.round(mozmm.getBoundingClientRect().height),
-   "mozmm div should be square");
+SpecialPowers.pushPrefEnv({'set': [['layout.css.dpi', dpi=96]]}, test1);
 
-checkPixelRelativeUnits();
+var mozmmSize;
+function test1() {
+  var mozmm = document.getElementById("mozmm");
+  mozmmSize = mozmm.getBoundingClientRect().width;
+  is(Math.round(mozmmSize), Math.round(mozmm.getBoundingClientRect().height),
+     "mozmm div should be square");
 
-SpecialPowers.setIntPref("layout.css.dpi", dpi = 192);
+  checkPixelRelativeUnits();
 
-// At 192 dpi, a one-inch box should be twice the number of device pixels,
-// and since we haven't changed the device-pixels-per-CSS-pixel ratio, the
-// mozmm box should be twice the size in CSS pixels.
-check("mozmm", mozmmSize*2);
-checkPixelRelativeUnits();
+  SpecialPowers.pushPrefEnv({'set': [['layout.css.dpi', dpi=192]]}, test2);
+}
 
-SpecialPowers.setIntPref("layout.css.dpi", oldDPI);
+function test2() {
+  // At 192 dpi, a one-inch box should be twice the number of device pixels,
+  // and since we haven't changed the device-pixels-per-CSS-pixel ratio, the
+  // mozmm box should be twice the size in CSS pixels.
+  check("mozmm", mozmmSize*2);
+  checkPixelRelativeUnits();
+
+  SimpleTest.finish();
+}
 
 </script>
 </pre>

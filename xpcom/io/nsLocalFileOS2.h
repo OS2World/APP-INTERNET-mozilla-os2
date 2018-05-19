@@ -14,6 +14,10 @@
 #ifndef _nsLocalFileOS2_H_
 #define _nsLocalFileOS2_H_
 
+#define INCL_BASE
+#define INCL_PM
+#include <os2.h>
+
 #include "nscore.h"
 #include "nsError.h"
 #include "nsString.h"
@@ -23,13 +27,7 @@
 #include "nsILocalFileOS2.h"
 #include "nsIHashable.h"
 #include "nsIClassInfoImpl.h"
-
-#define INCL_DOS
-#define INCL_DOSERRORS
-#define INCL_WINCOUNTRY
-#define INCL_WINWORKPLACE
-
-#include <os2.h>
+#include "prio.h"
 
 class TypeEaEnumerator;
 
@@ -44,7 +42,7 @@ public:
     static nsresult nsLocalFileConstructor(nsISupports* outer, const nsIID& aIID, void* *aInstancePtr);
 
     // nsISupports interface
-    NS_DECL_ISUPPORTS
+    NS_DECL_THREADSAFE_ISUPPORTS
 
     // nsIFile interface
     NS_DECL_NSIFILE
@@ -63,6 +61,12 @@ public:
     static void GlobalShutdown();
 
 private:
+    // CopySingleFile constants for |options| parameter:
+    enum CopyFileOption {
+      Move                    = 1u << 1,
+      Rename                  = 1u << 3
+    };
+
     nsLocalFile(const nsLocalFile& other);
     virtual ~nsLocalFile() {}
 
@@ -79,7 +83,7 @@ private:
     nsresult Stat();
 
     nsresult CopyMove(nsIFile *newParentDir, const nsACString &newName, bool move);
-    nsresult CopySingleFile(nsIFile *source, nsIFile* dest, const nsACString &newName, bool move);
+    nsresult CopySingleFile(nsIFile *source, nsIFile* dest, const nsACString &newName, uint32_t options);
 
     nsresult SetModDate(int64_t aLastModifiedTime);
     nsresult AppendNativeInternal(const nsAFlatCString &node, bool multipleComponents);

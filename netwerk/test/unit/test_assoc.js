@@ -1,54 +1,61 @@
-const Cc = Components.classes;
-const Ci = Components.interfaces;
-const Cu = Components.utils;
-const Cr = Components.results;
-
 Cu.import("resource://testing-common/httpd.js");
+Cu.import("resource://gre/modules/NetUtil.jsm");
 
 var httpserver = new HttpServer();
 var currentTestIndex = 0;
-var tests = [
-             // this is valid
-             {url: "/assoc/assoctest?valid",
-              responseheader: [ "Assoc-Req: GET http://localhost:4444/assoc/assoctest?valid",
-                                "Pragma: X-Verify-Assoc-Req" ],
-              flags : 0},
 
-             // this is invalid because the method is wrong
-             {url: "/assoc/assoctest?invalid",
-              responseheader: [ "Assoc-Req: POST http://localhost:4444/assoc/assoctest?invalid",
-                                "Pragma: X-Verify-Assoc-Req" ],
-              flags : CL_EXPECT_LATE_FAILURE},
-             
-             // this is invalid because the url is wrong
-             {url: "/assoc/assoctest?notvalid",
-              responseheader: [ "Assoc-Req: GET http://localhost:4444/wrongpath/assoc/assoctest?notvalid",
-                                "Pragma: X-Verify-Assoc-Req" ],
-              flags : CL_EXPECT_LATE_FAILURE},
+XPCOMUtils.defineLazyGetter(this, "port", function() {
+    return httpserver.identity.primaryPort;
+});
+
+XPCOMUtils.defineLazyGetter(this, "tests", function() {
+    return [
+            // this is valid
+            {url: "/assoc/assoctest?valid",
+             responseheader: ["Assoc-Req: GET http://localhost:" + port +
+                              "/assoc/assoctest?valid",
+                              "Pragma: X-Verify-Assoc-Req"],
+             flags: 0},
+
+            // this is invalid because the method is wrong
+            {url: "/assoc/assoctest?invalid",
+             responseheader: ["Assoc-Req: POST http://localhost:" + port +
+                              "/assoc/assoctest?invalid",
+                              "Pragma: X-Verify-Assoc-Req"],
+             flags: CL_EXPECT_LATE_FAILURE},
+
+            // this is invalid because the url is wrong
+            {url: "/assoc/assoctest?notvalid",
+             responseheader: ["Assoc-Req: GET http://localhost:" + port +
+                              "/wrongpath/assoc/assoctest?notvalid",
+                              "Pragma: X-Verify-Assoc-Req"],
+             flags: CL_EXPECT_LATE_FAILURE},
 
              // this is invalid because the space between method and URL is missing
-             {url: "/assoc/assoctest?invalid2",
-              responseheader: [ "Assoc-Req: GEThttp://localhost:4444/assoc/assoctest?invalid2",
-                                "Pragma: X-Verify-Assoc-Req" ],
-              flags : CL_EXPECT_LATE_FAILURE},
-];
+            {url: "/assoc/assoctest?invalid2",
+             responseheader: ["Assoc-Req: GEThttp://localhost:" + port +
+                              "/assoc/assoctest?invalid2",
+                              "Pragma: X-Verify-Assoc-Req"],
+             flags: CL_EXPECT_LATE_FAILURE},
+    ];
+});
 
 var oldPrefVal;
 var domBranch;
 
 function setupChannel(url)
 {
-    var ios = Components.classes["@mozilla.org/network/io-service;1"].
-                         getService(Ci.nsIIOService);
-    var chan = ios.newChannel("http://localhost:4444" + url, "", null);
-    return chan;
+  return NetUtil.newChannel({
+    uri: "http://localhost:" + port + url,
+    loadUsingSystemPrincipal: true
+  });
 }
 
 function startIter()
 {
     var channel = setupChannel(tests[currentTestIndex].url);
-    channel.asyncOpen(new ChannelListener(completeIter,
-                                          channel, tests[currentTestIndex].flags), null);
+    channel.asyncOpen2(new ChannelListener(completeIter,
+                                          channel, tests[currentTestIndex].flags));
 }
 
 function completeIter(request, data, ctx)
@@ -71,7 +78,7 @@ function run_test()
     domBranch.setBoolPref("enforce", true);
 
     httpserver.registerPathHandler("/assoc/assoctest", handler);
-    httpserver.start(4444);
+    httpserver.start(-1);
 
     startIter();
     do_test_pending();

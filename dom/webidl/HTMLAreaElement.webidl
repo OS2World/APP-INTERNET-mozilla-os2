@@ -20,30 +20,21 @@ interface HTMLAreaElement : HTMLElement {
            attribute DOMString coords;
            [SetterThrows]
            attribute DOMString shape;
-  // No support for stringifier attributes yet
-  //[SetterThrows]
-  //stringifier attribute DOMString href;
-  stringifier;
-           [SetterThrows]
-           attribute DOMString href;
            [SetterThrows]
            attribute DOMString target;
            [SetterThrows]
            attribute DOMString download;
            [SetterThrows]
            attribute DOMString ping;
-
-  // not implemented.
-  //        [SetterThrows]
-  //       attribute DOMString rel;
-  //readonly attribute DOMTokenList relList;
-  //
-  //       [SetterThrows]
-  //       attribute DOMString hreflang;
-  //       [SetterThrows]
-  //       attribute DOMString type;
+           [SetterThrows]
+           attribute DOMString rel;
+           [SetterThrows, Pref="network.http.enablePerElementReferrer"]
+           attribute DOMString referrerPolicy;
+           [PutForwards=value]
+  readonly attribute DOMTokenList relList;
 };
-HTMLAreaElement implements URLUtils;
+
+HTMLAreaElement implements HTMLHyperlinkElementUtils;
 
 // http://www.whatwg.org/specs/web-apps/current-work/#other-elements,-attributes-and-apis
 partial interface HTMLAreaElement {

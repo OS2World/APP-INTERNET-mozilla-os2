@@ -12,16 +12,25 @@
 #ifndef nsIMediaList_h_
 #define nsIMediaList_h_
 
+#include "nsAutoPtr.h"
 #include "nsIDOMMediaList.h"
 #include "nsTArray.h"
 #include "nsIAtom.h"
 #include "nsCSSValue.h"
+#include "nsWrapperCache.h"
 #include "mozilla/Attributes.h"
+#include "mozilla/ErrorResult.h"
 
 class nsPresContext;
-class nsCSSStyleSheet;
 class nsAString;
 struct nsMediaFeature;
+
+namespace mozilla {
+class CSSStyleSheet;
+namespace css {
+class DocumentRule;
+} // namespace css
+} // namespace mozilla
 
 struct nsMediaExpression {
   enum Range { eMin, eMax, eEqual };
@@ -32,7 +41,16 @@ struct nsMediaExpression {
 
   // aActualValue must be obtained from mFeature->mGetter
   bool Matches(nsPresContext* aPresContext,
-                 const nsCSSValue& aActualValue) const;
+               const nsCSSValue& aActualValue) const;
+
+  bool operator==(const nsMediaExpression& aOther) const {
+    return mFeature == aOther.mFeature && // pointer equality fine (atom-like)
+           mRange == aOther.mRange &&
+           mValue == aOther.mValue;
+  }
+  bool operator!=(const nsMediaExpression& aOther) const {
+    return !(*this == aOther);
+  }
 };
 
 /**
@@ -56,7 +74,7 @@ struct nsMediaExpression {
  */
 class nsMediaQueryResultCacheKey {
 public:
-  nsMediaQueryResultCacheKey(nsIAtom* aMedium)
+  explicit nsMediaQueryResultCacheKey(nsIAtom* aMedium)
     : mMedium(aMedium)
   {}
 
@@ -68,6 +86,21 @@ public:
   void AddExpression(const nsMediaExpression* aExpression,
                      bool aExpressionMatches);
   bool Matches(nsPresContext* aPresContext) const;
+  bool HasFeatureConditions() const {
+    return !mFeatureCache.IsEmpty();
+  }
+
+  /**
+   * An operator== that implements list equality, which isn't quite as
+   * good as set equality, but catches the trivial equality cases.
+   */
+  bool operator==(const nsMediaQueryResultCacheKey& aOther) const {
+    return mMedium == aOther.mMedium &&
+           mFeatureCache == aOther.mFeatureCache;
+  }
+  bool operator!=(const nsMediaQueryResultCacheKey& aOther) const {
+    return !(*this == aOther);
+  }
 private:
   struct ExpressionEntry {
     // FIXME: if we were better at maintaining invariants about clearing
@@ -75,13 +108,87 @@ private:
     // nsMediaExpression*| instead.
     nsMediaExpression mExpression;
     bool mExpressionMatches;
+
+    bool operator==(const ExpressionEntry& aOther) const {
+      return mExpression == aOther.mExpression &&
+             mExpressionMatches == aOther.mExpressionMatches;
+    }
+    bool operator!=(const ExpressionEntry& aOther) const {
+      return !(*this == aOther);
+    }
   };
   struct FeatureEntry {
     const nsMediaFeature *mFeature;
     InfallibleTArray<ExpressionEntry> mExpressions;
+
+    bool operator==(const FeatureEntry& aOther) const {
+      return mFeature == aOther.mFeature &&
+             mExpressions == aOther.mExpressions;
+    }
+    bool operator!=(const FeatureEntry& aOther) const {
+      return !(*this == aOther);
+    }
   };
   nsCOMPtr<nsIAtom> mMedium;
   nsTArray<FeatureEntry> mFeatureCache;
+};
+
+/**
+ * nsDocumentRuleResultCacheKey is analagous to nsMediaQueryResultCacheKey
+ * and stores the result of matching the @-moz-document rules from a set
+ * of style sheets.  nsCSSRuleProcessor builds up an
+ * nsDocumentRuleResultCacheKey as it visits the @-moz-document rules
+ * while building its RuleCascadeData.
+ *
+ * Rather than represent the result using a list of both the matching and
+ * non-matching rules, we just store the matched rules.  The assumption is
+ * that in situations where we have a large number of rules -- such as the
+ * thousands added by AdBlock Plus -- that only a small number will be
+ * matched.  Thus to check if the nsDocumentRuleResultCacheKey matches a
+ * given nsPresContext, we also need the entire list of @-moz-document
+ * rules to know which rules must not match.
+ */
+class nsDocumentRuleResultCacheKey
+{
+public:
+#ifdef DEBUG
+  nsDocumentRuleResultCacheKey()
+    : mFinalized(false) {}
+#endif
+
+  bool AddMatchingRule(mozilla::css::DocumentRule* aRule);
+  bool Matches(nsPresContext* aPresContext,
+               const nsTArray<mozilla::css::DocumentRule*>& aRules) const;
+
+  bool operator==(const nsDocumentRuleResultCacheKey& aOther) const {
+    MOZ_ASSERT(mFinalized);
+    MOZ_ASSERT(aOther.mFinalized);
+    return mMatchingRules == aOther.mMatchingRules;
+  }
+  bool operator!=(const nsDocumentRuleResultCacheKey& aOther) const {
+    return !(*this == aOther);
+  }
+
+  void Swap(nsDocumentRuleResultCacheKey& aOther) {
+    mMatchingRules.SwapElements(aOther.mMatchingRules);
+#ifdef DEBUG
+    std::swap(mFinalized, aOther.mFinalized);
+#endif
+  }
+
+  void Finalize();
+
+#ifdef DEBUG
+  void List(FILE* aOut = stdout, int32_t aIndex = 0) const;
+#endif
+
+  size_t SizeOfExcludingThis(mozilla::MallocSizeOf aMallocSizeOf) const;
+
+private:
+  nsTArray<mozilla::css::DocumentRule*> mMatchingRules;
+#ifdef DEBUG
+  bool mFinalized;
+#endif
 };
 
 class nsMediaQuery {
@@ -102,9 +209,9 @@ private:
     , mTypeOmitted(aOther.mTypeOmitted)
     , mHadUnknownExpression(aOther.mHadUnknownExpression)
     , mMediaType(aOther.mMediaType)
-    // Clone checks the result of this deep copy for allocation failure
     , mExpressions(aOther.mExpressions)
   {
+    MOZ_ASSERT(mExpressions.Length() == aOther.mExpressions.Length());
   }
 
 public:
@@ -143,33 +250,58 @@ private:
   nsTArray<nsMediaExpression> mExpressions;
 };
 
-class nsMediaList MOZ_FINAL : public nsIDOMMediaList {
+class nsMediaList final : public nsIDOMMediaList
+                        , public nsWrapperCache
+{
 public:
+  typedef mozilla::ErrorResult ErrorResult;
+
   nsMediaList();
 
-  NS_DECL_ISUPPORTS
+  virtual JSObject*
+  WrapObject(JSContext* aCx, JS::Handle<JSObject*> aGivenProto) override;
+  nsISupports* GetParentObject() const
+  {
+    return nullptr;
+  }
+
+  NS_DECL_CYCLE_COLLECTING_ISUPPORTS
+  NS_DECL_CYCLE_COLLECTION_SCRIPT_HOLDER_CLASS(nsMediaList)
 
   NS_DECL_NSIDOMMEDIALIST
 
-  nsresult GetText(nsAString& aMediaText);
-  nsresult SetText(const nsAString& aMediaText);
+  void GetText(nsAString& aMediaText);
+  void SetText(const nsAString& aMediaText);
 
   // Does this query apply to the presentation?
   // If |aKey| is non-null, add cache information to it.
   bool Matches(nsPresContext* aPresContext,
                  nsMediaQueryResultCacheKey* aKey);
 
-  nsresult SetStyleSheet(nsCSSStyleSheet* aSheet);
+  void SetStyleSheet(mozilla::CSSStyleSheet* aSheet);
   void AppendQuery(nsAutoPtr<nsMediaQuery>& aQuery) {
     // Takes ownership of aQuery
     mArray.AppendElement(aQuery.forget());
   }
 
-  nsresult Clone(nsMediaList** aResult);
+  already_AddRefed<nsMediaList> Clone();
 
-  int32_t Count() { return mArray.Length(); }
   nsMediaQuery* MediumAt(int32_t aIndex) { return mArray[aIndex]; }
   void Clear() { mArray.Clear(); }
+
+  // WebIDL
+  // XPCOM GetMediaText and SetMediaText are fine.
+  uint32_t Length() { return mArray.Length(); }
+  void IndexedGetter(uint32_t aIndex, bool& aFound, nsAString& aReturn);
+  // XPCOM Item is fine.
+  void DeleteMedium(const nsAString& aMedium, ErrorResult& aRv)
+  {
+    aRv = DeleteMedium(aMedium);
+  }
+  void AppendMedium(const nsAString& aMedium, ErrorResult& aRv)
+  {
+    aRv = AppendMedium(aMedium);
+  }
 
 protected:
   ~nsMediaList();
@@ -181,6 +313,6 @@ protected:
   // not refcounted; sheet will let us know when it goes away
   // mStyleSheet is the sheet that needs to be dirtied when this medialist
   // changes
-  nsCSSStyleSheet*         mStyleSheet;
+  mozilla::CSSStyleSheet* mStyleSheet;
 };
 #endif /* !defined(nsIMediaList_h_) */

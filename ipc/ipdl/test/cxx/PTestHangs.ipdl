@@ -2,17 +2,17 @@
 namespace mozilla {
 namespace _ipdltest {
 
-rpc protocol PTestHangs {
+intr protocol PTestHangs {
 both:
-    rpc StackFrame();
+    intr StackFrame();
 
 parent:
     async Nonce();
 
 child:
     async Start();
-    rpc Hang();
-    __delete__();
+    intr Hang();
+    async __delete__();
 
 
 state START:

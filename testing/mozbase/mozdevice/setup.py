@@ -4,13 +4,20 @@
 
 from setuptools import setup
 
-PACKAGE_VERSION = '0.26'
+PACKAGE_NAME = 'mozdevice'
+PACKAGE_VERSION = '0.48'
 
-setup(name='mozdevice',
+deps = ['mozfile >= 1.0',
+        'mozlog >= 3.0',
+        'moznetwork >= 0.24',
+        'mozprocess >= 0.19',
+        ]
+
+setup(name=PACKAGE_NAME,
       version=PACKAGE_VERSION,
       description="Mozilla-authored device management",
       long_description="see http://mozbase.readthedocs.org/",
-      classifiers=[], # Get strings from http://pypi.python.org/pypi?%3Aaction=list_classifiers
+      classifiers=[],  # Get strings from http://pypi.python.org/pypi?%3Aaction=list_classifiers
       keywords='',
       author='Mozilla Automation and Testing Team',
       author_email='tools@lists.mozilla.org',
@@ -19,7 +26,7 @@ setup(name='mozdevice',
       packages=['mozdevice'],
       include_package_data=True,
       zip_safe=False,
-      install_requires=['mozlog'],
+      install_requires=deps,
       entry_points="""
       # -*- Entry points: -*-
       [console_scripts]

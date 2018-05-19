@@ -4,9 +4,10 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "nsISupports.idl"
-#include "nsIMIMEInfo.idl"
-#include "nsIURI.idl"
-#include "nsIFile.idl"
+
+interface nsIFile;
+interface nsIMIMEInfo;
+interface nsIURI;
 
 %{C++
 #define NS_MIMESERVICE_CID                           \
@@ -29,7 +30,7 @@
  *
  * @see nsIMIMEInfo
  */
-[scriptable, uuid(5b3675a1-02db-4f8f-a560-b34736635f47)]
+[scriptable, main_process_scriptable_only, uuid(5b3675a1-02db-4f8f-a560-b34736635f47)]
 interface nsIMIMEService : nsISupports {
     /**
      * Retrieves an nsIMIMEInfo using both the extension

@@ -146,7 +146,7 @@ function do_check_compat_status(aStrict, aAddonCompat, aCallback) {
     do_check_eq(a7.appDisabled, !aAddonCompat[6]);
     do_check_false(a7.strictCompatibility);
 
-    aCallback();
+    do_execute_soon(aCallback);
   });
 }
 
@@ -154,7 +154,7 @@ function do_check_compat_status(aStrict, aAddonCompat, aCallback) {
 function run_test() {
   do_test_pending();
   createAppInfo("xpcshell@tests.mozilla.org", "XPCShell", "1", "1.9.2");
-  
+
   writeInstallRDFForExtension(addon1, profileDir);
   writeInstallRDFForExtension(addon2, profileDir);
   writeInstallRDFForExtension(addon3, profileDir);

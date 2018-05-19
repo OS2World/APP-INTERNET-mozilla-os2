@@ -4,7 +4,7 @@
 
 #include "nsISupports.idl"
 
-[scriptable, builtinclass, uuid(b76a3de4-79f4-4cbb-a0e2-871095eacb2c)]
+[scriptable, builtinclass, uuid(df31c280-1ef1-11e5-867f-0800200c9a66)]
 interface nsIAudioManager : nsISupports
 {
   /**
@@ -12,21 +12,6 @@ interface nsIAudioManager : nsISupports
    */
   attribute boolean microphoneMuted;
 
-  /**
-   * The master volume.
-   */
-  attribute float masterVolume;
-
-  /**
-   * Master volume muted?
-   */
-  attribute boolean masterMuted;
-
-  /**
-   * Are we playing audio from the FM radio?
-   */
-  attribute boolean fmRadioAudioEnabled;
- 
   /**
    * Set the phone's audio mode.
    */
@@ -51,7 +36,9 @@ interface nsIAudioManager : nsISupports
   const long FORCE_WIRED_ACCESSORY = 5;
   const long FORCE_BT_CAR_DOCK     = 6;
   const long FORCE_BT_DESK_DOCK    = 7;
-
+  const long FORCE_ANALOG_DOCK     = 8;
+  const long FORCE_DIGITAL_DOCK    = 9;
+  const long FORCE_NO_BT_A2DP      = 10;
   const long USE_COMMUNICATION     = 0;
   const long USE_MEDIA             = 1;
   const long USE_RECORD            = 2;
@@ -61,21 +48,11 @@ interface nsIAudioManager : nsISupports
   long getForceForUse(in long usage);
 
   /**
-   * Control the volume of various audio streams
+   * These functions would be used when we enable the new volume control API
+   * (mozAudioChannelManager). The range of volume index is from 0 to N.
+   * More details on : https://gist.github.com/evanxd/41d8e2d91c5201a42bfa
    */
-  const long STREAM_TYPE_VOICE_CALL = 0;
-  const long STREAM_TYPE_SYSTEM = 1;
-  const long STREAM_TYPE_RING = 2;
-  const long STREAM_TYPE_MUSIC = 3;
-  const long STREAM_TYPE_ALARM = 4;
-  const long STREAM_TYPE_NOTIFICATION = 5;
-  const long STREAM_TYPE_BLUETOOTH_SCO = 6;
-  const long STREAM_TYPE_ENFORCED_AUDIBLE = 7;
-  const long STREAM_TYPE_DTMF = 8;
-  const long STREAM_TYPE_TTS = 9;
-  const long STREAM_TYPE_FM = 10;
-
-  void setStreamVolumeIndex(in long stream, in long index);
-  long getStreamVolumeIndex(in long stream);
-  long getMaxStreamVolumeIndex(in long stream);
+  void setAudioChannelVolume(in unsigned long channel, in unsigned long index);
+  unsigned long getAudioChannelVolume(in unsigned long channel);
+  unsigned long getMaxAudioChannelVolume(in unsigned long channel);
 };

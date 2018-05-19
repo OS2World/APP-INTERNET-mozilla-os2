@@ -4,165 +4,153 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#include "BaselineFrame.h"
-#include "BaselineFrame-inl.h"
-#include "BaselineIC.h"
-#include "BaselineJIT.h"
-#include "Ion.h"
-#include "IonFrames-inl.h"
+#include "jit/BaselineFrame-inl.h"
 
+#include "jit/BaselineJIT.h"
+#include "jit/Ion.h"
 #include "vm/Debugger.h"
-#include "vm/ScopeObject.h"
+#include "vm/EnvironmentObject.h"
+
+#include "jit/JitFrames-inl.h"
+#include "vm/Stack-inl.h"
 
 using namespace js;
 using namespace js::jit;
 
+static void
+MarkLocals(BaselineFrame* frame, JSTracer* trc, unsigned start, unsigned end)
+{
+    if (start < end) {
+        // Stack grows down.
+        Value* last = frame->valueSlot(end - 1);
+        TraceRootRange(trc, end - start, last, "baseline-stack");
+    }
+}
+
 void
-BaselineFrame::trace(JSTracer *trc)
+BaselineFrame::trace(JSTracer* trc, JitFrameIterator& frameIterator)
 {
     replaceCalleeToken(MarkCalleeToken(trc, calleeToken()));
 
-    gc::MarkValueRoot(trc, &thisValue(), "baseline-this");
+    // Mark |this|, actual and formal args.
+    if (isFunctionFrame()) {
+        TraceRoot(trc, &thisArgument(), "baseline-this");
 
-    // Mark actual and formal args.
-    if (isNonEvalFunctionFrame()) {
         unsigned numArgs = js::Max(numActualArgs(), numFormalArgs());
-        gc::MarkValueRootRange(trc, numArgs, argv(), "baseline-args");
+        TraceRootRange(trc, numArgs + isConstructing(), argv(), "baseline-args");
     }
 
-    // Mark scope chain.
-    gc::MarkObjectRoot(trc, &scopeChain_, "baseline-scopechain");
+    // Mark environment chain, if it exists.
+    if (envChain_)
+        TraceRoot(trc, &envChain_, "baseline-envchain");
 
     // Mark return value.
     if (hasReturnValue())
-        gc::MarkValueRoot(trc, returnValue(), "baseline-rval");
+        TraceRoot(trc, returnValue().address(), "baseline-rval");
 
-    if (isEvalFrame())
-        gc::MarkScriptRoot(trc, &evalScript_, "baseline-evalscript");
+    if (isEvalFrame() && script()->isDirectEvalInFunction())
+        TraceRoot(trc, evalNewTargetAddress(), "baseline-evalNewTarget");
 
     if (hasArgsObj())
-        gc::MarkObjectRoot(trc, &argsObj_, "baseline-args-obj");
+        TraceRoot(trc, &argsObj_, "baseline-args-obj");
 
     // Mark locals and stack values.
-    size_t nvalues = numValueSlots();
-    if (nvalues > 0) {
-        // The stack grows down, so start at the last Value.
-        Value *last = valueSlot(nvalues - 1);
-        gc::MarkValueRootRange(trc, nvalues, last, "baseline-stack");
+    JSScript* script = this->script();
+    size_t nfixed = script->nfixed();
+    jsbytecode* pc;
+    frameIterator.baselineScriptAndPc(nullptr, &pc);
+    size_t nlivefixed = script->calculateLiveFixed(pc);
+
+    // NB: It is possible that numValueSlots() could be zero, even if nfixed is
+    // nonzero.  This is the case if the function has an early stack check.
+    if (numValueSlots() == 0)
+        return;
+
+    MOZ_ASSERT(nfixed <= numValueSlots());
+
+    if (nfixed == nlivefixed) {
+        // All locals are live.
+        MarkLocals(this, trc, 0, numValueSlots());
+    } else {
+        // Mark operand stack.
+        MarkLocals(this, trc, nfixed, numValueSlots());
+
+        // Clear dead block-scoped locals.
+        while (nfixed > nlivefixed)
+            unaliasedLocal(--nfixed).setUndefined();
+
+        // Mark live locals.
+        MarkLocals(this, trc, 0, nlivefixed);
     }
+
+    if (script->compartment()->debugEnvs)
+        script->compartment()->debugEnvs->markLiveFrame(trc, this);
 }
 
 bool
-BaselineFrame::copyRawFrameSlots(AutoValueVector *vec) const
+BaselineFrame::isNonGlobalEvalFrame() const
 {
-    unsigned nfixed = script()->nfixed;
-    unsigned nformals = numFormalArgs();
-
-    if (!vec->resize(nformals + nfixed))
-        return false;
-
-    mozilla::PodCopy(vec->begin(), argv(), nformals);
-    for (unsigned i = 0; i < nfixed; i++)
-        (*vec)[nformals + i] = *valueSlot(i);
-    return true;
+    return isEvalFrame() && script()->enclosingScope()->as<EvalScope>().isNonGlobal();
 }
 
 bool
-BaselineFrame::strictEvalPrologue(JSContext *cx)
+BaselineFrame::initFunctionEnvironmentObjects(JSContext* cx)
 {
-    JS_ASSERT(isStrictEvalFrame());
-
-    CallObject *callobj = CallObject::createForStrictEval(cx, this);
-    if (!callobj)
-        return false;
-
-    pushOnScopeChain(*callobj);
-    flags_ |= HAS_CALL_OBJ;
-    return true;
+    return js::InitFunctionEnvironmentObjects(cx, this);
 }
 
 bool
-BaselineFrame::heavyweightFunPrologue(JSContext *cx)
+BaselineFrame::pushVarEnvironment(JSContext* cx, HandleScope scope)
 {
-    return initFunctionScopeObjects(cx);
+    return js::PushVarEnvironmentObject(cx, scope, this);
 }
 
 bool
-BaselineFrame::initFunctionScopeObjects(JSContext *cx)
-{
-    JS_ASSERT(isNonEvalFunctionFrame());
-    JS_ASSERT(fun()->isHeavyweight());
-
-    CallObject *callobj = CallObject::createForFunction(cx, this);
-    if (!callobj)
-        return false;
-
-    pushOnScopeChain(*callobj);
-    flags_ |= HAS_CALL_OBJ;
-    return true;
-}
-
-bool
-BaselineFrame::initForOsr(StackFrame *fp, uint32_t numStackValues)
+BaselineFrame::initForOsr(InterpreterFrame* fp, uint32_t numStackValues)
 {
     mozilla::PodZero(this);
 
-    scopeChain_ = fp->scopeChain();
+    envChain_ = fp->environmentChain();
 
-    if (fp->hasCallObjUnchecked())
-        flags_ |= BaselineFrame::HAS_CALL_OBJ;
-
-    if (fp->hasBlockChain()) {
-        flags_ |= BaselineFrame::HAS_BLOCKCHAIN;
-        blockChain_ = &fp->blockChain();
-    }
-
-    if (fp->isEvalFrame()) {
-        flags_ |= BaselineFrame::EVAL;
-        evalScript_ = fp->script();
-    }
+    if (fp->hasInitialEnvironmentUnchecked())
+        flags_ |= BaselineFrame::HAS_INITIAL_ENV;
 
     if (fp->script()->needsArgsObj() && fp->hasArgsObj()) {
         flags_ |= BaselineFrame::HAS_ARGS_OBJ;
         argsObj_ = &fp->argsObj();
     }
 
-    if (fp->hasHookData()) {
-        flags_ |= BaselineFrame::HAS_HOOK_DATA;
-        hookData_ = fp->hookData();
-    }
-
     if (fp->hasReturnValue())
         setReturnValue(fp->returnValue());
-
-    if (fp->hasPushedSPSFrame())
-        flags_ |= BaselineFrame::HAS_PUSHED_SPS_FRAME;
 
     frameSize_ = BaselineFrame::FramePointerOffset +
         BaselineFrame::Size() +
         numStackValues * sizeof(Value);
 
-    JS_ASSERT(numValueSlots() == numStackValues);
+    MOZ_ASSERT(numValueSlots() == numStackValues);
 
     for (uint32_t i = 0; i < numStackValues; i++)
         *valueSlot(i) = fp->slots()[i];
 
-    JSContext *cx = GetIonContext()->cx;
-    if (cx->compartment()->debugMode()) {
-        // In debug mode, update any Debugger.Frame objects for the StackFrame to
-        // point to the BaselineFrame.
+    if (fp->isDebuggee()) {
+        JSContext* cx = GetJSContextFromMainThread();
+
+        // For debuggee frames, update any Debugger.Frame objects for the
+        // InterpreterFrame to point to the BaselineFrame.
 
         // The caller pushed a fake return address. ScriptFrameIter, used by the
         // debugger, wants a valid return address, but it's okay to just pick one.
         // In debug mode there's always at least 1 ICEntry (since there are always
         // debug prologue/epilogue calls).
-        IonFrameIterator iter(cx->mainThread().ionTop);
-        JS_ASSERT(iter.returnAddress() == NULL);
-        BaselineScript *baseline = fp->script()->baselineScript();
+        JitFrameIterator iter(cx);
+        MOZ_ASSERT(iter.returnAddress() == nullptr);
+        BaselineScript* baseline = fp->script()->baselineScript();
         iter.current()->setReturnAddress(baseline->returnAddressForIC(baseline->icEntry(0)));
 
         if (!Debugger::handleBaselineOsr(cx, fp, this))
             return false;
+
+        setIsDebuggee();
     }
 
     return true;

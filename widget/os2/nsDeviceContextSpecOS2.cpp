@@ -8,11 +8,7 @@
 
 #include <stdlib.h>
 
-#define INCL_PM
-#define INCL_DOS
-#define INCL_SPLDOSPRINT
-#define INCL_DEVDJP
-#include <os2.h>
+#include "nsDeviceContextSpecOS2.h"
 
 #define INCL_GRE_DEVICE
 #include <pmddim.h>
@@ -23,7 +19,7 @@
 #include "nsUnicharUtils.h"
 #include "nsStringFwd.h"
 #include "nsStringEnumerator.h"
-#include "nsOS2Uni.h"
+#include "nsNativeCharsetUtils.h"
 #include "nsDirectoryServiceDefs.h"
 #include "nsIFileStreams.h"
 #include "gfxPDFSurface.h"
@@ -37,10 +33,13 @@
 #include "nsIStringBundle.h"
 #include "nsILocalFile.h"
 
-#include "nsDeviceContextSpecOS2.h"
 #include "nsPrintOS2.h"
 #include "nsPrintfCString.h"
 #include "mozilla/Preferences.h"
+
+#define QQ_(str) #str
+#define Q_(str) QQ_(str)
+#define MOZ_APP_DISPLAYNAME_STR Q_(MOZ_APP_DISPLAYNAME)
 
 using namespace mozilla;
 
@@ -76,7 +75,10 @@ static int16_t  AdjustFormatAndExtension(int16_t aFormat,
                                          nsAString& aFileName);
 static nsresult GetFileNameForPrintSettings(nsIPrintSettings* aPS,
                                             nsAString& aFileName);
-static char *   GetACPString(const PRUnichar* aStr);
+#if 0 // This is temporariy disabled, see #171.
+static char *   GetACPString(const char16_t* aStr);
+#endif
+static char *   GetACPString(const nsAString& aStr);
 static void     SetDevModeFromSettings(ULONG printer,
                                        nsIPrintSettings* aPrintSettings);
 
@@ -87,7 +89,9 @@ static void     SetDevModeFromSettings(ULONG printer,
 os2Printers sPrinterList;
 
 // Pref Constants
+#if 0 // This is temporariy disabled, see #171.
 static const char kOS2UseBuiltinPS[]    = "print.os2.postscript.use_builtin";
+#endif
 static const char kOS2UseIbmNull[]      = "print.os2.postscript.use_ibmnull";
 
 //---------------------------------------------------------------------------
@@ -159,7 +163,7 @@ nsDeviceContextSpecOS2::~nsDeviceContextSpecOS2()
     delete mQueue;
 }
 
-NS_IMPL_ISUPPORTS1(nsDeviceContextSpecOS2, nsIDeviceContextSpec)
+NS_IMPL_ISUPPORTS(nsDeviceContextSpecOS2, nsIDeviceContextSpec)
 
 //---------------------------------------------------------------------------
 
@@ -174,7 +178,7 @@ NS_IMETHODIMP nsDeviceContextSpecOS2::Init(nsIWidget *aWidget,
 
   nsXPIDLString printerName;
   mPrintSettings->GetPrinterName(getter_Copies(printerName));
-  NS_ENSURE_TRUE(!printerName.IsEmpty(), NS_ERROR_FAILURE);
+  NS_ENSURE_TRUE(!printerName.IsEmpty(), NS_ERROR_GFX_PRINTER_NO_PRINTER_AVAILABLE);
 
   int32_t printerNdx = sPrinterList.GetPrinterIndex(printerName);
   if (printerNdx < 0) {
@@ -234,7 +238,7 @@ NS_IMETHODIMP nsDeviceContextSpecOS2::Init(nsIWidget *aWidget,
   PR_ExplodeTime(PR_Now(), PR_LocalTimeParameters, &time);
   mDefaultName.Assign(
       nsPrintfCString("%s_%04d%02d%02d_%02d%02d%02d",
-                      MOZ_APP_DISPLAYNAME, time.tm_year, time.tm_month+1,
+                      MOZ_APP_DISPLAYNAME_STR, time.tm_year, time.tm_month+1,
                       time.tm_mday, time.tm_hour, time.tm_min, time.tm_sec));
 
   // Identify the print job's destination - it may get changed below.
@@ -335,9 +339,15 @@ int16_t nsDeviceContextSpecOS2::AdjustDestinationForFormat(int16_t aFormat,
   }
 
   // Determine whether to use the native or builtin PS generator
-  bool useBuiltinPS;
-      if (!NS_SUCCEEDED(Preferences::GetBool(kOS2UseBuiltinPS, &useBuiltinPS)))
+#if 1
+  // With native GPI printing temporarily disabled, we always want Cairo
+  // (builtin) PS generator, see #171.
+  enum { useBuiltinPS = true };
+#else
+  bool useBuiltinPS = false;
+  if (!NS_SUCCEEDED(Preferences::GetBool(kOS2UseBuiltinPS, &useBuiltinPS)))
     Preferences::SetBool(kOS2UseBuiltinPS, false);
+#endif
 
   // Postscript format - If the driver can't handle PS, redirect to file.
   // If it can and the user wants native support, change the format.
@@ -485,7 +495,7 @@ NS_IMETHODIMP nsDeviceContextSpecOS2::GetSurfaceForPrinter(gfxASurface **surface
   int16_t outputFormat;
   mPrintSettings->GetOutputFormat(&outputFormat);
 
-  nsRefPtr<gfxASurface> newSurface;
+  RefPtr<gfxASurface> newSurface;
 
 //*** PDF
   if (outputFormat == nsIPrintSettings::kOutputFormatPDF) {
@@ -530,14 +540,15 @@ NS_IMETHODIMP nsDeviceContextSpecOS2::GetSurfaceForPrinter(gfxASurface **surface
   }
 
 //*** Native
+#if 0 // This is temporariy disabled, see #171.
   else {
     char* filePath = nullptr;
     if (mDestination == printToFile) {
-      PRUnichar* fileName;
+      char16_t* fileName;
 
       mPrintSettings->GetToFileName(&fileName);
       filePath = GetACPString(fileName);
-      nsMemory::Free(fileName);
+      free(fileName);
     }
 
     mPrintingStarted = true;
@@ -545,12 +556,13 @@ NS_IMETHODIMP nsDeviceContextSpecOS2::GetSurfaceForPrinter(gfxASurface **surface
     NS_ENSURE_TRUE(mPrintDC, NS_ERROR_FAILURE);
 
     if (filePath)
-      nsMemory::Free(filePath);
+      free(filePath);
 
     newSurface = new(std::nothrow)
       gfxOS2Surface(mPrintDC, gfxIntSize(int(mXPixels), int(mYPixels)),
                     (mDestination == printPreview));
   }
+#endif
 
   if (!newSurface) {
     DBGM("new gfxOS2Surface failed");
@@ -643,25 +655,30 @@ nsresult nsDeviceContextSpecOS2::CreateStreamForFormat(int16_t aFormat,
 // Helper function to convert the string to the native codepage,
 // similar to UnicodeToCodepage() in nsDragService.cpp.
 
+#if 0 // This is temporariy disabled, see #171.
 static
-char* GetACPString(const PRUnichar* aStr)
+char* GetACPString(const char16_t* aStr)
 {
-   nsString str(aStr);
-   if (str.Length() == 0) {
+   return GetACPString(nsDependentString(aStr));
+}
+#endif
+
+static
+char* GetACPString(const nsAString& aStr)
+{
+   if (aStr.Length() == 0) {
       return nullptr;
    }
 
-   nsAutoCharBuffer buffer;
-   int32_t bufLength;
-   WideCharToMultiByte(0, str.get(), str.Length(),
-                       buffer, bufLength);
-   return ToNewCString(nsDependentCString(buffer.Elements()));
+   nsAutoCString buf;
+   NS_CopyUnicodeToNative(aStr, buf);
+   return ToNewCString(buf);
 }
 
 //---------------------------------------------------------------------------
 
-NS_IMETHODIMP nsDeviceContextSpecOS2::BeginDocument(PRUnichar* aTitle,
-                                                    PRUnichar* aPrintToFileName,
+NS_IMETHODIMP nsDeviceContextSpecOS2::BeginDocument(const nsAString& aTitle,
+                                                    char16_t* aPrintToFileName,
                                                     int32_t aStartPage,
                                                     int32_t aEndPage)
 {
@@ -669,16 +686,16 @@ NS_IMETHODIMP nsDeviceContextSpecOS2::BeginDocument(PRUnichar* aTitle,
 
 #ifdef debug_thebes_print
   printf("BeginDoc - tile= %s  file= %s  fromPg= %d  toPg= %d\n",
-         NS_LossyConvertUTF16toASCII(nsString(aTitle)).get(),
+         NS_LossyConvertUTF16toASCII(aTitle).get(),
          NS_LossyConvertUTF16toASCII(nsString(aPrintToFileName)).get(),
          aStartPage, aEndPage);
 #endif
 
   if (mSpoolerStream) {
-    if (aTitle) {
+    if (! aTitle.IsEmpty ()) {
       char *title = GetACPString(aTitle);
       nsresult rv = mSpoolerStream->BeginDocument(title);
-      nsMemory::Free(title);
+      free(title);
       return rv;
     }
     else
@@ -699,7 +716,7 @@ NS_IMETHODIMP nsDeviceContextSpecOS2::BeginDocument(PRUnichar* aTitle,
                            const_cast<BYTE*>(pszDocName), 0, 0);
   mPrintingStarted = true;
   if (title) {
-    nsMemory::Free(title);
+    free(title);
   }
 
   DBGX();
@@ -721,7 +738,7 @@ NS_IMETHODIMP nsDeviceContextSpecOS2::EndDocument()
   mPages = 0;
 
   if (outputFormat != nsIPrintSettings::kOutputFormatNative) {
-    mPrintSettings->SetToFileName(NULL);
+    mPrintSettings->SetToFileName(nullptr);
     nsCOMPtr<nsIPrintSettingsService> pss =
       do_GetService("@mozilla.org/gfx/printsettings-service;1");
     if (pss)
@@ -917,7 +934,7 @@ nsPrinterEnumeratorOS2::~nsPrinterEnumeratorOS2()
 DBGNX();
 }
 
-NS_IMPL_ISUPPORTS1(nsPrinterEnumeratorOS2, nsIPrinterEnumerator)
+NS_IMPL_ISUPPORTS(nsPrinterEnumeratorOS2, nsIPrinterEnumerator)
 
 NS_IMETHODIMP nsPrinterEnumeratorOS2::GetPrinterNameList(
                                       nsIStringEnumerator **aPrinterNameList)
@@ -941,7 +958,7 @@ NS_IMETHODIMP nsPrinterEnumeratorOS2::GetPrinterNameList(
 }
 
 NS_IMETHODIMP nsPrinterEnumeratorOS2::GetDefaultPrinterName(
-                                          PRUnichar * *aDefaultPrinterName)
+                                          char16_t * *aDefaultPrinterName)
 {
   NS_ENSURE_ARG_POINTER(aDefaultPrinterName);
 
@@ -956,7 +973,7 @@ NS_IMETHODIMP nsPrinterEnumeratorOS2::GetDefaultPrinterName(
 }
 
 NS_IMETHODIMP nsPrinterEnumeratorOS2::InitPrintSettingsFromPrinter(
-                                          const PRUnichar *aPrinterName,
+                                          const char16_t *aPrinterName,
                                           nsIPrintSettings *aPrintSettings)
 {
   NS_ENSURE_ARG_POINTER(aPrinterName);
@@ -976,7 +993,7 @@ NS_IMETHODIMP nsPrinterEnumeratorOS2::InitPrintSettingsFromPrinter(
 }
 
 NS_IMETHODIMP nsPrinterEnumeratorOS2::DisplayPropertiesDlg(
-                                          const PRUnichar *aPrinterName,
+                                          const char16_t *aPrinterName,
                                           nsIPrintSettings *aPrintSettings)
 {
   int32_t index = sPrinterList.GetPrinterIndex(aPrinterName);
@@ -996,7 +1013,7 @@ NS_IMETHODIMP nsPrinterEnumeratorOS2::DisplayPropertiesDlg(
 //  os2NullOutputStream implementation
 //---------------------------------------------------------------------------
 
-NS_IMPL_ISUPPORTS1(os2NullOutputStream, nsIOutputStream)
+NS_IMPL_ISUPPORTS(os2NullOutputStream, nsIOutputStream)
 
 os2NullOutputStream::os2NullOutputStream()
 {
@@ -1058,7 +1075,7 @@ NS_IMETHODIMP os2NullOutputStream::IsNonBlocking(bool *_retval)
 //  os2SpoolerStream implementation
 //---------------------------------------------------------------------------
 
-NS_IMPL_ISUPPORTS1(os2SpoolerStream, nsIOutputStream)
+NS_IMPL_ISUPPORTS(os2SpoolerStream, nsIOutputStream)
 
 os2SpoolerStream::os2SpoolerStream()
   : mSpl(0), mPages(0)
@@ -1077,8 +1094,8 @@ nsresult os2SpoolerStream::Init(os2PrintQ* aQueue, const char* aTitle)
   ULONG   ulSize = 0;
 
   // Determine whether to use IBMNULL or the native driver
-  bool useIbmNull;
-      if (!NS_SUCCEEDED(Preferences::GetBool(kOS2UseIbmNull, &useIbmNull)))
+  bool useIbmNull = true;
+  if (!NS_SUCCEEDED(Preferences::GetBool(kOS2UseIbmNull, &useIbmNull)))
     Preferences::SetBool(kOS2UseIbmNull, true);
 
   // Sending Moz's Postscript output through the native PS driver adds printer
@@ -1191,7 +1208,7 @@ NS_IMETHODIMP os2SpoolerStream::Close()
 {
   DBGN();
 
-  BOOL rc = SplQmNewPage(mSpl, mPages);
+  DebugOnly <BOOL> rc = SplQmNewPage(mSpl, mPages);
 #ifdef debug_thebes_print
   if (!rc) {
     printf("SplQmNewPage failed setting page count - continuing\n");

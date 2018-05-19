@@ -8,11 +8,12 @@
 
 #include "nsCOMPtr.h"
 #include "nsIDeviceContextSpec.h"
-#include "nsIPrintOptions.h" // For nsIPrinterEnumerator
+#include "nsIPrinterEnumerator.h"
 #include "nsIPrintSettings.h"
 #include "nsISupportsPrimitives.h"
 #include <windows.h>
 #include "mozilla/Attributes.h"
+#include "mozilla/RefPtr.h"
 
 class nsIWidget;
 
@@ -23,19 +24,23 @@ public:
 
   NS_DECL_ISUPPORTS
 
-  NS_IMETHOD GetSurfaceForPrinter(gfxASurface **surface);
-  NS_IMETHOD BeginDocument(PRUnichar*  aTitle, 
-                           PRUnichar*  aPrintToFileName,
-                           int32_t     aStartPage, 
-                           int32_t     aEndPage) { return NS_OK; }
-  NS_IMETHOD EndDocument() { return NS_OK; }
-  NS_IMETHOD BeginPage() { return NS_OK; }
-  NS_IMETHOD EndPage() { return NS_OK; }
+  virtual already_AddRefed<PrintTarget> MakePrintTarget() final;
+  NS_IMETHOD BeginDocument(const nsAString& aTitle,
+                           const nsAString& aPrintToFileName,
+                           int32_t          aStartPage,
+                           int32_t          aEndPage) override { return NS_OK; }
+  NS_IMETHOD EndDocument() override { return NS_OK; }
+  NS_IMETHOD BeginPage() override { return NS_OK; }
+  NS_IMETHOD EndPage() override { return NS_OK; }
 
-  NS_IMETHOD Init(nsIWidget* aWidget, nsIPrintSettings* aPS, bool aIsPrintPreview);
+  NS_IMETHOD Init(nsIWidget* aWidget, nsIPrintSettings* aPS, bool aIsPrintPreview) override;
 
-  void GetDriverName(PRUnichar *&aDriverName) const   { aDriverName = mDriverName;     }
-  void GetDeviceName(PRUnichar *&aDeviceName) const   { aDeviceName = mDeviceName;     }
+  float GetDPI() final;
+
+  float GetPrintingScale() final;
+
+  void GetDriverName(wchar_t *&aDriverName) const   { aDriverName = mDriverName;     }
+  void GetDeviceName(wchar_t *&aDeviceName) const   { aDeviceName = mDeviceName;     }
 
   // The GetDevMode will return a pointer to a DevMode
   // whether it is from the Global memory handle or just the DevMode
@@ -44,37 +49,34 @@ public:
   void GetDevMode(LPDEVMODEW &aDevMode);
 
   // helper functions
-  nsresult GetDataFromPrinter(const PRUnichar * aName, nsIPrintSettings* aPS = nullptr);
-
-  static nsresult SetPrintSettingsFromDevMode(nsIPrintSettings* aPrintSettings, 
-                                              LPDEVMODEW         aDevMode);
+  nsresult GetDataFromPrinter(char16ptr_t aName, nsIPrintSettings* aPS = nullptr);
 
 protected:
 
-  void SetDeviceName(const PRUnichar* aDeviceName);
-  void SetDriverName(const PRUnichar* aDriverName);
+  void SetDeviceName(char16ptr_t aDeviceName);
+  void SetDriverName(char16ptr_t aDriverName);
   void SetDevMode(LPDEVMODEW aDevMode);
-
-  void SetupPaperInfoFromSettings();
 
   virtual ~nsDeviceContextSpecWin();
 
-  PRUnichar*      mDriverName;
-  PRUnichar*      mDeviceName;
+  wchar_t*      mDriverName;
+  wchar_t*      mDeviceName;
   LPDEVMODEW mDevMode;
 
   nsCOMPtr<nsIPrintSettings> mPrintSettings;
+  int16_t mOutputFormat = nsIPrintSettings::kOutputFormatNative;
 };
 
 
 //-------------------------------------------------------------------------
 // Printer Enumerator
 //-------------------------------------------------------------------------
-class nsPrinterEnumeratorWin MOZ_FINAL : public nsIPrinterEnumerator
+class nsPrinterEnumeratorWin final : public nsIPrinterEnumerator
 {
+  ~nsPrinterEnumeratorWin();
+
 public:
   nsPrinterEnumeratorWin();
-  ~nsPrinterEnumeratorWin();
   NS_DECL_ISUPPORTS
   NS_DECL_NSIPRINTERENUMERATOR
 };

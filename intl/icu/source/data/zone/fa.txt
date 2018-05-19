@@ -1,16 +1,7 @@
-﻿// ***************************************************************************
-// *
-// * Copyright (C) 2012 International Business Machines
-// * Corporation and others.  All Rights Reserved.
-// * Tool: org.unicode.cldr.icu.NewLdml2IcuConverter
-// * Source File: <path>/common/main/fa.xml
-// *
-// ***************************************************************************
-/**
- *  ICU <specials> source: <path>/xml/main/fa.xml
- */
+﻿// © 2016 and later: Unicode, Inc. and others.
+// License & terms of use: http://www.unicode.org/copyright.html#License
 fa{
-    Version{"2.0.78.32"}
+    Version{"2.1.29.44"}
     zoneStrings{
         "Africa:Abidjan"{
             ec{"آبیجان"}
@@ -86,6 +77,9 @@ fa{
         }
         "Africa:Johannesburg"{
             ec{"ژوهانسبورگ"}
+        }
+        "Africa:Juba"{
+            ec{"جوبا"}
         }
         "Africa:Kampala"{
             ec{"کامپالا"}
@@ -169,7 +163,7 @@ fa{
             ec{"ایدک"}
         }
         "America:Anchorage"{
-            ec{"انکریج"}
+            ec{"انکوریج"}
         }
         "America:Anguilla"{
             ec{"آنگوئیلا"}
@@ -210,6 +204,9 @@ fa{
         "America:Bahia"{
             ec{"بایا"}
         }
+        "America:Bahia_Banderas"{
+            ec{"باهیا باندراس"}
+        }
         "America:Barbados"{
             ec{"باربادوس"}
         }
@@ -223,7 +220,7 @@ fa{
             ec{"بلان‐سابلون"}
         }
         "America:Boa_Vista"{
-            ec{"بوئاویشتا"}
+            ec{"بوئاویستا"}
         }
         "America:Bogota"{
             ec{"بوگوتا"}
@@ -259,7 +256,7 @@ fa{
             ec{"شیکاگو"}
         }
         "America:Chihuahua"{
-            ec{"چیئوائوا"}
+            ec{"چیواوا"}
         }
         "America:Coral_Harbour"{
             ec{"اتکوکان"}
@@ -270,6 +267,9 @@ fa{
         "America:Costa_Rica"{
             ec{"کاستاریکا"}
         }
+        "America:Creston"{
+            ec{"کرستون"}
+        }
         "America:Cuiaba"{
             ec{"کویاوا"}
         }
@@ -277,7 +277,7 @@ fa{
             ec{"کوراسائو"}
         }
         "America:Danmarkshavn"{
-            ec{"دانمارک‌شاون"}
+            ec{"دانمارکس‌هاون"}
         }
         "America:Dawson"{
             ec{"داوسن"}
@@ -289,7 +289,7 @@ fa{
             ec{"دنور"}
         }
         "America:Detroit"{
-            ec{"دترویت"}
+            ec{"دیترویت"}
         }
         "America:Dominica"{
             ec{"دومینیکا"}
@@ -303,6 +303,9 @@ fa{
         "America:El_Salvador"{
             ec{"السالوادور"}
         }
+        "America:Fort_Nelson"{
+            ec{"فورت نلسون"}
+        }
         "America:Fortaleza"{
             ec{"فورتالزا"}
         }
@@ -310,7 +313,7 @@ fa{
             ec{"گلیس‌بی"}
         }
         "America:Godthab"{
-            ec{"گودهوب"}
+            ec{"نووک"}
         }
         "America:Goose_Bay"{
             ec{"گوس‌بی"}
@@ -319,7 +322,7 @@ fa{
             ec{"گراند تورک"}
         }
         "America:Grenada"{
-            ec{"گرانادا"}
+            ec{"گرنادا"}
         }
         "America:Guadeloupe"{
             ec{"گوادلوپ"}
@@ -384,6 +387,9 @@ fa{
         "America:Kentucky:Monticello"{
             ec{"مانتیسلو، کنتاکی"}
         }
+        "America:Kralendijk"{
+            ec{"کرالندیک"}
+        }
         "America:La_Paz"{
             ec{"لاپاز"}
         }
@@ -414,6 +420,9 @@ fa{
         "America:Martinique"{
             ec{"مارتینیک"}
         }
+        "America:Matamoros"{
+            ec{"ماتاموروس"}
+        }
         "America:Mazatlan"{
             ec{"ماساتلان"}
         }
@@ -425,6 +434,9 @@ fa{
         }
         "America:Merida"{
             ec{"مریدا"}
+        }
+        "America:Metlakatla"{
+            ec{"متالاکاتلا"}
         }
         "America:Mexico_City"{
             ec{"مکزیکوسیتی"}
@@ -440,9 +452,6 @@ fa{
         }
         "America:Montevideo"{
             ec{"مونته‌ویدئو"}
-        }
-        "America:Montreal"{
-            ec{"مونرئال"}
         }
         "America:Montserrat"{
             ec{"مونتسرات"}
@@ -470,6 +479,9 @@ fa{
         }
         "America:North_Dakota:New_Salem"{
             ec{"نیوسالم، داکوتای شمالی"}
+        }
+        "America:Ojinaga"{
+            ec{"اخیناگا"}
         }
         "America:Panama"{
             ec{"پاناما"}
@@ -513,6 +525,9 @@ fa{
         "America:Rio_Branco"{
             ec{"ریوبرانکو"}
         }
+        "America:Santa_Isabel"{
+            ec{"سانتا ایزابل"}
+        }
         "America:Santarem"{
             ec{"سنتارم"}
         }
@@ -528,8 +543,8 @@ fa{
         "America:Scoresbysund"{
             ec{"اسکورسبیسوند"}
         }
-        "America:Shiprock"{
-            ec{"شیپراک"}
+        "America:Sitka"{
+            ec{"سیتکا"}
         }
         "America:St_Barthelemy"{
             ec{"سنت بارتلمی"}
@@ -550,7 +565,7 @@ fa{
             ec{"سنت وینسنت"}
         }
         "America:Swift_Current"{
-            ec{"سوئیفت‌کرنت"}
+            ec{"سویفت‌کارنت"}
         }
         "America:Tegucigalpa"{
             ec{"تگوسیگالپا"}
@@ -594,6 +609,9 @@ fa{
         "Antarctica:DumontDUrville"{
             ec{"دومون دورویل"}
         }
+        "Antarctica:Macquarie"{
+            ec{"مکواری"}
+        }
         "Antarctica:Mawson"{
             ec{"ماوسون"}
         }
@@ -606,11 +624,11 @@ fa{
         "Antarctica:Rothera"{
             ec{"روترا"}
         }
-        "Antarctica:South_Pole"{
-            ec{"قطب جنوب"}
-        }
         "Antarctica:Syowa"{
             ec{"شووا"}
+        }
+        "Antarctica:Troll"{
+            ec{"ترول"}
         }
         "Antarctica:Vostok"{
             ec{"ووستوک"}
@@ -651,6 +669,9 @@ fa{
         "Asia:Bangkok"{
             ec{"بانکوک"}
         }
+        "Asia:Barnaul"{
+            ec{"بارنائول"}
+        }
         "Asia:Beirut"{
             ec{"بیروت"}
         }
@@ -663,11 +684,11 @@ fa{
         "Asia:Calcutta"{
             ec{"کلکته"}
         }
+        "Asia:Chita"{
+            ec{"چیتا"}
+        }
         "Asia:Choibalsan"{
             ec{"چویبالسان"}
-        }
-        "Asia:Chongqing"{
-            ec{"چونگ‌کینگ"}
         }
         "Asia:Colombo"{
             ec{"کلمبو"}
@@ -690,8 +711,8 @@ fa{
         "Asia:Gaza"{
             ec{"غزه"}
         }
-        "Asia:Harbin"{
-            ec{"هاربین"}
+        "Asia:Hebron"{
+            ec{"الخلیل"}
         }
         "Asia:Hong_Kong"{
             ec{"هنگ‌کنگ"}
@@ -720,11 +741,11 @@ fa{
         "Asia:Karachi"{
             ec{"کراچی"}
         }
-        "Asia:Kashgar"{
-            ec{"کاشغر"}
-        }
         "Asia:Katmandu"{
             ec{"کاتماندو"}
+        }
+        "Asia:Khandyga"{
+            ec{"خاندیگا"}
         }
         "Asia:Krasnoyarsk"{
             ec{"کراسنویارسک"}
@@ -755,6 +776,9 @@ fa{
         }
         "Asia:Nicosia"{
             ec{"نیکوزیا"}
+        }
+        "Asia:Novokuznetsk"{
+            ec{"نوووکوزنتسک"}
         }
         "Asia:Novosibirsk"{
             ec{"نووسیبیریسک"}
@@ -804,6 +828,9 @@ fa{
         "Asia:Singapore"{
             ec{"سنگاپور"}
         }
+        "Asia:Srednekolymsk"{
+            ec{"اسردنکولیمسک"}
+        }
         "Asia:Taipei"{
             ec{"تایپه"}
         }
@@ -822,11 +849,17 @@ fa{
         "Asia:Tokyo"{
             ec{"توکیو"}
         }
+        "Asia:Tomsk"{
+            ec{"تومسک"}
+        }
         "Asia:Ulaanbaatar"{
             ec{"اولان‌باتور"}
         }
         "Asia:Urumqi"{
             ec{"ارومچی"}
+        }
+        "Asia:Ust-Nera"{
+            ec{"اوست نرا"}
         }
         "Asia:Vientiane"{
             ec{"وینتیان"}
@@ -918,6 +951,9 @@ fa{
         "Europe:Andorra"{
             ec{"آندورا"}
         }
+        "Europe:Astrakhan"{
+            ec{"آستراخان"}
+        }
         "Europe:Athens"{
             ec{"آتن"}
         }
@@ -939,6 +975,9 @@ fa{
         "Europe:Budapest"{
             ec{"بوداپست"}
         }
+        "Europe:Busingen"{
+            ec{"بازنگن"}
+        }
         "Europe:Chisinau"{
             ec{"کیشیناو"}
         }
@@ -947,7 +986,7 @@ fa{
         }
         "Europe:Dublin"{
             ec{"دوبلین"}
-            ld{"وقت تابستانی ایرلند"}
+            ld{"وقت عادی ایرلند"}
         }
         "Europe:Gibraltar"{
             ec{"جبل‌الطارق"}
@@ -972,6 +1011,9 @@ fa{
         }
         "Europe:Kiev"{
             ec{"کیف"}
+        }
+        "Europe:Kirov"{
+            ec{"کیروف"}
         }
         "Europe:Lisbon"{
             ec{"لیسبون"}
@@ -1049,6 +1091,9 @@ fa{
         "Europe:Tirane"{
             ec{"تیرانا"}
         }
+        "Europe:Ulyanovsk"{
+            ec{"اولیانوفسک"}
+        }
         "Europe:Uzhgorod"{
             ec{"اوژگورود"}
         }
@@ -1117,6 +1162,9 @@ fa{
         }
         "Pacific:Auckland"{
             ec{"اوکلند"}
+        }
+        "Pacific:Bougainville"{
+            ec{"بوگنویل"}
         }
         "Pacific:Chatham"{
             ec{"چتم"}
@@ -1236,7 +1284,7 @@ fa{
             ls{"وقت شرق افریقا"}
         }
         "meta:Africa_Southern"{
-            ls{"وقت جنوب افریقا"}
+            ls{"وقت عادی جنوب افریقا"}
         }
         "meta:Africa_Western"{
             ld{"وقت تابستانی غرب افریقا"}
@@ -1247,11 +1295,6 @@ fa{
             ld{"وقت تابستانی آلاسکا"}
             lg{"وقت آلاسکا"}
             ls{"وقت عادی آلاسکا"}
-        }
-        "meta:Alaska_Hawaii"{
-            ld{"وقت تابستانی آلاسکا‐هاوائی"}
-            lg{"وقت آلاسکا‐هاوائی"}
-            ls{"وقت عادی آلاسکا‐هاوائی"}
         }
         "meta:Almaty"{
             ld{"وقت تابستانی آلماآتا"}
@@ -1288,6 +1331,11 @@ fa{
             lg{"وقت آنادیر"}
             ls{"وقت عادی آنادیر"}
         }
+        "meta:Apia"{
+            ld{"وقت تابستانی آپیا"}
+            lg{"وقت آپیا"}
+            ls{"وقت عادی آپیا"}
+        }
         "meta:Arabian"{
             ld{"وقت تابستانی عربستان"}
             lg{"وقت عربستان"}
@@ -1307,11 +1355,6 @@ fa{
             ld{"وقت تابستانی ارمنستان"}
             lg{"وقت ارمنستان"}
             ls{"وقت عادی ارمنستان"}
-        }
-        "meta:Ashkhabad"{
-            ld{"وقت تابستانی عشق‌آباد"}
-            lg{"وقت عشق‌آباد"}
-            ls{"وقت عادی عشق‌آباد"}
         }
         "meta:Atlantic"{
             ld{"وقت تابستانی آتلانتیک"}
@@ -1348,20 +1391,10 @@ fa{
             lg{"وقت آزور"}
             ls{"وقت عادی آزور"}
         }
-        "meta:Baku"{
-            ld{"وقت تابستانی باکو"}
-            lg{"وقت باکو"}
-            ls{"وقت عادی باکو"}
-        }
         "meta:Bangladesh"{
             ld{"وقت تابستانی بنگلادش"}
             lg{"وقت بنگلادش"}
             ls{"وقت عادی بنگلادش"}
-        }
-        "meta:Bering"{
-            ld{"وقت تابستانی برینگ"}
-            lg{"وقت برینگ"}
-            ls{"وقت عادی برینگ"}
         }
         "meta:Bhutan"{
             ls{"وقت بوتان"}
@@ -1383,7 +1416,7 @@ fa{
             ls{"وقت عادی کیپ‌ورد"}
         }
         "meta:Chamorro"{
-            ls{"وقت چامورو"}
+            ls{"وقت عادی چامورو"}
         }
         "meta:Chatham"{
             ld{"وقت تابستانی چت‌هام"}
@@ -1432,14 +1465,6 @@ fa{
         "meta:DumontDUrville"{
             ls{"وقت دومون دورویل"}
         }
-        "meta:Dushanbe"{
-            ld{"وقت تابستانی دوشنبه"}
-            lg{"وقت دوشنبه"}
-            ls{"وقت عادی دوشنبه"}
-        }
-        "meta:Dutch_Guiana"{
-            ls{"وقت گویان هلند"}
-        }
         "meta:East_Timor"{
             ls{"وقت تیمور شرقی"}
         }
@@ -1460,6 +1485,9 @@ fa{
             ld{"وقت تابستانی شرق اروپا"}
             lg{"وقت شرق اروپا"}
             ls{"وقت عادی شرق اروپا"}
+        }
+        "meta:Europe_Further_Eastern"{
+            ls{"وقت تابستانی مکان‌های دیگر شرق اروپا"}
         }
         "meta:Europe_Western"{
             ld{"وقت تابستانی غرب اروپا"}
@@ -1499,11 +1527,6 @@ fa{
         "meta:Gilbert_Islands"{
             ls{"وقت جزایر گیلبرت"}
         }
-        "meta:Greenland_Central"{
-            ld{"وقت تابستانی مرکز گروئنلند"}
-            lg{"وقت مرکز گروئنلند"}
-            ls{"وقت عادی مرکز گروئنلند"}
-        }
         "meta:Greenland_Eastern"{
             ld{"وقت تابستانی شرق گرینلند"}
             lg{"وقت شرق گرینلند"}
@@ -1518,15 +1541,15 @@ fa{
             ls{"وقت عادی گوام"}
         }
         "meta:Gulf"{
-            ls{"وقت خلیج فارس"}
+            ls{"وقت عادی خلیج فارس"}
         }
         "meta:Guyana"{
             ls{"وقت گویان"}
         }
         "meta:Hawaii_Aleutian"{
-            ld{"وقت تابستانی هاوایی"}
-            lg{"وقت هاوایی"}
-            ls{"وقت عادی هاوایی"}
+            ld{"وقت تابستانی هاوایی‐الوشن"}
+            lg{"وقت هاوایی‐الوشن"}
+            ls{"وقت عادی هاوایی‐الوشن"}
         }
         "meta:Hong_Kong"{
             ld{"وقت تابستانی هنگ‌کنگ"}
@@ -1580,12 +1603,6 @@ fa{
             ld{"وقت تابستانی پتروپاولوسک‐کامچاتسکی"}
             lg{"وقت پتروپاولوسک‐کامچاتسکی"}
             ls{"وقت عادی پتروپاولوسک‐کامچاتسکی"}
-        }
-        "meta:Karachi"{
-            ls{"وقت کراچی"}
-        }
-        "meta:Kashgar"{
-            ls{"وقت کاشغر"}
         }
         "meta:Kazakhstan_Eastern"{
             ls{"وقت شرق قزاقستان"}
@@ -1652,6 +1669,16 @@ fa{
         }
         "meta:Mawson"{
             ls{"وقت ماوسون"}
+        }
+        "meta:Mexico_Northwest"{
+            ld{"وقت تابستانی شمال غرب مکزیک"}
+            lg{"وقت شمال غرب مکزیک"}
+            ls{"وقت عادی شمال غرب مکزیک"}
+        }
+        "meta:Mexico_Pacific"{
+            ld{"وقت تابستانی شرق مکزیک"}
+            lg{"وقت شرق مکزیک"}
+            ls{"وقت عادی شرق مکزیک"}
         }
         "meta:Mongolia"{
             ld{"وقت تابستانی اولان‌باتور"}
@@ -1741,15 +1768,18 @@ fa{
             ls{"وقت جزایر فونیکس"}
         }
         "meta:Pierre_Miquelon"{
-            ld{"وقت تابستانی سنت پیر و میکلون"}
-            lg{"وقت سنت پیر و میکلون"}
-            ls{"وقت عادی سنت پیر و میکلون"}
+            ld{"وقت تابستانی سنت‌پیر و میکلون"}
+            lg{"وقت سنت‌پیر و میکلون"}
+            ls{"وقت عادی سنت‌پیر و میکلون"}
         }
         "meta:Pitcairn"{
             ls{"وقت پیتکایرن"}
         }
         "meta:Ponape"{
             ls{"وقت پوناپه"}
+        }
+        "meta:Pyongyang"{
+            ls{"وقت پیونگ‌یانگ"}
         }
         "meta:Qyzylorda"{
             ld{"وقت تابستانی قیزیل‌اوردا"}
@@ -1772,13 +1802,10 @@ fa{
             lg{"وقت سامارا"}
             ls{"وقت عادی سامارا"}
         }
-        "meta:Samarkand"{
-            ld{"وقت تابستانی سمرقند"}
-            lg{"وقت سمرقند"}
-            ls{"وقت عادی سمرقند"}
-        }
         "meta:Samoa"{
-            ls{"وقت ساموا"}
+            ld{"وقت تابستانی ساموا"}
+            lg{"وقت ساموا"}
+            ls{"وقت عادی ساموا"}
         }
         "meta:Seychelles"{
             ls{"وقت سیشل"}
@@ -1809,16 +1836,6 @@ fa{
         "meta:Tajikistan"{
             ls{"وقت تاجیکستان"}
         }
-        "meta:Tashkent"{
-            ld{"وقت تابستانی تاشکند"}
-            lg{"وقت تاشکند"}
-            ls{"وقت عادی تاشکند"}
-        }
-        "meta:Tbilisi"{
-            ld{"وقت تابستانی تفلیس"}
-            lg{"وقت تفلیس"}
-            ls{"وقت عادی تفلیس"}
-        }
         "meta:Tokelau"{
             ls{"وقت توکلائو"}
         }
@@ -1829,11 +1846,6 @@ fa{
         }
         "meta:Truk"{
             ls{"وقت چوئوک"}
-        }
-        "meta:Turkey"{
-            ld{"وقت تابستانی ترکیه"}
-            lg{"وقت ترکیه"}
-            ls{"وقت عادی ترکیه"}
         }
         "meta:Turkmenistan"{
             ld{"وقت تابستانی ترکمنستان"}
@@ -1847,9 +1859,6 @@ fa{
             ld{"وقت تابستانی اروگوئه"}
             lg{"وقت اروگوئه"}
             ls{"وقت عادی اروگوئه"}
-        }
-        "meta:Urumqi"{
-            ls{"وقت ارومچی"}
         }
         "meta:Uzbekistan"{
             ld{"وقت تابستانی ازبکستان"}
@@ -1893,21 +1902,12 @@ fa{
             lg{"وقت یکاترینبورگ"}
             ls{"وقت عادی یکاترینبورگ"}
         }
-        "meta:Yerevan"{
-            ld{"وقت تابستانی ایروان"}
-            lg{"وقت ایروان"}
-            ls{"وقت عادی ایروان"}
-        }
-        "meta:Yukon"{
-            ld{"وقت تابستانی یوکان"}
-            lg{"وقت یوکان"}
-            ls{"وقت عادی یوکان"}
-        }
         fallbackFormat{"{1} ({0})"}
-        fallbackRegionFormat{"وقت {1} ({0})"}
-        gmtFormat{"GMT{0}"}
-        gmtZeroFormat{"GMT"}
+        gmtFormat{"{0} گرینویچ"}
+        gmtZeroFormat{"گرینویچ"}
         hourFormat{"+HH:mm;−HH:mm"}
         regionFormat{"وقت {0}"}
+        regionFormatDaylight{"وقت تابستانی {0}"}
+        regionFormatStandard{"وقت عادی {0}"}
     }
 }

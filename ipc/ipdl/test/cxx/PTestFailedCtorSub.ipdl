@@ -4,14 +4,14 @@ include protocol PTestFailedCtorSubsub;
 namespace mozilla {
 namespace _ipdltest {
 
-rpc protocol PTestFailedCtorSub {
+intr protocol PTestFailedCtorSub {
     manager PTestFailedCtor;
     manages PTestFailedCtorSubsub;
 
 parent:
     async PTestFailedCtorSubsub();
     sync Sync();
-    __delete__();
+    async __delete__();
 };
 
 }

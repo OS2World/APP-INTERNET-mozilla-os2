@@ -14,30 +14,31 @@
  */
 
 interface Element : Node {
-/*
-  We haven't moved these from Node to Element like the spec wants.
-
-  [Throws]
+  [Constant]
   readonly attribute DOMString? namespaceURI;
+  [Constant]
   readonly attribute DOMString? prefix;
+  [Constant]
   readonly attribute DOMString localName;
-*/
+
   // Not [Constant] because it depends on which document we're in
   [Pure]
   readonly attribute DOMString tagName;
 
   [Pure]
            attribute DOMString id;
-/*
-  FIXME Bug 810677 Move className from HTMLElement to Element
+  [Pure]
            attribute DOMString className;
-*/
-  [Constant]
-  readonly attribute DOMTokenList? classList;
+  [Constant, PutForwards=value]
+  readonly attribute DOMTokenList classList;
 
-  [Constant]
-  readonly attribute MozNamedAttrMap attributes;
+  [SameObject]
+  readonly attribute NamedNodeMap attributes;
+  [Pure]
+  sequence<DOMString> getAttributeNames();
+  [Pure]
   DOMString? getAttribute(DOMString name);
+  [Pure]
   DOMString? getAttributeNS(DOMString? namespace, DOMString localName);
   [Throws]
   void setAttribute(DOMString name, DOMString value);
@@ -47,26 +48,33 @@ interface Element : Node {
   void removeAttribute(DOMString name);
   [Throws]
   void removeAttributeNS(DOMString? namespace, DOMString localName);
+  [Pure]
   boolean hasAttribute(DOMString name);
+  [Pure]
   boolean hasAttributeNS(DOMString? namespace, DOMString localName);
+  [Pure]
+  boolean hasAttributes();
 
+  [Throws, Pure]
+  Element? closest(DOMString selector);
+
+  [Throws, Pure]
+  boolean matches(DOMString selector);
+  [Throws, Pure, BinaryName="matches"]
+  boolean webkitMatchesSelector(DOMString selector);
+
+  [Pure]
   HTMLCollection getElementsByTagName(DOMString localName);
-  [Throws]
+  [Throws, Pure]
   HTMLCollection getElementsByTagNameNS(DOMString? namespace, DOMString localName);
+  [Pure]
   HTMLCollection getElementsByClassName(DOMString classNames);
 
-  [Constant]
-  readonly attribute HTMLCollection children;
-  [Pure]
-  readonly attribute Element? firstElementChild;
-  [Pure]
-  readonly attribute Element? lastElementChild;
-  [Pure]
-  readonly attribute Element? previousElementSibling;
-  [Pure]
-  readonly attribute Element? nextElementSibling;
-  [Pure]
-  readonly attribute unsigned long childElementCount;
+  [Throws, Pure]
+  Element? insertAdjacentElement(DOMString where, Element element); // historical
+
+  [Throws]
+  void insertAdjacentText(DOMString where, DOMString data); // historical
 
   /**
    * The ratio of font-size-inflated text font size to computed font
@@ -83,12 +91,7 @@ interface Element : Node {
   readonly attribute float fontSizeInflation;
 
   // Mozilla specific stuff
-
-  [SetterThrows,LenientThis]
-           attribute EventHandler onmouseenter;
-  [SetterThrows,LenientThis]
-           attribute EventHandler onmouseleave;
-  [SetterThrows]
+  [Pure]
            attribute EventHandler onwheel;
 
   // Selectors API
@@ -98,8 +101,18 @@ interface Element : Node {
    *
    * See <http://dev.w3.org/2006/webapi/selectors-api2/#matchesselector>
    */
-  [Throws]
+  [Throws, Pure, BinaryName="matches"]
   boolean mozMatchesSelector(DOMString selector);
+
+  // Pointer events methods.
+  [Throws, Pref="dom.w3c_pointer_events.enabled", UnsafeInPrerendering]
+  void setPointerCapture(long pointerId);
+
+  [Throws, Pref="dom.w3c_pointer_events.enabled"]
+  void releasePointerCapture(long pointerId);
+
+  [Pref="dom.w3c_pointer_events.enabled"]
+  boolean hasPointerCapture(long pointerId);
 
   // Proprietary extensions
   /**
@@ -119,21 +132,6 @@ interface Element : Node {
   void releaseCapture();
 
   // Mozilla extensions
-  /**
-   * Requests that this element be made the full-screen element, as per the DOM
-   * full-screen api.
-   *
-   * @see <https://wiki.mozilla.org/index.php?title=Gecko:FullScreenAPI>
-   */
-  void mozRequestFullScreen();
-
-  /**
-   * Requests that this element be made the pointer-locked element, as per the DOM
-   * pointer lock api.
-   *
-   * @see <http://dvcs.w3.org/hg/pointerlock/raw-file/default/index.html>
-   */
-  void mozRequestPointerLock();
 
   // Obsolete methods.
   Attr? getAttributeNode(DOMString name);
@@ -144,20 +142,56 @@ interface Element : Node {
   Attr? getAttributeNodeNS(DOMString? namespaceURI, DOMString localName);
   [Throws]
   Attr? setAttributeNodeNS(Attr newAttr);
+
+  [ChromeOnly]
+  /**
+   * Scrolls the element by (dx, dy) CSS pixels without doing any
+   * layout flushing.
+   */
+  boolean scrollByNoFlush(long dx, long dy);
+
+  // Support reporting of Grid properties
+
+  /**
+   * If this element has a display:grid or display:inline-grid style,
+   * this property returns an object with computed values for grid
+   * tracks and lines.
+   */
+  [ChromeOnly, Pure]
+  sequence<Grid> getGridFragments();
+};
+
+// http://dev.w3.org/csswg/cssom-view/
+enum ScrollLogicalPosition { "start", "end" };
+dictionary ScrollIntoViewOptions : ScrollOptions {
+  ScrollLogicalPosition block = "start";
 };
 
 // http://dev.w3.org/csswg/cssom-view/#extensions-to-the-element-interface
 partial interface Element {
-  ClientRectList getClientRects();
-  ClientRect getBoundingClientRect();
+  DOMRectList getClientRects();
+  DOMRect getBoundingClientRect();
 
   // scrolling
-  void scrollIntoView(optional boolean top = true);
+  void scrollIntoView(boolean top);
+  void scrollIntoView(optional ScrollIntoViewOptions options);
   // None of the CSSOM attributes are [Pure], because they flush
            attribute long scrollTop;   // scroll on setting
            attribute long scrollLeft;  // scroll on setting
   readonly attribute long scrollWidth;
   readonly attribute long scrollHeight;
+  
+  void scroll(unrestricted double x, unrestricted double y);
+  void scroll(optional ScrollToOptions options);
+  void scrollTo(unrestricted double x, unrestricted double y);
+  void scrollTo(optional ScrollToOptions options);
+  void scrollBy(unrestricted double x, unrestricted double y);
+  void scrollBy(optional ScrollToOptions options);
+  // mozScrollSnap is used by chrome to perform scroll snapping after the
+  // user performs actions that may affect scroll position
+  // mozScrollSnap is deprecated, to be replaced by a web accessible API, such
+  // as an extension to the ScrollOptions dictionary.  See bug 1137937.
+  [ChromeOnly] void mozScrollSnap();
 
   readonly attribute long clientTop;
   readonly attribute long clientLeft;
@@ -165,26 +199,20 @@ partial interface Element {
   readonly attribute long clientHeight;
 
   // Mozilla specific stuff
-  /* The maximum offset that the element can be scrolled to
+  /* The minimum/maximum offset that the element can be scrolled to
      (i.e., the value that scrollLeft/scrollTop would be clamped to if they were
      set to arbitrarily large values. */
-  readonly attribute long scrollTopMax;
-  readonly attribute long scrollLeftMax;
-};
-
-// http://dvcs.w3.org/hg/undomanager/raw-file/tip/undomanager.html
-partial interface Element {
-  [Pref="dom.undo_manager.enabled"]
-  readonly attribute UndoManager? undoManager;
-  [SetterThrows,Pref="dom.undo_manager.enabled"]
-  attribute boolean undoScope;
+  [ChromeOnly] readonly attribute long scrollTopMin;
+               readonly attribute long scrollTopMax;
+  [ChromeOnly] readonly attribute long scrollLeftMin;
+               readonly attribute long scrollLeftMax;
 };
 
 // http://domparsing.spec.whatwg.org/#extensions-to-the-element-interface
 partial interface Element {
-  [Throws,TreatNullAs=EmptyString]
+  [Pure,SetterThrows,TreatNullAs=EmptyString]
   attribute DOMString innerHTML;
-  [Throws,TreatNullAs=EmptyString]
+  [Pure,SetterThrows,TreatNullAs=EmptyString]
   attribute DOMString outerHTML;
   [Throws]
   void insertAdjacentHTML(DOMString position, DOMString text);
@@ -192,10 +220,40 @@ partial interface Element {
 
 // http://www.w3.org/TR/selectors-api/#interface-definitions
 partial interface Element {
-  [Throws]
+  [Throws, Pure]
   Element?  querySelector(DOMString selectors);
-  [Throws]
+  [Throws, Pure]
   NodeList  querySelectorAll(DOMString selectors);
 };
 
+// http://w3c.github.io/webcomponents/spec/shadow/#extensions-to-element-interface
+partial interface Element {
+  [Throws,Func="nsDocument::IsWebComponentsEnabled"]
+  ShadowRoot createShadowRoot();
+  [Func="nsDocument::IsWebComponentsEnabled"]
+  NodeList getDestinationInsertionPoints();
+  [Func="nsDocument::IsWebComponentsEnabled"]
+  readonly attribute ShadowRoot? shadowRoot;
+};
+
 Element implements ChildNode;
+Element implements NonDocumentTypeChildNode;
+Element implements ParentNode;
+Element implements Animatable;
+Element implements GeometryUtils;
+
+// https://fullscreen.spec.whatwg.org/#api
+partial interface Element {
+  [Throws, UnsafeInPrerendering, Func="nsDocument::IsUnprefixedFullscreenEnabled"]
+  void requestFullscreen();
+  [Throws, UnsafeInPrerendering, BinaryName="requestFullscreen"]
+  void mozRequestFullScreen();
+};
+
+// https://w3c.github.io/pointerlock/#extensions-to-the-element-interface
+partial interface Element {
+  [UnsafeInPrerendering]
+  void requestPointerLock();
+  [UnsafeInPrerendering, BinaryName="requestPointerLock", Pref="pointer-lock-api.prefixed.enabled"]
+  void mozRequestPointerLock();
+};

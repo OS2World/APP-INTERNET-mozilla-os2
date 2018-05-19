@@ -9,75 +9,26 @@
 {
   'includes': [
     '../../../../build/common.gypi',
-    '../test_framework/test_framework.gypi'
   ],
-  'variables': {
-    'conditions': [
-      ['build_with_chromium==1', {
-        'use_temporal_layers%': 0,
-      }, {
-        'use_temporal_layers%': 1,
-      }],
-    ],
-  },
   'targets': [
     {
       'target_name': 'webrtc_vp8',
-      'type': '<(library)',
+      'type': 'static_library',
       'dependencies': [
-        '<(webrtc_root)/system_wrappers/source/system_wrappers.gyp:system_wrappers',
+        '<(webrtc_root)/common.gyp:webrtc_common',
         '<(webrtc_root)/common_video/common_video.gyp:common_video',
+        '<(webrtc_root)/modules/video_coding/utility/video_coding_utility.gyp:video_coding_utility',
+        '<(webrtc_root)/system_wrappers/system_wrappers.gyp:system_wrappers',
       ],
       'include_dirs': [
-        'include',
-        '<(webrtc_root)/common_video/interface',
-        '<(webrtc_root)/modules/video_coding/codecs/interface',
-        '<(webrtc_root)/modules/interface',
+        '../../../../../../../libyuv/include',
       ],
       'conditions': [
         ['build_libvpx==1', {
           'dependencies': [
-            '<(DEPTH)/third_party/libvpx/libvpx.gyp:libvpx',
-          ],
-          'conditions': [
-            # TODO(mikhal): Investigate this mechanism for handling differences
-            # between the Chromium and standalone builds.
-            # http://code.google.com/p/webrtc/issues/detail?id=201
-            ['build_with_chromium==1', {
-              'defines': [
-                'WEBRTC_LIBVPX_VERSION=960' # Bali
-              ],
-            }, {
-              'defines': [
-                'WEBRTC_LIBVPX_VERSION=971' # Cayuga
-              ],
-            }],
-            ['use_temporal_layers==1', {
-              'sources': [
-                'temporal_layers.h',
-                'temporal_layers.cc',
-              ],
-            }],
+            '<(libvpx_dir)/libvpx.gyp:libvpx',
           ],
         },{
-	  'include_dirs': [
-            '$(DIST)/include',
-          ],
-          'defines': [
-            # This must be updated to match mozilla's version of libvpx
-            'WEBRTC_LIBVPX_VERSION=1000',
-          ],
-          'conditions': [
-            ['use_temporal_layers==1', {
-              'defines': [
-                'WEBRTC_LIBVPX_TEMPORAL_LAYERS=1'
-              ],
-            },{
-              'defines': [
-                'WEBRTC_LIBVPX_TEMPORAL_LAYERS=0'
-              ],
-            }],
-          ],
           'link_settings': {
             'libraries': [
               '$(LIBVPX_OBJ)/libvpx.a',
@@ -85,67 +36,33 @@
           },
         }],
       ],
-      'direct_dependent_settings': {
-        'include_dirs': [
-          'include',
-          '<(webrtc_root)/common_video/interface',
-          '<(webrtc_root)/modules/video_coding/codecs/interface',
-        ],
-      },
       'sources': [
-        'reference_picture_selection.h',
-        'reference_picture_selection.cc',
+        'default_temporal_layers.cc',
+        'default_temporal_layers.h',
         'include/vp8.h',
         'include/vp8_common_types.h',
+        'realtime_temporal_layers.cc',
+        'reference_picture_selection.cc',
+        'reference_picture_selection.h',
+        'screenshare_layers.cc',
+        'screenshare_layers.h',
+        'simulcast_encoder_adapter.cc',
+        'simulcast_encoder_adapter.h',
+        'temporal_layers.h',
+        'vp8_factory.cc',
+        'vp8_factory.h',
         'vp8_impl.cc',
+        'vp8_impl.h',
+      ],
+      # Disable warnings to enable Win64 build, issue 1323.
+      'msvs_disabled_warnings': [
+        4267,  # size_t to int truncation.
       ],
     },
   ], # targets
   'conditions': [
     ['include_tests==1', {
       'targets': [
-        {
-          'target_name': 'vp8_integrationtests',
-          'type': 'executable',
-          'dependencies': [
-            'test_framework',
-            'webrtc_vp8',
-            '<(webrtc_root)/common_video/common_video.gyp:common_video',
-            '<(webrtc_root)/system_wrappers/source/system_wrappers.gyp:system_wrappers',
-            '<(webrtc_root)/test/test.gyp:test_support',
-            '<(webrtc_root)/test/test.gyp:test_support_main',
-            '<(DEPTH)/testing/gtest.gyp:gtest',
-          ],
-         'sources': [
-           # source files
-            'test/vp8_impl_unittest.cc',
-          ],
-        },
-        {
-          'target_name': 'vp8_unittests',
-          'type': 'executable',
-          'dependencies': [
-            'webrtc_vp8',
-            'test_framework',
-            '<(DEPTH)/testing/gmock.gyp:gmock',
-            '<(DEPTH)/testing/gtest.gyp:gtest',
-            '<(webrtc_root)/test/test.gyp:test_support_main',
-          ],
-          'include_dirs': [
-            '<(DEPTH)/third_party/libvpx/source/libvpx',
-          ],
-          'sources': [
-            'reference_picture_selection_unittest.cc',
-            'temporal_layers_unittest.cc',
-          ],
-          'conditions': [
-            ['build_libvpx==1', {
-              'dependencies': [
-                '<(DEPTH)/third_party/libvpx/libvpx.gyp:libvpx',
-              ],
-            }],
-          ],
-        },
         {
           'target_name': 'vp8_coder',
           'type': 'executable',
@@ -154,9 +71,9 @@
             '<(webrtc_root)/common_video/common_video.gyp:common_video',
             '<(webrtc_root)/test/metrics.gyp:metrics',
             '<(DEPTH)/testing/gtest.gyp:gtest',
-            '<(webrtc_root)/system_wrappers/source/system_wrappers.gyp:system_wrappers',
+            '<(webrtc_root)/system_wrappers/system_wrappers.gyp:system_wrappers',
             '<(webrtc_root)/test/test.gyp:test_support_main',
-            '<(webrtc_root)/tools/tools.gyp:command_line_parser',
+            '<(webrtc_root)/tools/internal_tools.gyp:command_line_parser',
           ],
           'sources': [
             'vp8_sequence_coder.cc',

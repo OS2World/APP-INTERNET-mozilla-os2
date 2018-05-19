@@ -9,21 +9,15 @@
 #ifndef logging_h__
 #define logging_h__
 
-#if defined(PR_LOG)
-#error "Must #include logging.h before before any IPDL-generated files or other files that #include prlog.h."
-#endif
-
-// Enforce logging under production builds for MOZ_MTLOG friends.
-#ifndef PR_LOGGING
-#define FORCE_PR_LOG 1
-#endif
-
 #include <sstream>
-#include <prlog.h>
+#include "mozilla/Logging.h"
 
-#if defined(PR_LOGGING)
+#define ML_ERROR            mozilla::LogLevel::Error
+#define ML_WARNING          mozilla::LogLevel::Warning
+#define ML_NOTICE           mozilla::LogLevel::Info
+#define ML_INFO             mozilla::LogLevel::Debug
+#define ML_DEBUG            mozilla::LogLevel::Verbose
 
-// PR_LOGGING is on --> make useful MTLOG macros
 #define MOZ_MTLOG_MODULE(n) \
   static PRLogModuleInfo* getLogModule() {      \
     static PRLogModuleInfo* log;                \
@@ -34,15 +28,11 @@
 
 #define MOZ_MTLOG(level, b) \
   do {                                                                  \
-    std::stringstream str;                                              \
-    str << b;                                                           \
-    PR_LOG(getLogModule(), level, ("%s", str.str().c_str())); } while(0)
-
-#else
-// PR_LOGGING is off --> make no-op MTLOG macros
-#define MOZ_MTLOG_MODULE(n)
-#define MOZ_MTLOG(level, b)
-
-#endif // defined(PR_LOGGING)
+    if (MOZ_LOG_TEST(getLogModule(), level)) {                           \
+      std::stringstream str;                                            \
+      str << b;                                                         \
+      MOZ_LOG(getLogModule(), level, ("%s", str.str().c_str()));         \
+    }                                                                   \
+  } while(0)
 
 #endif // logging_h__

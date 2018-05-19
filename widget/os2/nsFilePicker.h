@@ -7,18 +7,17 @@
 #ifndef nsFilePicker_h__
 #define nsFilePicker_h__
 
+#define INCL_BASE
+#define INCL_PM
+#include <os2.h>
+
 #include "nsISimpleEnumerator.h"
 #include "nsCOMArray.h"
 #include "nsTArray.h"
-#include "nsICharsetConverterManager.h"
+#include "nsIUnicodeDecoder.h"
+#include "nsIUnicodeEncoder.h"
 #include "nsBaseFilePicker.h"
 #include "nsString.h"
-
-#define INCL_DOS
-#define INCL_NLS
-#define INCL_WIN
-#define INCL_WINSTDFILE
-#include <os2.h>
 
 /**
  * Native OS/2 FileSelector wrapper
@@ -26,9 +25,9 @@
 
 class nsFilePicker : public nsBaseFilePicker
 {
+  virtual ~nsFilePicker();
 public:
   nsFilePicker(); 
-  virtual ~nsFilePicker();
 
   static void ReleaseGlobals();
 
@@ -49,27 +48,25 @@ public:
 
 protected:
   /* method from nsBaseFilePicker */
-  virtual void InitNative(nsIWidget *aParent, const nsAString& aTitle,
-                          int16_t aMode);
+  virtual void InitNative(nsIWidget *aParent, const nsAString& aTitle);
 
 
   void GetFilterListArray(nsString& aFilterList);
   static void GetFileSystemCharset(nsCString & fileSystemCharset);
   char * ConvertToFileSystemCharset(const nsAString& inString);
-  PRUnichar * ConvertFromFileSystemCharset(const char *inString);
+  char16_t * ConvertFromFileSystemCharset(const char *inString);
 
   HWND                   mWnd;
   nsString               mTitle;
-  int16_t                mMode;
   nsCString              mFile;
   nsString               mDefault;
   nsString               mDefaultExtension;
   nsTArray<nsString>     mFilters;
   nsTArray<nsString>     mTitles;
-  nsIUnicodeEncoder*     mUnicodeEncoder;
-  nsIUnicodeDecoder*     mUnicodeDecoder;
+  nsCOMPtr<nsIUnicodeEncoder> mUnicodeEncoder;
+  nsCOMPtr<nsIUnicodeDecoder> mUnicodeDecoder;
   int16_t                mSelectedType;
-  nsCOMArray<nsIFile> mFiles;
+  nsCOMArray<nsIFile>    mFiles;
   static char            mLastUsedDirectory[];
 };
 

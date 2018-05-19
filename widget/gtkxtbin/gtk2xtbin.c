@@ -40,7 +40,6 @@ static void            gtk_xtbin_init       (GtkXtBin      *xtbin);
 static void            gtk_xtbin_realize    (GtkWidget      *widget);
 static void            gtk_xtbin_unrealize    (GtkWidget      *widget);
 static void            gtk_xtbin_destroy    (GtkObject      *object);
-static void            gtk_xtbin_shutdown   (GtkObject      *object);
 
 /* Xt aware XEmbed */
 static void       xt_client_handle_xembed_message (Widget w, 
@@ -83,9 +82,7 @@ xt_event_prepare (GSource*  source_data,
 {   
   int mask;
 
-  GDK_THREADS_ENTER();
   mask = XPending(xtdisplay);
-  GDK_THREADS_LEAVE();
 
   return (gboolean)mask;
 }
@@ -93,16 +90,12 @@ xt_event_prepare (GSource*  source_data,
 static gboolean
 xt_event_check (GSource*  source_data)
 {
-  GDK_THREADS_ENTER ();
-
   if (xt_event_poll_fd.revents & G_IO_IN) {
     int mask;
     mask = XPending(xtdisplay);
-    GDK_THREADS_LEAVE ();
     return (gboolean)mask;
   }
 
-  GDK_THREADS_LEAVE ();
   return FALSE;
 }   
 
@@ -111,13 +104,10 @@ xt_event_dispatch (GSource*  source_data,
                     GSourceFunc call_back,
                     gpointer  user_data)
 {
-  XEvent event;
   XtAppContext ac;
   int i = 0;
 
   ac = XtDisplayToApplicationContext(xtdisplay);
-
-  GDK_THREADS_ENTER ();
 
   /* Process only real X traffic here.  We only look for data on the
    * pipe, limit it to XTBIN_MAX_EVENTS and only call
@@ -127,8 +117,6 @@ xt_event_dispatch (GSource*  source_data,
   for (i=0; i < XTBIN_MAX_EVENTS && XPending(xtdisplay); i++) {
     XtAppProcessEvent(ac, XtIMXEvent);
   }
-
-  GDK_THREADS_LEAVE ();
 
   return TRUE;  
 }

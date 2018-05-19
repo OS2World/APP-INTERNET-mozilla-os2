@@ -4,7 +4,7 @@
  * You can obtain one at http://mozilla.org/MPL/2.0/.
  *
  * The origin of this IDL file is
- * https://dvcs.w3.org/hg/audio/raw-file/tip/webaudio/specification.html
+ * https://webaudio.github.io/web-audio-api/
  *
  * Copyright © 2012 W3C® (MIT, ERCIM, Keio), All Rights Reserved. W3C
  * liability, trademark and document use rules apply.
@@ -13,83 +13,110 @@
 callback DecodeSuccessCallback = void (AudioBuffer decodedData);
 callback DecodeErrorCallback = void ();
 
-[Constructor, PrefControlled]
+enum AudioContextState {
+    "suspended",
+    "running",
+    "closed"
+};
+
+dictionary PeriodicWaveConstraints {
+  boolean disableNormalization = false;
+};
+
+[Constructor,
+ Constructor(AudioChannel audioChannelType),
+ Pref="dom.webaudio.enabled"]
 interface AudioContext : EventTarget {
 
     readonly attribute AudioDestinationNode destination;
     readonly attribute float sampleRate;
     readonly attribute double currentTime;
     readonly attribute AudioListener listener;
+    readonly attribute AudioContextState state;
+    [Throws]
+    Promise<void> suspend();
+    [Throws]
+    Promise<void> resume();
+    [Throws]
+    Promise<void> close();
+    attribute EventHandler onstatechange;
 
-    [Creator, Throws]
+    [NewObject, Throws]
     AudioBuffer createBuffer(unsigned long numberOfChannels, unsigned long length, float sampleRate);
 
-    void decodeAudioData(ArrayBuffer audioData,
-                         DecodeSuccessCallback successCallback,
-                         optional DecodeErrorCallback errorCallback);
+    [Throws]
+    Promise<AudioBuffer> decodeAudioData(ArrayBuffer audioData,
+                                         optional DecodeSuccessCallback successCallback,
+                                         optional DecodeErrorCallback errorCallback);
 
-    // AudioNode creation 
-    [Creator]
+    // AudioNode creation
+    [NewObject, Throws]
     AudioBufferSourceNode createBufferSource();
 
-    [Creator, Throws]
+    [NewObject, Throws]
+    ConstantSourceNode createConstantSource();
+
+    [NewObject, Throws]
     MediaStreamAudioDestinationNode createMediaStreamDestination();
 
-    [Creator, Throws]
+    [NewObject, Throws]
     ScriptProcessorNode createScriptProcessor(optional unsigned long bufferSize = 0,
                                               optional unsigned long numberOfInputChannels = 2,
                                               optional unsigned long numberOfOutputChannels = 2);
 
-    [Creator]
+    [NewObject, Throws]
+    StereoPannerNode createStereoPanner();
+    [NewObject, Throws]
     AnalyserNode createAnalyser();
-    [Creator]
+    [NewObject, Throws, UnsafeInPrerendering]
+    MediaElementAudioSourceNode createMediaElementSource(HTMLMediaElement mediaElement);
+    [NewObject, Throws, UnsafeInPrerendering]
+    MediaStreamAudioSourceNode createMediaStreamSource(MediaStream mediaStream);
+    [NewObject, Throws]
     GainNode createGain();
-    [Creator, Throws]
+    [NewObject, Throws]
     DelayNode createDelay(optional double maxDelayTime = 1);
-    [Creator]
+    [NewObject, Throws]
     BiquadFilterNode createBiquadFilter();
-    [Creator]
+    [NewObject, Throws]
+    IIRFilterNode createIIRFilter(sequence<double> feedforward, sequence<double> feedback);
+    [NewObject, Throws]
     WaveShaperNode createWaveShaper();
-    [Creator]
+    [NewObject, Throws]
     PannerNode createPanner();
-    [Creator]
+    [NewObject, Throws]
     ConvolverNode createConvolver();
 
-    [Creator, Throws]
+    [NewObject, Throws]
     ChannelSplitterNode createChannelSplitter(optional unsigned long numberOfOutputs = 6);
-    [Creator, Throws]
+    [NewObject, Throws]
     ChannelMergerNode createChannelMerger(optional unsigned long numberOfInputs = 6);
 
-    [Creator]
+    [NewObject, Throws]
     DynamicsCompressorNode createDynamicsCompressor();
 
-    [Creator, Throws]
-    PeriodicWave createPeriodicWave(Float32Array real, Float32Array imag);
+    [NewObject, Throws]
+    OscillatorNode createOscillator();
+    [NewObject, Throws]
+    PeriodicWave createPeriodicWave(Float32Array real, Float32Array imag, optional PeriodicWaveConstraints constraints);
 
 };
 
-/*
- * The origin of this IDL file is
- * https://dvcs.w3.org/hg/audio/raw-file/tip/webaudio/specification.html#AlternateNames
- */
-[PrefControlled]
+// Mozilla extensions
 partial interface AudioContext {
-    [Creator, Throws]
-    AudioBuffer? createBuffer(ArrayBuffer buffer, boolean mixToMono);
+  // Read AudioChannel.webidl for more information about this attribute.
+  [Pref="media.useAudioChannelAPI"]
+  readonly attribute AudioChannel mozAudioChannelType;
 
-    // Same as createGain()
-    [Creator,Pref="media.webaudio.legacy.AudioContext"]
-    GainNode createGainNode();
+  // These 2 events are dispatched when the AudioContext object is muted by
+  // the AudioChannelService. It's call 'interrupt' because when this event is
+  // dispatched on a HTMLMediaElement, the audio stream is paused.
+  [Pref="media.useAudioChannelAPI"]
+  attribute EventHandler onmozinterruptbegin;
 
-    // Same as createDelay()
-    [Creator, Throws, Pref="media.webaudio.legacy.AudioContext"]
-    DelayNode createDelayNode(optional double maxDelayTime = 1);
+  [Pref="media.useAudioChannelAPI"]
+  attribute EventHandler onmozinterruptend;
 
-    // Same as createScriptProcessor()
-    [Creator, Throws, Pref="media.webaudio.legacy.AudioContext"]
-    ScriptProcessorNode createJavaScriptNode(optional unsigned long bufferSize = 0,
-                                             optional unsigned long numberOfInputChannels = 2,
-                                             optional unsigned long numberOfOutputChannels = 2);
+  // This method is for test only.
+  [ChromeOnly] AudioChannel testAudioChannelInAudioNodeStream();
 };
-
-

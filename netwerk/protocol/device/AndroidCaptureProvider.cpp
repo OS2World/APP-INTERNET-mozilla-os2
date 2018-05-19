@@ -6,7 +6,6 @@
 #include "base/basictypes.h"
 #include "AndroidCaptureProvider.h"
 #include "nsXULAppAPI.h"
-#include "AndroidBridge.h"
 #include "nsStreamUtils.h"
 #include "nsThreadUtils.h"
 #include "nsMemory.h"
@@ -17,7 +16,7 @@
 
 using namespace mozilla::net;
 
-NS_IMPL_THREADSAFE_ISUPPORTS2(AndroidCameraInputStream, nsIInputStream, nsIAsyncInputStream)
+NS_IMPL_ISUPPORTS(AndroidCameraInputStream, nsIInputStream, nsIAsyncInputStream)
 
 AndroidCameraInputStream::AndroidCameraInputStream() :
   mWidth(0), mHeight(0), mCamera(0), mHeaderSent(false), mClosed(true), mFrameSize(0),
@@ -30,7 +29,7 @@ AndroidCameraInputStream::AndroidCameraInputStream() :
 AndroidCameraInputStream::~AndroidCameraInputStream() {
   // clear the frame queue
   while (mFrameQueue->GetSize() > 0) {
-    nsMemory::Free(mFrameQueue->PopFront());
+    free(mFrameQueue->PopFront());
   }
   delete mFrameQueue;
 }
@@ -38,7 +37,7 @@ AndroidCameraInputStream::~AndroidCameraInputStream() {
 NS_IMETHODIMP
 AndroidCameraInputStream::Init(nsACString& aContentType, nsCaptureParams* aParams)
 {
-  if (XRE_GetProcessType() != GeckoProcessType_Default)
+  if (!XRE_IsParentProcess())
     return NS_ERROR_NOT_IMPLEMENTED;
 
   mContentType = aContentType;
@@ -61,14 +60,14 @@ void AndroidCameraInputStream::ReceiveFrame(char* frame, uint32_t length) {
   {
     mozilla::ReentrantMonitorAutoEnter autoMonitor(mMonitor);
     if (mFrameQueue->GetSize() > MAX_FRAMES_QUEUED) {
-      nsMemory::Free(mFrameQueue->PopFront());
+      free(mFrameQueue->PopFront());
       mAvailable -= mFrameSize;
     }
   }
   
   mFrameSize = sizeof(RawPacketHeader) + length;
   
-  char* fullFrame = (char*)nsMemory::Alloc(mFrameSize);
+  char* fullFrame = (char*)moz_xmalloc(mFrameSize);
 
   if (!fullFrame)
     return;
@@ -177,7 +176,7 @@ NS_IMETHODIMP AndroidCameraInputStream::ReadSegments(nsWriteSegmentFun aWriter, 
       }
   
       // RawReader does a copy when calling VideoData::Create()
-      nsMemory::Free(frame);
+      free(frame);
   
       if (NS_FAILED(rv))
         return NS_OK;
@@ -255,15 +254,15 @@ NS_IMETHODIMP AndroidCameraInputStream::CloseWithStatus(nsresult status)
  * AndroidCaptureProvider implementation
  */
 
-NS_IMPL_THREADSAFE_ISUPPORTS0(AndroidCaptureProvider)
+NS_IMPL_ISUPPORTS0(AndroidCaptureProvider)
 
-AndroidCaptureProvider* AndroidCaptureProvider::sInstance = NULL;
+AndroidCaptureProvider* AndroidCaptureProvider::sInstance = nullptr;
 
 AndroidCaptureProvider::AndroidCaptureProvider() {
 }
 
 AndroidCaptureProvider::~AndroidCaptureProvider() {
-  AndroidCaptureProvider::sInstance = NULL;
+  AndroidCaptureProvider::sInstance = nullptr;
 }
 
 nsresult AndroidCaptureProvider::Init(nsACString& aContentType,
@@ -275,7 +274,7 @@ nsresult AndroidCaptureProvider::Init(nsACString& aContentType,
   NS_ASSERTION(aParams->frameLimit == 0 || aParams->timeLimit == 0,
     "Cannot set both a frame limit and a time limit!");
 
-  nsRefPtr<AndroidCameraInputStream> stream;
+  RefPtr<AndroidCameraInputStream> stream;
 
   if (aContentType.EqualsLiteral("video/x-raw-yuv")) {
     stream = new AndroidCameraInputStream();
@@ -289,13 +288,14 @@ nsresult AndroidCaptureProvider::Init(nsACString& aContentType,
   } else {
     NS_NOTREACHED("Should not have asked Android for this type!");
   }
-  return CallQueryInterface(stream, aStream);
+  stream.forget(aStream);
+  return NS_OK;
 }
 
 already_AddRefed<AndroidCaptureProvider> GetAndroidCaptureProvider() {
   if (!AndroidCaptureProvider::sInstance) {
     AndroidCaptureProvider::sInstance = new AndroidCaptureProvider();
   }
-  nsRefPtr<AndroidCaptureProvider> ret = AndroidCaptureProvider::sInstance;
+  RefPtr<AndroidCaptureProvider> ret = AndroidCaptureProvider::sInstance;
   return ret.forget();
 }

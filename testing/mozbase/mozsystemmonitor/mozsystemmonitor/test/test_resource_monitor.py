@@ -3,7 +3,6 @@
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
 import multiprocessing
-import tempfile
 import time
 import unittest
 
@@ -20,6 +19,7 @@ from mozsystemmonitor.resourcemonitor import (
 
 @unittest.skipIf(psutil is None, 'Resource monitor requires psutil.')
 class TestResourceMonitor(unittest.TestCase):
+
     def test_basic(self):
         monitor = SystemResourceMonitor(poll_interval=0.5)
 
@@ -85,7 +85,6 @@ class TestResourceMonitor(unittest.TestCase):
         monitor.record_event('t0')
         time.sleep(0.5)
 
-        t1 = time.time()
         monitor.record_event('t1')
         time.sleep(0.5)
         monitor.stop()
@@ -152,3 +151,30 @@ class TestResourceMonitor(unittest.TestCase):
         v = monitor.max_memory_percent()
         self.assertIsInstance(v, float)
 
+    def test_as_dict(self):
+        monitor = SystemResourceMonitor(poll_interval=0.25)
+
+        monitor.start()
+        time.sleep(0.1)
+        monitor.begin_phase('phase1')
+        monitor.record_event('foo')
+        time.sleep(0.1)
+        monitor.begin_phase('phase2')
+        monitor.record_event('bar')
+        time.sleep(0.2)
+        monitor.finish_phase('phase1')
+        time.sleep(0.2)
+        monitor.finish_phase('phase2')
+        time.sleep(0.4)
+        monitor.stop()
+
+        d = monitor.as_dict()
+
+        self.assertEqual(d['version'], 2)
+        self.assertEqual(len(d['events']), 2)
+        self.assertEqual(len(d['phases']), 2)
+        self.assertIn('system', d)
+        self.assertIsInstance(d['system'], dict)
+        self.assertIsInstance(d['overall'], dict)
+        self.assertIn('duration', d['overall'])
+        self.assertIn('cpu_times', d['overall'])

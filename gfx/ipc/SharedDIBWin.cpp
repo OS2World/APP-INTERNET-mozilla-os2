@@ -11,10 +11,9 @@
 namespace mozilla {
 namespace gfx {
 
-static const uint32_t kBytesPerPixel = 4;
 static const uint32_t kByteAlign = 1 << gfxAlphaRecovery::GoodAlignmentLog2();
 static const uint32_t kHeaderBytes =
-  (sizeof(BITMAPV4HEADER) + kByteAlign - 1) & ~(kByteAlign - 1);
+  (uint32_t(sizeof(BITMAPV4HEADER)) + kByteAlign - 1) & ~(kByteAlign - 1);
 
 SharedDIBWin::SharedDIBWin() :
     mSharedHdc(nullptr)
@@ -40,8 +39,8 @@ SharedDIBWin::Close()
   if (mSharedBmp)
     ::DeleteObject(mSharedBmp);
 
-  mSharedHdc = NULL;
-  mOldObj = mSharedBmp = NULL;
+  mSharedHdc = nullptr;
+  mOldObj = mSharedBmp = nullptr;
 
   SharedDIB::Close();
 
@@ -83,7 +82,7 @@ SharedDIBWin::Attach(Handle aHandle, uint32_t aWidth, uint32_t aHeight,
   if (NS_FAILED(rv))
     return rv;
 
-  if (NS_FAILED(SetupSurface(NULL, &bmih))) {
+  if (NS_FAILED(SetupSurface(nullptr, &bmih))) {
     Close();
     return NS_ERROR_FAILURE;
   }
@@ -135,7 +134,6 @@ SharedDIBWin::SetupSurface(HDC aHdc, BITMAPV4HEADER *aHdr)
 
   return NS_OK;
 }
-
 
 } // gfx
 } // mozilla

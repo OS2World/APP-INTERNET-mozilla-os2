@@ -107,7 +107,7 @@ struct ANPAudioTrack {
   ANPAudioTrack() : lock("ANPAudioTrack") { }
 };
 
-class AudioRunnable : public nsRunnable
+class AudioRunnable : public mozilla::Runnable
 {
 public:
   NS_DECL_NSIRUNNABLE
@@ -124,9 +124,7 @@ AudioRunnable::Run()
 {
   PR_SetCurrentThreadName("Android Audio");
 
-  JNIEnv* jenv = GetJNIForThread();
-  if (!jenv)
-    return NS_ERROR_FAILURE;
+  JNIEnv* const jenv = mozilla::jni::GetEnvForThread();
 
   mozilla::AutoLocalJNIFrame autoFrame(jenv, 2);
 
@@ -136,7 +134,7 @@ AudioRunnable::Run()
     return NS_ERROR_FAILURE;
   }
 
-  jbyte *byte = jenv->GetByteArrayElements(bytearray, NULL);
+  jbyte *byte = jenv->GetByteArrayElements(bytearray, nullptr);
   if (!byte) {
     LOG("AudioRunnable:: Run.  Could not create bytearray");
     return NS_ERROR_FAILURE;
@@ -205,13 +203,11 @@ anp_audio_newTrack(uint32_t sampleRate,    // sampling rate in Hz
                    void* user)
 {
   ANPAudioTrack *s = new ANPAudioTrack();
-  if (s == NULL) {
-    return NULL;
+  if (s == nullptr) {
+    return nullptr;
   }
 
-  JNIEnv *jenv = GetJNIForThread();
-  if (!jenv)
-    return NULL;
+  JNIEnv* const jenv = mozilla::jni::GetEnvForThread();
 
   s->at_class = init_jni_bindings(jenv);
   s->rate = sampleRate;
@@ -262,18 +258,18 @@ anp_audio_newTrack(uint32_t sampleRate,    // sampling rate in Hz
                                 s->bufferSize,
                                 MODE_STREAM);
 
-  if (autoFrame.CheckForException() || obj == NULL) {
+  if (autoFrame.CheckForException() || obj == nullptr) {
     jenv->DeleteGlobalRef(s->at_class);
-    free(s);
-    return NULL;
+    delete s;
+    return nullptr;
   }
 
   jint state = jenv->CallIntMethod(obj, at.getstate);
 
   if (autoFrame.CheckForException() || state == STATE_UNINITIALIZED) {
     jenv->DeleteGlobalRef(s->at_class);
-    free(s);
-    return NULL;
+    delete s;
+    return nullptr;
   }
 
   s->output_unit = jenv->NewGlobalRef(obj);
@@ -283,7 +279,7 @@ anp_audio_newTrack(uint32_t sampleRate,    // sampling rate in Hz
 void
 anp_audio_deleteTrack(ANPAudioTrack* s)
 {
-  if (s == NULL) {
+  if (s == nullptr) {
     return;
   }
 
@@ -298,7 +294,7 @@ anp_audio_deleteTrack(ANPAudioTrack* s)
 void
 anp_audio_start(ANPAudioTrack* s)
 {
-  if (s == NULL || s->output_unit == NULL) {
+  if (s == nullptr || s->output_unit == nullptr) {
     return;
   }
 
@@ -307,16 +303,14 @@ anp_audio_start(ANPAudioTrack* s)
     return;
   }
 
-  JNIEnv *jenv = GetJNIForThread();
-  if (!jenv)
-    return;
+  JNIEnv* const jenv = mozilla::jni::GetEnvForThread();
 
   mozilla::AutoLocalJNIFrame autoFrame(jenv, 0);
   jenv->CallVoidMethod(s->output_unit, at.play);
 
   if (autoFrame.CheckForException()) {
     jenv->DeleteGlobalRef(s->at_class);
-    free(s);
+    delete s;
     return;
   }
 
@@ -324,7 +318,7 @@ anp_audio_start(ANPAudioTrack* s)
   s->keepGoing = true;
 
   // AudioRunnable now owns the ANPAudioTrack
-  nsRefPtr<AudioRunnable> runnable = new AudioRunnable(s);
+  RefPtr<AudioRunnable> runnable = new AudioRunnable(s);
 
   nsCOMPtr<nsIThread> thread;
   NS_NewThread(getter_AddRefs(thread), runnable);
@@ -333,13 +327,11 @@ anp_audio_start(ANPAudioTrack* s)
 void
 anp_audio_pause(ANPAudioTrack* s)
 {
-  if (s == NULL || s->output_unit == NULL) {
+  if (s == nullptr || s->output_unit == nullptr) {
     return;
   }
 
-  JNIEnv *jenv = GetJNIForThread();
-  if (!jenv)
-    return;
+  JNIEnv* const jenv = mozilla::jni::GetEnvForThread();
 
   mozilla::AutoLocalJNIFrame autoFrame(jenv, 0);
   jenv->CallVoidMethod(s->output_unit, at.pause);
@@ -348,14 +340,12 @@ anp_audio_pause(ANPAudioTrack* s)
 void
 anp_audio_stop(ANPAudioTrack* s)
 {
-  if (s == NULL || s->output_unit == NULL) {
+  if (s == nullptr || s->output_unit == nullptr) {
     return;
   }
 
   s->isStopped = true;
-  JNIEnv *jenv = GetJNIForThread();
-  if (!jenv)
-    return;
+  JNIEnv* const jenv = mozilla::jni::GetEnvForThread();
 
   mozilla::AutoLocalJNIFrame autoFrame(jenv, 0);
   jenv->CallVoidMethod(s->output_unit, at.stop);

@@ -6,14 +6,15 @@
 #include "nsPrintObject.h"
 #include "nsIContentViewer.h"
 #include "nsIDOMDocument.h"
-#include "nsContentUtils.h"
+#include "nsContentUtils.h" // for nsAutoScriptBlocker
 #include "nsIInterfaceRequestorUtils.h"
 #include "nsPIDOMWindow.h"
 #include "nsGkAtoms.h"
 #include "nsComponentManagerUtils.h"
 #include "nsIDocShellTreeItem.h"
 #include "nsIBaseWindow.h"
-                                                   
+#include "nsIDocument.h"
+
 //---------------------------------------------------
 //-- nsPrintObject Class Impl
 //---------------------------------------------------
@@ -41,13 +42,13 @@ nsPrintObject::~nsPrintObject()
     if (baseWin) {
       baseWin->Destroy();
     }
-  }                            
+  }
   mDocShell = nullptr;
-  mTreeOwner = nullptr; // mTreeOwner must be released after mDocShell; 
+  mTreeOwner = nullptr; // mTreeOwner must be released after mDocShell;
 }
 
 //------------------------------------------------------------------
-nsresult 
+nsresult
 nsPrintObject::Init(nsIDocShell* aDocShell, nsIDOMDocument* aDoc,
                     bool aPrintPreview)
 {
@@ -57,18 +58,19 @@ nsPrintObject::Init(nsIDocShell* aDocShell, nsIDOMDocument* aDoc,
     mDocShell = aDocShell;
   } else {
     mTreeOwner = do_GetInterface(aDocShell);
-    int32_t itemType = 0;
-    aDocShell->GetItemType(&itemType);
     // Create a container docshell for printing.
     mDocShell = do_CreateInstance("@mozilla.org/docshell;1");
     NS_ENSURE_TRUE(mDocShell, NS_ERROR_OUT_OF_MEMORY);
     mDidCreateDocShell = true;
-    mDocShell->SetItemType(itemType);
+    mDocShell->SetItemType(aDocShell->ItemType());
     mDocShell->SetTreeOwner(mTreeOwner);
   }
   NS_ENSURE_TRUE(mDocShell, NS_ERROR_FAILURE);
 
+  // Keep the document related to this docshell alive
   nsCOMPtr<nsIDOMDocument> dummy = do_GetInterface(mDocShell);
+  mozilla::Unused << dummy;
+
   nsCOMPtr<nsIContentViewer> viewer;
   mDocShell->GetContentViewer(getter_AddRefs(viewer));
   NS_ENSURE_STATE(viewer);
@@ -77,9 +79,9 @@ nsPrintObject::Init(nsIDocShell* aDocShell, nsIDOMDocument* aDoc,
   NS_ENSURE_STATE(doc);
 
   if (mParent) {
-    nsCOMPtr<nsPIDOMWindow> window = doc->GetWindow();
+    nsCOMPtr<nsPIDOMWindowOuter> window = doc->GetWindow();
     if (window) {
-      mContent = do_QueryInterface(window->GetFrameElementInternal());
+      mContent = window->GetFrameElementInternal();
     }
     mDocument = doc;
     return NS_OK;
@@ -95,7 +97,7 @@ nsPrintObject::Init(nsIDocShell* aDocShell, nsIDOMDocument* aDoc,
 
 //------------------------------------------------------------------
 // Resets PO by destroying the presentation
-void 
+void
 nsPrintObject::DestroyPresentation()
 {
   if (mPresShell) {

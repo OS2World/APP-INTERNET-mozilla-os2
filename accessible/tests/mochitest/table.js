@@ -28,6 +28,13 @@ const kListboxColumnHeader = 1;
 const kTreeColumnHeader = 2;
 
 /**
+ * Constants to define table type.
+ */
+const kTable = 0;
+const kTreeTable = 1;
+const kMathTable = 2;
+
+/**
  * Test table structure and related methods.
  *
  * @param  aIdentifier     [in] table accessible identifier
@@ -37,10 +44,11 @@ const kTreeColumnHeader = 2;
  *                          arranged into the list.
  * @param  aCaption        [in] caption text if any
  * @param  aSummary        [in] summary text if any
- * @param  aIsTreeTable    [in] specifies whether given table is tree table
+ * @param  aTableType      [in] specifies the table type.
+ * @param  aRowRoles       [in] array of row roles.
  */
 function testTableStruct(aIdentifier, aCellsArray, aColHeaderType,
-                         aCaption, aSummary, aIsTreeTable)
+                         aCaption, aSummary, aTableType, aRowRoles)
 {
   var tableNode = getNode(aIdentifier);
   var isGrid = tableNode.getAttribute("role") == "grid" ||
@@ -52,9 +60,19 @@ function testTableStruct(aIdentifier, aCellsArray, aColHeaderType,
 
   // Test table accessible tree.
   var tableObj = {
-    role: aIsTreeTable ? ROLE_TREE_TABLE : ROLE_TABLE,
     children: []
   };
+  switch (aTableType) {
+    case kTable:
+      tableObj.role = ROLE_TABLE;
+      break;
+    case kTreeTable:
+      tableObj.role = ROLE_TREE_TABLE;
+      break;
+    case kMathTable:
+      tableObj.role = ROLE_MATHML_TABLE;
+      break;
+  }
 
   // caption accessible handling
   if (aCaption) {
@@ -99,7 +117,7 @@ function testTableStruct(aIdentifier, aCellsArray, aColHeaderType,
   // rows and cells accessibles
   for (var rowIdx = 0; rowIdx < rowCount; rowIdx++) {
     var rowObj = {
-      role: ROLE_ROW,
+      role: aRowRoles ? aRowRoles[rowIdx] : ROLE_ROW,
       children: []
     };
 
@@ -109,7 +127,8 @@ function testTableStruct(aIdentifier, aCellsArray, aColHeaderType,
       var role = ROLE_NOTHING;
       switch (celltype) {
         case kDataCell:
-          role = (isGrid ? ROLE_GRID_CELL : ROLE_CELL);
+          role = (aTableType == kMathTable ? ROLE_MATHML_CELL :
+                  (isGrid ? ROLE_GRID_CELL : ROLE_CELL));
           break;
         case kRowHeaderCell:
           role = ROLE_ROWHEADER;
@@ -361,7 +380,8 @@ function testTableSelection(aIdentifier, aCellsArray, aMsg)
   for (var colIdx = 0; colIdx < colsCount; colIdx++) {
     var isColSelected = true;
     for (var rowIdx = 0; rowIdx < rowCount; rowIdx++) {
-      if (aCellsArray[rowIdx][colIdx] == false) {
+      if (aCellsArray[rowIdx][colIdx] == false ||
+          aCellsArray[rowIdx][colIdx] == undefined) {
         isColSelected = false;
         break;
       }
@@ -401,7 +421,8 @@ function testTableSelection(aIdentifier, aCellsArray, aMsg)
   for (var rowIdx = 0; rowIdx < rowCount; rowIdx++) {
     var isRowSelected = true;
     for (var colIdx = 0; colIdx < colsCount; colIdx++) {
-      if (aCellsArray[rowIdx][colIdx] == false) {
+      if (aCellsArray[rowIdx][colIdx] == false ||
+          aCellsArray[rowIdx][colIdx] == undefined) {
         isRowSelected = false;
         break;
       }
@@ -442,7 +463,8 @@ function testTableSelection(aIdentifier, aCellsArray, aMsg)
       if (aCellsArray[rowIdx][colIdx] & kSpanned)
         continue;
 
-      is(acc.isCellSelected(rowIdx, colIdx), aCellsArray[rowIdx][colIdx],
+      var isSelected = aCellsArray[rowIdx][colIdx] == true;
+      is(acc.isCellSelected(rowIdx, colIdx), isSelected,
          msg + "Wrong selection state of cell at " + rowIdx + " row and " +
          colIdx + " column for " + prettyName(aIdentifier));
 
@@ -496,7 +518,9 @@ function testTableSelection(aIdentifier, aCellsArray, aMsg)
 
       var cell = acc.getCellAt(rowIdx, colIdx);
       var isSel = aCellsArray[rowIdx][colIdx];
-      if (isSel)
+      if (isSel == undefined)
+        testStates(cell, 0, 0, STATE_SELECTABLE | STATE_SELECTED);
+      else if (isSel == true)
         testStates(cell, STATE_SELECTED);
       else
         testStates(cell, STATE_SELECTABLE, 0, STATE_SELECTED);
@@ -690,9 +714,9 @@ function testHeaderCells(aHeaderInfoMap)
         var rowHeaderCell = getAccessible(rowHeaderCells[idx]);
         var actualRowHeaderCell =
           actualRowHeaderCells.queryElementAt(idx, nsIAccessible);
-        ok(actualRowHeaderCell, rowHeaderCell,
-           "Wrong row header cell at index " + idx + " for the cell " +
-           prettyName(rowHeaderCells[idx]));
+        isObject(actualRowHeaderCell, rowHeaderCell,
+                 "Wrong row header cell at index " + idx + " for the cell " +
+                 dataCellIdentifier);
       }
     }
 
@@ -711,9 +735,9 @@ function testHeaderCells(aHeaderInfoMap)
         var colHeaderCell = getAccessible(colHeaderCells[idx]);
         var actualColHeaderCell =
           actualColHeaderCells.queryElementAt(idx, nsIAccessible);
-        ok(actualColHeaderCell, colHeaderCell,
-           "Wrong column header cell at index " + idx + " for the cell " +
-           prettyName(colHeaderCells[idx]));
+        isObject(actualColHeaderCell, colHeaderCell,
+                 "Wrong column header cell at index " + idx + " for the cell " +
+                 dataCellIdentifier);
       }
     }
   }

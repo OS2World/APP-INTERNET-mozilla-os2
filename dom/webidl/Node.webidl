@@ -12,7 +12,6 @@
 
 interface Principal;
 interface URI;
-interface UserDataHandler;
 
 interface Node : EventTarget {
   const unsigned short ELEMENT_NODE = 1;
@@ -32,17 +31,22 @@ interface Node : EventTarget {
   [Pure]
   readonly attribute DOMString nodeName;
 
-  [Pure]
+  [Pure, Throws]
   readonly attribute DOMString? baseURI;
 
+  [Pure, BinaryName=getComposedDoc]
+  readonly attribute boolean isConnected;
   [Pure]
   readonly attribute Document? ownerDocument;
+  [Pure, Pref="dom.node.rootNode.enabled"]
+  readonly attribute Node rootNode;
   [Pure]
   readonly attribute Node? parentNode;
   [Pure]
   readonly attribute Element? parentElement;
+  [Pure]
   boolean hasChildNodes();
-  [Constant]
+  [SameObject]
   readonly attribute NodeList childNodes;
   [Pure]
   readonly attribute Node? firstChild;
@@ -55,7 +59,7 @@ interface Node : EventTarget {
 
   [SetterThrows, Pure]
            attribute DOMString? nodeValue;
-  [SetterThrows, Pure]
+  [Throws, Pure]
            attribute DOMString? textContent;
   [Throws]
   Node insertBefore(Node node, Node? child);
@@ -68,7 +72,10 @@ interface Node : EventTarget {
   void normalize();
 
   [Throws]
-  Node cloneNode(optional boolean deep = true);
+  Node cloneNode(optional boolean deep = false);
+  [Pure]
+  boolean isSameNode(Node? node);
+  [Pure]
   boolean isEqualNode(Node? node);
 
   const unsigned short DOCUMENT_POSITION_DISCONNECTED = 0x01;
@@ -77,31 +84,32 @@ interface Node : EventTarget {
   const unsigned short DOCUMENT_POSITION_CONTAINS = 0x08;
   const unsigned short DOCUMENT_POSITION_CONTAINED_BY = 0x10;
   const unsigned short DOCUMENT_POSITION_IMPLEMENTATION_SPECIFIC = 0x20; // historical
+  [Pure]
   unsigned short compareDocumentPosition(Node other);
+  [Pure]
   boolean contains(Node? other);
 
+  [Pure]
   DOMString? lookupPrefix(DOMString? namespace);
+  [Pure]
   DOMString? lookupNamespaceURI(DOMString? prefix);
+  [Pure]
   boolean isDefaultNamespace(DOMString? namespace);
 
   // Mozilla-specific stuff
-  // These have been moved to Element in the spec.
-  // If we move namespaceURI, prefix and localName to Element they should return
-  // a non-nullable type.
-  [Constant]
-  readonly attribute DOMString? namespaceURI;
-  [Constant]
-  readonly attribute DOMString? prefix;
-  [Constant]
-  readonly attribute DOMString? localName;
-
-  boolean hasAttributes();
-  [Throws, Func="nsINode::IsChromeOrXBL"]
-  any setUserData(DOMString key, any data, UserDataHandler? handler);
-  [Throws, Func="nsINode::IsChromeOrXBL"]
+  [Throws, Func="IsChromeOrXBL"]
+  any setUserData(DOMString key, any data);
+  [Throws, Func="IsChromeOrXBL"]
   any getUserData(DOMString key);
   [ChromeOnly]
   readonly attribute Principal nodePrincipal;
   [ChromeOnly]
   readonly attribute URI? baseURIObject;
+  [ChromeOnly]
+  sequence<MutationObserver> getBoundMutationObservers();
+
+#ifdef ACCESSIBILITY
+  [Pref="accessibility.AOM.enabled"]
+  readonly attribute AccessibleNode? accessibleNode;
+#endif
 };

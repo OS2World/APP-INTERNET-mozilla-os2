@@ -1,9 +1,5 @@
-const Cc = Components.classes;
-const Ci = Components.interfaces;
-const Cu = Components.utils;
-const Cr = Components.results;
-
 Cu.import("resource://testing-common/httpd.js");
+Cu.import("resource://gre/modules/NetUtil.jsm");
 var httpserver = new HttpServer();
 
 var ios;
@@ -46,7 +42,8 @@ var listener_3 = {
     }
 };
 
-var listener_2 = {
+XPCOMUtils.defineLazyGetter(this, "listener_2", function() {
+    return {
     // this listener is used to process the revalidation of the
     // corrupted cache entry. its revalidation prompts it to be cleaned
 
@@ -71,14 +68,18 @@ var listener_2 = {
     },
 
     onStopRequest: function test_onStopR(request, ctx, status) {
-	var channel = request.QueryInterface(Ci.nsIHttpChannel);
-
-	var chan = ios.newChannel("http://localhost:4444/test1", "", null);
-	chan.asyncOpen(listener_3, null);
+    var channel = request.QueryInterface(Ci.nsIHttpChannel);
+    var chan = NetUtil.newChannel({
+      uri: "http://localhost:" + httpserver.identity.primaryPort + "/test1",
+      loadUsingSystemPrincipal: true
+    });
+    chan.asyncOpen2(listener_3);
     }
 };
+});
 
-var listener_1 = {
+XPCOMUtils.defineLazyGetter(this, "listener_1", function() {
+    return {
     // this listener processes the initial request from a empty cache.
     // the server responds with the wrong data ('A')
 
@@ -99,12 +100,15 @@ var listener_1 = {
     },
 
     onStopRequest: function test_onStopR(request, ctx, status) {
-	var channel = request.QueryInterface(Ci.nsIHttpChannel);
-
-	var chan = ios.newChannel("http://localhost:4444/test1", "", null);
-	chan.asyncOpen(listener_2, null);
+    var channel = request.QueryInterface(Ci.nsIHttpChannel);
+    var chan = NetUtil.newChannel({
+      uri: "http://localhost:" + httpserver.identity.primaryPort + "/test1",
+      loadUsingSystemPrincipal: true
+    });
+	  chan.asyncOpen2(listener_2);
     }
 };
+});
 
 function run_test() {
     do_get_profile();
@@ -114,10 +118,14 @@ function run_test() {
     evict_cache_entries();
 
     httpserver.registerPathHandler("/test1", handler);
-    httpserver.start(4444);
+    httpserver.start(-1);
 
-    var chan = ios.newChannel("http://localhost:4444/test1", "", null);
-    chan.asyncOpen(listener_1, null);
+    var port = httpserver.identity.primaryPort;
+    var chan = NetUtil.newChannel({
+      uri: "http://localhost:" + port + "/test1",
+      loadUsingSystemPrincipal: true
+    });
+    chan.asyncOpen2(listener_1);
 
     do_test_pending();
 }

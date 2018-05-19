@@ -2,8 +2,6 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-const Cc = Components.classes;
-const Ci = Components.interfaces;
 const PR_RDONLY = 0x1;
 
 function new_file_input_stream(file) {
@@ -36,13 +34,13 @@ function err(file, lineNo, msg) {
 
 function run_test()
 {
-  for each (var test in test_array) {
+  for (var test of test_array) {
     var lineStream = new_line_input_stream(test.file);
     var lineNo = 0;
     var more = false;
     var line = {};
     more = lineStream.readLine(line);
-    for each (var check in test.lines) {
+    for (var check of test.lines) {
       ++lineNo;
       if (lineNo == test.lines.length) {
         if (more) err(test.file, lineNo, "There should be no more data after the last line");

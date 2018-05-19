@@ -302,7 +302,7 @@ extern PRIntervalTime   _PR_UNIX_TicksPerSecond(void);
 #define _MD_INTERVAL_PER_SEC		_PR_UNIX_TicksPerSecond
 #endif
 
-#ifdef HAVE_CLOCK_MONOTONIC
+#ifdef _PR_HAVE_CLOCK_MONOTONIC
 extern PRIntervalTime   _PR_UNIX_GetInterval2(void);
 extern PRIntervalTime   _PR_UNIX_TicksPerSecond2(void);
 #define _MD_INTERVAL_INIT()
@@ -492,6 +492,12 @@ extern PRStatus _MD_MemUnmap(void *addr, PRUint32 size);
 
 extern PRStatus _MD_CloseFileMap(struct PRFileMap *fmap);
 #define _MD_CLOSE_FILE_MAP _MD_CloseFileMap
+
+extern PRStatus _MD_SyncMemMap(
+    PRFileDesc *fd,
+    void *addr,
+    PRUint32 len);
+#define _MD_SYNC_MEM_MAP _MD_SyncMemMap
 
 /*
  * The standard (XPG4) gettimeofday() (from BSD) takes two arguments.

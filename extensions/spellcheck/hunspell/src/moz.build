@@ -1,30 +1,38 @@
-# -*- Mode: python; c-basic-offset: 4; indent-tabs-mode: nil; tab-width: 40 -*-
+# -*- Mode: python; indent-tabs-mode: nil; tab-width: 40 -*-
 # vim: set filetype=python:
 # This Source Code Form is subject to the terms of the Mozilla Public
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
-MODULE = 'hunspell'
-
-CPP_SOURCES += [
-    'mozHunspell.cpp',
-    'mozHunspellDirProvider.cpp',
+UNIFIED_SOURCES += [
+    'affentry.cxx',
+    'affixmgr.cxx',
+    'csutil.cxx',
+    'filemgr.cxx',
+    'hashmgr.cxx',
+    'hunspell.cxx',
+    'hunzip.cxx',
+    'phonet.cxx',
+    'replist.cxx',
+    'suggestmgr.cxx',
 ]
 
-if not CONFIG['MOZ_NATIVE_HUNSPELL']:
-    CPP_SOURCES += [
-        'affentry.cpp',
-        'affixmgr.cpp',
-        'csutil.cpp',
-        'dictmgr.cpp',
-        'filemgr.cpp',
-        'hashmgr.cpp',
-        'hunspell.cpp',
-        'hunzip.cpp',
-        'phonet.cpp',
-        'replist.cpp',
-        'suggestmgr.cpp',
+# This variable is referenced in configure.in.  Make sure to change that file
+# too if you need to change this variable.
+DEFINES['HUNSPELL_STATIC'] = True
+
+FINAL_LIBRARY = 'xul'
+
+LOCAL_INCLUDES += [
+    '../glue',
+]
+
+# We allow warnings for third-party code that can be updated from upstream.
+ALLOW_COMPILER_WARNINGS = True
+
+include('/ipc/chromium/chromium-config.mozbuild')
+
+if CONFIG['CLANG_CXX'] or CONFIG['CLANG_CL']:
+    CXXFLAGS += [
+        '-Wno-implicit-fallthrough',
     ]
-
-LIBRARY_NAME = 'hunspell_s'
-

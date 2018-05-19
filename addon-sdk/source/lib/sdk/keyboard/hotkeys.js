@@ -1,4 +1,3 @@
-/* vim:set ts=2 sw=2 sts=2 et: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -85,7 +84,7 @@ keyboardObserver.on("keydown", function onKeypress(event, window) {
 
   // If it's not a printable character then we fall back to a human readable
   // equivalent of one of the following constants.
-  // http://mxr.mozilla.org/mozilla-central/source/dom/interfaces/events/nsIDOMKeyEvent.idl
+  // http://dxr.mozilla.org/mozilla-central/source/dom/interfaces/events/nsIDOMKeyEvent.idl
   key = getKeyForCode(keyCode);
 
   // If only non-function (f1 - f24) key or only modifiers are pressed we don't

@@ -1,4 +1,3 @@
-#filter substitution
 // -*- Mode: js2; tab-width: 2; indent-tabs-mode: nil; js2-basic-offset: 2; js2-skip-preprocessor-directives: t; -*-
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -6,9 +5,10 @@
 
 "use strict";
 
-const { classes: Cc, interfaces: Ci, utils: Cu } = Components;
+var { classes: Cc, interfaces: Ci, utils: Cu } = Components;
 
 Cu.import("resource://gre/modules/Services.jsm");
+Cu.import("resource://gre/modules/Messaging.jsm");
 Cu.import("resource://gre/modules/SharedPreferences.jsm");
 
 // Name of Android SharedPreference controlling whether to upload
@@ -24,17 +24,11 @@ const WRAPPER_VERSION = 1;
 const EVENT_HEALTH_REQUEST = "HealthReport:Request";
 const EVENT_HEALTH_RESPONSE = "HealthReport:Response";
 
-function sendMessageToJava(message) {
-  return Cc["@mozilla.org/android/bridge;1"]
-    .getService(Ci.nsIAndroidBridge)
-    .handleGeckoMessage(JSON.stringify(message));
-}
-
 // about:healthreport prefs are stored in Firefox's default Android
 // SharedPreferences.
-let sharedPrefs = new SharedPreferences();
+var sharedPrefs = SharedPreferences.forApp();
 
-let healthReportWrapper = {
+var healthReportWrapper = {
   init: function () {
     let iframe = document.getElementById("remote-report");
     iframe.addEventListener("load", healthReportWrapper.initRemotePage, false);
@@ -93,7 +87,7 @@ let healthReportWrapper = {
 
   refreshPayload: function () {
     console.log("AboutHealthReport: page requested fresh payload.");
-    sendMessageToJava({
+    Messaging.sendRequest({
       type: EVENT_HEALTH_REQUEST,
     });
   },
@@ -125,15 +119,15 @@ let healthReportWrapper = {
 
   showSettings: function () {
     console.log("AboutHealthReport: showing settings.");
-    sendMessageToJava({
+    Messaging.sendRequest({
       type: "Settings:Show",
-      resource: "preferences_datareporting",
+      resource: "preferences_vendor",
     });
   },
 
   launchUpdater: function () {
     console.log("AboutHealthReport: launching updater.");
-    sendMessageToJava({
+    Messaging.sendRequest({
       type: "Updater:Launch",
     });
   },
@@ -193,3 +187,6 @@ let healthReportWrapper = {
     healthReportWrapper.reportFailure(healthReportWrapper.ERROR_PAYLOAD_FAILED);
   },
 };
+
+window.addEventListener("load", healthReportWrapper.init.bind(healthReportWrapper), false);
+window.addEventListener("unload", healthReportWrapper.uninit.bind(healthReportWrapper), false);

@@ -6,10 +6,7 @@
 #ifndef nsExternalHelperAppService_h__
 #define nsExternalHelperAppService_h__
 
-#ifdef MOZ_LOGGING
-#define FORCE_PR_LOG
-#endif
-#include "prlog.h"
+#include "mozilla/Logging.h"
 #include "prtime.h"
 
 #include "nsIExternalHelperAppService.h"
@@ -42,7 +39,7 @@
 class nsExternalAppHandler;
 class nsIMIMEInfo;
 class nsITransfer;
-class nsIDOMWindow;
+class nsPIDOMWindowOuter;
 
 /**
  * The helper app service. Responsible for handling content that Mozilla
@@ -65,13 +62,12 @@ public:
   NS_DECL_NSIOBSERVER
 
   nsExternalHelperAppService();
-  virtual ~nsExternalHelperAppService();
 
   /**
    * Initializes internal state. Will be called automatically when
    * this service is first instantiated.
    */
-  NS_HIDDEN_(nsresult) Init();
+  MOZ_MUST_USE nsresult Init();
  
   /**
    * Given a mimetype and an extension, looks up a mime info from the OS.
@@ -106,13 +102,24 @@ public:
    * @param aFile           [out] An nsIFile representation of that platform
    *                        application path.
    */
-  virtual nsresult GetFileTokenForPath(const PRUnichar * platformAppPath,
+  virtual nsresult GetFileTokenForPath(const char16_t * platformAppPath,
                                        nsIFile ** aFile);
 
-  virtual NS_HIDDEN_(nsresult) OSProtocolHandlerExists(const char *aScheme,
+  virtual nsresult OSProtocolHandlerExists(const char *aScheme,
                                                        bool *aExists) = 0;
 
+  /**
+   * Given an extension, get a MIME type string. If not overridden by
+   * the OS-specific nsOSHelperAppService, will call into GetMIMEInfoFromOS
+   * with an empty mimetype.
+   * @return true if we successfully found a mimetype.
+   */
+  virtual bool GetMIMETypeFromOSForExtension(const nsACString& aExtension,
+                                             nsACString& aMIMEType);
+
 protected:
+  virtual ~nsExternalHelperAppService();
+
   /**
    * Searches the "extra" array of MIMEInfo objects for an object
    * with a specific type. If found, it will modify the passed-in
@@ -121,7 +128,7 @@ protected:
    * @param aContentType The type to search for.
    * @param aMIMEInfo    [inout] The mime info, if found
    */
-  NS_HIDDEN_(nsresult) FillMIMEInfoForMimeTypeFromExtras(
+  nsresult FillMIMEInfoForMimeTypeFromExtras(
     const nsACString& aContentType, nsIMIMEInfo * aMIMEInfo);
   /**
    * Searches the "extra" array of MIMEInfo objects for an object
@@ -131,7 +138,7 @@ protected:
    *
    * @see FillMIMEInfoForMimeTypeFromExtras
    */
-  NS_HIDDEN_(nsresult) FillMIMEInfoForExtensionFromExtras(
+  nsresult FillMIMEInfoForExtensionFromExtras(
     const nsACString& aExtension, nsIMIMEInfo * aMIMEInfo);
 
   /**
@@ -140,28 +147,18 @@ protected:
    * @param aMIMEType [out] The found MIME type.
    * @return true if the extension was found, false otherwise.
    */
-  NS_HIDDEN_(bool) GetTypeFromExtras(const nsACString& aExtension,
+  bool GetTypeFromExtras(const nsACString& aExtension,
                                        nsACString& aMIMEType);
 
   /**
-   * Fixes the file permissions to be correct. Base class has a no-op
-   * implementation, subclasses can use this to correctly inherit ACLs from the
-   * parent directory, to make the permissions obey the umask, etc.
+   * Logging Module. Usage: set MOZ_LOG=HelperAppService:level, where level
+   * should be 2 for errors, 3 for debug messages from the cross- platform
+   * nsExternalHelperAppService, and 4 for os-specific debug messages.
    */
-  virtual void FixFilePermissions(nsIFile* aFile);
+  static mozilla::LazyLogModule mLog;
 
-#ifdef PR_LOGGING
-  /**
-   * NSPR Logging Module. Usage: set NSPR_LOG_MODULES=HelperAppService:level,
-   * where level should be 2 for errors, 3 for debug messages from the cross-
-   * platform nsExternalHelperAppService, and 4 for os-specific debug messages.
-   */
-  static PRLogModuleInfo* mLog;
-
-#endif
-  // friend, so that it can access the nspr log module and FixFilePermissions
+  // friend, so that it can access the nspr log module.
   friend class nsExternalAppHandler;
-  friend class nsExternalLoadRequest;
 
   /**
    * Helper function for ExpungeTemporaryFiles and ExpungeTemporaryPrivateFiles
@@ -183,6 +180,7 @@ protected:
    * the private browsing mode)
    */
   void ExpungeTemporaryPrivateFiles();
+
   /**
    * Array for the files that should be deleted
    */
@@ -192,6 +190,14 @@ protected:
    * added during the private browsing mode)
    */
   nsCOMArray<nsIFile> mTemporaryPrivateFilesList;
+
+private:
+  nsresult DoContentContentProcessHelper(const nsACString& aMimeContentType,
+                                         nsIRequest *aRequest,
+                                         nsIInterfaceRequestor *aContentContext,
+                                         bool aForceSave,
+                                         nsIInterfaceRequestor *aWindowContext,
+                                         nsIStreamListener ** aStreamListener);
 };
 
 /**
@@ -202,13 +208,13 @@ protected:
  * stored the data into.  We create a handler every time we have to process
  * data using a helper app.
  */
-class nsExternalAppHandler MOZ_FINAL : public nsIStreamListener,
-                                       public nsIHelperAppLauncher,
-                                       public nsITimerCallback,
-                                       public nsIBackgroundFileSaverObserver
+class nsExternalAppHandler final : public nsIStreamListener,
+                                   public nsIHelperAppLauncher,
+                                   public nsITimerCallback,
+                                   public nsIBackgroundFileSaverObserver
 {
 public:
-  NS_DECL_ISUPPORTS
+  NS_DECL_THREADSAFE_ISUPPORTS
   NS_DECL_NSISTREAMLISTENER
   NS_DECL_NSIREQUESTOBSERVER
   NS_DECL_NSIHELPERAPPLAUNCHER
@@ -217,25 +223,44 @@ public:
   NS_DECL_NSIBACKGROUNDFILESAVEROBSERVER
 
   /**
-   * @param aMIMEInfo      MIMEInfo object, representing the type of the
-   *                       content that should be handled
-   * @param aFileExtension The extension we need to append to our temp file,
-   *                       INCLUDING the ".". e.g. .mp3
-   * @param aWindowContext Window context, as passed to DoContent
-   * @param mExtProtSvc    nsExternalHelperAppService on creation
-   * @param aFileName      The filename to use
-   * @param aReason        A constant from nsIHelperAppLauncherDialog indicating
-   *                       why the request is handled by a helper app.
+   * @param aMIMEInfo       MIMEInfo object, representing the type of the
+   *                        content that should be handled
+   * @param aFileExtension  The extension we need to append to our temp file,
+   *                        INCLUDING the ".". e.g. .mp3
+   * @param aContentContext dom Window context, as passed to DoContent.
+   * @param aWindowContext  Top level window context used in dialog parenting,
+   *                        as passed to DoContent. This parameter may be null,
+   *                        in which case dialogs will be parented to
+   *                        aContentContext.
+   * @param mExtProtSvc     nsExternalHelperAppService on creation
+   * @param aFileName       The filename to use
+   * @param aReason         A constant from nsIHelperAppLauncherDialog indicating
+   *                        why the request is handled by a helper app.
    */
   nsExternalAppHandler(nsIMIMEInfo * aMIMEInfo, const nsCSubstring& aFileExtension,
+                       nsIInterfaceRequestor * aContentContext,
                        nsIInterfaceRequestor * aWindowContext,
                        nsExternalHelperAppService * aExtProtSvc,
                        const nsAString& aFilename,
                        uint32_t aReason, bool aForceSave);
 
-  ~nsExternalAppHandler();
+  /**
+   * Clean up after the request was diverted to the parent process.
+   */
+  void DidDivertRequest(nsIRequest *request);
+
+  /**
+   * Apply content conversions if needed.
+   */
+  void MaybeApplyDecodingForExtension(nsIRequest *request);
 
 protected:
+  ~nsExternalAppHandler();
+
+  nsIInterfaceRequestor* GetDialogParent() {
+    return mWindowContext ? mWindowContext : mContentContext;
+  }
+
   nsCOMPtr<nsIFile> mTempFile;
   nsCOMPtr<nsIURI> mSourceUrl;
   nsString mTempFileExtension;
@@ -245,13 +270,23 @@ protected:
    * The MIME Info for this load. Will never be null.
    */
   nsCOMPtr<nsIMIMEInfo> mMimeInfo;
+
+  /**
+   * The dom window associated with this request to handle content.
+   */
+  nsCOMPtr<nsIInterfaceRequestor> mContentContext;
+
+  /**
+   * If set, the parent window helper app dialogs and file pickers
+   * should use in parenting. If null, we use mContentContext.
+   */
   nsCOMPtr<nsIInterfaceRequestor> mWindowContext;
 
   /**
    * Used to close the window on a timer, to avoid any exceptions that are
    * thrown if we try to close the window before it's fully loaded.
    */
-  nsCOMPtr<nsIDOMWindow> mWindowToClose;
+  nsCOMPtr<nsPIDOMWindowOuter> mWindowToClose;
   nsCOMPtr<nsITimer> mTimer;
 
   /**
@@ -282,12 +317,9 @@ protected:
   bool mShouldCloseWindow;
 
   /**
-   * have we received information from the user about how they want to
-   * dispose of this content
+   * True if a stop request has been issued.
    */
-  bool mReceivedDispositionInfo;
   bool mStopRequestIssued; 
-  bool mProgressListenerInitialized;
 
   bool mIsFileChannel;
 
@@ -324,6 +356,20 @@ protected:
   nsCOMPtr<nsIBackgroundFileSaver> mSaver;
 
   /**
+   * Stores the SHA-256 hash associated with the file that we downloaded.
+   */
+  nsAutoCString mHash;
+  /**
+   * Stores the signature information of the downloaded file in an nsIArray of
+   * nsIX509CertList of nsIX509Cert. If the file is unsigned this will be
+   * empty.
+   */
+  nsCOMPtr<nsIArray> mSignatureInfo;
+  /**
+   * Stores the redirect information associated with the channel.
+   */
+  nsCOMPtr<nsIArray> mRedirects;
+  /**
    * Creates the temporary file for the download and an output stream for it.
    * Upon successful return, both mTempFile and mSaver will be valid.
    */
@@ -334,17 +380,21 @@ protected:
    * using the window which initiated the load....RetargetLoadNotifications
    * contains that information...
    */
-  void RetargetLoadNotifications(nsIRequest *request); 
+  void RetargetLoadNotifications(nsIRequest *request);
   /**
-   * If the user tells us how they want to dispose of the content and
-   * we still haven't finished downloading while they were deciding,
-   * then create a progress listener of some kind so they know
-   * what's going on...
+   * Once the user tells us how they want to dispose of the content
+   * create an nsITransfer so they know what's going on. If this fails, the
+   * caller MUST call Cancel.
    */
-  nsresult CreateProgressListener();
+  nsresult CreateTransfer();
 
+  /**
+   * If we fail to create the necessary temporary file to initiate a transfer
+   * we will report the failure by creating a failed nsITransfer.
+   */
+  nsresult CreateFailedTransfer(bool aIsPrivateBrowsing);
 
-  /* 
+  /*
    * The following two functions are part of the split of SaveToDisk
    * to make it async, and works as following:
    *
@@ -380,33 +430,21 @@ protected:
    */
   void ProcessAnyRefreshTags();
 
-  /** 
-   * An internal method used to actually move the temp file to the final
-   * destination once we done receiving data AND have showed the progress dialog
-   */
-  nsresult MoveFile(nsIFile * aNewFileLocation);
   /**
-   * An internal method used to actually launch a helper app given the temp file
-   * once we are done receiving data AND have showed the progress dialog.
-   * Uses the application specified in the mime info.
+   * Notify our nsITransfer object that we are done with the download.  This is
+   * always called after the target file has been closed.
+   *
+   * @param aStatus
+   *        NS_OK for success, or a failure code if the download failed.
+   *        A partially downloaded file may still be available in this case.
    */
-  nsresult OpenWithApplication();
-  
-  /**
-   * Helper routine which peaks at the mime action specified by mMimeInfo
-   * and calls either MoveFile or OpenWithApplication
-   */
-  nsresult ExecuteDesiredAction();
+  void NotifyTransfer(nsresult aStatus);
+
   /**
    * Helper routine that searches a pref string for a given mime type
    */
   bool GetNeverAskFlagFromPref(const char * prefName, const char * aContentType);
 
-  /**
-   * Initialize an nsITransfer object for use as a progress object
-   */
-  nsresult InitializeDownload(nsITransfer*);
-  
   /**
    * Helper routine to ensure mSuggestedFileName is "correct";
    * this ensures that mTempFileExtension only contains an extension when it
@@ -427,7 +465,17 @@ protected:
    */
   nsresult MaybeCloseWindow();
 
-  nsCOMPtr<nsIWebProgressListener2> mWebProgressListener;
+  /**
+   * Set in nsHelperDlgApp.js. This is always null after the user has chosen an
+   * action.
+   */
+  nsCOMPtr<nsIWebProgressListener2> mDialogProgressListener;
+  /**
+   * Set once the user has chosen an action. This is null after the download
+   * has been canceled or completes.
+   */
+  nsCOMPtr<nsITransfer> mTransfer;
+
   nsCOMPtr<nsIChannel> mOriginalChannel; /**< in the case of a redirect, this will be the pre-redirect channel. */
   nsCOMPtr<nsIHelperAppLauncherDialog> mDialog;
 
@@ -444,7 +492,7 @@ protected:
    */
   nsCOMPtr<nsIRequest> mRequest;
 
-  nsRefPtr<nsExternalHelperAppService> mExtProtSvc;
+  RefPtr<nsExternalHelperAppService> mExtProtSvc;
 };
 
 #endif // nsExternalHelperAppService_h__

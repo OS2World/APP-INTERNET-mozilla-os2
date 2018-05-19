@@ -7,14 +7,14 @@
 
 #include "nsIStreamConverter.h"
 #include "nsIChannel.h"
-#include "nsIURI.h"
 #include "nsString.h"
-#include "nsXPIDLString.h"
 #include "nsCOMPtr.h"
 #include "nsIByteRangeRequest.h"
+#include "nsILoadInfo.h"
 #include "nsIMultiPartChannel.h"
 #include "nsAutoPtr.h"
 #include "mozilla/Attributes.h"
+#include "nsHttpResponseHead.h"
 
 #define NS_MULTIMIXEDCONVERTER_CID                         \
 { /* 7584CE90-5B25-11d3-A175-0050041CAF44 */         \
@@ -31,9 +31,9 @@
 // Instances on this channel are passed out to the consumer through the
 // nsIStreamListener interface.
 //
-class nsPartChannel MOZ_FINAL : public nsIChannel,
-                                public nsIByteRangeRequest,
-                                public nsIMultiPartChannel
+class nsPartChannel final : public nsIChannel,
+                            public nsIByteRangeRequest,
+                            public nsIMultiPartChannel
 {
 public:
   nsPartChannel(nsIChannel *aMultipartChannel, uint32_t aPartID,
@@ -48,6 +48,7 @@ public:
   /* SetContentDisposition expects the full value of the Content-Disposition
    * header */
   void SetContentDisposition(const nsACString& aContentDispositionHeader);
+  void SetResponseHead(mozilla::net::nsHttpResponseHead * head) { mResponseHead = head; }
 
   NS_DECL_ISUPPORTS
   NS_DECL_NSIREQUEST
@@ -61,7 +62,8 @@ protected:
 protected:
   nsCOMPtr<nsIChannel>    mMultipartChannel;
   nsCOMPtr<nsIStreamListener> mListener;
-  
+  nsAutoPtr<mozilla::net::nsHttpResponseHead> mResponseHead;
+
   nsresult                mStatus;
   nsLoadFlags             mLoadFlags;
 
@@ -128,9 +130,10 @@ public:
     NS_DECL_NSIREQUESTOBSERVER
 
     nsMultiMixedConv();
-    virtual ~nsMultiMixedConv();
 
 protected:
+    virtual ~nsMultiMixedConv();
+
     nsresult SendStart(nsIChannel *aChannel);
     nsresult SendStop(nsresult aStatus);
     nsresult SendData(char *aBuffer, uint32_t aLen);
@@ -148,7 +151,7 @@ protected:
     nsCString           mToken;
     uint32_t            mTokenLen;
 
-    nsRefPtr<nsPartChannel> mPartChannel;   // the channel for the given part we're processing.
+    RefPtr<nsPartChannel> mPartChannel;   // the channel for the given part we're processing.
                                         // one channel per part.
     nsCOMPtr<nsISupports> mContext;
     nsCString           mContentType;

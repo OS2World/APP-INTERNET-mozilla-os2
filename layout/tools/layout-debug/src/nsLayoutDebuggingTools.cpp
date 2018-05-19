@@ -94,19 +94,19 @@ nsLayoutDebuggingTools::~nsLayoutDebuggingTools()
 {
 }
 
-NS_IMPL_ISUPPORTS1(nsLayoutDebuggingTools, nsILayoutDebuggingTools)
+NS_IMPL_ISUPPORTS(nsLayoutDebuggingTools, nsILayoutDebuggingTools)
 
 NS_IMETHODIMP
-nsLayoutDebuggingTools::Init(nsIDOMWindow *aWin)
+nsLayoutDebuggingTools::Init(mozIDOMWindow* aWin)
 {
     if (!Preferences::GetService()) {
         return NS_ERROR_UNEXPECTED;
     }
 
     {
-        nsCOMPtr<nsPIDOMWindow> window = do_QueryInterface(aWin);
-        if (!window)
+        if (!aWin)
             return NS_ERROR_UNEXPECTED;
+        auto* window = nsPIDOMWindowInner::From(aWin);
         mDocShell = window->GetDocShell();
     }
     NS_ENSURE_TRUE(mDocShell, NS_ERROR_UNEXPECTED);
@@ -320,11 +320,10 @@ static void DumpAWebShell(nsIDocShellTreeItem* aShellItem, FILE* out, int32_t aI
     fprintf(out, "' parent=%p <\n", static_cast<void*>(parent));
 
     ++aIndent;
-    nsCOMPtr<nsIDocShellTreeNode> shellAsNode(do_QueryInterface(aShellItem));
-    shellAsNode->GetChildCount(&n);
+    aShellItem->GetChildCount(&n);
     for (i = 0; i < n; ++i) {
         nsCOMPtr<nsIDocShellTreeItem> child;
-        shellAsNode->GetChildAt(i, getter_AddRefs(child));
+        aShellItem->GetChildAt(i, getter_AddRefs(child));
         if (child) {
             DumpAWebShell(child, out, aIndent);
         }
@@ -392,7 +391,7 @@ DumpFramesRecur(nsIDocShell* aDocShell, FILE* out)
     if (shell) {
         nsIFrame* root = shell->GetRootFrame();
         if (root) {
-            root->List(out, 0);
+            root->List(out);
         }
     }
     else {
@@ -427,7 +426,7 @@ DumpViewsRecur(nsIDocShell* aDocShell, FILE* out)
 {
 #ifdef DEBUG
     fprintf(out, "docshell=%p \n", static_cast<void*>(aDocShell));
-    nsRefPtr<nsViewManager> vm(view_manager(aDocShell));
+    RefPtr<nsViewManager> vm(view_manager(aDocShell));
     if (vm) {
         nsView* root = vm->GetRootView();
         if (root) {
@@ -517,7 +516,7 @@ nsLayoutDebuggingTools::DumpReflowStats()
 
 void nsLayoutDebuggingTools::ForceRefresh()
 {
-    nsRefPtr<nsViewManager> vm(view_manager(mDocShell));
+    RefPtr<nsViewManager> vm(view_manager(mDocShell));
     if (!vm)
         return;
     nsView* root = vm->GetRootView();

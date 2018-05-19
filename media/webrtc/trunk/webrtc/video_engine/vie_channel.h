@@ -13,415 +13,577 @@
 
 #include <list>
 
-#include "modules/remote_bitrate_estimator/include/remote_bitrate_estimator.h"
-#include "modules/rtp_rtcp/interface/rtp_rtcp_defines.h"
-#include "modules/udp_transport/interface/udp_transport.h"
-#include "modules/video_coding/main/interface/video_coding_defines.h"
-#include "system_wrappers/interface/scoped_ptr.h"
-#include "system_wrappers/interface/tick_util.h"
-#include "typedefs.h"  // NOLINT
-#include "video_engine/include/vie_network.h"
-#include "video_engine/include/vie_rtp_rtcp.h"
-#include "video_engine/vie_defines.h"
-#include "video_engine/vie_file_recorder.h"
-#include "video_engine/vie_frame_provider_base.h"
-#include "video_engine/vie_receiver.h"
-#include "video_engine/vie_sender.h"
-#include "video_engine/vie_sync_module.h"
+#include "webrtc/base/scoped_ptr.h"
+#include "webrtc/modules/remote_bitrate_estimator/include/remote_bitrate_estimator.h"
+#include "webrtc/modules/rtp_rtcp/interface/rtp_rtcp.h"
+#include "webrtc/modules/rtp_rtcp/interface/rtp_rtcp_defines.h"
+#include "webrtc/modules/video_coding/main/interface/video_coding_defines.h"
+#include "webrtc/system_wrappers/interface/critical_section_wrapper.h"
+#include "webrtc/system_wrappers/interface/scoped_refptr.h"
+#include "webrtc/system_wrappers/interface/tick_util.h"
+#include "webrtc/typedefs.h"
+#include "webrtc/video_engine/include/vie_network.h"
+#include "webrtc/video_engine/include/vie_rtp_rtcp.h"
+#include "webrtc/video_engine/vie_defines.h"
+#include "webrtc/video_engine/vie_frame_provider_base.h"
+#include "webrtc/video_engine/vie_receiver.h"
+#include "webrtc/video_engine/vie_sender.h"
+#include "webrtc/video_engine/vie_sync_module.h"
 
 namespace webrtc {
 
+class CallStatsObserver;
 class ChannelStatsObserver;
+class Config;
 class CriticalSectionWrapper;
-class Encryption;
+class EncodedImageCallback;
+class I420FrameCallback;
 class PacedSender;
+class PacketRouter;
+class PayloadRouter;
 class ProcessThread;
-class RtpRtcp;
-class RtcpRttObserver;
-class StatsObserver;
+class ReceiveStatisticsProxy;
+class ReportBlockStats;
+class RtcpRttStats;
 class ThreadWrapper;
+class ViEChannelProtectionCallback;
+class ViEDecoderObserver;
+class ViEEffectFilter;
+class ViERTPObserver;
 class VideoCodingModule;
 class VideoDecoder;
 class VideoRenderCallback;
-class ViEDecoderObserver;
-class ViEEffectFilter;
-class ViENetworkObserver;
-class ViERTCPObserver;
-class ViERTPObserver;
 class VoEVideoSync;
+
+struct SenderInfo;
 
 class ViEChannel
     : public VCMFrameTypeCallback,
       public VCMReceiveCallback,
       public VCMReceiveStatisticsCallback,
+      public VCMDecoderTimingCallback,
       public VCMPacketRequestCallback,
-      public VCMFrameStorageCallback,
-      public RtcpFeedback,
+      public VCMReceiveStateCallback,
       public RtpFeedback,
       public ViEFrameProviderBase {
  public:
   friend class ChannelStatsObserver;
+  friend class ViEChannelProtectionCallback;
 
-  ViEChannel(WebRtc_Word32 channel_id,
-             WebRtc_Word32 engine_id,
-             WebRtc_UWord32 number_of_cores,
+  ViEChannel(int32_t channel_id,
+             int32_t engine_id,
+             uint32_t number_of_cores,
+             const Config& config,
              ProcessThread& module_process_thread,
              RtcpIntraFrameObserver* intra_frame_observer,
              RtcpBandwidthObserver* bandwidth_observer,
              RemoteBitrateEstimator* remote_bitrate_estimator,
-             RtcpRttObserver* rtt_observer,
+             RtcpRttStats* rtt_stats,
              PacedSender* paced_sender,
-             RtpRtcp* default_rtp_rtcp,
-             bool sender);
+             PacketRouter* packet_router,
+             bool sender,
+             bool disable_default_encoder);
   ~ViEChannel();
 
-  WebRtc_Word32 Init();
+  int32_t Init();
 
   // Sets the encoder to use for the channel. |new_stream| indicates the encoder
   // type has changed and we should start a new RTP stream.
-  WebRtc_Word32 SetSendCodec(const VideoCodec& video_codec,
-                             bool new_stream = true);
-  WebRtc_Word32 SetReceiveCodec(const VideoCodec& video_codec);
-  WebRtc_Word32 GetReceiveCodec(VideoCodec* video_codec);
-  WebRtc_Word32 RegisterCodecObserver(ViEDecoderObserver* observer);
-  // Registers an external decoder. |decoder_render| is set to true if the
-  // decoder will do the rendering. If |decoder_render| is set,|render_delay|
-  // indicates the time needed to decode and render a frame.
-  WebRtc_Word32 RegisterExternalDecoder(const WebRtc_UWord8 pl_type,
-                                        VideoDecoder* decoder,
-                                        bool decoder_render,
-                                        WebRtc_Word32 render_delay);
-  WebRtc_Word32 DeRegisterExternalDecoder(const WebRtc_UWord8 pl_type);
-  WebRtc_Word32 ReceiveCodecStatistics(WebRtc_UWord32* num_key_frames,
-                                       WebRtc_UWord32* num_delta_frames);
-  WebRtc_UWord32 DiscardedPackets() const;
+  int32_t SetSendCodec(const VideoCodec& video_codec, bool new_stream = true);
+  int32_t SetReceiveCodec(const VideoCodec& video_codec);
+  int32_t GetReceiveCodec(VideoCodec* video_codec);
+  int32_t RegisterCodecObserver(ViEDecoderObserver* observer);
+  // Registers an external decoder. |buffered_rendering| means that the decoder
+  // will render frames after decoding according to the render timestamp
+  // provided by the video coding module. |render_delay| indicates the time
+  // needed to decode and render a frame.
+  int32_t RegisterExternalDecoder(const uint8_t pl_type,
+                                  VideoDecoder* decoder,
+                                  bool buffered_rendering,
+                                  int32_t render_delay);
+  int32_t DeRegisterExternalDecoder(const uint8_t pl_type);
+  int32_t ReceiveCodecStatistics(uint32_t* num_key_frames,
+                                 uint32_t* num_delta_frames);
+  uint32_t DiscardedPackets() const;
 
   // Returns the estimated delay in milliseconds.
   int ReceiveDelay() const;
 
   // Only affects calls to SetReceiveCodec done after this call.
-  WebRtc_Word32 WaitForKeyFrame(bool wait);
+  int32_t WaitForKeyFrame(bool wait);
 
   // If enabled, a key frame request will be sent as soon as there are lost
   // packets. If |only_key_frames| are set, requests are only sent for loss in
   // key frames.
-  WebRtc_Word32 SetSignalPacketLossStatus(bool enable, bool only_key_frames);
+  int32_t SetSignalPacketLossStatus(bool enable, bool only_key_frames);
 
-  WebRtc_Word32 SetRTCPMode(const RTCPMethod rtcp_mode);
-  WebRtc_Word32 GetRTCPMode(RTCPMethod* rtcp_mode);
-  WebRtc_Word32 SetNACKStatus(const bool enable);
-  WebRtc_Word32 SetFECStatus(const bool enable,
-                             const unsigned char payload_typeRED,
-                             const unsigned char payload_typeFEC);
-  WebRtc_Word32 SetHybridNACKFECStatus(const bool enable,
-                                       const unsigned char payload_typeRED,
-                                       const unsigned char payload_typeFEC);
-  WebRtc_Word32 SetKeyFrameRequestMethod(const KeyFrameRequestMethod method);
-  bool EnableRemb(bool enable);
+  void SetRTCPMode(const RTCPMethod rtcp_mode);
+  RTCPMethod GetRTCPMode() const;
+  int32_t SetNACKStatus(const bool enable);
+  int32_t SetFECStatus(const bool enable,
+                       const unsigned char payload_typeRED,
+                       const unsigned char payload_typeFEC);
+  int32_t SetHybridNACKFECStatus(const bool enable,
+                                 const unsigned char payload_typeRED,
+                                 const unsigned char payload_typeFEC);
+  bool IsSendingFecEnabled();
+  int SetSenderBufferingMode(int target_delay_ms);
+  int SetReceiverBufferingMode(int target_delay_ms);
+  int32_t SetKeyFrameRequestMethod(const KeyFrameRequestMethod method);
+  void EnableRemb(bool enable);
   int SetSendTimestampOffsetStatus(bool enable, int id);
   int SetReceiveTimestampOffsetStatus(bool enable, int id);
+  int SetSendAbsoluteSendTimeStatus(bool enable, int id);
+  int SetReceiveAbsoluteSendTimeStatus(bool enable, int id);
+  bool GetReceiveAbsoluteSendTimeStatus() const;
+  int SetSendVideoRotationStatus(bool enable, int id);
+  int SetReceiveVideoRotationStatus(bool enable, int id);
+  int SetSendRtpStreamId(bool enable, int id, const char* rid);
+  int SetReceiveRtpStreamId(bool enable, int id);
+  void SetRtcpXrRrtrStatus(bool enable);
   void SetTransmissionSmoothingStatus(bool enable);
-  WebRtc_Word32 EnableTMMBR(const bool enable);
-  WebRtc_Word32 EnableKeyFrameRequestCallback(const bool enable);
+  void EnableTMMBR(bool enable);
+  int32_t EnableKeyFrameRequestCallback(const bool enable);
 
   // Sets SSRC for outgoing stream.
-  WebRtc_Word32 SetSSRC(const uint32_t SSRC,
-                        const StreamType usage,
-                        const unsigned char simulcast_idx);
+  int32_t SetSSRC(const uint32_t SSRC,
+                  const StreamType usage,
+                  const unsigned char simulcast_idx);
 
   // Gets SSRC for outgoing stream number |idx|.
-  WebRtc_Word32 GetLocalSSRC(uint8_t idx, unsigned int* ssrc);
+  int32_t GetLocalSSRC(uint8_t idx, unsigned int* ssrc);
 
   // Gets SSRC for the incoming stream.
-  WebRtc_Word32 GetRemoteSSRC(uint32_t* ssrc);
+  int32_t GetRemoteSSRC(uint32_t* ssrc);
 
   // Gets the CSRC for the incoming stream.
-  WebRtc_Word32 GetRemoteCSRC(uint32_t CSRCs[kRtpCsrcSize]);
+  int32_t GetRemoteCSRC(uint32_t CSRCs[kRtpCsrcSize]);
+
+  // Gets the RID (if any) for the incoming stream.
+  int32_t GetRemoteRID(char rid[256]);
+
+  int SetRtxSendPayloadType(int payload_type);
+  void SetRtxReceivePayloadType(int payload_type);
 
   // Sets the starting sequence number, must be called before StartSend.
-  WebRtc_Word32 SetStartSequenceNumber(WebRtc_UWord16 sequence_number);
+  int32_t SetStartSequenceNumber(uint16_t sequence_number);
+
+  void SetRtpStateForSsrc(uint32_t ssrc, const RtpState& rtp_state);
+  RtpState GetRtpStateForSsrc(uint32_t ssrc);
 
   // Sets the CName for the outgoing stream on the channel.
-  WebRtc_Word32 SetRTCPCName(const char rtcp_cname[]);
-
-  // Gets the CName for the outgoing stream on the channel.
-  WebRtc_Word32 GetRTCPCName(char rtcp_cname[]);
+  int32_t SetRTCPCName(const char rtcp_cname[]);
 
   // Gets the CName of the incoming stream.
-  WebRtc_Word32 GetRemoteRTCPCName(char rtcp_cname[]);
-  WebRtc_Word32 RegisterRtpObserver(ViERTPObserver* observer);
-  WebRtc_Word32 RegisterRtcpObserver(ViERTCPObserver* observer);
-  WebRtc_Word32 SendApplicationDefinedRTCPPacket(
-      const WebRtc_UWord8 sub_type,
-      WebRtc_UWord32 name,
-      const WebRtc_UWord8* data,
-      WebRtc_UWord16 data_length_in_bytes);
+  int32_t GetRemoteRTCPCName(char rtcp_cname[]);
+  int32_t RegisterRtpObserver(ViERTPObserver* observer);
+  int32_t SendApplicationDefinedRTCPPacket(
+      const uint8_t sub_type,
+      uint32_t name,
+      const uint8_t* data,
+      uint16_t data_length_in_bytes);
+
+  // Gets info (including timestamp) from last rr + remote packetcount
+  // (derived from rr report + cached sender-side info).
+  int32_t GetRemoteRTCPReceiverInfo(uint32_t& NTPHigh, uint32_t& NTPLow,
+                                    uint32_t& receivedPacketCount,
+                                    uint64_t& receivedOctetCount,
+                                    uint32_t* jitterSamples,
+                                    uint16_t* fractionLost,
+                                    uint32_t* cumulativeLost,
+                                    int32_t* rttMs);
 
   // Returns statistics reported by the remote client in an RTCP packet.
-  WebRtc_Word32 GetSendRtcpStatistics(uint16_t* fraction_lost,
-                                      uint32_t* cumulative_lost,
-                                      uint32_t* extended_max,
-                                      uint32_t* jitter_samples,
-                                      int32_t* rtt_ms);
+  int32_t GetSendRtcpStatistics(uint16_t* fraction_lost,
+                                uint32_t* cumulative_lost,
+                                uint32_t* extended_max,
+                                uint32_t* jitter_samples,
+                                int64_t* rtt_ms);
+
+  // Called on receipt of RTCP report block from remote side.
+  void RegisterSendChannelRtcpStatisticsCallback(
+      RtcpStatisticsCallback* callback);
 
   // Returns our localy created statistics of the received RTP stream.
-  WebRtc_Word32 GetReceivedRtcpStatistics(uint16_t* fraction_lost,
-                                          uint32_t* cumulative_lost,
-                                          uint32_t* extended_max,
-                                          uint32_t* jitter_samples,
-                                          int32_t* rtt_ms);
+  int32_t GetReceivedRtcpStatistics(uint16_t* fraction_lost,
+                                    uint32_t* cumulative_lost,
+                                    uint32_t* extended_max,
+                                    uint32_t* jitter_samples,
+                                    int64_t* rtt_ms);
+
+  // Called on generation of RTCP stats
+  void RegisterReceiveChannelRtcpStatisticsCallback(
+      RtcpStatisticsCallback* callback);
 
   // Gets sent/received packets statistics.
-  WebRtc_Word32 GetRtpStatistics(uint32_t* bytes_sent,
-                                 uint32_t* packets_sent,
-                                 uint32_t* bytes_received,
-                                 uint32_t* packets_received) const;
+  int32_t GetRtpStatistics(size_t* bytes_sent,
+                           uint32_t* packets_sent,
+                           size_t* bytes_received,
+                           uint32_t* packets_received) const;
+
+  // Gets send statistics for the rtp and rtx stream.
+  void GetSendStreamDataCounters(StreamDataCounters* rtp_counters,
+                                 StreamDataCounters* rtx_counters) const;
+
+  // Gets received stream data counters.
+  void GetReceiveStreamDataCounters(StreamDataCounters* rtp_counters,
+                                    StreamDataCounters* rtx_counters) const;
+
+  // Called on update of RTP statistics.
+  void RegisterSendChannelRtpStatisticsCallback(
+      StreamDataCountersCallback* callback);
+
+  // Called on update of RTP statistics.
+  void RegisterReceiveChannelRtpStatisticsCallback(
+      StreamDataCountersCallback* callback);
+
+  void GetSendRtcpPacketTypeCounter(
+      RtcpPacketTypeCounter* packet_counter) const;
+
+  void GetReceiveRtcpPacketTypeCounter(
+      RtcpPacketTypeCounter* packet_counter) const;
+
+
+  int32_t GetRemoteRTCPSenderInfo(SenderInfo* sender_info) const;
+
   void GetBandwidthUsage(uint32_t* total_bitrate_sent,
                          uint32_t* video_bitrate_sent,
                          uint32_t* fec_bitrate_sent,
                          uint32_t* nackBitrateSent) const;
-  int GetEstimatedReceiveBandwidth(uint32_t* estimated_bandwidth) const;
+  // TODO(holmer): Deprecated. We should use the SendSideDelayObserver instead
+  // to avoid deadlocks.
+  bool GetSendSideDelay(int* avg_send_delay, int* max_send_delay) const;
+  void RegisterSendSideDelayObserver(SendSideDelayObserver* observer);
 
-  WebRtc_Word32 StartRTPDump(const char file_nameUTF8[1024],
-                             RTPDirections direction);
-  WebRtc_Word32 StopRTPDump(RTPDirections direction);
+  // Called on any new send bitrate estimate.
+  void RegisterSendBitrateObserver(BitrateStatisticsObserver* observer);
 
-  // Implements RtcpFeedback.
-  // TODO(pwestin) Depricate this functionality.
-  virtual void OnApplicationDataReceived(const WebRtc_Word32 id,
-                                         const WebRtc_UWord8 sub_type,
-                                         const WebRtc_UWord32 name,
-                                         const WebRtc_UWord16 length,
-                                         const WebRtc_UWord8* data);
-  virtual void OnSendReportReceived(const WebRtc_Word32 id,
-                                    const WebRtc_UWord32 senderSSRC,
-                                    uint32_t ntp_secs,
-                                    uint32_t ntp_frac,
-                                    uint32_t timestamp);
+  int32_t StartRTPDump(const char file_nameUTF8[1024],
+                       RTPDirections direction);
+  int32_t StopRTPDump(RTPDirections direction);
+
   // Implements RtpFeedback.
-  virtual WebRtc_Word32 OnInitializeDecoder(
-      const WebRtc_Word32 id,
-      const WebRtc_Word8 payload_type,
+  virtual int32_t OnInitializeDecoder(
+      const int32_t id,
+      const int8_t payload_type,
       const char payload_name[RTP_PAYLOAD_NAME_SIZE],
       const int frequency,
-      const WebRtc_UWord8 channels,
-      const WebRtc_UWord32 rate);
-  virtual void OnPacketTimeout(const WebRtc_Word32 id);
-  virtual void OnReceivedPacket(const WebRtc_Word32 id,
-                                const RtpRtcpPacketType packet_type);
-  virtual void OnPeriodicDeadOrAlive(const WebRtc_Word32 id,
-                                     const RTPAliveType alive);
-  virtual void OnIncomingSSRCChanged(const WebRtc_Word32 id,
-                                     const WebRtc_UWord32 SSRC);
-  virtual void OnIncomingCSRCChanged(const WebRtc_Word32 id,
-                                     const WebRtc_UWord32 CSRC,
+      const uint8_t channels,
+      const uint32_t rate);
+  virtual void OnIncomingSSRCChanged(const int32_t id,
+                                     const uint32_t ssrc);
+  virtual void OnIncomingCSRCChanged(const int32_t id,
+                                     const uint32_t CSRC,
                                      const bool added);
+  virtual void ResetStatistics(uint32_t);
 
-  WebRtc_Word32 SetLocalReceiver(const WebRtc_UWord16 rtp_port,
-                                 const WebRtc_UWord16 rtcp_port,
-                                 const char* ip_address);
-  WebRtc_Word32 GetLocalReceiver(WebRtc_UWord16* rtp_port,
-                                 WebRtc_UWord16* rtcp_port,
-                                 char* ip_address) const;
-  WebRtc_Word32 SetSendDestination(const char* ip_address,
-                                   const WebRtc_UWord16 rtp_port,
-                                   const WebRtc_UWord16 rtcp_port,
-                                   const WebRtc_UWord16 source_rtp_port,
-                                   const WebRtc_UWord16 source_rtcp_port);
-  WebRtc_Word32 GetSendDestination(char* ip_address,
-                                   WebRtc_UWord16* rtp_port,
-                                   WebRtc_UWord16* rtcp_port,
-                                   WebRtc_UWord16* source_rtp_port,
-                                   WebRtc_UWord16* source_rtcp_port) const;
-  WebRtc_Word32 GetSourceInfo(WebRtc_UWord16* rtp_port,
-                              WebRtc_UWord16* rtcp_port,
-                              char* ip_address,
-                              WebRtc_UWord32 ip_address_length);
+  int32_t SetLocalReceiver(const uint16_t rtp_port,
+                           const uint16_t rtcp_port,
+                           const char* ip_address);
+  int32_t GetLocalReceiver(uint16_t* rtp_port,
+                           uint16_t* rtcp_port,
+                           char* ip_address) const;
+  int32_t SetSendDestination(const char* ip_address,
+                             const uint16_t rtp_port,
+                             const uint16_t rtcp_port,
+                             const uint16_t source_rtp_port,
+                             const uint16_t source_rtcp_port);
+  int32_t GetSendDestination(char* ip_address,
+                             uint16_t* rtp_port,
+                             uint16_t* rtcp_port,
+                             uint16_t* source_rtp_port,
+                             uint16_t* source_rtcp_port) const;
+  int32_t GetSourceInfo(uint16_t* rtp_port,
+                        uint16_t* rtcp_port,
+                        char* ip_address,
+                        uint32_t ip_address_length);
 
-  WebRtc_Word32 SetRemoteSSRCType(const StreamType usage,
-                                  const uint32_t SSRC) const;
+  int32_t SetRemoteSSRCType(const StreamType usage, const uint32_t SSRC);
 
-  WebRtc_Word32 StartSend();
-  WebRtc_Word32 StopSend();
+  int32_t StartSend();
+  int32_t StopSend();
   bool Sending();
-  WebRtc_Word32 StartReceive();
-  WebRtc_Word32 StopReceive();
-  bool Receiving();
+  int32_t StartReceive();
+  int32_t StopReceive();
 
-  WebRtc_Word32 RegisterSendTransport(Transport* transport);
-  WebRtc_Word32 DeregisterSendTransport();
-
-  // Incoming packet from external transport.
-  WebRtc_Word32 ReceivedRTPPacket(const void* rtp_packet,
-                                  const WebRtc_Word32 rtp_packet_length);
+  int32_t RegisterSendTransport(Transport* transport);
+  int32_t DeregisterSendTransport();
 
   // Incoming packet from external transport.
-  WebRtc_Word32 ReceivedRTCPPacket(const void* rtcp_packet,
-                                   const WebRtc_Word32 rtcp_packet_length);
+  int32_t ReceivedRTPPacket(const void* rtp_packet,
+                            const size_t rtp_packet_length,
+                            const PacketTime& packet_time);
 
-  WebRtc_Word32 EnableIPv6();
-  bool IsIPv6Enabled();
-  WebRtc_Word32 SetSourceFilter(const WebRtc_UWord16 rtp_port,
-                                const WebRtc_UWord16 rtcp_port,
-                                const char* ip_address);
-  WebRtc_Word32 GetSourceFilter(WebRtc_UWord16* rtp_port,
-                                WebRtc_UWord16* rtcp_port,
-                                char* ip_address) const;
-
-  WebRtc_Word32 SetToS(const WebRtc_Word32 DSCP, const bool use_set_sockOpt);
-  WebRtc_Word32 GetToS(WebRtc_Word32* DSCP, bool* use_set_sockOpt) const;
-  WebRtc_Word32 SetSendGQoS(const bool enable,
-                            const WebRtc_Word32 service_type,
-                            const WebRtc_UWord32 max_bitrate,
-                            const WebRtc_Word32 overrideDSCP);
-  WebRtc_Word32 GetSendGQoS(bool* enabled,
-                            WebRtc_Word32* service_type,
-                            WebRtc_Word32* overrideDSCP) const;
+  // Incoming packet from external transport.
+  int32_t ReceivedRTCPPacket(const void* rtcp_packet,
+                             const size_t rtcp_packet_length);
 
   // Sets the maximum transfer unit size for the network link, i.e. including
   // IP, UDP and RTP headers.
-  WebRtc_Word32 SetMTU(WebRtc_UWord16 mtu);
+  int32_t SetMTU(uint16_t mtu);
 
   // Returns maximum allowed payload size, i.e. the maximum allowed size of
   // encoded data in each packet.
-  WebRtc_UWord16 MaxDataPayloadLength() const;
-  WebRtc_Word32 SetMaxPacketBurstSize(WebRtc_UWord16 max_number_of_packets);
-  WebRtc_Word32 SetPacketBurstSpreadState(bool enable,
-                                          const WebRtc_UWord16 frame_periodMS);
+  uint16_t MaxDataPayloadLength() const;
+  int32_t SetMaxPacketBurstSize(uint16_t max_number_of_packets);
+  int32_t SetPacketBurstSpreadState(bool enable, const uint16_t frame_periodMS);
 
-  WebRtc_Word32 SetPacketTimeoutNotification(bool enable,
-                                             WebRtc_UWord32 timeout_seconds);
-  WebRtc_Word32 RegisterNetworkObserver(ViENetworkObserver* observer);
-  bool NetworkObserverRegistered();
-  WebRtc_Word32 SetPeriodicDeadOrAliveStatus(
-      const bool enable, const WebRtc_UWord32 sample_time_seconds);
-
-  WebRtc_Word32 SendUDPPacket(const WebRtc_Word8* data,
-                              const WebRtc_UWord32 length,
-                              WebRtc_Word32& transmitted_bytes,
-                              bool use_rtcp_socket);
-
-  WebRtc_Word32 EnableColorEnhancement(bool enable);
+  int32_t EnableColorEnhancement(bool enable);
 
   // Gets the modules used by the channel.
   RtpRtcp* rtp_rtcp();
+  scoped_refptr<PayloadRouter> send_payload_router();
+  VCMProtectionCallback* vcm_protection_callback();
 
-  StatsObserver* GetStatsObserver();
+
+  CallStatsObserver* GetStatsObserver();
 
   // Implements VCMReceiveCallback.
-  virtual WebRtc_Word32 FrameToRender(I420VideoFrame& video_frame);  // NOLINT
+  virtual int32_t FrameToRender(I420VideoFrame& video_frame);  // NOLINT
 
   // Implements VCMReceiveCallback.
-  virtual WebRtc_Word32 ReceivedDecodedReferenceFrame(
-      const WebRtc_UWord64 picture_id);
+  virtual int32_t ReceivedDecodedReferenceFrame(
+      const uint64_t picture_id);
 
-  // Implements VCM.
-  virtual WebRtc_Word32 StoreReceivedFrame(
-      const EncodedVideoData& frame_to_store);
+  // Implements VCMReceiveCallback.
+  virtual void IncomingCodecChanged(const VideoCodec& codec);
 
-  // Implements VideoReceiveStatisticsCallback.
-  virtual WebRtc_Word32 ReceiveStatistics(const WebRtc_UWord32 bit_rate,
-                                          const WebRtc_UWord32 frame_rate);
+  // Implements VCMReceiveStatisticsCallback.
+  void OnReceiveRatesUpdated(uint32_t bit_rate, uint32_t frame_rate) override;
+  void OnDiscardedPacketsUpdated(int discarded_packets) override;
+  void OnFrameCountsUpdated(const FrameCounts& frame_counts) override;
+
+  // Implements VCMDecoderTimingCallback.
+  virtual void OnDecoderTiming(int decode_ms,
+                               int max_decode_ms,
+                               int current_delay_ms,
+                               int target_delay_ms,
+                               int jitter_buffer_ms,
+                               int min_playout_delay_ms,
+                               int render_delay_ms);
 
   // Implements VideoFrameTypeCallback.
-  virtual WebRtc_Word32 RequestKeyFrame();
+  virtual int32_t RequestKeyFrame();
 
   // Implements VideoFrameTypeCallback.
-  virtual WebRtc_Word32 SliceLossIndicationRequest(
-      const WebRtc_UWord64 picture_id);
+  virtual int32_t SliceLossIndicationRequest(
+      const uint64_t picture_id);
 
   // Implements VideoPacketRequestCallback.
-  virtual WebRtc_Word32 ResendPackets(const WebRtc_UWord16* sequence_numbers,
-                                      WebRtc_UWord16 length);
+  virtual int32_t ResendPackets(const uint16_t* sequence_numbers,
+                                uint16_t length);
 
-  WebRtc_Word32 RegisterExternalEncryption(Encryption* encryption);
-  WebRtc_Word32 DeRegisterExternalEncryption();
+  // Implements ReceiveStateCallback.
+  virtual void ReceiveStateChange(VideoReceiveState state);
 
-  WebRtc_Word32 SetVoiceChannel(WebRtc_Word32 ve_channel_id,
-                                VoEVideoSync* ve_sync_interface);
-  WebRtc_Word32 VoiceChannel();
+  int32_t SetVoiceChannel(int32_t ve_channel_id,
+                          VoEVideoSync* ve_sync_interface);
+  int32_t VoiceChannel();
 
   // Implements ViEFrameProviderBase.
   virtual int FrameCallbackChanged() {return -1;}
 
-  WebRtc_Word32 RegisterEffectFilter(ViEEffectFilter* effect_filter);
+  int32_t RegisterEffectFilter(ViEEffectFilter* effect_filter);
 
-  ViEFileRecorder& GetIncomingFileRecorder();
-  void ReleaseIncomingFileRecorder();
+  // New-style callbacks, used by VideoReceiveStream.
+  void RegisterPreRenderCallback(I420FrameCallback* pre_render_callback);
+  void RegisterPreDecodeImageCallback(
+      EncodedImageCallback* pre_decode_callback);
+
+  void RegisterSendFrameCountObserver(FrameCountObserver* observer);
+  void RegisterRtcpPacketTypeCounterObserver(
+      RtcpPacketTypeCounterObserver* observer);
+  void RegisterReceiveStatisticsProxy(
+      ReceiveStatisticsProxy* receive_statistics_proxy);
+  void ReceivedBWEPacket(int64_t arrival_time_ms, size_t payload_size,
+                         const RTPHeader& header);
 
  protected:
   static bool ChannelDecodeThreadFunction(void* obj);
   bool ChannelDecodeProcess();
 
-  void OnRttUpdate(uint32_t rtt);
+  void OnRttUpdate(int64_t rtt);
+
+  int ProtectionRequest(const FecProtectionParams* delta_fec_params,
+                        const FecProtectionParams* key_fec_params,
+                        uint32_t* sent_video_rate_bps,
+                        uint32_t* sent_nack_rate_bps,
+                        uint32_t* sent_fec_rate_bps);
 
  private:
+  void ReserveRtpRtcpModules(size_t total_modules)
+      EXCLUSIVE_LOCKS_REQUIRED(rtp_rtcp_cs_);
+  RtpRtcp* GetRtpRtcpModule(size_t simulcast_idx) const
+      EXCLUSIVE_LOCKS_REQUIRED(rtp_rtcp_cs_);
+  RtpRtcp::Configuration CreateRtpRtcpConfiguration();
+  RtpRtcp* CreateRtpRtcpModule();
   // Assumed to be protected.
-  WebRtc_Word32 StartDecodeThread();
-  WebRtc_Word32 StopDecodeThread();
+  int32_t StartDecodeThread();
+  int32_t StopDecodeThread();
 
-  WebRtc_Word32 ProcessNACKRequest(const bool enable);
-  WebRtc_Word32 ProcessFECRequest(const bool enable,
-                                  const unsigned char payload_typeRED,
-                                  const unsigned char payload_typeFEC);
+  int32_t ProcessNACKRequest(const bool enable);
+  int32_t ProcessFECRequest(const bool enable,
+                            const unsigned char payload_typeRED,
+                            const unsigned char payload_typeFEC);
+  // Compute NACK list parameters for the buffering mode.
+  int GetRequiredNackListSize(int target_delay_ms);
+  void SetRtxSendStatus(bool enable);
 
-  WebRtc_Word32 channel_id_;
-  WebRtc_Word32 engine_id_;
-  WebRtc_UWord32 number_of_cores_;
-  WebRtc_UWord8 num_socket_threads_;
+  void UpdateHistograms();
+  void UpdateHistogramsAtStopSend();
+
+  // ViEChannel exposes methods that allow to modify observers and callbacks
+  // to be modified. Such an API-style is cumbersome to implement and maintain
+  // at all the levels when comparing to only setting them at construction. As
+  // so this class instantiates its children with a wrapper that can be modified
+  // at a later time.
+  template <class T>
+  class RegisterableCallback : public T {
+   public:
+    RegisterableCallback()
+        : critsect_(CriticalSectionWrapper::CreateCriticalSection()),
+          callback_(NULL) {}
+
+    void Set(T* callback) {
+      CriticalSectionScoped cs(critsect_.get());
+      callback_ = callback;
+    }
+
+   protected:
+    // Note: this should be implemented with a RW-lock to allow simultaneous
+    // calls into the callback. However that doesn't seem to be needed for the
+    // current type of callbacks covered by this class.
+    rtc::scoped_ptr<CriticalSectionWrapper> critsect_;
+    T* callback_ GUARDED_BY(critsect_);
+
+   private:
+    DISALLOW_COPY_AND_ASSIGN(RegisterableCallback);
+  };
+
+  class RegisterableBitrateStatisticsObserver:
+    public RegisterableCallback<BitrateStatisticsObserver> {
+    virtual void Notify(const BitrateStatistics& total_stats,
+                        const BitrateStatistics& retransmit_stats,
+                        uint32_t ssrc) {
+      CriticalSectionScoped cs(critsect_.get());
+      if (callback_)
+        callback_->Notify(total_stats, retransmit_stats, ssrc);
+    }
+  } send_bitrate_observer_;
+
+  class RegisterableFrameCountObserver
+      : public RegisterableCallback<FrameCountObserver> {
+   public:
+    virtual void FrameCountUpdated(const FrameCounts& frame_counts,
+                                   uint32_t ssrc) {
+      CriticalSectionScoped cs(critsect_.get());
+      if (callback_)
+        callback_->FrameCountUpdated(frame_counts, ssrc);
+    }
+
+   private:
+  } send_frame_count_observer_;
+
+  class RegisterableSendSideDelayObserver :
+      public RegisterableCallback<SendSideDelayObserver> {
+    void SendSideDelayUpdated(int avg_delay_ms,
+                              int max_delay_ms,
+                              uint32_t ssrc) override {
+      CriticalSectionScoped cs(critsect_.get());
+      if (callback_)
+        callback_->SendSideDelayUpdated(avg_delay_ms, max_delay_ms, ssrc);
+    }
+  } send_side_delay_observer_;
+
+  class RegisterableRtcpPacketTypeCounterObserver
+      : public RegisterableCallback<RtcpPacketTypeCounterObserver> {
+   public:
+    void RtcpPacketTypesCounterUpdated(
+        uint32_t ssrc,
+        const RtcpPacketTypeCounter& packet_counter) override {
+      CriticalSectionScoped cs(critsect_.get());
+      if (callback_)
+        callback_->RtcpPacketTypesCounterUpdated(ssrc, packet_counter);
+      counter_map_[ssrc] = packet_counter;
+    }
+
+    virtual std::map<uint32_t, RtcpPacketTypeCounter> GetPacketTypeCounterMap()
+        const {
+      CriticalSectionScoped cs(critsect_.get());
+      return counter_map_;
+    }
+
+   private:
+    std::map<uint32_t, RtcpPacketTypeCounter> counter_map_
+        GUARDED_BY(critsect_);
+  } rtcp_packet_type_counter_observer_;
+
+  int32_t channel_id_;
+  int32_t engine_id_;
+  uint32_t number_of_cores_;
+  uint8_t num_socket_threads_;
 
   // Used for all registered callbacks except rendering.
-  scoped_ptr<CriticalSectionWrapper> callback_cs_;
-  scoped_ptr<CriticalSectionWrapper> rtp_rtcp_cs_;
-
-  RtpRtcp* default_rtp_rtcp_;
+  rtc::scoped_ptr<CriticalSectionWrapper> callback_cs_;
+  rtc::scoped_ptr<CriticalSectionWrapper> rtp_rtcp_cs_;
 
   // Owned modules/classes.
-  scoped_ptr<RtpRtcp> rtp_rtcp_;
+  rtc::scoped_ptr<RtpRtcp> rtp_rtcp_;
   std::list<RtpRtcp*> simulcast_rtp_rtcp_;
-#ifndef WEBRTC_EXTERNAL_TRANSPORT
-  UdpTransport& socket_transport_;
-#endif
-  VideoCodingModule& vcm_;
+  std::list<RtpRtcp*> removed_rtp_rtcp_;
+  scoped_refptr<PayloadRouter> send_payload_router_;
+  rtc::scoped_ptr<ViEChannelProtectionCallback> vcm_protection_callback_;
+
+  VideoCodingModule* const vcm_;
   ViEReceiver vie_receiver_;
   ViESender vie_sender_;
   ViESyncModule vie_sync_;
 
   // Helper to report call statistics.
-  scoped_ptr<ChannelStatsObserver> stats_observer_;
+  rtc::scoped_ptr<ChannelStatsObserver> stats_observer_;
 
   // Not owned.
+  VCMReceiveStatisticsCallback* vcm_receive_stats_callback_
+      GUARDED_BY(callback_cs_);
+  FrameCounts receive_frame_counts_ GUARDED_BY(callback_cs_);
   ProcessThread& module_process_thread_;
   ViEDecoderObserver* codec_observer_;
   bool do_key_frame_callbackRequest_;
   ViERTPObserver* rtp_observer_;
-  ViERTCPObserver* rtcp_observer_;
-  ViENetworkObserver* networkObserver_;
   RtcpIntraFrameObserver* intra_frame_observer_;
-  RtcpRttObserver* rtt_observer_;
+  RtcpRttStats* rtt_stats_;
   PacedSender* paced_sender_;
+  PacketRouter* packet_router_;
 
-  scoped_ptr<RtcpBandwidthObserver> bandwidth_observer_;
-  bool rtp_packet_timeout_;
+  rtc::scoped_ptr<RtcpBandwidthObserver> bandwidth_observer_;
   int send_timestamp_extension_id_;
-  bool using_packet_spread_;
+  int absolute_send_time_extension_id_;
+  int video_rotation_extension_id_;
+  int rid_extension_id_;
 
   Transport* external_transport_;
 
   bool decoder_reset_;
+  // Current receive codec used for codec change callback.
+  VideoCodec receive_codec_;
   bool wait_for_key_frame_;
-  ThreadWrapper* decode_thread_;
-
-  Encryption* external_encryption_;
+  rtc::scoped_ptr<ThreadWrapper> decode_thread_;
 
   ViEEffectFilter* effect_filter_;
   bool color_enhancement_;
 
-  ViEFileRecorder file_recorder_;
-
   // User set MTU, -1 if not set.
   uint16_t mtu_;
   const bool sender_;
+  // Used to skip default encoder in the new API.
+  const bool disable_default_encoder_;
+
+  int nack_history_size_sender_;
+  int max_nack_reordering_threshold_;
+  I420FrameCallback* pre_render_callback_;
+
+  rtc::scoped_ptr<ReportBlockStats> report_block_stats_sender_;
+  rtc::scoped_ptr<ReportBlockStats> report_block_stats_receiver_;
 };
 
 }  // namespace webrtc

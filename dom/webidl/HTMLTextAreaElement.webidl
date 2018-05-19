@@ -29,6 +29,8 @@ interface HTMLTextAreaElement : HTMLElement {
   [SetterThrows, Pure]
            attribute long maxLength;
   [SetterThrows, Pure]
+           attribute long minLength;
+  [SetterThrows, Pure]
            attribute DOMString name;
   [SetterThrows, Pure]
            attribute DOMString placeholder;
@@ -52,19 +54,23 @@ interface HTMLTextAreaElement : HTMLElement {
   readonly attribute ValidityState validity;
   readonly attribute DOMString validationMessage;
   boolean checkValidity();
+  boolean reportValidity();
   void setCustomValidity(DOMString error);
 
   // readonly attribute NodeList labels;
 
   void select();
   [Throws]
-           attribute unsigned long selectionStart;
+           attribute unsigned long? selectionStart;
   [Throws]
-           attribute unsigned long selectionEnd;
+           attribute unsigned long? selectionEnd;
   [Throws]
-           attribute DOMString selectionDirection;
-  // void setRangeText(DOMString replacement);
-  // void setRangeText(DOMString replacement, unsigned long start, unsigned long end, optional SelectionMode selectionMode);
+           attribute DOMString? selectionDirection;
+  [Throws]
+  void setRangeText(DOMString replacement);
+  [Throws]
+  void setRangeText(DOMString replacement, unsigned long start,
+    unsigned long end, optional SelectionMode selectionMode = "preserve");
   [Throws]
   void setSelectionRange(unsigned long start, unsigned long end, optional DOMString direction);
 };

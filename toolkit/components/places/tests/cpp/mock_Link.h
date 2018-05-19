@@ -11,15 +11,17 @@
 #ifndef mock_Link_h__
 #define mock_Link_h__
 
+#include "mozilla/MemoryReporting.h"
 #include "mozilla/dom/Link.h"
+#include "mozilla/dom/URLSearchParams.h"
 
 class mock_Link : public mozilla::dom::Link
 {
 public:
   NS_DECL_ISUPPORTS
 
-  mock_Link(void (*aHandlerFunction)(nsLinkState),
-            bool aRunNextTest = true)
+  explicit mock_Link(void (*aHandlerFunction)(nsLinkState),
+                     bool aRunNextTest = true)
   : mozilla::dom::Link(nullptr)
   , mHandler(aHandlerFunction)
   , mRunNextTest(aRunNextTest)
@@ -32,20 +34,21 @@ public:
     mDeathGrip = this;
   }
 
-  virtual void SetLinkState(nsLinkState aState)
+  virtual void SetLinkState(nsLinkState aState) override
   {
     // Notify our callback function.
     mHandler(aState);
 
     // Break the cycle so the object can be destroyed.
-    mDeathGrip = 0;
+    mDeathGrip = nullptr;
   }
 
-  virtual size_t SizeOfExcludingThis(nsMallocSizeOfFun aMallocSizeOf) const
+  virtual size_t SizeOfExcludingThis(mozilla::MallocSizeOf aMallocSizeOf) const override
   {
     return 0;   // the value shouldn't matter
   }
 
+protected:
   ~mock_Link() {
     // Run the next test if we are supposed to.
     if (mRunNextTest) {
@@ -56,10 +59,10 @@ public:
 private:
   void (*mHandler)(nsLinkState);
   bool mRunNextTest;
-  nsRefPtr<Link> mDeathGrip;
+  RefPtr<Link> mDeathGrip;
 };
 
-NS_IMPL_ISUPPORTS1(
+NS_IMPL_ISUPPORTS(
   mock_Link,
   mozilla::dom::Link
 )
@@ -100,18 +103,124 @@ Link::ResetLinkState(bool aNotify, bool aHasHref)
   NS_NOTREACHED("Unexpected call to Link::ResetLinkState");
 }
 
-already_AddRefed<nsIURI>
-Link::GetURI() const 
+nsIURI*
+Link::GetURI() const
 {
   NS_NOTREACHED("Unexpected call to Link::GetURI");
   return nullptr; // suppress compiler warning
 }
 
 size_t
-Link::SizeOfExcludingThis(nsMallocSizeOfFun aMallocSizeOf) const
+Link::SizeOfExcludingThis(mozilla::MallocSizeOf aMallocSizeOf) const
 {
   NS_NOTREACHED("Unexpected call to Link::SizeOfExcludingThis");
   return 0;
+}
+
+NS_IMPL_CYCLE_COLLECTION_CLASS(URLSearchParams)
+NS_IMPL_CYCLE_COLLECTION_UNLINK_BEGIN(URLSearchParams)
+NS_IMPL_CYCLE_COLLECTION_UNLINK_END
+NS_IMPL_CYCLE_COLLECTION_TRAVERSE_BEGIN(URLSearchParams)
+NS_IMPL_CYCLE_COLLECTION_TRAVERSE_END
+NS_IMPL_CYCLE_COLLECTION_TRACE_WRAPPERCACHE(URLSearchParams)
+
+NS_IMPL_CYCLE_COLLECTING_ADDREF(URLSearchParams)
+NS_IMPL_CYCLE_COLLECTING_RELEASE(URLSearchParams)
+
+NS_INTERFACE_MAP_BEGIN_CYCLE_COLLECTION(URLSearchParams)
+  NS_WRAPPERCACHE_INTERFACE_MAP_ENTRY
+  NS_INTERFACE_MAP_ENTRY(nsISupports)
+NS_INTERFACE_MAP_END
+
+
+URLSearchParams::URLSearchParams(nsISupports* aParent,
+                                 URLSearchParamsObserver* aObserver)
+{
+}
+
+URLSearchParams::~URLSearchParams()
+{
+}
+
+JSObject*
+URLSearchParams::WrapObject(JSContext* aCx, JS::Handle<JSObject*> aGivenProto)
+{
+  return nullptr;
+}
+
+void
+URLSearchParams::ParseInput(const nsACString& aInput)
+{
+  NS_NOTREACHED("Unexpected call to URLSearchParams::ParseInput");
+}
+
+void
+URLSearchParams::Serialize(nsAString& aValue) const
+{
+  NS_NOTREACHED("Unexpected call to URLSearchParams::Serialize");
+}
+
+void
+URLSearchParams::Get(const nsAString& aName, nsString& aRetval)
+{
+  NS_NOTREACHED("Unexpected call to URLSearchParams::Get");
+}
+
+void
+URLSearchParams::GetAll(const nsAString& aName, nsTArray<nsString >& aRetval)
+{
+  NS_NOTREACHED("Unexpected call to URLSearchParams::GetAll");
+}
+
+void
+URLSearchParams::Set(const nsAString& aName, const nsAString& aValue)
+{
+  NS_NOTREACHED("Unexpected call to URLSearchParams::Set");
+}
+
+void
+URLSearchParams::Append(const nsAString& aName, const nsAString& aValue)
+{
+  NS_NOTREACHED("Unexpected call to URLSearchParams::Append");
+}
+
+void
+URLSearchParams::AppendInternal(const nsAString& aName, const nsAString& aValue)
+{
+  NS_NOTREACHED("Unexpected call to URLSearchParams::AppendInternal");
+}
+
+bool
+URLSearchParams::Has(const nsAString& aName)
+{
+  NS_NOTREACHED("Unexpected call to URLSearchParams::Has");
+  return false;
+}
+
+void
+URLSearchParams::Delete(const nsAString& aName)
+{
+  NS_NOTREACHED("Unexpected call to URLSearchParams::Delete");
+}
+
+void
+URLSearchParams::DeleteAll()
+{
+  NS_NOTREACHED("Unexpected call to URLSearchParams::DeleteAll");
+}
+
+void
+URLSearchParams::NotifyObserver()
+{
+  NS_NOTREACHED("Unexpected call to URLSearchParams::NotifyObserver");
+}
+
+NS_IMETHODIMP
+URLSearchParams::GetSendInfo(nsIInputStream** aBody, uint64_t* aContentLength,
+                             nsACString& aContentType, nsACString& aCharset)
+{
+  NS_NOTREACHED("Unexpected call to URLSearchParams::GetSendInfo");
+  return NS_OK;
 }
 
 } // namespace dom

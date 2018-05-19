@@ -63,8 +63,7 @@ PRLock *_pr_dnsLock = NULL;
 
 #if defined(SOLARIS) || (defined(BSDI) && defined(_REENTRANT)) \
 	|| (defined(LINUX) && defined(_REENTRANT) \
-        && !(defined(__GLIBC__) && __GLIBC__ >= 2) \
-        && !defined(ANDROID))
+        && defined(__GLIBC__) && __GLIBC__ < 2)
 #define _PR_HAVE_GETPROTO_R
 #define _PR_HAVE_GETPROTO_R_POINTER
 #endif
@@ -2228,10 +2227,6 @@ PR_IMPLEMENT(PRStatus) PR_StringToNetAddr(const char *string, PRNetAddr *addr)
 #if !defined(_PR_HAVE_GETADDRINFO)
     return pr_StringToNetAddrFB(string, addr);
 #else
-#if defined(_PR_INET6_PROBE)
-    if (!_pr_ipv6_is_present())
-        return pr_StringToNetAddrFB(string, addr);
-#endif
     /*
      * getaddrinfo with AI_NUMERICHOST is much slower than pr_inet_aton on some
      * platforms, such as Mac OS X (bug 404399), Linux glibc 2.10 (bug 344809),
@@ -2240,6 +2235,11 @@ PR_IMPLEMENT(PRStatus) PR_StringToNetAddr(const char *string, PRNetAddr *addr)
      */
     if (!strchr(string, '%'))
         return pr_StringToNetAddrFB(string, addr);
+
+#if defined(_PR_INET6_PROBE)
+    if (!_pr_ipv6_is_present())
+        return pr_StringToNetAddrFB(string, addr);
+#endif
 
     return pr_StringToNetAddrGAI(string, addr);
 #endif

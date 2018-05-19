@@ -8,6 +8,13 @@
 #ifndef nsDeviceContextSpecOS2_h___
 #define nsDeviceContextSpecOS2_h___
 
+#define INCL_BASE
+#define INCL_PM
+// too pity the above two don't include this one (looks like a bug):
+#define INCL_SPLDOSPRINT
+#define INCL_DEVDJP
+#include <os2.h>
+
 #include "nsCOMPtr.h"
 #include "nsString.h"
 #include "nsIDeviceContextSpec.h"
@@ -25,7 +32,6 @@ class nsDeviceContextSpecOS2 : public nsIDeviceContextSpec
 {
 public:
   nsDeviceContextSpecOS2();
-  virtual ~nsDeviceContextSpecOS2();
 
   NS_DECL_ISUPPORTS
 
@@ -34,8 +40,8 @@ public:
                   bool aIsPrintPreview);
 
   NS_IMETHOD GetSurfaceForPrinter(gfxASurface **nativeSurface);
-  NS_IMETHOD BeginDocument(PRUnichar* aTitle, PRUnichar* aPrintToFileName,
-                           PRInt32 aStartPage, PRInt32 aEndPage);
+  NS_IMETHOD BeginDocument(const nsAString& aTitle, char16_t* aPrintToFileName,
+                           int32_t aStartPage, int32_t aEndPage);
   NS_IMETHOD EndDocument();
   NS_IMETHOD BeginPage();
   NS_IMETHOD EndPage();
@@ -47,6 +53,8 @@ protected:
 
   int16_t    AdjustDestinationForFormat(int16_t aFormat, long driverType);
   nsresult   CreateStreamForFormat(int16_t aFormat, nsIOutputStream **aStream);
+
+  virtual ~nsDeviceContextSpecOS2();
 
   os2PrintQ*    mQueue;
   HDC           mPrintDC;
@@ -60,7 +68,7 @@ protected:
   int32_t       mYDpi;
   nsCString     mDefaultName;
   nsCOMPtr<nsIPrintSettings> mPrintSettings;
-  nsCOMPtr<os2SpoolerStream> mSpoolerStream;
+  RefPtr<os2SpoolerStream> mSpoolerStream;
 };
 
 //---------------------------------------------------------------------------

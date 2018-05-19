@@ -4,30 +4,29 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "nsIOService.h"
-#include "nsFTPChannel.h"
 #include "nsFtpControlConnection.h"
 #include "nsFtpProtocolHandler.h"
-#include "prlog.h"
-#include "nsIPipe.h"
+#include "mozilla/Logging.h"
 #include "nsIInputStream.h"
 #include "nsISocketTransportService.h"
 #include "nsISocketTransport.h"
-#include "nsNetUtil.h"
 #include "nsThreadUtils.h"
-#include "nsCRT.h"
+#include "nsIOutputStream.h"
+#include "nsNetCID.h"
 #include <algorithm>
 
-#if defined(PR_LOGGING)
-extern PRLogModuleInfo* gFTPLog;
-#endif
-#define LOG(args)         PR_LOG(gFTPLog, PR_LOG_DEBUG, args)
-#define LOG_ALWAYS(args)  PR_LOG(gFTPLog, PR_LOG_ALWAYS, args)
+using namespace mozilla;
+using namespace mozilla::net;
+
+extern LazyLogModule gFTPLog;
+#define LOG(args)         MOZ_LOG(gFTPLog, mozilla::LogLevel::Debug, args)
+#define LOG_INFO(args)  MOZ_LOG(gFTPLog, mozilla::LogLevel::Info, args)
 
 //
 // nsFtpControlConnection implementation ...
 //
 
-NS_IMPL_ISUPPORTS1(nsFtpControlConnection, nsIInputStreamCallback)
+NS_IMPL_ISUPPORTS(nsFtpControlConnection, nsIInputStreamCallback)
 
 NS_IMETHODIMP
 nsFtpControlConnection::OnInputStreamReady(nsIAsyncInputStream *stream)
@@ -36,7 +35,7 @@ nsFtpControlConnection::OnInputStreamReady(nsIAsyncInputStream *stream)
 
     // Consume data whether we have a listener or not.
     uint64_t avail64;
-    uint32_t avail;
+    uint32_t avail = 0;
     nsresult rv = stream->Available(&avail64);
     if (NS_SUCCEEDED(rv)) {
         avail = (uint32_t)std::min(avail64, (uint64_t)sizeof(data));
@@ -50,7 +49,7 @@ nsFtpControlConnection::OnInputStreamReady(nsIAsyncInputStream *stream)
     // It's important that we null out mListener before calling one of its
     // methods as it may call WaitData, which would queue up another read.
 
-    nsRefPtr<nsFtpControlConnectionListener> listener;
+    RefPtr<nsFtpControlConnectionListener> listener;
     listener.swap(mListener);
 
     if (!listener)
@@ -67,15 +66,15 @@ nsFtpControlConnection::OnInputStreamReady(nsIAsyncInputStream *stream)
 
 nsFtpControlConnection::nsFtpControlConnection(const nsCSubstring& host,
                                                uint32_t port)
-    : mServerType(0), mSessionId(gFtpHandler->GetSessionId()), mHost(host)
-    , mPort(port)
+    : mServerType(0), mSessionId(gFtpHandler->GetSessionId())
+    , mUseUTF8(false), mHost(host), mPort(port)
 {
-    LOG_ALWAYS(("FTP:CC created @%p", this));
+    LOG_INFO(("FTP:CC created @%p", this));
 }
 
 nsFtpControlConnection::~nsFtpControlConnection() 
 {
-    LOG_ALWAYS(("FTP:CC destroyed @%p", this));
+    LOG_INFO(("FTP:CC destroyed @%p", this));
 }
 
 bool
@@ -157,12 +156,12 @@ nsFtpControlConnection::Disconnect(nsresult status)
     if (!mSocket)
         return NS_OK;  // already disconnected
     
-    LOG_ALWAYS(("FTP:(%p) CC disconnecting (%x)", this, status));
+    LOG_INFO(("FTP:(%p) CC disconnecting (%x)", this, status));
 
     if (NS_FAILED(status)) {
         // break cyclic reference!
         mSocket->Close(status);
-        mSocket = 0;
+        mSocket = nullptr;
         mSocketInput->AsyncWait(nullptr, 0, 0, nullptr);  // clear any observer
         mSocketInput = nullptr;
         mSocketOutput = nullptr;

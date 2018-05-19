@@ -4,18 +4,24 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#include "GonkMemoryPressureMonitoring.h"
-#include "mozilla/FileUtils.h"
-#include "mozilla/Monitor.h"
-#include "mozilla/Preferences.h"
-#include "mozilla/Services.h"
-#include "nsIObserver.h"
-#include "nsIObserverService.h"
-#include "nsThreadUtils.h"
+#include <android/log.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <poll.h>
-#include <android/log.h>
+#include <sys/sysinfo.h>
+
+#include "GonkMemoryPressureMonitoring.h"
+#include "mozilla/ArrayUtils.h"
+#include "mozilla/FileUtils.h"
+#include "mozilla/Monitor.h"
+#include "mozilla/Preferences.h"
+#include "mozilla/ProcessPriorityManager.h"
+#include "mozilla/Services.h"
+#include "nsIObserver.h"
+#include "nsIObserverService.h"
+#include "nsMemoryPressure.h"
+#include "nsPrintfCString.h"
+#include "nsThreadUtils.h"
 
 #define LOG(args...)  \
   __android_log_print(ANDROID_LOG_INFO, "GonkMemoryPressure" , ## args)
@@ -23,37 +29,6 @@
 using namespace mozilla;
 
 namespace {
-
-class MemoryPressureRunnable : public nsRunnable
-{
-  const char *mTopic;
-  const PRUnichar *mData;
-public:
-  MemoryPressureRunnable(const char *aTopic, const PRUnichar *aData) :
-    mTopic(aTopic), mData(aData)
-  {
-  }
-
-  NS_IMETHOD Run()
-  {
-    MOZ_ASSERT(NS_IsMainThread());
-    LOG("Dispatching low-memory memory-pressure event");
-
-    nsCOMPtr<nsIObserverService> os = services::GetObserverService();
-    if (os) {
-      os->NotifyObservers(nullptr, mTopic, mData);
-    }
-    return NS_OK;
-  }
-};
-
-static void
-Dispatch(const char *aTopic, const PRUnichar *aData)
-{
-  nsRefPtr<MemoryPressureRunnable> memoryPressureRunnable =
-    new MemoryPressureRunnable(aTopic, aData);
-  NS_DispatchToMainThread(memoryPressureRunnable);
-}
 
 /**
  * MemoryPressureWatcher watches sysfs from its own thread to notice when the
@@ -84,18 +59,23 @@ Dispatch(const char *aTopic, const PRUnichar *aData)
  * between read()s, we sleep by Wait()'ing on a monitor, which we notify on
  * shutdown.
  */
-class MemoryPressureWatcher
+class MemoryPressureWatcher final
   : public nsIRunnable
   , public nsIObserver
 {
 public:
   MemoryPressureWatcher()
     : mMonitor("MemoryPressureWatcher")
+    , mLowMemTriggerKB(0)
+    , mPageSize(0)
     , mShuttingDown(false)
+    , mTriggerFd(-1)
+    , mShutdownPipeRead(-1)
+    , mShutdownPipeWrite(-1)
   {
   }
 
-  NS_DECL_ISUPPORTS
+  NS_DECL_THREADSAFE_ISUPPORTS
 
   nsresult Init()
   {
@@ -103,24 +83,20 @@ public:
     NS_ENSURE_STATE(os);
 
     // The observer service holds us alive.
-    os->AddObserver(this, NS_XPCOM_SHUTDOWN_OBSERVER_ID, /* holdsWeak */ false);
+    os->AddObserver(this, NS_XPCOM_SHUTDOWN_OBSERVER_ID, /* ownsWeak */ false);
 
-    // While we're under memory pressure, we periodically read()
-    // notify_trigger_active to try and see when we're no longer under memory
-    // pressure.  mPollMS indicates how many milliseconds we wait between those
-    // read()s.
-    mPollMS = Preferences::GetUint("gonk.systemMemoryPressureRecoveryPollMS",
-                                   /* default */ 5000);
+    // Initialize the internal state
+    mPageSize = sysconf(_SC_PAGESIZE);
+    ReadPrefs();
+    nsresult rv = OpenFiles();
+    NS_ENSURE_SUCCESS(rv, rv);
+    SetLowMemTrigger(mSoftLowMemTriggerKB);
 
-    int pipes[2];
-    NS_ENSURE_STATE(!pipe(pipes));
-    mShutdownPipeRead = pipes[0];
-    mShutdownPipeWrite = pipes[1];
     return NS_OK;
   }
 
   NS_IMETHOD Observe(nsISupports* aSubject, const char* aTopic,
-                     const PRUnichar* aData)
+                     const char16_t* aData)
   {
     MOZ_ASSERT(strcmp(aTopic, NS_XPCOM_SHUTDOWN_OBSERVER_ID) == 0);
     LOG("Observed XPCOM shutdown.");
@@ -139,32 +115,35 @@ public:
     return NS_OK;
   }
 
-  NS_IMETHOD Run()
+  NS_IMETHOD Run() override
   {
     MOZ_ASSERT(!NS_IsMainThread());
 
-    int lowMemFd = open("/sys/kernel/mm/lowmemkiller/notify_trigger_active",
-                        O_RDONLY | O_CLOEXEC);
-    NS_ENSURE_STATE(lowMemFd != -1);
-    ScopedClose autoClose(lowMemFd);
-
-    nsresult rv = CheckForMemoryPressure(lowMemFd, nullptr);
+    int triggerResetTimeout = -1;
+    bool memoryPressure;
+    nsresult rv = CheckForMemoryPressure(&memoryPressure);
     NS_ENSURE_SUCCESS(rv, rv);
 
     while (true) {
-      // Wait for a notification on lowMemFd or for data to be written to
-      // mShutdownPipeWrite.  (poll(lowMemFd, POLLPRI) blocks until we're under
-      // memory pressure.)
+      // Wait for a notification on mTriggerFd or for data to be written to
+      // mShutdownPipeWrite.  (poll(mTriggerFd, POLLPRI) blocks until we're
+      // under memory pressure or until we time out, the time out is used
+      // to adjust the trigger level after a memory pressure event.)
       struct pollfd pollfds[2];
-      pollfds[0].fd = lowMemFd;
+      pollfds[0].fd = mTriggerFd;
       pollfds[0].events = POLLPRI;
       pollfds[1].fd = mShutdownPipeRead;
       pollfds[1].events = POLLIN;
 
-      int pollRv;
-      do {
-        pollRv = poll(pollfds, NS_ARRAY_LENGTH(pollfds), /* timeout */ -1);
-      } while (pollRv == -1 && errno == EINTR);
+      int pollRv = MOZ_TEMP_FAILURE_RETRY(
+        poll(pollfds, ArrayLength(pollfds), triggerResetTimeout)
+      );
+
+      if (pollRv == 0) {
+        // Timed out, adjust the trigger and update the timeout.
+        triggerResetTimeout = AdjustTrigger(triggerResetTimeout);
+        continue;
+      }
 
       if (pollfds[1].revents) {
         // Something was written to our shutdown pipe; we're outta here.
@@ -179,23 +158,24 @@ public:
         return NS_ERROR_FAILURE;
       }
 
-      // POLLPRI on lowMemFd indicates that we're in a low-memory situation.  We
-      // could read lowMemFd to double-check, but we've observed that the read
-      // sometimes completes after the memory-pressure event is over, so let's
-      // just believe the result of poll().
+      // POLLPRI on mTriggerFd indicates that we're in a low-memory situation.
+      // We could read lowMemFd to double-check, but we've observed that the
+      // read sometimes completes after the memory-pressure event is over, so
+      // let's just believe the result of poll().
+      rv = DispatchMemoryPressure(MemPressure_New);
+      NS_ENSURE_SUCCESS(rv, rv);
 
-      // We use low-memory-no-forward because each process has its own watcher
-      // and thus there is no need for the main process to forward this event.
-      Dispatch("memory-pressure",
-               NS_LITERAL_STRING("low-memory-no-forward").get());
+      // Move to the hard level if we're on the soft one.
+      if (mLowMemTriggerKB > mHardLowMemTriggerKB) {
+        SetLowMemTrigger(mHardLowMemTriggerKB);
+      }
 
-      // Manually check lowMemFd until we observe that memory pressure is over.
-      // We won't fire any more low-memory events until we observe that
+      // Manually check mTriggerFd until we observe that memory pressure is
+      // over.  We won't fire any more low-memory events until we observe that
       // we're no longer under pressure. Instead, we fire low-memory-ongoing
       // events, which cause processes to keep flushing caches but will not
       // trigger expensive GCs and other attempts to save memory that are
       // likely futile at this point.
-      bool memoryPressure;
       do {
         {
           MonitorAutoLock lock(mMonitor);
@@ -215,15 +195,20 @@ public:
         }
 
         LOG("Checking to see if memory pressure is over.");
-        rv = CheckForMemoryPressure(lowMemFd, &memoryPressure);
+        rv = CheckForMemoryPressure(&memoryPressure);
         NS_ENSURE_SUCCESS(rv, rv);
 
         if (memoryPressure) {
-          Dispatch("memory-pressure",
-                   NS_LITERAL_STRING("low-memory-ongoing-no-forward").get());
+          rv = DispatchMemoryPressure(MemPressure_Ongoing);
+          NS_ENSURE_SUCCESS(rv, rv);
           continue;
         }
       } while (false);
+
+      if (XRE_IsParentProcess()) {
+        // The main process will try to adjust the trigger.
+        triggerResetTimeout = mPollMS * 2;
+      }
 
       LOG("Memory pressure is over.");
     }
@@ -231,48 +216,130 @@ public:
     return NS_OK;
   }
 
+protected:
+  ~MemoryPressureWatcher() {}
+
 private:
+  void ReadPrefs() {
+    // While we're under memory pressure, we periodically read()
+    // notify_trigger_active to try and see when we're no longer under memory
+    // pressure.  mPollMS indicates how many milliseconds we wait between those
+    // read()s.
+    Preferences::AddUintVarCache(&mPollMS,
+      "gonk.systemMemoryPressureRecoveryPollMS", /* default */ 5000);
+
+    // We have two values for the notify trigger, a soft one which is triggered
+    // before we start killing background applications and an hard one which is
+    // after we've killed background applications but before we start killing
+    // foreground ones.
+    Preferences::AddUintVarCache(&mSoftLowMemTriggerKB,
+      "gonk.notifySoftLowMemUnderKB", /* default */ 43008);
+    Preferences::AddUintVarCache(&mHardLowMemTriggerKB,
+      "gonk.notifyHardLowMemUnderKB", /* default */ 14336);
+  }
+
+  nsresult OpenFiles() {
+    mTriggerFd = open("/sys/kernel/mm/lowmemkiller/notify_trigger_active",
+                      O_RDONLY | O_CLOEXEC);
+    NS_ENSURE_STATE(mTriggerFd != -1);
+
+    int pipes[2];
+    NS_ENSURE_STATE(!pipe(pipes));
+    mShutdownPipeRead = pipes[0];
+    mShutdownPipeWrite = pipes[1];
+    return NS_OK;
+  }
+
   /**
-   * Read from aLowMemFd, which we assume corresponds to the
-   * notify_trigger_active sysfs node, and determine whether we're currently
-   * under memory pressure.
+   * Set the low memory trigger to the specified value, this can be done by
+   * the main process alone.
+   */
+  void SetLowMemTrigger(uint32_t aValue) {
+    if (XRE_IsParentProcess()) {
+      nsPrintfCString str("%ld", (aValue * 1024) / mPageSize);
+      if (WriteSysFile("/sys/module/lowmemorykiller/parameters/notify_trigger",
+                       str.get())) {
+        mLowMemTriggerKB = aValue;
+      }
+    }
+  }
+
+  /**
+   * Read from the trigger file descriptor and determine whether we're
+   * currently under memory pressure.
    *
    * We don't expect this method to block.
    */
-  nsresult CheckForMemoryPressure(int aLowMemFd, bool* aOut)
+  nsresult CheckForMemoryPressure(bool* aOut)
   {
-    if (aOut) {
-      *aOut = false;
-    }
+    *aOut = false;
 
-    lseek(aLowMemFd, 0, SEEK_SET);
+    lseek(mTriggerFd, 0, SEEK_SET);
 
     char buf[2];
-    int nread;
-    do {
-      nread = read(aLowMemFd, buf, sizeof(buf));
-    } while(nread == -1 && errno == EINTR);
+    int nread = MOZ_TEMP_FAILURE_RETRY(read(mTriggerFd, buf, sizeof(buf)));
     NS_ENSURE_STATE(nread == 2);
 
     // The notify_trigger_active sysfs node should contain either "0\n" or
     // "1\n".  The latter indicates memory pressure.
-    if (aOut) {
-      *aOut = buf[0] == '1' && buf[1] == '\n';
-    }
+    *aOut = (buf[0] == '1');
     return NS_OK;
   }
 
+  int AdjustTrigger(int timeout)
+  {
+    if (!XRE_IsParentProcess()) {
+      return -1; // Only the main process can adjust the trigger.
+    }
+
+    struct sysinfo info;
+    int rv = sysinfo(&info);
+    if (rv < 0) {
+      return -1; // Without system information we're blind, bail out.
+    }
+
+    size_t freeMemory = (info.freeram * info.mem_unit) / 1024;
+
+    if (freeMemory > mSoftLowMemTriggerKB) {
+      SetLowMemTrigger(mSoftLowMemTriggerKB);
+      return -1; // Trigger adjusted, wait indefinitely.
+    }
+
+    // Wait again but double the duration, max once per day.
+    return std::min(86400000, timeout * 2);
+  }
+
+  /**
+   * Dispatch the specified memory pressure event unless a high-priority
+   * process is present. If a high-priority process is present then it's likely
+   * responding to an urgent event (an incoming call or message for example) so
+   * avoid wasting CPU time responding to low-memory events.
+   */
+  nsresult DispatchMemoryPressure(MemoryPressureState state)
+  {
+    if (ProcessPriorityManager::AnyProcessHasHighPriority()) {
+      return NS_OK;
+    }
+
+    return NS_DispatchMemoryPressure(state);
+  }
+
   Monitor mMonitor;
-  uint32_t mPollMS;
+  uint32_t mPollMS; // Ongoing pressure poll delay
+  uint32_t mSoftLowMemTriggerKB; // Soft memory pressure level
+  uint32_t mHardLowMemTriggerKB; // Hard memory pressure level
+  uint32_t mLowMemTriggerKB; // Current value of the trigger
+  size_t mPageSize;
   bool mShuttingDown;
 
+  ScopedClose mTriggerFd;
   ScopedClose mShutdownPipeRead;
   ScopedClose mShutdownPipeWrite;
 };
 
-NS_IMPL_THREADSAFE_ISUPPORTS2(MemoryPressureWatcher, nsIRunnable, nsIObserver);
+NS_IMPL_ISUPPORTS(MemoryPressureWatcher, nsIRunnable, nsIObserver);
 
-} // anonymous namespace
+} // namespace
 
 namespace mozilla {
 
@@ -280,12 +347,13 @@ void
 InitGonkMemoryPressureMonitoring()
 {
   // memoryPressureWatcher is held alive by the observer service.
-  nsRefPtr<MemoryPressureWatcher> memoryPressureWatcher =
+  RefPtr<MemoryPressureWatcher> memoryPressureWatcher =
     new MemoryPressureWatcher();
   NS_ENSURE_SUCCESS_VOID(memoryPressureWatcher->Init());
 
   nsCOMPtr<nsIThread> thread;
-  NS_NewThread(getter_AddRefs(thread), memoryPressureWatcher);
+  NS_NewNamedThread("MemoryPressure", getter_AddRefs(thread),
+                    memoryPressureWatcher);
 }
 
 } // namespace mozilla

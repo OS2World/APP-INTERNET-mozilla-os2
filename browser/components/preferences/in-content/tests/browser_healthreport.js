@@ -3,28 +3,29 @@
 
 "use strict";
 
+const FHR_UPLOAD_ENABLED = "datareporting.healthreport.uploadEnabled";
+
+function runPaneTest(fn) {
+  open_preferences((win) => {
+    let doc = win.document;
+    win.gotoPref("paneAdvanced");
+    let advancedPrefs = doc.getElementById("advancedPrefs");
+    let tab = doc.getElementById("dataChoicesTab");
+    advancedPrefs.selectedTab = tab;
+    fn(win, doc);
+  });
+}
+
 function test() {
   waitForExplicitFinish();
   resetPreferences();
   registerCleanupFunction(resetPreferences);
-  open_preferences(runTest);
+  runPaneTest(testBasic);
 }
 
-function runTest(win) {
-  let doc = win.document;
-
-  win.gotoPref("paneAdvanced");
-  let advancedPrefs = doc.getElementById("advancedPrefs");
-  let dataChoicesTab = doc.getElementById("dataChoicesTab");
-  advancedPrefs.selectedTab = dataChoicesTab;
-
-  let policy = Components.classes["@mozilla.org/datareporting/service;1"]
-                                 .getService(Components.interfaces.nsISupports)
-                                 .wrappedJSObject
-                                 .policy;
-  ok(policy);
-  is(policy.dataSubmissionPolicyAccepted, false, "Data submission policy not accepted.");
-  is(policy.healthReportUploadEnabled, true, "Health Report upload enabled on app first run.");
+function testBasic(win, doc) {
+  is(Services.prefs.getBoolPref(FHR_UPLOAD_ENABLED), true,
+     "Health Report upload enabled on app first run.");
 
   let checkbox = doc.getElementById("submitHealthReportBox");
   ok(checkbox);
@@ -32,17 +33,30 @@ function runTest(win) {
 
   checkbox.checked = false;
   checkbox.doCommand();
-  is(policy.healthReportUploadEnabled, false, "Unchecking checkbox opts out of FHR upload.");
+  is(Services.prefs.getBoolPref(FHR_UPLOAD_ENABLED), false,
+     "Unchecking checkbox opts out of FHR upload.");
 
   checkbox.checked = true;
   checkbox.doCommand();
-  is(policy.healthReportUploadEnabled, true, "Checking checkbox allows FHR upload.");
+  is(Services.prefs.getBoolPref(FHR_UPLOAD_ENABLED), true,
+     "Checking checkbox allows FHR upload.");
+
+  win.close();
+  Services.prefs.lockPref(FHR_UPLOAD_ENABLED);
+  runPaneTest(testUploadDisabled);
+}
+
+function testUploadDisabled(win, doc) {
+  ok(Services.prefs.prefIsLocked(FHR_UPLOAD_ENABLED), "Upload enabled flag is locked.");
+  let checkbox = doc.getElementById("submitHealthReportBox");
+  is(checkbox.getAttribute("disabled"), "true", "Checkbox is disabled if upload flag is locked.");
+  Services.prefs.unlockPref(FHR_UPLOAD_ENABLED);
 
   win.close();
   finish();
 }
 
 function resetPreferences() {
-  Services.prefs.clearUserPref("datareporting.healthreport.uploadEnabled");
+  Services.prefs.clearUserPref(FHR_UPLOAD_ENABLED);
 }
 

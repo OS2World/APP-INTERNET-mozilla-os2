@@ -1,227 +1,457 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 4 -*- */
-/* vim: set sw=4 ts=8 et ft=cpp: */
+/* -*- Mode: c++; c-basic-offset: 2; indent-tabs-mode: nil; tab-width: 40 -*- */
+/* vim: set ts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+#include "mozilla/ipc/Ril.h"
 #include <fcntl.h>
 #include <sys/socket.h>
 #include <sys/un.h>
-#include <netdb.h> // For gethostbyname.
+#include "jsfriendapi.h"
+#include "mozilla/ArrayUtils.h"
+#include "mozilla/dom/ScriptSettings.h"
+#include "mozilla/dom/workers/Workers.h"
+#include "mozilla/ipc/RilSocket.h"
+#include "mozilla/ipc/RilSocketConsumer.h"
+#include "nsThreadUtils.h" // For NS_IsMainThread.
+#include "RilConnector.h"
 
-#undef LOG
+#ifdef CHROMIUM_LOG
+#undef CHROMIUM_LOG
+#endif
+
 #if defined(MOZ_WIDGET_GONK)
 #include <android/log.h>
-#define LOG(args...)  __android_log_print(ANDROID_LOG_INFO, "Gonk", args)
+#define CHROMIUM_LOG(args...)  __android_log_print(ANDROID_LOG_INFO, "Gonk", args)
 #else
-#define LOG(args...)  printf(args);
+#define CHROMIUM_LOG(args...)  printf(args);
 #endif
-
-#include "jsfriendapi.h"
-#include "nsThreadUtils.h" // For NS_IsMainThread.
-#include "Ril.h"
-
-USING_WORKERS_NAMESPACE
-using namespace mozilla::ipc;
-
-namespace {
-
-const char* RIL_SOCKET_NAME = "/dev/socket/rilproxy";
-
-// Network port to connect to for adb forwarded sockets when doing
-// desktop development.
-const uint32_t RIL_TEST_PORT = 6200;
-
-class DispatchRILEvent : public WorkerTask
-{
-public:
-    DispatchRILEvent(UnixSocketRawData* aMessage)
-      : mMessage(aMessage)
-    { }
-
-    virtual bool RunTask(JSContext *aCx);
-
-private:
-    nsAutoPtr<UnixSocketRawData> mMessage;
-};
-
-bool
-DispatchRILEvent::RunTask(JSContext *aCx)
-{
-    JSObject *obj = JS_GetGlobalForScopeChain(aCx);
-
-    JSObject *array = JS_NewUint8Array(aCx, mMessage->mSize);
-    if (!array) {
-        return false;
-    }
-
-    memcpy(JS_GetArrayBufferViewData(array), mMessage->mData, mMessage->mSize);
-    JS::Value argv[] = { OBJECT_TO_JSVAL(array) };
-    return JS_CallFunctionName(aCx, obj, "onRILMessage", NS_ARRAY_LENGTH(argv),
-                               argv, argv);
-}
-
-class RilConnector : public mozilla::ipc::UnixSocketConnector
-{
-public:
-  RilConnector(unsigned long aClientId) : mClientId(aClientId)
-  {}
-
-  virtual ~RilConnector()
-  {}
-
-  virtual int Create();
-  virtual bool CreateAddr(bool aIsServer,
-                          socklen_t& aAddrSize,
-                          sockaddr_any& aAddr,
-                          const char* aAddress);
-  virtual bool SetUp(int aFd);
-  virtual void GetSocketAddr(const sockaddr_any& aAddr,
-                             nsAString& aAddrStr);
-
-private:
-  unsigned long mClientId;
-};
-
-int
-RilConnector::Create()
-{
-    MOZ_ASSERT(!NS_IsMainThread());
-
-    int fd = -1;
-
-#if defined(MOZ_WIDGET_GONK)
-    fd = socket(AF_LOCAL, SOCK_STREAM, 0);
-#else
-    // If we can't hit a local loopback, fail later in connect.
-    fd = socket(AF_INET, SOCK_STREAM, 0);
-#endif
-
-    if (fd < 0) {
-        NS_WARNING("Could not open ril socket!");
-        return -1;
-    }
-
-    if (!SetUp(fd)) {
-        NS_WARNING("Could not set up socket!");
-    }
-    return fd;
-}
-
-bool
-RilConnector::CreateAddr(bool aIsServer,
-                         socklen_t& aAddrSize,
-                         sockaddr_any& aAddr,
-                         const char* aAddress)
-{
-    // We never open ril socket as server.
-    MOZ_ASSERT(!aIsServer);
-    uint32_t af;
-#if defined(MOZ_WIDGET_GONK)
-    af = AF_LOCAL;
-#else
-    af = AF_INET;
-#endif
-    switch (af) {
-    case AF_LOCAL:
-        aAddr.un.sun_family = af;
-        if(strlen(aAddress) > sizeof(aAddr.un.sun_path)) {
-            NS_WARNING("Address too long for socket struct!");
-            return false;
-        }
-        strcpy((char*)&aAddr.un.sun_path, aAddress);
-        aAddrSize = strlen(aAddress) + offsetof(struct sockaddr_un, sun_path) + 1;
-        break;
-    case AF_INET:
-        aAddr.in.sin_family = af;
-        aAddr.in.sin_port = htons(RIL_TEST_PORT + mClientId);
-        aAddr.in.sin_addr.s_addr = htons(INADDR_LOOPBACK);
-        aAddrSize = sizeof(sockaddr_in);
-        break;
-    default:
-        NS_WARNING("Socket type not handled by connector!");
-        return false;
-    }
-    return true;
-}
-
-bool
-RilConnector::SetUp(int aFd)
-{
-    // Nothing to do here.
-    return true;
-}
-
-void
-RilConnector::GetSocketAddr(const sockaddr_any& aAddr,
-                            nsAString& aAddrStr)
-{
-    // Unused.
-    MOZ_NOT_REACHED("This should never be called!");
-}
-
-} // anonymous namespace
 
 namespace mozilla {
 namespace ipc {
 
-RilConsumer::RilConsumer(unsigned long aClientId,
-                         WorkerCrossThreadDispatcher* aDispatcher)
-    : mDispatcher(aDispatcher)
-    , mClientId(aClientId)
-    , mShutdown(false)
+USING_WORKERS_NAMESPACE;
+using namespace JS;
+
+class RilConsumer;
+
+static const char RIL_SOCKET_NAME[] = "/dev/socket/rilproxy";
+
+static nsTArray<UniquePtr<RilConsumer>> sRilConsumers;
+
+//
+// RilConsumer
+//
+
+class RilConsumer final : public RilSocketConsumer
 {
-    // Only append client id after RIL_SOCKET_NAME when it's not connected to
-    // the first(0) rilproxy for compatibility.
-    if (!aClientId) {
-        mAddress = RIL_SOCKET_NAME;
-    } else {
-        struct sockaddr_un addr_un;
-        snprintf(addr_un.sun_path, sizeof addr_un.sun_path, "%s%lu",
-                 RIL_SOCKET_NAME, aClientId);
-        mAddress = addr_un.sun_path;
+public:
+  RilConsumer();
+
+  nsresult ConnectWorkerToRIL(JSContext* aCx);
+
+  nsresult Register(unsigned long aClientId,
+                    WorkerCrossThreadDispatcher* aDispatcher);
+  void Unregister();
+
+  // Methods for |RilSocketConsumer|
+  //
+
+  void ReceiveSocketData(JSContext* aCx,
+                         int aIndex,
+                         UniquePtr<UnixSocketBuffer>& aBuffer) override;
+  void OnConnectSuccess(int aIndex) override;
+  void OnConnectError(int aIndex) override;
+  void OnDisconnect(int aIndex) override;
+
+protected:
+  static bool PostRILMessage(JSContext* aCx, unsigned aArgc, Value* aVp);
+
+  nsresult Send(JSContext* aCx, const CallArgs& aArgs);
+  nsresult Receive(JSContext* aCx,
+                   uint32_t aClientId,
+                   const UnixSocketBuffer* aBuffer);
+  void Close();
+
+private:
+  RefPtr<RilSocket> mSocket;
+  nsCString mAddress;
+  bool mShutdown;
+};
+
+RilConsumer::RilConsumer()
+  : mShutdown(false)
+{ }
+
+nsresult
+RilConsumer::ConnectWorkerToRIL(JSContext* aCx)
+{
+  // Set up the postRILMessage on the function for worker -> RIL thread
+  // communication.
+  Rooted<JSObject*> workerGlobal(aCx, CurrentGlobalOrNull(aCx));
+
+  // Check whether |postRILMessage| has been defined.  No one but this class
+  // should ever define |postRILMessage| in a RIL worker.
+  Rooted<Value> val(aCx);
+  if (!JS_GetProperty(aCx, workerGlobal, "postRILMessage", &val)) {
+    // Just returning failure here will cause the exception on the JSContext to
+    // be reported as needed.
+    return NS_ERROR_FAILURE;
+  }
+
+  // Make sure that |postRILMessage| is a function.
+  if (JSTYPE_FUNCTION == JS_TypeOfValue(aCx, val)) {
+    return NS_OK;
+  }
+
+  JSFunction* postRILMessage = JS_DefineFunction(aCx, workerGlobal,
+                                                 "postRILMessage",
+                                                 PostRILMessage, 2, 0);
+  if (NS_WARN_IF(!postRILMessage)) {
+    // Just returning failure here will cause the exception on the JSContext to
+    // be reported as needed.
+    return NS_ERROR_FAILURE;
+  }
+  return NS_OK;
+}
+
+nsresult
+RilConsumer::Register(unsigned long aClientId,
+                      WorkerCrossThreadDispatcher* aDispatcher)
+{
+  // Only append client id after RIL_SOCKET_NAME when it's not connected to
+  // the first(0) rilproxy for compatibility.
+  if (!aClientId) {
+    mAddress = RIL_SOCKET_NAME;
+  } else {
+    struct sockaddr_un addr_un;
+    snprintf(addr_un.sun_path, sizeof addr_un.sun_path, "%s%lu",
+             RIL_SOCKET_NAME, aClientId);
+    mAddress = addr_un.sun_path;
+  }
+
+  mSocket = new RilSocket(aDispatcher, this, aClientId);
+
+  nsresult rv = mSocket->Connect(new RilConnector(mAddress, aClientId));
+  if (NS_FAILED(rv)) {
+    return rv;
+  }
+
+  return NS_OK;
+}
+
+void
+RilConsumer::Unregister()
+{
+  mShutdown = true;
+  Close();
+}
+
+bool
+RilConsumer::PostRILMessage(JSContext* aCx, unsigned aArgc, Value* aVp)
+{
+  CallArgs args = CallArgsFromVp(aArgc, aVp);
+
+  if (args.length() != 2) {
+    JS_ReportErrorASCII(aCx, "Expecting two arguments with the RIL message");
+    return false;
+  }
+
+  int clientId = args[0].toInt32();
+
+  if ((ssize_t)sRilConsumers.Length() <= clientId || !sRilConsumers[clientId]) {
+    // Probably shutting down.
+    return true;
+  }
+
+  nsresult rv = sRilConsumers[clientId]->Send(aCx, args);
+  if (NS_FAILED(rv)) {
+    return false;
+  }
+
+  return true;
+}
+
+nsresult
+RilConsumer::Send(JSContext* aCx, const CallArgs& aArgs)
+{
+  if (NS_WARN_IF(!mSocket) ||
+      NS_WARN_IF(mSocket->GetConnectionStatus() == SOCKET_DISCONNECTED)) {
+    // Probably shutting down.
+    return NS_OK;
+  }
+
+  UniquePtr<UnixSocketRawData> raw;
+
+  Value v = aArgs[1];
+
+  if (v.isString()) {
+    JSAutoByteString abs;
+    Rooted<JSString*> str(aCx, v.toString());
+    if (!abs.encodeUtf8(aCx, str)) {
+      return NS_ERROR_FAILURE;
     }
 
-    ConnectSocket(new RilConnector(mClientId), mAddress.get());
-}
-
-void
-RilConsumer::Shutdown()
-{
-    mShutdown = true;
-    CloseSocket();
-}
-
-void
-RilConsumer::ReceiveSocketData(nsAutoPtr<UnixSocketRawData>& aMessage)
-{
-    MOZ_ASSERT(NS_IsMainThread());
-
-    nsRefPtr<DispatchRILEvent> dre(new DispatchRILEvent(aMessage.forget()));
-    mDispatcher->PostTask(dre);
-}
-
-void
-RilConsumer::OnConnectSuccess()
-{
-    // Nothing to do here.
-    LOG("Socket open for RIL\n");
-}
-
-void
-RilConsumer::OnConnectError()
-{
-    LOG("%s\n", __FUNCTION__);
-    CloseSocket();
-}
-
-void
-RilConsumer::OnDisconnect()
-{
-    LOG("%s\n", __FUNCTION__);
-    if (!mShutdown) {
-        ConnectSocket(new RilConnector(mClientId), mAddress.get(), 1000);
+    raw = MakeUnique<UnixSocketRawData>(abs.ptr(), abs.length());
+  } else if (!v.isPrimitive()) {
+    JSObject* obj = v.toObjectOrNull();
+    if (!JS_IsTypedArrayObject(obj)) {
+      JS_ReportErrorASCII(aCx, "Object passed in wasn't a typed array");
+      return NS_ERROR_FAILURE;
     }
+
+    uint32_t type = JS_GetArrayBufferViewType(obj);
+    if (type != js::Scalar::Int8 &&
+        type != js::Scalar::Uint8 &&
+        type != js::Scalar::Uint8Clamped) {
+      JS_ReportErrorASCII(aCx, "Typed array data is not octets");
+      return NS_ERROR_FAILURE;
+    }
+
+    size_t size = JS_GetTypedArrayByteLength(obj);
+    bool isShared;
+    void* data;
+    {
+      AutoCheckCannotGC nogc;
+      data = JS_GetArrayBufferViewData(obj, &isShared, nogc);
+    }
+    if (isShared) {
+      JS_ReportErrorASCII(
+        aCx, "Incorrect argument.  Shared memory not supported");
+      return NS_ERROR_FAILURE;
+    }
+    raw = MakeUnique<UnixSocketRawData>(data, size);
+  } else {
+    JS_ReportErrorASCII(
+      aCx, "Incorrect argument. Expecting a string or a typed array");
+    return NS_ERROR_FAILURE;
+  }
+
+  if (!raw) {
+    JS_ReportErrorASCII(aCx, "Unable to post to RIL");
+    return NS_ERROR_FAILURE;
+  }
+
+  mSocket->SendSocketData(raw.release());
+
+  return NS_OK;
+}
+
+nsresult
+RilConsumer::Receive(JSContext* aCx,
+                     uint32_t aClientId,
+                     const UnixSocketBuffer* aBuffer)
+{
+  MOZ_ASSERT(aBuffer);
+
+  Rooted<JSObject*> obj(aCx, CurrentGlobalOrNull(aCx));
+
+  Rooted<JSObject*> array(aCx, JS_NewUint8Array(aCx, aBuffer->GetSize()));
+  if (NS_WARN_IF(!array)) {
+    // Just suppress the exception, since our callers don't have a way to
+    // indicate they failed.
+    JS_ClearPendingException(aCx);
+    return NS_ERROR_FAILURE;
+  }
+  {
+    AutoCheckCannotGC nogc;
+    bool isShared;
+    memcpy(JS_GetArrayBufferViewData(array, &isShared, nogc),
+           aBuffer->GetData(), aBuffer->GetSize());
+    MOZ_ASSERT(!isShared);      // Array was constructed above.
+  }
+
+  AutoValueArray<2> args(aCx);
+  args[0].setNumber(aClientId);
+  args[1].setObject(*array);
+
+  Rooted<Value> rval(aCx);
+  JS_CallFunctionName(aCx, obj, "onRILMessage", args, &rval);
+  // Just suppress the exception, since our callers don't have a way to
+  // indicate they failed.
+  JS_ClearPendingException(aCx);
+
+  return NS_OK;
+}
+
+void
+RilConsumer::Close()
+{
+  if (mSocket) {
+    mSocket->Close();
+    mSocket = nullptr;
+  }
+}
+
+// |RilSocketConnector|
+
+void
+RilConsumer::ReceiveSocketData(JSContext* aCx,
+                               int aIndex,
+                               UniquePtr<UnixSocketBuffer>& aBuffer)
+{
+  Receive(aCx, (uint32_t)aIndex, aBuffer.get());
+}
+
+void
+RilConsumer::OnConnectSuccess(int aIndex)
+{
+  // Nothing to do here.
+  CHROMIUM_LOG("RIL[%d]: %s\n", aIndex, __FUNCTION__);
+}
+
+void
+RilConsumer::OnConnectError(int aIndex)
+{
+  CHROMIUM_LOG("RIL[%d]: %s\n", aIndex, __FUNCTION__);
+  Close();
+}
+
+void
+RilConsumer::OnDisconnect(int aIndex)
+{
+  CHROMIUM_LOG("RIL[%d]: %s\n", aIndex, __FUNCTION__);
+  if (mShutdown) {
+    return;
+  }
+  mSocket->Connect(new RilConnector(mAddress, aIndex),
+                   mSocket->GetSuggestedConnectDelayMs());
+}
+
+//
+// RilWorker
+//
+
+nsTArray<UniquePtr<RilWorker>> RilWorker::sRilWorkers;
+
+nsresult
+RilWorker::Register(unsigned int aClientId,
+                    WorkerCrossThreadDispatcher* aDispatcher)
+{
+  MOZ_ASSERT(NS_IsMainThread());
+
+  sRilWorkers.EnsureLengthAtLeast(aClientId + 1);
+
+  if (sRilWorkers[aClientId]) {
+    NS_WARNING("RilWorkers already registered");
+    return NS_ERROR_FAILURE;
+  }
+
+  // Now that we're set up, connect ourselves to the RIL thread.
+  sRilWorkers[aClientId] = MakeUnique<RilWorker>(aDispatcher);
+
+  nsresult rv = sRilWorkers[aClientId]->RegisterConsumer(aClientId);
+  if (NS_FAILED(rv)) {
+    return rv;
+  }
+
+  return NS_OK;
+}
+
+void
+RilWorker::Shutdown()
+{
+  MOZ_ASSERT(NS_IsMainThread());
+
+  for (size_t i = 0; i < sRilWorkers.Length(); ++i) {
+    if (!sRilWorkers[i]) {
+      continue;
+    }
+    sRilWorkers[i]->UnregisterConsumer(i);
+    sRilWorkers[i] = nullptr;
+  }
+}
+
+RilWorker::RilWorker(WorkerCrossThreadDispatcher* aDispatcher)
+  : mDispatcher(aDispatcher)
+{
+  MOZ_ASSERT(mDispatcher);
+}
+
+class RilWorker::RegisterConsumerTask : public WorkerTask
+{
+public:
+  RegisterConsumerTask(unsigned int aClientId,
+                       WorkerCrossThreadDispatcher* aDispatcher)
+    : mClientId(aClientId)
+    , mDispatcher(aDispatcher)
+  {
+    MOZ_ASSERT(mDispatcher);
+  }
+
+  bool RunTask(JSContext* aCx) override
+  {
+    sRilConsumers.EnsureLengthAtLeast(mClientId + 1);
+
+    MOZ_ASSERT(!sRilConsumers[mClientId]);
+
+    auto rilConsumer = MakeUnique<RilConsumer>();
+
+    nsresult rv = rilConsumer->ConnectWorkerToRIL(aCx);
+    if (NS_FAILED(rv)) {
+      return false;
+    }
+
+    rv = rilConsumer->Register(mClientId, mDispatcher);
+    if (NS_FAILED(rv)) {
+      return false;
+    }
+    sRilConsumers[mClientId] = Move(rilConsumer);
+
+    return true;
+  }
+
+private:
+  unsigned int mClientId;
+  RefPtr<WorkerCrossThreadDispatcher> mDispatcher;
+};
+
+nsresult
+RilWorker::RegisterConsumer(unsigned int aClientId)
+{
+  RefPtr<RegisterConsumerTask> task = new RegisterConsumerTask(aClientId,
+                                                                 mDispatcher);
+  if (!mDispatcher->PostTask(task)) {
+    NS_WARNING("Failed to post register-consumer task.");
+    return NS_ERROR_UNEXPECTED;
+  }
+
+  return NS_OK;
+}
+
+class RilWorker::UnregisterConsumerTask : public WorkerTask
+{
+public:
+  UnregisterConsumerTask(unsigned int aClientId)
+    : mClientId(aClientId)
+  { }
+
+  bool RunTask(JSContext* aCx) override
+  {
+    MOZ_ASSERT(mClientId < sRilConsumers.Length());
+    MOZ_ASSERT(sRilConsumers[mClientId]);
+
+    sRilConsumers[mClientId]->Unregister();
+    sRilConsumers[mClientId] = nullptr;
+
+    return true;
+  }
+
+private:
+  unsigned int mClientId;
+};
+
+void
+RilWorker::UnregisterConsumer(unsigned int aClientId)
+{
+  RefPtr<UnregisterConsumerTask> task =
+    new UnregisterConsumerTask(aClientId);
+
+  if (!mDispatcher->PostTask(task)) {
+    NS_WARNING("Failed to post unregister-consumer task.");
+    return;
+  }
 }
 
 } // namespace ipc

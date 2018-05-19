@@ -7,185 +7,187 @@
 #include "gfxASurface.h"
 #include "gfxContext.h"
 #include "gfxPlatform.h"
-#include "mozilla/arm.h"
+#include "gfx2DGlue.h"
 #ifdef MOZ_X11
 #include "cairo.h"
 #include "gfxXlibSurface.h"
 #endif
+#include "mozilla/gfx/Logging.h"
 
-gfxSurfaceDrawable::gfxSurfaceDrawable(gfxASurface* aSurface,
-                                       const gfxIntSize aSize,
+using namespace mozilla;
+using namespace mozilla::gfx;
+
+gfxSurfaceDrawable::gfxSurfaceDrawable(SourceSurface* aSurface,
+                                       const IntSize aSize,
                                        const gfxMatrix aTransform)
  : gfxDrawable(aSize)
- , mSurface(aSurface)
+ , mSourceSurface(aSurface)
  , mTransform(aTransform)
 {
+  if (!mSourceSurface) {
+    gfxWarning() << "Creating gfxSurfaceDrawable with null SourceSurface";
+  }
 }
 
-static gfxMatrix
-DeviceToImageTransform(gfxContext* aContext,
-                       const gfxMatrix& aUserSpaceToImageSpace)
+bool
+gfxSurfaceDrawable::DrawWithSamplingRect(DrawTarget* aDrawTarget,
+                                         CompositionOp aOp,
+                                         AntialiasMode aAntialiasMode,
+                                         const gfxRect& aFillRect,
+                                         const gfxRect& aSamplingRect,
+                                         ExtendMode aExtendMode,
+                                         const SamplingFilter aSamplingFilter,
+                                         gfxFloat aOpacity)
 {
-    gfxFloat deviceX, deviceY;
-    nsRefPtr<gfxASurface> currentTarget =
-        aContext->CurrentSurface(&deviceX, &deviceY);
-    gfxMatrix currentMatrix = aContext->CurrentMatrix();
-    gfxMatrix deviceToUser = gfxMatrix(currentMatrix).Invert();
-    deviceToUser.Translate(-gfxPoint(-deviceX, -deviceY));
-    return gfxMatrix(deviceToUser).Multiply(aUserSpaceToImageSpace);
-}
+  if (!mSourceSurface) {
+    return true;
+  }
 
-static void
-PreparePatternForUntiledDrawing(gfxPattern* aPattern,
-                                const gfxMatrix& aDeviceToImage,
-                                gfxASurface *currentTarget,
-                                const gfxPattern::GraphicsFilter aDefaultFilter)
-{
-    if (!currentTarget) {
-        // This happens if we're dealing with an Azure target.
-        aPattern->SetExtend(gfxPattern::EXTEND_PAD);
-        aPattern->SetFilter(aDefaultFilter);
-        return;
-    }
+  // When drawing with CLAMP we can expand the sampling rect to the nearest pixel
+  // without changing the result.
+  IntRect intRect = IntRect::RoundOut(aSamplingRect.x, aSamplingRect.y,
+                                      aSamplingRect.width, aSamplingRect.height);
 
-    // In theory we can handle this using cairo's EXTEND_PAD,
-    // but implementation limitations mean we have to consult
-    // the surface type.
-    switch (currentTarget->GetType()) {
+  IntSize size = mSourceSurface->GetSize();
+  if (!IntRect(IntPoint(), size).Contains(intRect)) {
+    return false;
+  }
 
-#ifdef MOZ_X11
-        case gfxASurface::SurfaceTypeXlib:
-        {
-            // See bugs 324698, 422179, and 468496.  This is a workaround for
-            // XRender's RepeatPad not being implemented correctly on old X
-            // servers.
-            //
-            // In this situation, cairo avoids XRender and instead reads back
-            // to perform EXTEND_PAD with pixman.  This is too slow so we
-            // avoid EXTEND_PAD and set the filter to CAIRO_FILTER_FAST ---
-            // otherwise, pixman's sampling will sample transparency for the
-            // outside edges and we'll get blurry edges.
-            //
-            // But don't do this for simple downscales because it's horrible.
-            // Downscaling means that device-space coordinates are
-            // scaled *up* to find the image pixel coordinates.
-            //
-            // Cairo, and hence Gecko, can use RepeatPad on Xorg 1.7. We
-            // enable EXTEND_PAD provided that we're running on a recent
-            // enough X server.
-            if (static_cast<gfxXlibSurface*>(currentTarget)->IsPadSlow()) {
-                bool isDownscale =
-                    aDeviceToImage.xx >= 1.0 && aDeviceToImage.yy >= 1.0 &&
-                    aDeviceToImage.xy == 0.0 && aDeviceToImage.yx == 0.0;
-
-                gfxPattern::GraphicsFilter filter =
-                    isDownscale ? aDefaultFilter : gfxPattern::FILTER_FAST;
-                aPattern->SetFilter(filter);
-
-                // Use the default EXTEND_NONE
-                break;
-            }
-            // else fall through to EXTEND_PAD and the default filter.
-        }
-#endif
-
-        default:
-            // turn on EXTEND_PAD.
-            // This is what we really want for all surface types, if the
-            // implementation was universally good.
-            aPattern->SetExtend(gfxPattern::EXTEND_PAD);
-            aPattern->SetFilter(aDefaultFilter);
-            break;
-    }
+  DrawInternal(aDrawTarget, aOp, aAntialiasMode, aFillRect, intRect,
+               ExtendMode::CLAMP, aSamplingFilter, aOpacity, gfxMatrix());
+  return true;
 }
 
 bool
 gfxSurfaceDrawable::Draw(gfxContext* aContext,
                          const gfxRect& aFillRect,
-                         bool aRepeat,
-                         const gfxPattern::GraphicsFilter& aFilter,
+                         ExtendMode aExtendMode,
+                         const SamplingFilter aSamplingFilter,
+                         gfxFloat aOpacity,
                          const gfxMatrix& aTransform)
+
 {
-    nsRefPtr<gfxPattern> pattern = new gfxPattern(mSurface);
-    if (aRepeat) {
-        pattern->SetExtend(gfxPattern::EXTEND_REPEAT);
-        pattern->SetFilter(aFilter);
-    } else {
-        gfxPattern::GraphicsFilter filter = aFilter;
-        if (aContext->CurrentMatrix().HasOnlyIntegerTranslation() &&
-            aTransform.HasOnlyIntegerTranslation())
-        {
-          // If we only have integer translation, no special filtering needs to
-          // happen and we explicitly use FILTER_FAST. This is fast for some
-          // backends.
-          filter = gfxPattern::FILTER_FAST;
-        }
-        nsRefPtr<gfxASurface> currentTarget = aContext->CurrentSurface();
-        gfxMatrix deviceSpaceToImageSpace =
-            DeviceToImageTransform(aContext, aTransform);
-        PreparePatternForUntiledDrawing(pattern, deviceSpaceToImageSpace,
-                                        currentTarget, filter);
-    }
-    pattern->SetMatrix(gfxMatrix(aTransform).Multiply(mTransform));
-    aContext->NewPath();
-    aContext->SetPattern(pattern);
-    aContext->Rectangle(aFillRect);
-    aContext->Fill();
+  if (!mSourceSurface) {
     return true;
+  }
+
+  DrawInternal(aContext->GetDrawTarget(), aContext->CurrentOp(),
+               aContext->CurrentAntialiasMode(), aFillRect, IntRect(),
+               aExtendMode, aSamplingFilter, aOpacity, aTransform);
+  return true;
+}
+
+void
+gfxSurfaceDrawable::DrawInternal(DrawTarget* aDrawTarget,
+                                 CompositionOp aOp,
+                                 AntialiasMode aAntialiasMode,
+                                 const gfxRect& aFillRect,
+                                 const IntRect& aSamplingRect,
+                                 ExtendMode aExtendMode,
+                                 const SamplingFilter aSamplingFilter,
+                                 gfxFloat aOpacity,
+                                 const gfxMatrix& aTransform)
+{
+    Matrix patternTransform = ToMatrix(aTransform * mTransform);
+    patternTransform.Invert();
+
+    SurfacePattern pattern(mSourceSurface, aExtendMode,
+                           patternTransform, aSamplingFilter, aSamplingRect);
+
+    Rect fillRect = ToRect(aFillRect);
+
+    if (aOp == CompositionOp::OP_SOURCE && aOpacity == 1.0) {
+        // Emulate cairo operator source which is bound by mask!
+        aDrawTarget->ClearRect(fillRect);
+        aDrawTarget->FillRect(fillRect, pattern);
+    } else {
+        aDrawTarget->FillRect(fillRect, pattern,
+                              DrawOptions(aOpacity, aOp, aAntialiasMode));
+    }
 }
 
 gfxCallbackDrawable::gfxCallbackDrawable(gfxDrawingCallback* aCallback,
-                                         const gfxIntSize aSize)
+                                         const IntSize aSize)
  : gfxDrawable(aSize)
  , mCallback(aCallback)
 {
 }
 
 already_AddRefed<gfxSurfaceDrawable>
-gfxCallbackDrawable::MakeSurfaceDrawable(const gfxPattern::GraphicsFilter aFilter)
+gfxCallbackDrawable::MakeSurfaceDrawable(const SamplingFilter aSamplingFilter)
 {
-    nsRefPtr<gfxASurface> surface =
-        gfxPlatform::GetPlatform()->CreateOffscreenSurface(mSize, gfxASurface::CONTENT_COLOR_ALPHA);
-    if (!surface || surface->CairoStatus() != 0)
+    SurfaceFormat format =
+        gfxPlatform::GetPlatform()->Optimal2DFormatForContent(gfxContentType::COLOR_ALPHA);
+    RefPtr<DrawTarget> dt =
+        gfxPlatform::GetPlatform()->CreateOffscreenContentDrawTarget(mSize,
+                                                                     format);
+    if (!dt || !dt->IsValid())
         return nullptr;
 
-    nsRefPtr<gfxContext> ctx = new gfxContext(surface);
-    Draw(ctx, gfxRect(0, 0, mSize.width, mSize.height), false, aFilter);
-    nsRefPtr<gfxSurfaceDrawable> drawable = new gfxSurfaceDrawable(surface, mSize);
-    return drawable.forget();
+    RefPtr<gfxContext> ctx = gfxContext::CreateOrNull(dt);
+    MOZ_ASSERT(ctx); // already checked for target above
+    Draw(ctx, gfxRect(0, 0, mSize.width, mSize.height), ExtendMode::CLAMP,
+         aSamplingFilter);
+
+    RefPtr<SourceSurface> surface = dt->Snapshot();
+    if (surface) {
+        RefPtr<gfxSurfaceDrawable> drawable = new gfxSurfaceDrawable(surface, mSize);
+        return drawable.forget();
+    }
+    return nullptr;
+}
+
+static bool
+IsRepeatingExtendMode(ExtendMode aExtendMode)
+{
+  switch (aExtendMode) {
+  case ExtendMode::REPEAT:
+  case ExtendMode::REPEAT_X:
+  case ExtendMode::REPEAT_Y:
+    return true;
+  default:
+    return false;
+  }
 }
 
 bool
 gfxCallbackDrawable::Draw(gfxContext* aContext,
                           const gfxRect& aFillRect,
-                          bool aRepeat,
-                          const gfxPattern::GraphicsFilter& aFilter,
+                          ExtendMode aExtendMode,
+                          const SamplingFilter aSamplingFilter,
+                          gfxFloat aOpacity,
                           const gfxMatrix& aTransform)
 {
-    if (aRepeat && !mSurfaceDrawable) {
-        mSurfaceDrawable = MakeSurfaceDrawable(aFilter);
+    if ((IsRepeatingExtendMode(aExtendMode) || aOpacity != 1.0 || aContext->CurrentOp() != CompositionOp::OP_OVER) &&
+        !mSurfaceDrawable) {
+        mSurfaceDrawable = MakeSurfaceDrawable(aSamplingFilter);
     }
 
     if (mSurfaceDrawable)
-        return mSurfaceDrawable->Draw(aContext, aFillRect, aRepeat, aFilter,
-                                      aTransform);
+        return mSurfaceDrawable->Draw(aContext, aFillRect, aExtendMode,
+                                      aSamplingFilter,
+                                      aOpacity, aTransform);
 
     if (mCallback)
-        return (*mCallback)(aContext, aFillRect, aFilter, aTransform);
+        return (*mCallback)(aContext, aFillRect, aSamplingFilter, aTransform);
 
     return false;
 }
 
 gfxPatternDrawable::gfxPatternDrawable(gfxPattern* aPattern,
-                                       const gfxIntSize aSize)
+                                       const IntSize aSize)
  : gfxDrawable(aSize)
  , mPattern(aPattern)
 {
 }
 
+gfxPatternDrawable::~gfxPatternDrawable()
+{
+}
+
 class DrawingCallbackFromDrawable : public gfxDrawingCallback {
 public:
-    DrawingCallbackFromDrawable(gfxDrawable* aDrawable)
+    explicit DrawingCallbackFromDrawable(gfxDrawable* aDrawable)
      : mDrawable(aDrawable) {
         NS_ASSERTION(aDrawable, "aDrawable is null!");
     }
@@ -194,22 +196,23 @@ public:
 
     virtual bool operator()(gfxContext* aContext,
                               const gfxRect& aFillRect,
-                              const gfxPattern::GraphicsFilter& aFilter,
+                              const SamplingFilter aSamplingFilter,
                               const gfxMatrix& aTransform = gfxMatrix())
     {
-        return mDrawable->Draw(aContext, aFillRect, false, aFilter,
+        return mDrawable->Draw(aContext, aFillRect, ExtendMode::CLAMP,
+                               aSamplingFilter, 1.0,
                                aTransform);
     }
 private:
-    nsRefPtr<gfxDrawable> mDrawable;
+    RefPtr<gfxDrawable> mDrawable;
 };
 
 already_AddRefed<gfxCallbackDrawable>
 gfxPatternDrawable::MakeCallbackDrawable()
 {
-    nsRefPtr<gfxDrawingCallback> callback =
+    RefPtr<gfxDrawingCallback> callback =
         new DrawingCallbackFromDrawable(this);
-    nsRefPtr<gfxCallbackDrawable> callbackDrawable =
+    RefPtr<gfxCallbackDrawable> callbackDrawable =
         new gfxCallbackDrawable(callback, mSize);
     return callbackDrawable.forget();
 }
@@ -217,14 +220,17 @@ gfxPatternDrawable::MakeCallbackDrawable()
 bool
 gfxPatternDrawable::Draw(gfxContext* aContext,
                          const gfxRect& aFillRect,
-                         bool aRepeat,
-                         const gfxPattern::GraphicsFilter& aFilter,
+                         ExtendMode aExtendMode,
+                         const SamplingFilter aSamplingFilter,
+                         gfxFloat aOpacity,
                          const gfxMatrix& aTransform)
 {
+    DrawTarget& aDrawTarget = *aContext->GetDrawTarget();
+
     if (!mPattern)
         return false;
 
-    if (aRepeat) {
+    if (IsRepeatingExtendMode(aExtendMode)) {
         // We can't use mPattern directly: We want our repeated tiles to have
         // the size mSize, which might not be the case in mPattern.
         // So we need to draw mPattern into a surface of size mSize, create
@@ -232,17 +238,17 @@ gfxPatternDrawable::Draw(gfxContext* aContext,
         // gfxCallbackDrawable and gfxSurfaceDrawable already know how to do
         // those things, so we use them here. Drawing mPattern into the surface
         // will happen through this Draw() method with aRepeat = false.
-        nsRefPtr<gfxCallbackDrawable> callbackDrawable = MakeCallbackDrawable();
-        return callbackDrawable->Draw(aContext, aFillRect, true, aFilter,
-                                      aTransform);
+        RefPtr<gfxCallbackDrawable> callbackDrawable = MakeCallbackDrawable();
+        return callbackDrawable->Draw(aContext, aFillRect, aExtendMode,
+                                      aSamplingFilter,
+                                      aOpacity, aTransform);
     }
 
-    aContext->NewPath();
     gfxMatrix oldMatrix = mPattern->GetMatrix();
-    mPattern->SetMatrix(gfxMatrix(aTransform).Multiply(oldMatrix));
-    aContext->SetPattern(mPattern);
-    aContext->Rectangle(aFillRect);
-    aContext->Fill();
+    mPattern->SetMatrix(aTransform * oldMatrix);
+    DrawOptions drawOptions(aOpacity);
+    aDrawTarget.FillRect(ToRect(aFillRect),
+                         *mPattern->GetPattern(&aDrawTarget), drawOptions);
     mPattern->SetMatrix(oldMatrix);
     return true;
 }

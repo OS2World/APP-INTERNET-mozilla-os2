@@ -11,7 +11,7 @@
 #ifndef WEBRTC_MODULES_AUDIO_PROCESSING_NS_INCLUDE_NOISE_SUPPRESSION_X_H_
 #define WEBRTC_MODULES_AUDIO_PROCESSING_NS_INCLUDE_NOISE_SUPPRESSION_X_H_
 
-#include "typedefs.h"
+#include "webrtc/typedefs.h"
 
 typedef struct NsxHandleT NsxHandle;
 
@@ -61,7 +61,7 @@ int WebRtcNsx_Free(NsxHandle* nsxInst);
  * Return value         :  0 - Ok
  *                        -1 - Error
  */
-int WebRtcNsx_Init(NsxHandle* nsxInst, WebRtc_UWord32 fs);
+int WebRtcNsx_Init(NsxHandle* nsxInst, uint32_t fs);
 
 /*
  * This changes the aggressiveness of the noise suppression method.
@@ -84,23 +84,17 @@ int WebRtcNsx_set_policy(NsxHandle* nsxInst, int mode);
  *
  * Input
  *      - nsxInst       : NSx instance. Needs to be initiated before call.
- *      - speechFrame   : Pointer to speech frame buffer for L band
- *      - speechFrameHB : Pointer to speech frame buffer for H band
- *      - fs            : sampling frequency
+ *      - speechFrame   : Pointer to speech frame buffer for each band
+ *      - num_bands     : Number of bands
  *
  * Output:
  *      - nsxInst       : Updated NSx instance
- *      - outFrame      : Pointer to output frame for L band
- *      - outFrameHB    : Pointer to output frame for H band
- *
- * Return value         :  0 - OK
- *                        -1 - Error
+ *      - outFrame      : Pointer to output frame for each band
  */
-int WebRtcNsx_Process(NsxHandle* nsxInst,
-                      short* speechFrame,
-                      short* speechFrameHB,
-                      short* outFrame,
-                      short* outFrameHB);
+void WebRtcNsx_Process(NsxHandle* nsxInst,
+                       const short* const* speechFrame,
+                       int num_bands,
+                       short* const* outFrame);
 
 #ifdef __cplusplus
 }

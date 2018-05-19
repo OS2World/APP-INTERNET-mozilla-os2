@@ -5,67 +5,87 @@
 
 #include "SharedSurfaceEGL.h"
 
-#include "GLContext.h"
-#include "SharedSurfaceGL.h"
-#include "SurfaceFactory.h"
+#include "GLBlitHelper.h"
+#include "GLContextEGL.h"
 #include "GLLibraryEGL.h"
-
-using namespace mozilla::gfx;
+#include "GLReadTexImageHelper.h"
+#include "mozilla/layers/LayersSurfaces.h"  // for SurfaceDescriptor, etc
+#include "SharedSurface.h"
+#include "TextureGarbageBin.h"
 
 namespace mozilla {
 namespace gl {
 
-SharedSurface_EGLImage*
+/*static*/ UniquePtr<SharedSurface_EGLImage>
 SharedSurface_EGLImage::Create(GLContext* prodGL,
                                const GLFormats& formats,
-                               const gfxIntSize& size,
+                               const gfx::IntSize& size,
                                bool hasAlpha,
                                EGLContext context)
 {
-    GLLibraryEGL* egl = prodGL->GetLibraryEGL();
+    GLLibraryEGL* egl = &sEGLLibrary;
     MOZ_ASSERT(egl);
+    MOZ_ASSERT(context);
 
-    if (!HasExtensions(egl, prodGL))
-        return nullptr;
+    UniquePtr<SharedSurface_EGLImage> ret;
+
+    if (!HasExtensions(egl, prodGL)) {
+        return Move(ret);
+    }
 
     MOZ_ALWAYS_TRUE(prodGL->MakeCurrent());
-    GLuint prodTex = prodGL->CreateTextureForOffscreen(formats, size);
-    if (!prodTex)
-        return nullptr;
+    GLuint prodTex = CreateTextureForOffscreen(prodGL, formats, size);
+    if (!prodTex) {
+        return Move(ret);
+    }
 
-    return new SharedSurface_EGLImage(prodGL, egl,
-                                      size, hasAlpha,
-                                      formats, prodTex);
+    EGLClientBuffer buffer = reinterpret_cast<EGLClientBuffer>(uintptr_t(prodTex));
+    EGLImage image = egl->fCreateImage(egl->Display(), context,
+                                       LOCAL_EGL_GL_TEXTURE_2D, buffer,
+                                       nullptr);
+    if (!image) {
+        prodGL->fDeleteTextures(1, &prodTex);
+        return Move(ret);
+    }
+
+    ret.reset( new SharedSurface_EGLImage(prodGL, egl, size, hasAlpha,
+                                          formats, prodTex, image) );
+    return Move(ret);
 }
-
 
 bool
 SharedSurface_EGLImage::HasExtensions(GLLibraryEGL* egl, GLContext* gl)
 {
     return egl->HasKHRImageBase() &&
            egl->IsExtensionSupported(GLLibraryEGL::KHR_gl_texture_2D_image) &&
-           gl->IsExtensionSupported(GLContext::OES_EGL_image);
+           (gl->IsExtensionSupported(GLContext::OES_EGL_image_external) ||
+            gl->IsExtensionSupported(GLContext::OES_EGL_image));
 }
+
+SharedSurface_EGLImage::SharedSurface_EGLImage(GLContext* gl,
+                                               GLLibraryEGL* egl,
+                                               const gfx::IntSize& size,
+                                               bool hasAlpha,
+                                               const GLFormats& formats,
+                                               GLuint prodTex,
+                                               EGLImage image)
+    : SharedSurface(SharedSurfaceType::EGLImageShare,
+                    AttachmentType::GLTexture,
+                    gl,
+                    size,
+                    hasAlpha,
+                    false) // Can't recycle, as mSync changes never update TextureHost.
+    , mMutex("SharedSurface_EGLImage mutex")
+    , mEGL(egl)
+    , mFormats(formats)
+    , mProdTex(prodTex)
+    , mImage(image)
+    , mSync(0)
+{}
 
 SharedSurface_EGLImage::~SharedSurface_EGLImage()
 {
     mEGL->fDestroyImage(Display(), mImage);
-    mImage = 0;
-
-    mGL->MakeCurrent();
-    mGL->fDeleteTextures(1, &mProdTex);
-    mProdTex = 0;
-
-    if (mProdTexForPipe) {
-        mGL->fDeleteTextures(1, &mProdTexForPipe);
-        mProdTexForPipe = 0;
-    }
-
-    if (mConsTex) {
-        MOZ_ASSERT(mGarbageBin);
-        mGarbageBin->Trash(mConsTex);
-        mConsTex = 0;
-    }
 
     if (mSync) {
         // We can't call this unless we have the ext, but we will always have
@@ -73,93 +93,31 @@ SharedSurface_EGLImage::~SharedSurface_EGLImage()
         mEGL->fDestroySync(Display(), mSync);
         mSync = 0;
     }
-}
 
-void
-SharedSurface_EGLImage::LockProdImpl()
-{
-    MutexAutoLock lock(mMutex);
-
-    if (!mPipeComplete)
+    if (!mGL || !mGL->MakeCurrent())
         return;
 
-    if (mPipeActive)
-        return;
-
-    mGL->BlitTextureToTexture(mProdTex, mProdTexForPipe, Size(), Size());
     mGL->fDeleteTextures(1, &mProdTex);
-    mProdTex = mProdTexForPipe;
-    mProdTexForPipe = 0;
-    mPipeActive = true;
+    mProdTex = 0;
 }
 
-static bool
-CreateTexturePipe(GLLibraryEGL* const egl, GLContext* const gl,
-                  const GLFormats& formats, const gfxIntSize& size,
-                  GLuint* const out_tex, EGLImage* const out_image)
+layers::TextureFlags
+SharedSurface_EGLImage::GetTextureFlags() const
 {
-    MOZ_ASSERT(out_tex && out_image);
-    *out_tex = 0;
-    *out_image = 0;
-
-    GLuint tex = gl->CreateTextureForOffscreen(formats, size);
-    if (!tex)
-        return false;
-
-    EGLContext context = gl->GetEGLContext();
-    MOZ_ASSERT(context);
-    EGLClientBuffer buffer = reinterpret_cast<EGLClientBuffer>(tex);
-    EGLImage image = egl->fCreateImage(egl->Display(), context,
-                                       LOCAL_EGL_GL_TEXTURE_2D, buffer,
-                                       nullptr);
-    if (!image) {
-        gl->fDeleteTextures(1, &tex);
-        return false;
-    }
-
-    // Success.
-    *out_tex = tex;
-    *out_image = image;
-    return true;
+    return layers::TextureFlags::DEALLOCATE_CLIENT;
 }
 
 void
-SharedSurface_EGLImage::Fence()
+SharedSurface_EGLImage::ProducerReleaseImpl()
 {
     MutexAutoLock lock(mMutex);
     mGL->MakeCurrent();
-
-    if (!mPipeActive) {
-        MOZ_ASSERT(!mSync);
-        MOZ_ASSERT(!mPipeComplete);
-
-        if (!mPipeFailed) {
-            if (!CreateTexturePipe(mEGL, mGL, mFormats, Size(),
-                                   &mProdTexForPipe, &mImage))
-            {
-                mPipeFailed = true;
-            }
-        }
-
-        if (!mPixels) {
-            gfxASurface::gfxImageFormat format =
-                  HasAlpha() ? gfxASurface::ImageFormatARGB32
-                             : gfxASurface::ImageFormatRGB24;
-            mPixels = new gfxImageSurface(Size(), format);
-        }
-
-        mPixels->Flush();
-        mGL->ReadScreenIntoImageSurface(mPixels);
-        mPixels->MarkDirty();
-        return;
-    }
-    MOZ_ASSERT(mPipeActive);
-    MOZ_ASSERT(mCurConsGL);
 
     if (mEGL->IsExtensionSupported(GLLibraryEGL::KHR_fence_sync) &&
         mGL->IsExtensionSupported(GLContext::OES_EGL_sync))
     {
         if (mSync) {
+            MOZ_RELEASE_ASSERT(false, "GFX: Non-recycleable should not Fence twice.");
             MOZ_ALWAYS_TRUE( mEGL->fDestroySync(Display(), mSync) );
             mSync = 0;
         }
@@ -177,36 +135,14 @@ SharedSurface_EGLImage::Fence()
     mGL->fFinish();
 }
 
-bool
-SharedSurface_EGLImage::WaitSync()
+void
+SharedSurface_EGLImage::ProducerReadAcquireImpl()
 {
-    MutexAutoLock lock(mMutex);
-    if (!mSync) {
-        // We must not be needed.
-        return true;
+    // Wait on the fence, because presumably we're going to want to read this surface
+    if (mSync) {
+        mEGL->fClientWaitSync(Display(), mSync, 0, LOCAL_EGL_FOREVER);
     }
-    MOZ_ASSERT(mEGL->IsExtensionSupported(GLLibraryEGL::KHR_fence_sync));
-
-    // Wait FOREVER, primarily because some NVIDIA (at least Tegra) drivers
-    // have ClientWaitSync returning immediately if the timeout delay is anything
-    // else than FOREVER.
-    //
-    // FIXME: should we try to use a finite timeout delay where possible?
-    EGLint status = mEGL->fClientWaitSync(Display(),
-                                          mSync,
-                                          0,
-                                          LOCAL_EGL_FOREVER);
-
-    if (status != LOCAL_EGL_CONDITION_SATISFIED) {
-        return false;
-    }
-
-    MOZ_ALWAYS_TRUE( mEGL->fDestroySync(Display(), mSync) );
-    mSync = 0;
-
-    return true;
 }
-
 
 EGLDisplay
 SharedSurface_EGLImage::Display() const
@@ -214,51 +150,42 @@ SharedSurface_EGLImage::Display() const
     return mEGL->Display();
 }
 
-GLuint
-SharedSurface_EGLImage::AcquireConsumerTexture(GLContext* consGL)
+bool
+SharedSurface_EGLImage::ToSurfaceDescriptor(layers::SurfaceDescriptor* const out_descriptor)
 {
-    MutexAutoLock lock(mMutex);
-    MOZ_ASSERT(!mCurConsGL || consGL == mCurConsGL);
-    if (mPipeFailed)
-        return 0;
+    *out_descriptor = layers::EGLImageDescriptor((uintptr_t)mImage, (uintptr_t)mSync,
+                                                 mSize, mHasAlpha);
+    return true;
+}
 
-    if (mPipeActive) {
-        MOZ_ASSERT(mConsTex);
+bool
+SharedSurface_EGLImage::ReadbackBySharedHandle(gfx::DataSourceSurface* out_surface)
+{
+    MOZ_ASSERT(out_surface);
+    MOZ_ASSERT(NS_IsMainThread());
+    return sEGLLibrary.ReadbackEGLImage(mImage, out_surface);
+}
 
-        return mConsTex;
+////////////////////////////////////////////////////////////////////////
+
+/*static*/ UniquePtr<SurfaceFactory_EGLImage>
+SurfaceFactory_EGLImage::Create(GLContext* prodGL, const SurfaceCaps& caps,
+                                const RefPtr<layers::LayersIPCChannel>& allocator,
+                                const layers::TextureFlags& flags)
+{
+    EGLContext context = GLContextEGL::Cast(prodGL)->mContext;
+
+    typedef SurfaceFactory_EGLImage ptrT;
+    UniquePtr<ptrT> ret;
+
+    GLLibraryEGL* egl = &sEGLLibrary;
+    if (SharedSurface_EGLImage::HasExtensions(egl, prodGL)) {
+        ret.reset( new ptrT(prodGL, caps, allocator, flags, context) );
     }
 
-    if (!mConsTex) {
-        consGL->fGenTextures(1, &mConsTex);
-        ScopedBindTexture autoTex(consGL, mConsTex);
-        consGL->fEGLImageTargetTexture2D(LOCAL_GL_TEXTURE_2D, mImage);
-
-        mPipeComplete = true;
-        mCurConsGL = consGL;
-        mGarbageBin = consGL->TexGarbageBin();
-    }
-
-    MOZ_ASSERT(consGL == mCurConsGL);
-    return 0;
+    return Move(ret);
 }
 
-gfxImageSurface*
-SharedSurface_EGLImage::GetPixels() const
-{
-    MutexAutoLock lock(mMutex);
-    return mPixels;
-}
+} // namespace gl
 
-
-
-SurfaceFactory_EGLImage*
-SurfaceFactory_EGLImage::Create(GLContext* prodGL,
-                                        const SurfaceCaps& caps)
-{
-    EGLContext context = prodGL->GetEGLContext();
-
-    return new SurfaceFactory_EGLImage(prodGL, context, caps);
-}
-
-} /* namespace gfx */
 } /* namespace mozilla */

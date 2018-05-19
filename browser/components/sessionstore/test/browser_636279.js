@@ -1,13 +1,13 @@
 /* Any copyright is dedicated to the Public Domain.
    http://creativecommons.org/publicdomain/zero/1.0/ */
 
-let stateBackup = ss.getBrowserState();
+var stateBackup = ss.getBrowserState();
 
-let statePinned = {windows:[{tabs:[
+var statePinned = {windows:[{tabs:[
   {entries:[{url:"http://example.com#1"}], pinned: true}
 ]}]};
 
-let state = {windows:[{tabs:[
+var state = {windows:[{tabs:[
   {entries:[{url:"http://example.com#1"}]},
   {entries:[{url:"http://example.com#2"}]},
   {entries:[{url:"http://example.com#3"}]},
@@ -71,14 +71,14 @@ function countTabs() {
   return [needsRestore, isRestoring];
 }
 
-let TabsProgressListener = {
+var TabsProgressListener = {
   init: function () {
-    gBrowser.addTabsProgressListener(this);
+    Services.obs.addObserver(this, "sessionstore-debug-tab-restored", false);
   },
 
   uninit: function () {
+    Services.obs.removeObserver(this, "sessionstore-debug-tab-restored");
     this.unsetCallback();
-    gBrowser.removeTabsProgressListener(this);
  },
 
   setCallback: function (callback) {
@@ -89,11 +89,13 @@ let TabsProgressListener = {
     delete this.callback;
   },
 
-  onStateChange: function (aBrowser, aWebProgress, aRequest, aStateFlags, aStatus) {
-    if (this.callback && aBrowser.__SS_restoreState == TAB_STATE_RESTORING &&
-        aStateFlags & Ci.nsIWebProgressListener.STATE_STOP &&
-        aStateFlags & Ci.nsIWebProgressListener.STATE_IS_NETWORK &&
-        aStateFlags & Ci.nsIWebProgressListener.STATE_IS_WINDOW)
+  observe: function (browser, topic, data) {
+    TabsProgressListener.onRestored(browser);
+  },
+
+  onRestored: function (browser) {
+    if (this.callback && browser.__SS_restoreState == TAB_STATE_RESTORING) {
       this.callback.apply(null, countTabs());
+    }
   }
 }

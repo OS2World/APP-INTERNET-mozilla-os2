@@ -2,9 +2,9 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-let EXPORTED_SYMBOLS = ["LightweightThemeConsumer"];
-let Cc = Components.classes;
-let Ci = Components.interfaces;
+var EXPORTED_SYMBOLS = ["LightweightThemeConsumer"];
+var Cc = Components.classes;
+var Ci = Components.interfaces;
 
 Components.utils.import("resource://gre/modules/Services.jsm");
 Components.utils.import("resource://gre/modules/LightweightThemeManager.jsm");
@@ -39,7 +39,6 @@ LightweightThemeConsumer.prototype = {
 
     let msg = active ? { type: "LightweightTheme:Update", data: aData } :
                        { type: "LightweightTheme:Disable" };
-    let bridge = Cc["@mozilla.org/android/bridge;1"].getService(Ci.nsIAndroidBridge);
-    bridge.handleGeckoMessage(JSON.stringify(msg));
+    Services.androidBridge.handleGeckoMessage(msg);
   }
 }

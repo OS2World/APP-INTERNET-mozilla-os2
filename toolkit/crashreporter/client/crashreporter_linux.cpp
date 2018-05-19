@@ -14,6 +14,8 @@
 #include "crashreporter.h"
 #include "crashreporter_gtk_common.h"
 
+#define LABEL_MAX_CHAR_WIDTH 48
+
 using std::string;
 using std::vector;
 
@@ -30,9 +32,9 @@ static bool gEmailFieldHint = true;
 static bool gCommentFieldHint = true;
 
 // handle from dlopen'ing libgnome
-static void* gnomeLib = NULL;
+static void* gnomeLib = nullptr;
 // handle from dlopen'ing libgnomeui
-static void* gnomeuiLib = NULL;
+static void* gnomeuiLib = nullptr;
 
 static void LoadSettings()
 {
@@ -118,7 +120,7 @@ void SendReport()
 
   // and spawn a thread to do the sending
   GError* err;
-  gSendThreadID = g_thread_create(SendThread, NULL, TRUE, &err);
+  gSendThreadID = g_thread_create(SendThread, nullptr, TRUE, &err);
 }
 
 static void ShowReportInfo(GtkTextView* viewReportTextView)
@@ -178,14 +180,17 @@ static void ViewReportClicked(GtkButton* button,
                                            GTK_DIALOG_MODAL,
                                            GTK_STOCK_OK,
                                            GTK_RESPONSE_OK,
-                                           NULL));
+                                           nullptr));
 
   GtkWidget* scrolled = gtk_scrolled_window_new(0, 0);
-  gtk_container_add(GTK_CONTAINER(dialog->vbox), scrolled);
+  gtk_container_add(GTK_CONTAINER(gtk_dialog_get_content_area(dialog)), scrolled);
   gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(scrolled),
-                                 GTK_POLICY_NEVER, GTK_POLICY_ALWAYS);
+                                 GTK_POLICY_AUTOMATIC, GTK_POLICY_ALWAYS);
   gtk_scrolled_window_set_shadow_type(GTK_SCROLLED_WINDOW(scrolled),
                                       GTK_SHADOW_IN);
+#if (MOZ_WIDGET_GTK >= 3)
+  gtk_widget_set_vexpand(scrolled, TRUE);
+#endif
 
   GtkWidget* viewReportTextView = gtk_text_view_new();
   gtk_container_add(GTK_CONTAINER(scrolled), viewReportTextView);
@@ -235,26 +240,26 @@ static void CommentInsert(GtkTextBuffer* buffer,
 static void UpdateHintText(GtkWidget* widget, gboolean gainedFocus,
                            bool* hintShowing, const char* hintText)
 {
-  GtkTextBuffer* buffer = NULL;
+  GtkTextBuffer* buffer = nullptr;
   if (GTK_IS_TEXT_VIEW(widget))
     buffer = gtk_text_view_get_buffer(GTK_TEXT_VIEW(widget));
 
   if (gainedFocus) {
     if (*hintShowing) {
-      if (buffer == NULL) { // sort of cheating
+      if (buffer == nullptr) { // sort of cheating
         gtk_entry_set_text(GTK_ENTRY(widget), "");
       }
       else { // GtkTextView
         gtk_text_buffer_set_text(buffer, "", 0);
       }
-      gtk_widget_modify_text(widget, GTK_STATE_NORMAL, NULL);
+      gtk_widget_modify_text(widget, GTK_STATE_NORMAL, nullptr);
       *hintShowing = false;
     }
   }
   else {
     // lost focus
-    const char* text = NULL;
-    if (buffer == NULL) {
+    const char* text = nullptr;
+    if (buffer == nullptr) {
       text = gtk_entry_get_text(GTK_ENTRY(widget));
     }
     else {
@@ -264,10 +269,10 @@ static void UpdateHintText(GtkWidget* widget, gboolean gainedFocus,
       text = gtk_text_buffer_get_text(buffer, &start, &end, TRUE);
     }
 
-    if (text == NULL || text[0] == '\0') {
+    if (text == nullptr || text[0] == '\0') {
       *hintShowing = true;
 
-      if (buffer == NULL) {
+      if (buffer == nullptr) {
         gtk_entry_set_text(GTK_ENTRY(widget), hintText);
       }
       else {
@@ -347,7 +352,7 @@ void TryInitGnome()
 
   if (gnome_program_init && libgnomeui_module_info_get) {
     gnome_program_init("crashreporter", "1.0", libgnomeui_module_info_get(),
-                       gArgc, gArgv, NULL);
+                       gArgc, gArgv, nullptr);
   }
 
 }
@@ -376,12 +381,12 @@ void UIShutdown()
   // Don't dlclose gnomeLib as libgnomevfs and libORBit-2 use atexit().
 }
 
-bool UIShowCrashUI(const string& dumpfile,
+bool UIShowCrashUI(const StringTable& files,
                    const StringTable& queryParameters,
                    const string& sendURL,
                    const vector<string>& restartArgs)
 {
-  gDumpFile = dumpfile;
+  gFiles = files;
   gQueryParameters = queryParameters;
   gSendURL = sendURL;
   gRestartArgs = restartArgs;
@@ -395,6 +400,7 @@ bool UIShowCrashUI(const string& dumpfile,
   gtk_window_set_position(GTK_WINDOW(gWindow), GTK_WIN_POS_CENTER);
   gtk_container_set_border_width(GTK_CONTAINER(gWindow), 12);
   g_signal_connect(gWindow, "delete-event", G_CALLBACK(WindowDeleted), 0);
+  g_signal_connect(gWindow, "key_press_event", G_CALLBACK(check_escape), nullptr);
 
   GtkWidget* vbox = gtk_vbox_new(FALSE, 6);
   gtk_container_add(GTK_CONTAINER(gWindow), vbox);
@@ -411,7 +417,11 @@ bool UIShowCrashUI(const string& dumpfile,
     gtk_label_new(gStrings[ST_CRASHREPORTERDESCRIPTION].c_str());
   gtk_box_pack_start(GTK_BOX(vbox), descriptionLabel, TRUE, TRUE, 0);
   // force the label to line wrap
+#if (MOZ_WIDGET_GTK == 2)
   gtk_widget_set_size_request(descriptionLabel, 400, -1);
+#else
+  gtk_label_set_max_width_chars(GTK_LABEL(descriptionLabel), LABEL_MAX_CHAR_WIDTH);
+#endif
   gtk_label_set_line_wrap(GTK_LABEL(descriptionLabel), TRUE);
   gtk_label_set_selectable(GTK_LABEL(descriptionLabel), TRUE);
   gtk_misc_set_alignment(GTK_MISC(descriptionLabel), 0, 0.5);
@@ -455,6 +465,9 @@ bool UIShowCrashUI(const string& dumpfile,
                                  GTK_POLICY_NEVER, GTK_POLICY_ALWAYS);
   gtk_scrolled_window_set_shadow_type(GTK_SCROLLED_WINDOW(scrolled),
                                       GTK_SHADOW_IN);
+#if (MOZ_WIDGET_GTK >= 3)
+  gtk_scrolled_window_set_min_content_height(GTK_SCROLLED_WINDOW(scrolled), 100);
+#endif
 
   gCommentTextLabel = gtk_label_new(gStrings[ST_COMMENTGRAYTEXT].c_str());
   gCommentText = gtk_text_view_new();
@@ -504,7 +517,7 @@ bool UIShowCrashUI(const string& dumpfile,
 
   // Get the throbber image from alongside the executable
   char* dir = g_path_get_dirname(gArgv[0]);
-  char* path = g_build_filename(dir, "Throbber-small.gif", NULL);
+  char* path = g_build_filename(dir, "Throbber-small.gif", nullptr);
   g_free(dir);
   gThrobber = gtk_image_new_from_file(path);
   gtk_box_pack_start(GTK_BOX(progressBox), gThrobber, FALSE, FALSE, 0);
@@ -513,7 +526,11 @@ bool UIShowCrashUI(const string& dumpfile,
     gtk_label_new(gStrings[ST_REPORTPRESUBMIT].c_str());
   gtk_box_pack_start(GTK_BOX(progressBox), gProgressLabel, TRUE, TRUE, 0);
   // force the label to line wrap
+#if (MOZ_WIDGET_GTK == 2)
   gtk_widget_set_size_request(gProgressLabel, 400, -1);
+#else
+  gtk_label_set_max_width_chars(GTK_LABEL(gProgressLabel), LABEL_MAX_CHAR_WIDTH);
+#endif
   gtk_label_set_line_wrap(GTK_LABEL(gProgressLabel), TRUE);
 
   GtkWidget* buttonBox = gtk_hbutton_box_new();
@@ -524,14 +541,14 @@ bool UIShowCrashUI(const string& dumpfile,
   gCloseButton =
     gtk_button_new_with_label(gStrings[ST_QUIT].c_str());
   gtk_box_pack_start(GTK_BOX(buttonBox), gCloseButton, FALSE, FALSE, 0);
-  GTK_WIDGET_SET_FLAGS(gCloseButton, GTK_CAN_DEFAULT);
+  gtk_widget_set_can_default(gCloseButton, TRUE);
   g_signal_connect(gCloseButton, "clicked", G_CALLBACK(CloseClicked), 0);
 
   gRestartButton = 0;
   if (restartArgs.size() > 0) {
     gRestartButton = gtk_button_new_with_label(gStrings[ST_RESTART].c_str());
     gtk_box_pack_start(GTK_BOX(buttonBox), gRestartButton, FALSE, FALSE, 0);
-    GTK_WIDGET_SET_FLAGS(gRestartButton, GTK_CAN_DEFAULT);
+    gtk_widget_set_can_default(gRestartButton, TRUE);
     g_signal_connect(gRestartButton, "clicked", G_CALLBACK(RestartClicked), 0);
   }
 
@@ -551,7 +568,7 @@ bool UIShowCrashUI(const string& dumpfile,
 
   gtk_widget_show_all(gWindow);
   // stick this here to avoid the show_all above...
-  gtk_widget_hide_all(gThrobber);
+  gtk_widget_hide(gThrobber);
 
   gtk_main();
 

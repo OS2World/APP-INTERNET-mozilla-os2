@@ -1,4 +1,4 @@
-/* -*- Mode: Java; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
+/* -*- indent-tabs-mode: nil; js-indent-level: 2 -*- */
 /* vim:set ts=2 sw=2 sts=2 et: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -8,14 +8,19 @@
  * Tests for correct behavior of the server start() and stop() methods.
  */
 
-const PORT = 4444;
-const PREPATH = "http://localhost:" + PORT;
+XPCOMUtils.defineLazyGetter(this, "PORT", function() {
+  return srv.identity.primaryPort;
+});
+
+XPCOMUtils.defineLazyGetter(this, "PREPATH", function() {
+  return "http://localhost:" + PORT;
+});
 
 var srv, srv2;
 
 function run_test()
 {
-  if ("@mozilla.org/windows-registry-key;1" in Components.classes)
+  if (mozinfo.os == "win")
   {
     dumpn("*** not running test_start_stop.js on Windows for now, because " +
           "Windows is dumb");
@@ -25,7 +30,7 @@ function run_test()
   dumpn("*** run_test");
 
   srv = createServer();
-  srv.start(PORT);
+  srv.start(-1);
 
   try
   {

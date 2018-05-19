@@ -6,67 +6,54 @@
 // Keep in (case-insensitive) order:
 #include "gfxMatrix.h"
 #include "mozilla/dom/SVGAElement.h"
+#include "nsAutoPtr.h"
+#include "nsSVGContainerFrame.h"
 #include "nsSVGIntegrationUtils.h"
-#include "nsSVGTSpanFrame.h"
 #include "nsSVGUtils.h"
 #include "SVGLengthList.h"
 
-// <a> elements can contain text. nsSVGGlyphFrames expect to have
-// a class derived from nsSVGTextContainerFrame as a parent. We
-// also need something that implements nsISVGGlyphFragmentNode to get
-// the text DOM to work.
-
 using namespace mozilla;
 
-typedef nsSVGTSpanFrame nsSVGAFrameBase;
-
-class nsSVGAFrame : public nsSVGAFrameBase
+class nsSVGAFrame : public nsSVGDisplayContainerFrame
 {
   friend nsIFrame*
   NS_NewSVGAFrame(nsIPresShell* aPresShell, nsStyleContext* aContext);
 protected:
-  nsSVGAFrame(nsStyleContext* aContext) :
-    nsSVGAFrameBase(aContext) {}
+  explicit nsSVGAFrame(nsStyleContext* aContext)
+    : nsSVGDisplayContainerFrame(aContext) {}
 
 public:
   NS_DECL_FRAMEARENA_HELPERS
 
 #ifdef DEBUG
-  virtual void Init(nsIContent*      aContent,
-                    nsIFrame*        aParent,
-                    nsIFrame*        aPrevInFlow) MOZ_OVERRIDE;
+  virtual void Init(nsIContent*       aContent,
+                    nsContainerFrame* aParent,
+                    nsIFrame*         aPrevInFlow) override;
 #endif
 
   // nsIFrame:
-  NS_IMETHOD  AttributeChanged(int32_t         aNameSpaceID,
-                               nsIAtom*        aAttribute,
-                               int32_t         aModType);
+  virtual nsresult  AttributeChanged(int32_t         aNameSpaceID,
+                                     nsIAtom*        aAttribute,
+                                     int32_t         aModType) override;
 
   /**
    * Get the "type" of the frame
    *
    * @see nsGkAtoms::svgAFrame
    */
-  virtual nsIAtom* GetType() const;
+  virtual nsIAtom* GetType() const override;
 
-#ifdef DEBUG
-  NS_IMETHOD GetFrameName(nsAString& aResult) const
+#ifdef DEBUG_FRAME_DUMP
+  virtual nsresult GetFrameName(nsAString& aResult) const override
   {
     return MakeFrameName(NS_LITERAL_STRING("SVGA"), aResult);
   }
 #endif
   // nsISVGChildFrame interface:
-  virtual void NotifySVGChanged(uint32_t aFlags);
+  virtual void NotifySVGChanged(uint32_t aFlags) override;
   
   // nsSVGContainerFrame methods:
-  virtual gfxMatrix GetCanvasTM(uint32_t aFor);
-
-  // nsSVGTextContainerFrame methods:
-  virtual void GetXY(mozilla::SVGUserUnitList *aX, mozilla::SVGUserUnitList *aY);
-  virtual void GetDxDy(mozilla::SVGUserUnitList *aDx, mozilla::SVGUserUnitList *aDy);
-  virtual const SVGNumberList* GetRotate() {
-    return nullptr;
-  }
+  virtual gfxMatrix GetCanvasTM() override;
 
 private:
   nsAutoPtr<gfxMatrix> mCanvasTM;
@@ -87,19 +74,19 @@ NS_IMPL_FRAMEARENA_HELPERS(nsSVGAFrame)
 // nsIFrame methods
 #ifdef DEBUG
 void
-nsSVGAFrame::Init(nsIContent* aContent,
-                  nsIFrame* aParent,
-                  nsIFrame* aPrevInFlow)
+nsSVGAFrame::Init(nsIContent*       aContent,
+                  nsContainerFrame* aParent,
+                  nsIFrame*         aPrevInFlow)
 {
-  NS_ASSERTION(aContent->IsSVG(nsGkAtoms::a),
+  NS_ASSERTION(aContent->IsSVGElement(nsGkAtoms::a),
                "Trying to construct an SVGAFrame for a "
                "content element that doesn't support the right interfaces");
 
-  nsSVGAFrameBase::Init(aContent, aParent, aPrevInFlow);
+  nsSVGDisplayContainerFrame::Init(aContent, aParent, aPrevInFlow);
 }
 #endif /* DEBUG */
 
-NS_IMETHODIMP
+nsresult
 nsSVGAFrame::AttributeChanged(int32_t         aNameSpaceID,
                               nsIAtom*        aAttribute,
                               int32_t         aModType)
@@ -128,56 +115,33 @@ nsSVGAFrame::GetType() const
 void
 nsSVGAFrame::NotifySVGChanged(uint32_t aFlags)
 {
-  NS_ABORT_IF_FALSE(aFlags & (TRANSFORM_CHANGED | COORD_CONTEXT_CHANGED),
-                    "Invalidation logic may need adjusting");
+  MOZ_ASSERT(aFlags & (TRANSFORM_CHANGED | COORD_CONTEXT_CHANGED),
+             "Invalidation logic may need adjusting");
 
   if (aFlags & TRANSFORM_CHANGED) {
     // make sure our cached transform matrix gets (lazily) updated
     mCanvasTM = nullptr;
   }
 
-  nsSVGAFrameBase::NotifySVGChanged(aFlags);
+  nsSVGDisplayContainerFrame::NotifySVGChanged(aFlags);
 }
 
 //----------------------------------------------------------------------
 // nsSVGContainerFrame methods:
 
 gfxMatrix
-nsSVGAFrame::GetCanvasTM(uint32_t aFor)
+nsSVGAFrame::GetCanvasTM()
 {
-  if (!(GetStateBits() & NS_STATE_SVG_NONDISPLAY_CHILD)) {
-    if ((aFor == FOR_PAINTING && NS_SVGDisplayListPaintingEnabled()) ||
-        (aFor == FOR_HIT_TESTING && NS_SVGDisplayListHitTestingEnabled())) {
-      return nsSVGIntegrationUtils::GetCSSPxToDevPxMatrix(this);
-    }
-  }
   if (!mCanvasTM) {
-    NS_ASSERTION(mParent, "null parent");
+    NS_ASSERTION(GetParent(), "null parent");
 
-    nsSVGContainerFrame *parent = static_cast<nsSVGContainerFrame*>(mParent);
+    nsSVGContainerFrame *parent = static_cast<nsSVGContainerFrame*>(GetParent());
     dom::SVGAElement *content = static_cast<dom::SVGAElement*>(mContent);
 
-    gfxMatrix tm = content->PrependLocalTransformsTo(parent->GetCanvasTM(aFor));
+    gfxMatrix tm = content->PrependLocalTransformsTo(parent->GetCanvasTM());
 
     mCanvasTM = new gfxMatrix(tm);
   }
 
   return *mCanvasTM;
-}
-
-//----------------------------------------------------------------------
-// nsSVGTextContainerFrame methods:
-
-void
-nsSVGAFrame::GetXY(SVGUserUnitList *aX, SVGUserUnitList *aY)
-{
-  aX->Clear();
-  aY->Clear();
-}
-
-void
-nsSVGAFrame::GetDxDy(SVGUserUnitList *aDx, SVGUserUnitList *aDy)
-{
-  aDx->Clear();
-  aDy->Clear();
 }

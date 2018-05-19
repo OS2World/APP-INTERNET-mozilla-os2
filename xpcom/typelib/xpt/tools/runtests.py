@@ -32,14 +32,13 @@
 
 import difflib
 import os
-import shutil
 from StringIO import StringIO
 import subprocess
-import sys
 import tempfile
 import mozunit
 import unittest
 import xpt
+
 
 def get_output(bin, file):
     p = subprocess.Popen([bin, file], stdout=subprocess.PIPE)
@@ -53,7 +52,7 @@ if "MOZILLA_OBJDIR" in os.environ:
             xptdump = os.path.abspath(os.path.join(MOZILLA_OBJDIR,
                                                    "dist", "bin", "xpt_dump"))
             components = os.path.abspath(os.path.join(MOZILLA_OBJDIR,
-                                                   "dist", "bin", "components"))
+                                                      "dist", "bin", "components"))
             for f in os.listdir(components):
                 if not f.endswith(".xpt"):
                     continue
@@ -72,6 +71,7 @@ if "MOZILLA_OBJDIR" in os.environ:
                         print line
                 self.assert_(out == out2, "xpt_dump output should be identical for %s" % f)
 
+
 class TestIIDString(unittest.TestCase):
     def test_iid_str_roundtrip(self):
         iid_str = "11223344-5566-7788-9900-aabbccddeeff"
@@ -82,6 +82,7 @@ class TestIIDString(unittest.TestCase):
         iid = "\x11\x22\x33\x44\x55\x66\x77\x88\x99\x00\xaa\xbb\xcc\xdd\xee\xff"
         iid_str = xpt.Typelib.iid_to_string(iid)
         self.assertEqual(iid, xpt.Typelib.string_to_iid(iid_str))
+
 
 class TypelibCompareMixin:
     def assertEqualTypelibs(self, t1, t2):
@@ -134,7 +135,7 @@ class TypelibCompareMixin:
         for p1, p2 in zip(m1.params, m2.params):
             self.assertEqualParams(p1, p2)
         self.assertEqualParams(m1.result, m2.result)
-        
+
     def assertEqualConstants(self, c1, c2):
         self.assert_(c1 is not None, "Should not be None")
         self.assert_(c2 is not None, "Should not be None")
@@ -152,7 +153,7 @@ class TypelibCompareMixin:
         self.assertEqual(p1.shared, p2.shared)
         self.assertEqual(p1.dipper, p2.dipper)
         self.assertEqual(p1.optional, p2.optional)
-        
+
     def assertEqualTypes(self, t1, t2):
         self.assert_(t1 is not None, "Should not be None")
         self.assert_(t2 is not None, "Should not be None")
@@ -174,6 +175,7 @@ class TypelibCompareMixin:
             self.assertEqual(t1.size_is_arg_num, t2.size_is_arg_num)
             self.assertEqual(t1.length_is_arg_num, t2.length_is_arg_num)
 
+
 class TestTypelibReadWrite(unittest.TestCase, TypelibCompareMixin):
     def test_read_file(self):
         """
@@ -191,7 +193,7 @@ class TestTypelibReadWrite(unittest.TestCase, TypelibCompareMixin):
         self.assertEqualTypelibs(t, t2)
 
 
-#TODO: test flags in various combinations
+# TODO: test flags in various combinations
 class TestTypelibRoundtrip(unittest.TestCase, TypelibCompareMixin):
     def checkRoundtrip(self, t):
         s = StringIO()
@@ -200,13 +202,13 @@ class TestTypelibRoundtrip(unittest.TestCase, TypelibCompareMixin):
         t2 = xpt.Typelib.read(s)
         self.assert_(t2 is not None)
         self.assertEqualTypelibs(t, t2)
-        
+
     def test_simple(self):
         t = xpt.Typelib()
         # add an unresolved interface
         t.interfaces.append(xpt.Interface("IFoo"))
         self.checkRoundtrip(t)
-        
+
         t = xpt.Typelib()
         # add an unresolved interface with an IID
         t.interfaces.append(xpt.Interface("IBar", "11223344-5566-7788-9900-aabbccddeeff"))
@@ -305,7 +307,7 @@ class TestTypelibRoundtrip(unittest.TestCase, TypelibCompareMixin):
                                         xpt.Param(xpt.SimpleType(xpt.Type.Tags.int32)),
                                         ]))
         self.checkRoundtrip(t)
-        
+
         # add a method with a StringWithSize and WideStringWithSize arguments
         i.methods.append(xpt.Method("StringWithSizeMethod", xpt.Param(xpt.SimpleType(xpt.Type.Tags.void)),
                                     params=[
@@ -320,11 +322,12 @@ class TestTypelibRoundtrip(unittest.TestCase, TypelibCompareMixin):
                                         ]))
         self.checkRoundtrip(t)
 
+
 class TestInterfaceCmp(unittest.TestCase):
     def test_unresolvedName(self):
         """
         Test comparison function on xpt.Interface by name.
-        
+
         """
         i1 = xpt.Interface("ABC")
         i2 = xpt.Interface("DEF")
@@ -334,7 +337,7 @@ class TestInterfaceCmp(unittest.TestCase):
     def test_unresolvedEqual(self):
         """
         Test comparison function on xpt.Interface with equal names and IIDs.
-        
+
         """
         i1 = xpt.Interface("ABC")
         i2 = xpt.Interface("ABC")
@@ -343,7 +346,7 @@ class TestInterfaceCmp(unittest.TestCase):
     def test_unresolvedIID(self):
         """
         Test comparison function on xpt.Interface with different IIDs.
-        
+
         """
         # IIDs sort before names
         i1 = xpt.Interface("ABC", iid="22334411-5566-7788-9900-aabbccddeeff")
@@ -355,7 +358,7 @@ class TestInterfaceCmp(unittest.TestCase):
         """
         Test comparison function on xpt.Interface with interfaces with
         identical names and IIDs but different resolved status.
-        
+
         """
         i1 = xpt.Interface("ABC", iid="11223344-5566-7788-9900-aabbccddeeff")
         p = xpt.Param(xpt.SimpleType(xpt.Type.Tags.void))
@@ -369,7 +372,7 @@ class TestInterfaceCmp(unittest.TestCase):
         """
         Test comparison function on xpt.Interface with interfaces with
         identical names and IIDs, both of which are resolved.
-        
+
         """
         p = xpt.Param(xpt.SimpleType(xpt.Type.Tags.void))
         m = xpt.Method("Bar", p)
@@ -379,21 +382,22 @@ class TestInterfaceCmp(unittest.TestCase):
                            methods=[m])
         self.assert_(i2 == i1)
 
+
 class TestXPTLink(unittest.TestCase):
     def test_mergeDifferent(self):
         """
         Test that merging two typelibs with completely different interfaces
         produces the correctly merged typelib.
-        
+
         """
         t1 = xpt.Typelib()
         # add an unresolved interface
-        t1.interfaces.append(xpt.Interface("IFoo"))
+        t1.interfaces.append(xpt.Interface("IFoo", scriptable=True))
         t2 = xpt.Typelib()
         # add an unresolved interface
-        t2.interfaces.append(xpt.Interface("IBar"))
+        t2.interfaces.append(xpt.Interface("IBar", scriptable=True))
         t3 = xpt.xpt_link([t1, t2])
-        
+
         self.assertEqual(2, len(t3.interfaces))
         # Interfaces should wind up sorted
         self.assertEqual("IBar", t3.interfaces[0].name)
@@ -402,12 +406,12 @@ class TestXPTLink(unittest.TestCase):
         # Add some IID values
         t1 = xpt.Typelib()
         # add an unresolved interface
-        t1.interfaces.append(xpt.Interface("IFoo", iid="11223344-5566-7788-9900-aabbccddeeff"))
+        t1.interfaces.append(xpt.Interface("IFoo", iid="11223344-5566-7788-9900-aabbccddeeff", scriptable=True))
         t2 = xpt.Typelib()
         # add an unresolved interface
-        t2.interfaces.append(xpt.Interface("IBar", iid="44332211-6655-8877-0099-aabbccddeeff"))
+        t2.interfaces.append(xpt.Interface("IBar", iid="44332211-6655-8877-0099-aabbccddeeff", scriptable=True))
         t3 = xpt.xpt_link([t1, t2])
-        
+
         self.assertEqual(2, len(t3.interfaces))
         # Interfaces should wind up sorted
         self.assertEqual("IFoo", t3.interfaces[0].name)
@@ -417,7 +421,7 @@ class TestXPTLink(unittest.TestCase):
         """
         Test that merging two typelibs with conflicting interface definitions
         raises an error.
-        
+
         """
         # Same names, different IIDs
         t1 = xpt.Typelib()
@@ -447,12 +451,12 @@ class TestXPTLink(unittest.TestCase):
         # Unresolved in both, but t1 has an IID value
         t1 = xpt.Typelib()
         # add an unresolved interface with a valid IID
-        t1.interfaces.append(xpt.Interface("IFoo", iid="11223344-5566-7788-9900-aabbccddeeff"))
+        t1.interfaces.append(xpt.Interface("IFoo", iid="11223344-5566-7788-9900-aabbccddeeff", scriptable=True))
         t2 = xpt.Typelib()
         # add an unresolved interface, no IID
         t2.interfaces.append(xpt.Interface("IFoo"))
         t3 = xpt.xpt_link([t1, t2])
-        
+
         self.assertEqual(1, len(t3.interfaces))
         self.assertEqual("IFoo", t3.interfaces[0].name)
         self.assertEqual("11223344-5566-7788-9900-aabbccddeeff", t3.interfaces[0].iid)
@@ -462,9 +466,9 @@ class TestXPTLink(unittest.TestCase):
         t1.interfaces.append(xpt.Interface("IFoo"))
         t2 = xpt.Typelib()
         # add an unresolved interface with a valid IID
-        t2.interfaces.append(xpt.Interface("IFoo", iid="11223344-5566-7788-9900-aabbccddeeff"))
+        t2.interfaces.append(xpt.Interface("IFoo", iid="11223344-5566-7788-9900-aabbccddeeff", scriptable=True))
         t3 = xpt.xpt_link([t1, t2])
-        
+
         self.assertEqual(1, len(t3.interfaces))
         self.assertEqual("IFoo", t3.interfaces[0].name)
         self.assertEqual("11223344-5566-7788-9900-aabbccddeeff", t3.interfaces[0].iid)
@@ -486,9 +490,9 @@ class TestXPTLink(unittest.TestCase):
         p = xpt.Param(xpt.SimpleType(xpt.Type.Tags.void))
         m = xpt.Method("Bar", p)
         t2.interfaces.append(xpt.Interface("IFoo", iid="11223344-5566-7788-9900-aabbccddeeff",
-                                           methods=[m]))
+                                           methods=[m], scriptable=True))
         t3 = xpt.xpt_link([t1, t2])
-        
+
         self.assertEqual(1, len(t3.interfaces))
         self.assertEqual("IFoo", t3.interfaces[0].name)
         self.assertEqual("11223344-5566-7788-9900-aabbccddeeff", t3.interfaces[0].iid)
@@ -502,12 +506,12 @@ class TestXPTLink(unittest.TestCase):
         p = xpt.Param(xpt.SimpleType(xpt.Type.Tags.void))
         m = xpt.Method("Bar", p)
         t1.interfaces.append(xpt.Interface("IFoo", iid="11223344-5566-7788-9900-aabbccddeeff",
-                                           methods=[m]))
+                                           methods=[m], scriptable=True))
         t2 = xpt.Typelib()
         # add an unresolved interface
         t2.interfaces.append(xpt.Interface("IFoo"))
         t3 = xpt.xpt_link([t1, t2])
-        
+
         self.assertEqual(1, len(t3.interfaces))
         self.assertEqual("IFoo", t3.interfaces[0].name)
         self.assertEqual("11223344-5566-7788-9900-aabbccddeeff", t3.interfaces[0].iid)
@@ -530,15 +534,15 @@ class TestXPTLink(unittest.TestCase):
         t1.interfaces.append(pi)
         # add a child of the unresolved interface
         t1.interfaces.append(xpt.Interface("IChild", iid="11111111-1111-1111-1111-111111111111",
-                                           resolved=True, parent=pi))
+                                           resolved=True, parent=pi, scriptable=True))
         t2 = xpt.Typelib()
         # add a resolved interface
         p = xpt.Param(xpt.SimpleType(xpt.Type.Tags.void))
         m = xpt.Method("Bar", p)
         t2.interfaces.append(xpt.Interface("IFoo", iid="11223344-5566-7788-9900-aabbccddeeff",
-                                           methods=[m]))
+                                           methods=[m], scriptable=True))
         t3 = xpt.xpt_link([t1, t2])
-        
+
         self.assertEqual(2, len(t3.interfaces))
         self.assertEqual("IChild", t3.interfaces[0].name)
         self.assertEqual("11111111-1111-1111-1111-111111111111", t3.interfaces[0].iid)
@@ -557,16 +561,16 @@ class TestXPTLink(unittest.TestCase):
         p = xpt.Param(xpt.SimpleType(xpt.Type.Tags.void))
         m = xpt.Method("Bar", p)
         t1.interfaces.append(xpt.Interface("IFoo", iid="11223344-5566-7788-9900-aabbccddeeff",
-                                           methods=[m]))
+                                           methods=[m], scriptable=True))
         t2 = xpt.Typelib()
         # add an unresolved interface
         pi = xpt.Interface("IFoo")
         t2.interfaces.append(pi)
         # add a child of the unresolved interface
         t2.interfaces.append(xpt.Interface("IChild", iid="11111111-1111-1111-1111-111111111111",
-                                           resolved=True, parent=pi))
+                                           resolved=True, parent=pi, scriptable=True))
         t3 = xpt.xpt_link([t1, t2])
-        
+
         self.assertEqual(2, len(t3.interfaces))
         self.assertEqual("IChild", t3.interfaces[0].name)
         self.assertEqual("11111111-1111-1111-1111-111111111111", t3.interfaces[0].iid)
@@ -595,15 +599,15 @@ class TestXPTLink(unittest.TestCase):
         p = xpt.Param(xpt.InterfaceType(i))
         m = xpt.Method("ReturnIface", p)
         t1.interfaces.append(xpt.Interface("IRetval", iid="11111111-1111-1111-1111-111111111111",
-                                           methods=[m]))
+                                           methods=[m], scriptable=True))
         t2 = xpt.Typelib()
         # add a resolved interface
         p = xpt.Param(xpt.SimpleType(xpt.Type.Tags.void))
         m = xpt.Method("Bar", p)
         t2.interfaces.append(xpt.Interface("IFoo", iid="11223344-5566-7788-9900-aabbccddeeff",
-                                           methods=[m]))
+                                           methods=[m], scriptable=True))
         t3 = xpt.xpt_link([t1, t2])
-        
+
         self.assertEqual(2, len(t3.interfaces))
         self.assertEqual("IRetval", t3.interfaces[0].name)
         self.assertEqual("11111111-1111-1111-1111-111111111111", t3.interfaces[0].iid)
@@ -624,7 +628,7 @@ class TestXPTLink(unittest.TestCase):
         p = xpt.Param(xpt.SimpleType(xpt.Type.Tags.void))
         m = xpt.Method("Bar", p)
         t1.interfaces.append(xpt.Interface("IFoo", iid="11223344-5566-7788-9900-aabbccddeeff",
-                                           methods=[m]))
+                                           methods=[m], scriptable=True))
         t2 = xpt.Typelib()
         # add an unresolved interface
         i = xpt.Interface("IFoo")
@@ -634,9 +638,9 @@ class TestXPTLink(unittest.TestCase):
         p = xpt.Param(xpt.InterfaceType(i))
         m = xpt.Method("ReturnIface", p)
         t2.interfaces.append(xpt.Interface("IRetval", iid="11111111-1111-1111-1111-111111111111",
-                                           methods=[m]))
+                                           methods=[m], scriptable=True))
         t3 = xpt.xpt_link([t1, t2])
-        
+
         self.assertEqual(2, len(t3.interfaces))
         self.assertEqual("IRetval", t3.interfaces[0].name)
         self.assertEqual("11111111-1111-1111-1111-111111111111", t3.interfaces[0].iid)
@@ -668,14 +672,14 @@ class TestXPTLink(unittest.TestCase):
         p = xpt.Param(xpt.InterfaceType(i))
         m = xpt.Method("IfaceParam", vp, params=[p])
         t1.interfaces.append(xpt.Interface("IParam", iid="11111111-1111-1111-1111-111111111111",
-                                           methods=[m]))
+                                           methods=[m], scriptable=True))
         t2 = xpt.Typelib()
         # add a resolved interface
         m = xpt.Method("Bar", vp)
         t2.interfaces.append(xpt.Interface("IFoo", iid="11223344-5566-7788-9900-aabbccddeeff",
-                                           methods=[m]))
+                                           methods=[m], scriptable=True))
         t3 = xpt.xpt_link([t1, t2])
-        
+
         self.assertEqual(2, len(t3.interfaces))
         self.assertEqual("IParam", t3.interfaces[0].name)
         self.assertEqual("11111111-1111-1111-1111-111111111111", t3.interfaces[0].iid)
@@ -695,7 +699,7 @@ class TestXPTLink(unittest.TestCase):
         # add a resolved interface
         m = xpt.Method("Bar", vp)
         t1.interfaces.append(xpt.Interface("IFoo", iid="11223344-5566-7788-9900-aabbccddeeff",
-                                           methods=[m]))
+                                           methods=[m], scriptable=True))
         t2 = xpt.Typelib()
         # add an unresolved interface
         i = xpt.Interface("IFoo")
@@ -706,9 +710,9 @@ class TestXPTLink(unittest.TestCase):
         p = xpt.Param(xpt.InterfaceType(i))
         m = xpt.Method("IfaceParam", vp, params=[p])
         t2.interfaces.append(xpt.Interface("IParam", iid="11111111-1111-1111-1111-111111111111",
-                                           methods=[m]))
+                                           methods=[m], scriptable=True))
         t3 = xpt.xpt_link([t1, t2])
-        
+
         self.assertEqual(2, len(t3.interfaces))
         self.assertEqual("IParam", t3.interfaces[0].name)
         self.assertEqual("11111111-1111-1111-1111-111111111111", t3.interfaces[0].iid)
@@ -720,7 +724,6 @@ class TestXPTLink(unittest.TestCase):
         self.assert_(t3.interfaces[0].methods[0].params[0].type.iface.resolved)
         self.assertEqual(t3.interfaces[1],
                          t3.interfaces[0].methods[0].params[0].type.iface)
-
 
     def test_mergeReplaceArrayTypeParams(self):
         """
@@ -743,14 +746,14 @@ class TestXPTLink(unittest.TestCase):
         p = xpt.Param(xpt.ArrayType(xpt.InterfaceType(i), 1, 2))
         m = xpt.Method("ArrayIfaceParam", vp, params=[p, intp, intp])
         t1.interfaces.append(xpt.Interface("IParam", iid="11111111-1111-1111-1111-111111111111",
-                                           methods=[m]))
+                                           methods=[m], scriptable=True))
         t2 = xpt.Typelib()
         # add a resolved interface
         m = xpt.Method("Bar", vp)
         t2.interfaces.append(xpt.Interface("IFoo", iid="11223344-5566-7788-9900-aabbccddeeff",
-                                           methods=[m]))
+                                           methods=[m], scriptable=True))
         t3 = xpt.xpt_link([t1, t2])
-        
+
         self.assertEqual(2, len(t3.interfaces))
         self.assertEqual("IParam", t3.interfaces[0].name)
         self.assertEqual("11111111-1111-1111-1111-111111111111", t3.interfaces[0].iid)

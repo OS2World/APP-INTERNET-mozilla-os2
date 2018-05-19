@@ -5,13 +5,12 @@
 
 include protocol PPluginInstance;
 
-include "mozilla/plugins/PluginMessageUtils.h";
 
-using mozilla::plugins::Buffer;
-using mozilla::plugins::IPCByteRanges;
+using mozilla::plugins::Buffer from "mozilla/plugins/PluginMessageUtils.h";
+using mozilla::plugins::IPCByteRanges from "mozilla/plugins/PluginMessageUtils.h";
 
-using NPError;
-using NPReason;
+using NPError from "npapi.h";
+using NPReason from "npapi.h";
 
 namespace mozilla {
 namespace plugins {
@@ -20,13 +19,13 @@ namespace plugins {
  * NPBrowserStream represents a NPStream sent from the browser to the plugin.
  */
 
-rpc protocol PBrowserStream
+intr protocol PBrowserStream
 {
   manager PPluginInstance;
 
 child:
-  async Write(int32_t offset, Buffer data,
-              uint32_t newlength);
+  async Write(int32_t offset, uint32_t newlength,
+              Buffer data);
   async NPP_StreamAsFile(nsCString fname);
 
   /**
@@ -37,7 +36,8 @@ child:
   async __delete__();
 
 parent:
-  rpc NPN_RequestRead(IPCByteRanges ranges)
+  async AsyncNPP_NewStreamResult(NPError rv, uint16_t stype);
+  intr NPN_RequestRead(IPCByteRanges ranges)
     returns (NPError result);
   async NPN_DestroyStream(NPReason reason);
   async StreamDestroyed();

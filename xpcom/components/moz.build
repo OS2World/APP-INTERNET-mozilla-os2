@@ -1,4 +1,4 @@
-# -*- Mode: python; c-basic-offset: 4; indent-tabs-mode: nil; tab-width: 40 -*-
+# -*- Mode: python; indent-tabs-mode: nil; tab-width: 40 -*-
 # vim: set filetype=python:
 # This Source Code Form is subject to the terms of the Mozilla Public
 # License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -16,8 +16,6 @@ XPIDL_SOURCES += [
 
 XPIDL_MODULE = 'xpcom_components'
 
-MODULE = 'xpcom'
-
 EXPORTS += [
     'nsCategoryManagerUtils.h',
 ]
@@ -28,12 +26,30 @@ EXPORTS.mozilla += [
     'ModuleUtils.h',
 ]
 
-CPP_SOURCES += [
-    'ManifestParser.cpp',
+# nsCategoryManager.cpp and nsComponentManager.cpp cannot be built in
+# unified mode because they use thea PL_ARENA_CONST_ALIGN_MASK macro
+# with plarena.h.
+SOURCES += [
     'nsCategoryManager.cpp',
     'nsComponentManager.cpp',
-    'nsNativeComponentLoader.cpp',
 ]
 
-LIBRARY_NAME = 'xpcomcomponents_s'
+UNIFIED_SOURCES += [
+    'ManifestParser.cpp',
+    'nsNativeModuleLoader.cpp',
+]
 
+FINAL_LIBRARY = 'xul'
+
+LOCAL_INCLUDES += [
+    '!..',
+    '../base',
+    '../build',
+    '../ds',
+    '../reflect/xptinfo',
+    '/chrome',
+    '/modules/libjar',
+]
+
+if 'gtk' in CONFIG['MOZ_WIDGET_TOOLKIT']:
+    CXXFLAGS += CONFIG['TK_CFLAGS']

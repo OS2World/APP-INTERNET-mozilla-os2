@@ -2,47 +2,47 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#include "tests.h"
 #include "jsatom.h"
 
 #include "gc/Marking.h"
+#include "jsapi-tests/tests.h"
 #include "vm/String.h"
 
 using mozilla::ArrayLength;
 
-BEGIN_TEST(testAtomizedIsNotInterned)
+BEGIN_TEST(testAtomizedIsNotPinned)
 {
     /* Try to pick a string that won't be interned by other tests in this runtime. */
     static const char someChars[] = "blah blah blah? blah blah blah";
     JS::Rooted<JSAtom*> atom(cx, js::Atomize(cx, someChars, ArrayLength(someChars)));
-    CHECK(!JS_StringHasBeenInterned(cx, atom));
-    CHECK(JS_InternJSString(cx, atom));
-    CHECK(JS_StringHasBeenInterned(cx, atom));
+    CHECK(!JS_StringHasBeenPinned(cx, atom));
+    CHECK(JS_AtomizeAndPinJSString(cx, atom));
+    CHECK(JS_StringHasBeenPinned(cx, atom));
     return true;
 }
-END_TEST(testAtomizedIsNotInterned)
+END_TEST(testAtomizedIsNotPinned)
 
 struct StringWrapperStruct
 {
-    JSString *str;
+    JSString* str;
     bool     strOk;
 } sw;
 
-void
-FinalizeCallback(JSFreeOp *fop, JSFinalizeStatus status, JSBool isCompartmentGC)
+BEGIN_TEST(testPinAcrossGC)
 {
-    if (status == JSFINALIZE_GROUP_START)
-        sw.strOk = js::gc::IsStringMarked(&sw.str);
-}
-
-BEGIN_TEST(testInternAcrossGC)
-{
-    sw.str = JS_InternString(cx, "wrapped chars that another test shouldn't be using");
+    sw.str = JS_AtomizeAndPinString(cx, "wrapped chars that another test shouldn't be using");
     sw.strOk = false;
     CHECK(sw.str);
-    JS_SetFinalizeCallback(rt, FinalizeCallback);
-    JS_GC(rt);
+    JS_AddFinalizeCallback(cx, FinalizeCallback, nullptr);
+    JS_GC(cx);
     CHECK(sw.strOk);
     return true;
 }
-END_TEST(testInternAcrossGC)
+
+static void
+FinalizeCallback(JSFreeOp* fop, JSFinalizeStatus status, bool isZoneGC, void* data)
+{
+    if (status == JSFINALIZE_GROUP_START)
+        sw.strOk = js::gc::IsMarkedUnbarriered(fop->runtime(), &sw.str);
+}
+END_TEST(testPinAcrossGC)

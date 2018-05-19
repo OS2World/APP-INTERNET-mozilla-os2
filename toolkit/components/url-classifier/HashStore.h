@@ -13,17 +13,51 @@
 #include "nsIFile.h"
 #include "nsIFileStreams.h"
 #include "nsCOMPtr.h"
+#include "nsClassHashtable.h"
+#include "safebrowsing.pb.h"
+#include <string>
 
 namespace mozilla {
 namespace safebrowsing {
 
+// The abstract class of TableUpdateV2 and TableUpdateV4. This
+// is convenient for passing the TableUpdate* around associated
+// with v2 and v4 instance.
 class TableUpdate {
 public:
   TableUpdate(const nsACString& aTable)
-      : mTable(aTable), mLocalUpdate(false) {}
+    : mTable(aTable)
+  {
+  }
+
+  virtual ~TableUpdate() {}
+
+  // To be overriden.
+  virtual bool Empty() const = 0;
+
+  // Common interfaces.
   const nsCString& TableName() const { return mTable; }
 
-  bool Empty() const {
+  template<typename T>
+  static T* Cast(TableUpdate* aThat) {
+    return (T::TAG == aThat->Tag() ? reinterpret_cast<T*>(aThat) : nullptr);
+  }
+
+private:
+  virtual int Tag() const = 0;
+
+  nsCString mTable;
+};
+
+// A table update is built from a single update chunk from the server. As the
+// protocol parser processes each chunk, it constructs a table update with the
+// new hashes.
+class TableUpdateV2 : public TableUpdate {
+public:
+  explicit TableUpdateV2(const nsACString& aTable)
+    : TableUpdate(aTable) {}
+
+  bool Empty() const override {
     return mAddChunks.Length() == 0 &&
       mSubChunks.Length() == 0 &&
       mAddExpirations.Length() == 0 &&
@@ -34,62 +68,149 @@ public:
       mSubCompletes.Length() == 0;
   }
 
-  void NewAddChunk(uint32_t aChunk) { mAddChunks.Set(aChunk); }
-  void NewSubChunk(uint32_t aChunk) { mSubChunks.Set(aChunk); }
-
-  void NewAddExpiration(uint32_t aChunk) { mAddExpirations.Set(aChunk); }
-  void NewSubExpiration(uint32_t aChunk) { mSubExpirations.Set(aChunk); }
-
-  void NewAddPrefix(uint32_t aAddChunk, const Prefix& aPrefix);
-  void NewSubPrefix(uint32_t aAddChunk, const Prefix& aPrefix, uint32_t aSubChunk);
-  void NewAddComplete(uint32_t aChunk, const Completion& aCompletion);
-  void NewSubComplete(uint32_t aAddChunk, const Completion& aCompletion,
-                      uint32_t aSubChunk);
-  void SetLocalUpdate(void) { mLocalUpdate = true; }
-  bool IsLocalUpdate(void) { return mLocalUpdate; }
+  // Throughout, uint32_t aChunk refers only to the chunk number. Chunk data is
+  // stored in the Prefix structures.
+  MOZ_MUST_USE nsresult NewAddChunk(uint32_t aChunk) {
+    return mAddChunks.Set(aChunk);
+  };
+  MOZ_MUST_USE nsresult NewSubChunk(uint32_t aChunk) {
+    return mSubChunks.Set(aChunk);
+  };
+  MOZ_MUST_USE nsresult NewAddExpiration(uint32_t aChunk) {
+    return mAddExpirations.Set(aChunk);
+  };
+  MOZ_MUST_USE nsresult NewSubExpiration(uint32_t aChunk) {
+    return mSubExpirations.Set(aChunk);
+  };
+  MOZ_MUST_USE nsresult NewAddPrefix(uint32_t aAddChunk, const Prefix& aPrefix);
+  MOZ_MUST_USE nsresult NewSubPrefix(uint32_t aAddChunk,
+                                     const Prefix& aPrefix,
+                                     uint32_t aSubChunk);
+  MOZ_MUST_USE nsresult NewAddComplete(uint32_t aChunk,
+                                       const Completion& aCompletion);
+  MOZ_MUST_USE nsresult NewSubComplete(uint32_t aAddChunk,
+                                       const Completion& aCompletion,
+                                       uint32_t aSubChunk);
 
   ChunkSet& AddChunks() { return mAddChunks; }
   ChunkSet& SubChunks() { return mSubChunks; }
 
+  // Expirations for chunks.
   ChunkSet& AddExpirations() { return mAddExpirations; }
   ChunkSet& SubExpirations() { return mSubExpirations; }
 
+  // Hashes associated with this chunk.
   AddPrefixArray& AddPrefixes() { return mAddPrefixes; }
   SubPrefixArray& SubPrefixes() { return mSubPrefixes; }
   AddCompleteArray& AddCompletes() { return mAddCompletes; }
   SubCompleteArray& SubCompletes() { return mSubCompletes; }
 
-private:
-  nsCString mTable;
-  // Update not from the remote server (no freshness)
-  bool mLocalUpdate;
+  // For downcasting.
+  static const int TAG = 2;
 
+private:
+
+  // The list of chunk numbers that we have for each of the type of chunks.
   ChunkSet mAddChunks;
   ChunkSet mSubChunks;
   ChunkSet mAddExpirations;
   ChunkSet mSubExpirations;
+
+  // 4-byte sha256 prefixes.
   AddPrefixArray mAddPrefixes;
   SubPrefixArray mSubPrefixes;
+
+  // 32-byte hashes.
   AddCompleteArray mAddCompletes;
   SubCompleteArray mSubCompletes;
+
+  virtual int Tag() const override { return TAG; }
 };
 
+// Structure for DBService/HashStore/Classifiers to update.
+// It would contain the prefixes (both fixed and variable length)
+// for addition and indices to removal. See Bug 1283009.
+class TableUpdateV4 : public TableUpdate {
+public:
+  struct PrefixStdString {
+  private:
+    std::string mStorage;
+    nsDependentCSubstring mString;
+
+  public:
+    explicit PrefixStdString(std::string& aString)
+    {
+      aString.swap(mStorage);
+      mString.Rebind(mStorage.data(), mStorage.size());
+    };
+
+    const nsACString& GetPrefixString() const { return mString; };
+  };
+
+  typedef nsClassHashtable<nsUint32HashKey, PrefixStdString> PrefixStdStringMap;
+  typedef nsTArray<int32_t> RemovalIndiceArray;
+
+public:
+  explicit TableUpdateV4(const nsACString& aTable)
+    : TableUpdate(aTable)
+    , mFullUpdate(false)
+  {
+  }
+
+  bool Empty() const override
+  {
+    return mPrefixesMap.IsEmpty() && mRemovalIndiceArray.IsEmpty();
+  }
+
+  bool IsFullUpdate() const { return mFullUpdate; }
+  PrefixStdStringMap& Prefixes() { return mPrefixesMap; }
+  RemovalIndiceArray& RemovalIndices() { return mRemovalIndiceArray; }
+  const nsACString& ClientState() const { return mClientState; }
+  const nsACString& Checksum() const { return mChecksum; }
+
+  // For downcasting.
+  static const int TAG = 4;
+
+  void SetFullUpdate(bool aIsFullUpdate) { mFullUpdate = aIsFullUpdate; }
+  void NewPrefixes(int32_t aSize, std::string& aPrefixes);
+  void NewRemovalIndices(const uint32_t* aIndices, size_t aNumOfIndices);
+  void SetNewClientState(const nsACString& aState) { mClientState = aState; }
+  void NewChecksum(const std::string& aChecksum);
+
+private:
+  virtual int Tag() const override { return TAG; }
+
+  bool mFullUpdate;
+  PrefixStdStringMap mPrefixesMap;
+  RemovalIndiceArray mRemovalIndiceArray;
+  nsCString mClientState;
+  nsCString mChecksum;
+};
+
+// There is one hash store per table.
 class HashStore {
 public:
-  HashStore(const nsACString& aTableName, nsIFile* aStoreFile);
+  HashStore(const nsACString& aTableName,
+            const nsACString& aProvider,
+            nsIFile* aRootStoreFile);
   ~HashStore();
 
   const nsCString& TableName() const { return mTableName; }
 
   nsresult Open();
+  // Add Prefixes are stored partly in the PrefixSet (contains the
+  // Prefix data organized for fast lookup/low RAM usage) and partly in the
+  // HashStore (Add Chunk numbers - only used for updates, slow retrieval).
+  // AugmentAdds function joins the separate datasets into one complete
+  // prefixes+chunknumbers dataset.
   nsresult AugmentAdds(const nsTArray<uint32_t>& aPrefixes);
 
-  ChunkSet& AddChunks() { return mAddChunks; }
-  ChunkSet& SubChunks() { return mSubChunks; }
+  ChunkSet& AddChunks();
+  ChunkSet& SubChunks();
   AddPrefixArray& AddPrefixes() { return mAddPrefixes; }
-  AddCompleteArray& AddCompletes() { return mAddCompletes; }
   SubPrefixArray& SubPrefixes() { return mSubPrefixes; }
-  SubCompleteArray& SubCompletes() { return mSubCompletes; }
+  AddCompleteArray& AddCompletes();
+  SubCompleteArray& SubCompletes();
 
   // =======
   // Updates
@@ -121,11 +242,13 @@ private:
   nsresult SanityCheck();
   nsresult CalculateChecksum(nsAutoCString& aChecksum, uint32_t aFileSize,
                              bool aChecksumPresent);
-  nsresult CheckChecksum(nsIFile* aStoreFile, uint32_t aFileSize);
+  nsresult CheckChecksum(uint32_t aFileSize);
   void UpdateHeader();
 
+  nsresult ReadCompletions();
   nsresult ReadChunkNumbers();
   nsresult ReadHashes();
+
   nsresult ReadAddPrefixes();
   nsresult ReadSubPrefixes();
 
@@ -134,6 +257,13 @@ private:
 
   nsresult ProcessSubs();
 
+  nsresult PrepareForUpdate();
+
+  bool AlreadyReadChunkNumbers();
+  bool AlreadyReadCompletions();
+
+ // This is used for checking that the database is correct and for figuring out
+ // the number of chunks, etc. to read from disk on restart.
   struct Header {
     uint32_t magic;
     uint32_t version;
@@ -147,6 +277,8 @@ private:
 
   Header mHeader;
 
+  // The name of the table (must end in -shavar or -digest256, or evidently
+  // -simple for unittesting.
   nsCString mTableName;
   nsCOMPtr<nsIFile> mStoreDirectory;
 
@@ -154,19 +286,29 @@ private:
 
   nsCOMPtr<nsIInputStream> mInputStream;
 
+  // Chunk numbers, stored as uint32_t arrays.
   ChunkSet mAddChunks;
   ChunkSet mSubChunks;
 
   ChunkSet mAddExpirations;
   ChunkSet mSubExpirations;
 
+  // Chunk data for shavar tables. See Entries.h for format.
   AddPrefixArray mAddPrefixes;
-  AddCompleteArray mAddCompletes;
   SubPrefixArray mSubPrefixes;
+
+  // See bug 806422 for background. We must be able to distinguish between
+  // updates from the completion server and updates from the regular server.
+  AddCompleteArray mAddCompletes;
   SubCompleteArray mSubCompletes;
+
+  uint32_t mFileSize;
+
+  // For gtest to inspect private members.
+  friend class PerProviderDirectoryTestUtils;
 };
 
-}
-}
+} // namespace safebrowsing
+} // namespace mozilla
 
 #endif

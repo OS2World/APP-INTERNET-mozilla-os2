@@ -20,18 +20,16 @@
 #include "nsIFile.h"
 #include "nsNetUtil.h"
 #include "nsAutoLock.h"
-#include "prlog.h"
+#include "mozilla/Logging.h"
 #include "prenv.h"
 
 ////////////////////////////////////////////////////////////////////////////////
 
-#if defined(PR_LOGGING)
 //
 // set NSPR_LOG_MODULES=Test:5
 //
 static PRLogModuleInfo *gTestLog = nullptr;
-#endif
-#define LOG(args) PR_LOG(gTestLog, PR_LOG_DEBUG, args)
+#define LOG(args) MOZ_LOG(gTestLog, mozilla::LogLevel::Debug, args)
 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -45,7 +43,7 @@ class MyCopier : public nsIInputStreamCallback
                , public nsIOutputStreamCallback
 {
 public:
-    NS_DECL_ISUPPORTS
+    NS_DECL_THREADSAFE_ISUPPORTS
 
     MyCopier()
         : mLock(nullptr)
@@ -137,12 +135,12 @@ public:
         return mInput->AsyncWait(this, 0, 0, nullptr);
     }
 
-    static NS_METHOD FillOutputBuffer(nsIOutputStream *outStr,
-                                      void *closure,
-                                      char *buffer,
-                                      uint32_t offset,
-                                      uint32_t count,
-                                      uint32_t *countRead)
+    static nsresult FillOutputBuffer(nsIOutputStream *outStr,
+                                     void *closure,
+                                     char *buffer,
+                                     uint32_t offset,
+                                     uint32_t count,
+                                     uint32_t *countRead)
     {
         MyCopier *self = (MyCopier *) closure;
 
@@ -162,9 +160,9 @@ protected:
     nsresult                       mInputCondition;
 };
 
-NS_IMPL_THREADSAFE_ISUPPORTS2(MyCopier,
-                              nsIInputStreamCallback,
-                              nsIOutputStreamCallback)
+NS_IMPL_ISUPPORTS(MyCopier,
+                  nsIInputStreamCallback,
+                  nsIOutputStreamCallback)
 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -280,9 +278,7 @@ main(int argc, char* argv[])
         if (registrar)
             registrar->AutoRegister(nullptr);
 
-#if defined(PR_LOGGING)
         gTestLog = PR_NewLogModule("Test");
-#endif
 
         nsCOMPtr<nsIFile> srcFile;
         rv = NS_NewNativeLocalFile(nsDependentCString(fileName), false, getter_AddRefs(srcFile));
@@ -297,7 +293,7 @@ main(int argc, char* argv[])
         if (NS_FAILED(rv)) return rv;
 
         nsAutoCString newName(leafName);
-        newName.Append(NS_LITERAL_CSTRING(".1"));
+        newName.AppendLiteral(".1");
         rv = destFile->SetNativeLeafName(newName);
         if (NS_FAILED(rv)) return rv;
 
@@ -305,7 +301,7 @@ main(int argc, char* argv[])
         NS_ASSERTION(NS_SUCCEEDED(rv), "RunTest failed");
 
         newName = leafName;
-        newName.Append(NS_LITERAL_CSTRING(".2"));
+        newName.AppendLiteral(".2");
         rv = destFile->SetNativeLeafName(newName);
         if (NS_FAILED(rv)) return rv;
 

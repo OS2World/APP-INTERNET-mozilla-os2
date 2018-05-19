@@ -20,19 +20,19 @@
 #include "constants.h"
 
 void WebRtcIlbcfix_CbMemEnergyAugmentation(
-    WebRtc_Word16 *interpSamples, /* (i) The interpolated samples */
-    WebRtc_Word16 *CBmem,   /* (i) The CB memory */
-    WebRtc_Word16 scale,   /* (i) The scaling of all energy values */
-    WebRtc_Word16 base_size,  /* (i) Index to where the energy values should be stored */
-    WebRtc_Word16 *energyW16,  /* (o) Energy in the CB vectors */
-    WebRtc_Word16 *energyShifts /* (o) Shift value of the energy */
+    int16_t *interpSamples, /* (i) The interpolated samples */
+    int16_t *CBmem,   /* (i) The CB memory */
+    int16_t scale,   /* (i) The scaling of all energy values */
+    int16_t base_size,  /* (i) Index to where the energy values should be stored */
+    int16_t *energyW16,  /* (o) Energy in the CB vectors */
+    int16_t *energyShifts /* (o) Shift value of the energy */
                                            ){
-  WebRtc_Word32 energy, tmp32;
-  WebRtc_Word16 *ppe, *pp, *interpSamplesPtr;
-  WebRtc_Word16 *CBmemPtr, lagcount;
-  WebRtc_Word16 *enPtr=&energyW16[base_size-20];
-  WebRtc_Word16 *enShPtr=&energyShifts[base_size-20];
-  WebRtc_Word32 nrjRecursive;
+  int32_t energy, tmp32;
+  int16_t *ppe, *pp, *interpSamplesPtr;
+  int16_t *CBmemPtr, lagcount;
+  int16_t *enPtr=&energyW16[base_size-20];
+  int16_t *enShPtr=&energyShifts[base_size-20];
+  int32_t nrjRecursive;
 
   CBmemPtr = CBmem+147;
   interpSamplesPtr = interpSamples;
@@ -44,8 +44,7 @@ void WebRtcIlbcfix_CbMemEnergyAugmentation(
   for (lagcount=20; lagcount<=39; lagcount++) {
 
     /* Update the energy recursively to save complexity */
-    nrjRecursive = nrjRecursive +
-        WEBRTC_SPL_MUL_16_16_RSFT(*ppe, *ppe, scale);
+    nrjRecursive += (*ppe * *ppe) >> scale;
     ppe--;
     energy = nrjRecursive;
 
@@ -58,9 +57,9 @@ void WebRtcIlbcfix_CbMemEnergyAugmentation(
     energy += WebRtcSpl_DotProductWithScale(pp, pp, SUBL-lagcount, scale);
 
     /* Normalize the energy and store the number of shifts */
-    (*enShPtr) = (WebRtc_Word16)WebRtcSpl_NormW32(energy);
-    tmp32 = WEBRTC_SPL_LSHIFT_W32(energy, (*enShPtr));
-    (*enPtr) = (WebRtc_Word16)WEBRTC_SPL_RSHIFT_W32(tmp32, 16);
+    (*enShPtr) = (int16_t)WebRtcSpl_NormW32(energy);
+    tmp32 = energy << *enShPtr;
+    *enPtr = (int16_t)(tmp32 >> 16);
     enShPtr++;
     enPtr++;
   }

@@ -1,3 +1,5 @@
+/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
+/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 // Copyright (c) 2006-2008 The Chromium Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
@@ -14,14 +16,9 @@
 #include "base/logging.h"
 #include "base/platform_thread.h"
 #include "base/string_util.h"
+#include "mozilla/UniquePtr.h"
 
 namespace base {
-
-namespace {
-// Paranoia. Semaphores and shared memory segments should live in different
-// namespaces, but who knows what's out there.
-const char kSemaphoreSuffix[] = "-sem";
-}
 
 SharedMemory::SharedMemory()
     : mapped_file_(-1),
@@ -31,33 +28,22 @@ SharedMemory::SharedMemory()
       max_size_(0) {
 }
 
-SharedMemory::SharedMemory(SharedMemoryHandle handle, bool read_only)
-    : mapped_file_(handle.fd),
-      inode_(0),
-      memory_(NULL),
-      read_only_(read_only),
-      max_size_(0) {
-  struct stat st;
-  if (fstat(handle.fd, &st) == 0) {
-    // If fstat fails, then the file descriptor is invalid and we'll learn this
-    // fact when Map() fails.
-    inode_ = st.st_ino;
-  }
-}
-
-SharedMemory::SharedMemory(SharedMemoryHandle handle, bool read_only,
-                           ProcessHandle process)
-    : mapped_file_(handle.fd),
-      memory_(NULL),
-      read_only_(read_only),
-      max_size_(0) {
-  // We don't handle this case yet (note the ignored parameter); let's die if
-  // someone comes calling.
-  NOTREACHED();
-}
-
 SharedMemory::~SharedMemory() {
   Close();
+}
+
+bool SharedMemory::SetHandle(SharedMemoryHandle handle, bool read_only) {
+  DCHECK(mapped_file_ == -1);
+
+  struct stat st;
+  if (fstat(handle.fd, &st) < 0) {
+    return false;
+  }
+
+  mapped_file_ = handle.fd;
+  inode_ = st.st_ino;
+  read_only_ = read_only;
+  return true;
 }
 
 // static
@@ -98,7 +84,7 @@ bool SharedMemory::Delete(const std::wstring& name) {
 
   FilePath path(WideToUTF8(mem_filename));
   if (file_util::PathExists(path)) {
-    return file_util::Delete(path, false);
+    return file_util::Delete(path);
   }
 
   // Doesn't exist, so success.
@@ -136,6 +122,22 @@ bool SharedMemory::FilenameForMemoryName(const std::wstring &memname,
   return true;
 }
 
+namespace {
+
+// A class to handle auto-closing of FILE*'s.
+class ScopedFILEClose {
+ public:
+  inline void operator()(FILE* x) const {
+    if (x) {
+      fclose(x);
+    }
+  }
+};
+
+typedef mozilla::UniquePtr<FILE, ScopedFILEClose> ScopedFILE;
+
+}
+
 // Chromium mostly only use the unique/private shmem as specified by
 // "name == L"". The exception is in the StatsTable.
 // TODO(jrg): there is no way to "clean up" all unused named shmem if
@@ -146,7 +148,7 @@ bool SharedMemory::CreateOrOpen(const std::wstring &name,
                                 int posix_flags, size_t size) {
   DCHECK(mapped_file_ == -1);
 
-  file_util::ScopedFILE file_closer;
+  ScopedFILE file_closer;
   FILE *fp;
 
   if (name == L"") {
@@ -159,7 +161,7 @@ bool SharedMemory::CreateOrOpen(const std::wstring &name,
     // Deleting the file prevents anyone else from mapping it in
     // (making it private), and prevents the need for cleanup (once
     // the last fd is closed, it is truly freed).
-    file_util::Delete(path, false);
+    file_util::Delete(path);
   } else {
     std::wstring mem_filename;
     if (FilenameForMemoryName(name, &mem_filename) == false)
@@ -242,7 +244,7 @@ bool SharedMemory::Unmap() {
   return true;
 }
 
-bool SharedMemory::ShareToProcessCommon(ProcessHandle process,
+bool SharedMemory::ShareToProcessCommon(ProcessId processId,
                                         SharedMemoryHandle *new_handle,
                                         bool close_self) {
   const int new_fd = dup(mapped_file_);
@@ -257,10 +259,12 @@ bool SharedMemory::ShareToProcessCommon(ProcessHandle process,
 }
 
 
-void SharedMemory::Close() {
-  Unmap();
+void SharedMemory::Close(bool unmap_view) {
+  if (unmap_view) {
+    Unmap();
+  }
 
-  if (mapped_file_ > 0) {
+  if (mapped_file_ >= 0) {
     close(mapped_file_);
     mapped_file_ = -1;
   }

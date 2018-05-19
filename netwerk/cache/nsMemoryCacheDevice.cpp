@@ -10,9 +10,9 @@
 #include "nsICacheService.h"
 #include "nsICacheVisitor.h"
 #include "nsIStorageStream.h"
-#include "nsIMemoryReporter.h"
 #include "nsCRT.h"
 #include "nsReadableUtils.h"
+#include "mozilla/MathAlgorithms.h"
 #include "mozilla/Telemetry.h"
 #include <algorithm>
 
@@ -27,26 +27,7 @@
 // Entries with no expiration go in the first queue.
 
 const char *gMemoryDeviceID      = "memory";
-
-class NetworkMemoryCacheReporter MOZ_FINAL :
-    public mozilla::MemoryReporterBase
-{
-public:
-    NetworkMemoryCacheReporter(nsMemoryCacheDevice* aDevice)
-      : MemoryReporterBase(
-            "explicit/network/memory-cache",
-            KIND_HEAP,
-            UNITS_BYTES,
-            "Memory used by the network memory cache.")
-      , mDevice(aDevice)
-    {}
-
-private:
-    int64_t Amount() { return mDevice->TotalSize(); }
-
-    nsMemoryCacheDevice* mDevice;
-};
-
+using namespace mozilla;
 
 nsMemoryCacheDevice::nsMemoryCacheDevice()
     : mInitialized(false),
@@ -56,20 +37,15 @@ nsMemoryCacheDevice::nsMemoryCacheDevice()
       mInactiveSize(0),
       mEntryCount(0),
       mMaxEntryCount(0),
-      mMaxEntrySize(-1), // -1 means "no limit"
-      mReporter(nullptr)
+      mMaxEntrySize(-1)  // -1 means "no limit"
 {
     for (int i=0; i<kQueueCount; ++i)
         PR_INIT_CLIST(&mEvictionList[i]);
-
-    mReporter = new NetworkMemoryCacheReporter(this);
-    NS_RegisterMemoryReporter(mReporter);
 }
 
 
 nsMemoryCacheDevice::~nsMemoryCacheDevice()
 {
-    NS_UnregisterMemoryReporter(mReporter);
     Shutdown();
 }
 
@@ -79,9 +55,9 @@ nsMemoryCacheDevice::Init()
 {
     if (mInitialized)  return NS_ERROR_ALREADY_INITIALIZED;
 
-    nsresult  rv = mMemCacheEntries.Init();
-    mInitialized = NS_SUCCEEDED(rv);
-    return rv;
+    mMemCacheEntries.Init();
+    mInitialized = true;
+    return NS_OK;
 }
 
 
@@ -429,7 +405,7 @@ nsMemoryCacheDevice::EvictionList(nsCacheEntry * entry, int32_t  deltaSize)
     int32_t  size       = deltaSize + (int32_t)entry->DataSize();
     int32_t  fetchCount = std::max(1, entry->FetchCount());
 
-    return std::min(PR_FloorLog2(size / fetchCount), kQueueCount - 1);
+    return std::min((int)mozilla::FloorLog2(size / fetchCount), kQueueCount - 1);
 }
 
 
@@ -528,7 +504,7 @@ nsMemoryCacheDevice::EvictEntries(const char * clientID)
 nsresult
 nsMemoryCacheDevice::EvictPrivateEntries()
 {
-    return DoEvictEntries(&IsEntryPrivate, NULL);
+    return DoEvictEntries(&IsEntryPrivate, nullptr);
 }
 
 
@@ -553,14 +529,6 @@ nsMemoryCacheDevice::SetMaxEntrySize(int32_t maxSizeInKilobytes)
 }
 
 #ifdef DEBUG
-static PLDHashOperator
-CountEntry(PLDHashTable * table, PLDHashEntryHdr * hdr, uint32_t number, void * arg)
-{
-    int32_t *entryCount = (int32_t *)arg;
-    ++(*entryCount);
-    return PL_DHASH_NEXT;
-}
-
 void
 nsMemoryCacheDevice::CheckEntryCount()
 {
@@ -577,8 +545,10 @@ nsMemoryCacheDevice::CheckEntryCount()
     NS_ASSERTION(mEntryCount == evictionListCount, "### mem cache badness");
 
     int32_t entryCount = 0;
-    mMemCacheEntries.VisitEntries(CountEntry, &entryCount);
-    NS_ASSERTION(mEntryCount == entryCount, "### mem cache badness");    
+    for (auto iter = mMemCacheEntries.Iter(); !iter.Done(); iter.Next()) {
+        ++entryCount;
+    }
+    NS_ASSERTION(mEntryCount == entryCount, "### mem cache badness");
 }
 #endif
 
@@ -587,7 +557,7 @@ nsMemoryCacheDevice::CheckEntryCount()
  *****************************************************************************/
 
 
-NS_IMPL_ISUPPORTS1(nsMemoryCacheDeviceInfo, nsICacheDeviceInfo)
+NS_IMPL_ISUPPORTS(nsMemoryCacheDeviceInfo, nsICacheDeviceInfo)
 
 
 NS_IMETHODIMP

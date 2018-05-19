@@ -35,9 +35,6 @@ class EventWrapper {
   // either immediately or some time in the future.
   virtual bool Set() = 0;
 
-  // Prevents future Wait() calls from finishing without a new Set() call.
-  virtual bool Reset() = 0;
-
   // Puts the calling thread into a wait state. The thread may be released
   // by a Set() call depending on if other threads are waiting and if so on
   // timing. The thread that was released will call Reset() before leaving
@@ -54,13 +51,7 @@ class EventWrapper {
 
   virtual bool StopTimer() = 0;
 
-  // Only implemented on Windows
-  // Returns 1 if a key has been pressed since last call to this function.
-  // -1 indicates failure
-  // 0 indicates no key has been pressed since last call
-  // TODO(hellner) this function does not seem to belong here
-  static int KeyPressed();
 };
-} // namespace webrtc
+}  // namespace webrtc
 
 #endif  // WEBRTC_SYSTEM_WRAPPERS_INTERFACE_EVENT_WRAPPER_H_

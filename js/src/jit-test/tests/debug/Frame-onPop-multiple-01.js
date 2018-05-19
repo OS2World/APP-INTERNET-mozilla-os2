@@ -20,7 +20,7 @@ function completionString(c) {
     return '?';
 }
 
-var g = newGlobal('new-compartment'); // poor thing
+var g = newGlobal(); // poor thing
 g.eval('function f() { debugger; return "1"; }');
 
 // We create a bunch of debuggers, but they all consult this global variable
@@ -45,7 +45,7 @@ var frames = [];
 
 // We start off the test via Debugger.Frame.prototype.eval, so if we end
 // with a termination, we still catch it, instead of aborting the whole
-// test. (Debugger.Object.prototype.evalInGlobal would simplify this...)
+// test. (Debugger.Object.prototype.executeInGlobal would simplify this...)
 var dbg0 = new Debugger(g);
 dbg0.onEnterFrame = function handleOriginalEnter(frame) {
     dbg0.log += '(';

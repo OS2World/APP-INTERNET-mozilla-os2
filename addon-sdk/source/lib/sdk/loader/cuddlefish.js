@@ -1,10 +1,7 @@
-/* vim:set ts=2 sw=2 sts=2 expandtab */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
- * file, You can obtain one at http://mozilla.org/MPL/2.0/.
- */
-
-'use strict';
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
+"use strict";
 
 module.metadata = {
   "stability": "unstable"
@@ -17,7 +14,6 @@ module.metadata = {
 require('chrome')                  // Otherwise CFX will complain about Components
 require('toolkit/loader')          // Otherwise CFX will stip out loader.js
 require('sdk/addon/runner')        // Otherwise CFX will stip out addon/runner.js
-require('sdk/system/xul-app')      // Otherwise CFX will stip out sdk/system/xul-app
 */
 
 const { classes: Cc, Constructor: CC, interfaces: Ci, utils: Cu } = Components;
@@ -26,65 +22,16 @@ const { classes: Cc, Constructor: CC, interfaces: Ci, utils: Cu } = Components;
 const loaderURI = module.uri.replace("sdk/loader/cuddlefish.js",
                                      "toolkit/loader.js");
 const xulappURI = module.uri.replace("loader/cuddlefish.js",
-                                     "system/xul-app.js");
+                                     "system/xul-app.jsm");
 // We need to keep a reference to the sandbox in order to unload it in
 // bootstrap.js
 
-const loaderSandbox = loadSandbox(loaderURI);
+var loaderSandbox = loadSandbox(loaderURI);
 const loaderModule = loaderSandbox.exports;
 
-const xulappSandbox = loadSandbox(xulappURI);
-const xulappModule = xulappSandbox.exports;
+const { incompatibility } = Cu.import(xulappURI, {}).XulApp;
 
 const { override, load } = loaderModule;
-
-/**
- * Ensure the current application satisfied the requirements specified in the
- * module given. If not, an exception related to the incompatibility is
- * returned; `null` otherwise.
- *
- * @param {Object} module
- *  The module to check
- * @returns {Error}
- */
-function incompatibility(module) {
-
-  let { metadata, id } = module;
-
-  // if metadata or engines are not specified we assume compatibility is not
-  // an issue.
-  if (!metadata || !("engines" in metadata))
-    return null;
-
-  let { engines } = metadata;
-
-  if (engines === null || typeof(engines) !== "object")
-    return new Error("Malformed engines' property in metadata");
-
-  let applications = Object.keys(engines);
-
-  let versionRange;
-  applications.forEach(function(name) {
-    if (xulappModule.is(name)) {
-      versionRange = engines[name];
-      // Continue iteration. We want to ensure the module doesn't
-      // contain a typo in the applications' name or some unknown
-      // application - `is` function throws an exception in that case.
-    }
-  });
-
-  if (typeof(versionRange) === "string") {
-    if (xulappModule.satisfiesVersion(versionRange))
-      return null;
-
-    return new Error("Unsupported Application version: The module " + id +
-            " currently supports only version " + versionRange + " of " +
-            xulappModule.name + ".");
-  }
-
-  return new Error("Unsupported Application: The module " + id +
-            " currently supports only " + applications.join(", ") + ".")
-}
 
 function CuddlefishLoader(options) {
   let { manifest } = options;
@@ -94,8 +41,7 @@ function CuddlefishLoader(options) {
     // cache to avoid subsequent loads via `require`.
     modules: override({
       'toolkit/loader': loaderModule,
-      'sdk/loader/cuddlefish': exports,
-      'sdk/system/xul-app': xulappModule
+      'sdk/loader/cuddlefish': exports
     }, options.modules),
     resolve: function resolve(id, requirer) {
       let entry = requirer && requirer in manifest && manifest[requirer];

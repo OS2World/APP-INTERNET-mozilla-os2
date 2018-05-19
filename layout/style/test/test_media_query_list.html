@@ -270,14 +270,20 @@ function run() {
     subroot.offsetWidth; // flush layout
 
     var mql = subwin.matchMedia("(min-width: 150px)");
-    mql.addListener(null);
+    SimpleTest.doesThrow(function() {
+      mql.addListener(null);
+    }, "expected an exception");
 
     iframe.style.width = "100px";
     subroot.offsetWidth; // flush layout
     // With the bug, we crash here.  No need for test assertions.
 
-    mql.removeListener(null);
-    mql.removeListener(null);
+    SimpleTest.doesThrow(function() {
+      mql.removeListener(null);
+    }, "expected an exception");
+    SimpleTest.doesThrow(function() {
+      mql.removeListener(null);
+    }, "expected an exception");
   })();
 
   /* Bug 753777: test that things work in a freshly-created iframe */
@@ -325,6 +331,31 @@ function run() {
     subroot.offsetWidth; // flush layout
 
     is(JSON.stringify(gc_received), "[1,1]", "GC test: after notification 2");
+
+    bug1270626();
+  }
+
+  /* Bug 1270626: listeners that throw exceptions */
+  function bug1270626() {
+    var throwingListener = function(mql) {
+      throw "error";
+    }
+
+    iframe.style.width = "200px";
+    subroot.offsetWidth; // flush layout
+
+    var mql = subwin.matchMedia("(min-width: 150px)");
+    mql.addListener(throwingListener);
+
+    SimpleTest.expectUncaughtException(true);
+    is(SimpleTest.isExpectingUncaughtException(), true,
+       "should be waiting for an uncaught exception");
+
+    iframe.style.width = "100px";
+    subroot.offsetWidth; // flush layout
+
+    is(SimpleTest.isExpectingUncaughtException(), false,
+       "should have gotten an uncaught exception");
 
     SimpleTest.finish();
   }

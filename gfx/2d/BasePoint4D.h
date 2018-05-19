@@ -6,6 +6,8 @@
 #ifndef MOZILLA_BASEPOINT4D_H_
 #define MOZILLA_BASEPOINT4D_H_
 
+#include "mozilla/Assertions.h"
+
 namespace mozilla {
 namespace gfx {
 
@@ -16,7 +18,12 @@ namespace gfx {
  */
 template <class T, class Sub>
 struct BasePoint4D {
-  T x, y, z, w;
+  union {
+    struct {
+      T x, y, z, w;
+    };
+    T components[4];
+  };
 
   // Constructors
   BasePoint4D() : x(0), y(0), z(0), w(0) {}
@@ -86,12 +93,12 @@ struct BasePoint4D {
   }
 
   T& operator[](int aIndex) {
-    NS_ABORT_IF_FALSE(aIndex >= 0 && aIndex <= 3, "Invalid array index");
+    MOZ_ASSERT(aIndex >= 0 && aIndex <= 3, "Invalid array index");
     return *((&x)+aIndex);
   }
 
   const T& operator[](int aIndex) const {
-    NS_ABORT_IF_FALSE(aIndex >= 0 && aIndex <= 3, "Invalid array index");
+    MOZ_ASSERT(aIndex >= 0 && aIndex <= 3, "Invalid array index");
     return *((&x)+aIndex);
   }
 
@@ -114,9 +121,11 @@ struct BasePoint4D {
   void Normalize() {
     *this /= Length();
   }
+
+  bool HasPositiveWCoord() { return w > 0; }
 };
 
-}
-}
+} // namespace gfx
+} // namespace mozilla
 
 #endif /* MOZILLA_BASEPOINT4D_H_ */

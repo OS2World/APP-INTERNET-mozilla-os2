@@ -21,7 +21,7 @@ using namespace mozilla::dom;
 
 nsIFrame*
 NS_NewSVGGFrame(nsIPresShell* aPresShell, nsStyleContext* aContext)
-{  
+{
   return new (aPresShell) nsSVGGFrame(aContext);
 }
 
@@ -29,15 +29,15 @@ NS_IMPL_FRAMEARENA_HELPERS(nsSVGGFrame)
 
 #ifdef DEBUG
 void
-nsSVGGFrame::Init(nsIContent* aContent,
-                  nsIFrame* aParent,
-                  nsIFrame* aPrevInFlow)
+nsSVGGFrame::Init(nsIContent*       aContent,
+                  nsContainerFrame* aParent,
+                  nsIFrame*         aPrevInFlow)
 {
-  NS_ASSERTION(aContent->IsSVG() &&
+  NS_ASSERTION(aContent->IsSVGElement() &&
                static_cast<nsSVGElement*>(aContent)->IsTransformable(),
                "The element doesn't support nsIDOMSVGTransformable");
 
-  nsSVGGFrameBase::Init(aContent, aParent, aPrevInFlow);
+  nsSVGDisplayContainerFrame::Init(aContent, aParent, aPrevInFlow);
 }
 #endif /* DEBUG */
 
@@ -53,40 +53,34 @@ nsSVGGFrame::GetType() const
 void
 nsSVGGFrame::NotifySVGChanged(uint32_t aFlags)
 {
-  NS_ABORT_IF_FALSE(aFlags & (TRANSFORM_CHANGED | COORD_CONTEXT_CHANGED),
-                    "Invalidation logic may need adjusting");
+  MOZ_ASSERT(aFlags & (TRANSFORM_CHANGED | COORD_CONTEXT_CHANGED),
+             "Invalidation logic may need adjusting");
 
   if (aFlags & TRANSFORM_CHANGED) {
     // make sure our cached transform matrix gets (lazily) updated
     mCanvasTM = nullptr;
   }
 
-  nsSVGGFrameBase::NotifySVGChanged(aFlags);
+  nsSVGDisplayContainerFrame::NotifySVGChanged(aFlags);
 }
 
 gfxMatrix
-nsSVGGFrame::GetCanvasTM(uint32_t aFor)
+nsSVGGFrame::GetCanvasTM()
 {
-  if (!(GetStateBits() & NS_STATE_SVG_NONDISPLAY_CHILD)) {
-    if ((aFor == FOR_PAINTING && NS_SVGDisplayListPaintingEnabled()) ||
-        (aFor == FOR_HIT_TESTING && NS_SVGDisplayListHitTestingEnabled())) {
-      return nsSVGIntegrationUtils::GetCSSPxToDevPxMatrix(this);
-    }
-  }
   if (!mCanvasTM) {
-    NS_ASSERTION(mParent, "null parent");
+    NS_ASSERTION(GetParent(), "null parent");
 
-    nsSVGContainerFrame *parent = static_cast<nsSVGContainerFrame*>(mParent);
+    nsSVGContainerFrame *parent = static_cast<nsSVGContainerFrame*>(GetParent());
     SVGGraphicsElement *content = static_cast<SVGGraphicsElement*>(mContent);
 
-    gfxMatrix tm = content->PrependLocalTransformsTo(parent->GetCanvasTM(aFor));
+    gfxMatrix tm = content->PrependLocalTransformsTo(parent->GetCanvasTM());
 
     mCanvasTM = new gfxMatrix(tm);
   }
   return *mCanvasTM;
 }
 
-NS_IMETHODIMP
+nsresult
 nsSVGGFrame::AttributeChanged(int32_t         aNameSpaceID,
                               nsIAtom*        aAttribute,
                               int32_t         aModType)
@@ -99,6 +93,6 @@ nsSVGGFrame::AttributeChanged(int32_t         aNameSpaceID,
     // and cause DoApplyRenderingChangeToTree to make the SchedulePaint call.
     NotifySVGChanged(TRANSFORM_CHANGED);
   }
-  
+
   return NS_OK;
 }

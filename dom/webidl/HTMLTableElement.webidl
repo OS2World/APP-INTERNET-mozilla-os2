@@ -12,6 +12,7 @@
  */
 
 interface HTMLTableElement : HTMLElement {
+           [SetterThrows]
            attribute HTMLTableCaptionElement? caption;
   HTMLElement createCaption();
   void deleteCaption();
@@ -24,7 +25,7 @@ interface HTMLTableElement : HTMLElement {
   HTMLElement createTFoot();
   void deleteTFoot();
   readonly attribute HTMLCollection tBodies;
-  //HTMLElement createTBody();
+  HTMLElement createTBody();
   readonly attribute HTMLCollection rows;
   [Throws]
   HTMLElement insertRow(optional long index = -1);

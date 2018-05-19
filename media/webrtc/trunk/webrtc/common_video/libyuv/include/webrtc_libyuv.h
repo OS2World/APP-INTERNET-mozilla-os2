@@ -17,9 +17,10 @@
 
 #include <stdio.h>
 
-#include "common_types.h"  // RawVideoTypes.
-#include "common_video/interface/i420_video_frame.h"
-#include "typedefs.h"
+#include "webrtc/common_types.h"  // RawVideoTypes.
+#include "webrtc/common_video/rotation.h"
+#include "webrtc/common_video/interface/i420_video_frame.h"
+#include "webrtc/typedefs.h"
 
 namespace webrtc {
 
@@ -50,15 +51,6 @@ const double kPerfectPSNR = 48.0f;
 // TODO(wu): Consolidate types into one type throughout WebRtc.
 VideoType RawVideoTypeToCommonVideoVideoType(RawVideoType type);
 
-// Supported rotation
-// Direction of rotation - clockwise.
-enum VideoRotationMode {
-  kRotateNone = 0,
-  kRotate90 = 90,
-  kRotate180 = 180,
-  kRotate270 = 270,
-};
-
 // Align integer values.
 // Input:
 //   - value     : Input value to be aligned.
@@ -81,8 +73,8 @@ void Calc16ByteAlignedStride(int width, int* stride_y, int* stride_uv);
 //   - width        :frame width in pixels.
 //   - height       :frame height in pixels.
 // Return value:    :The required size in bytes to accommodate the specified
-//                   video frame or -1 in case of an error .
-int CalcBufferSize(VideoType type, int width, int height);
+//                   video frame.
+size_t CalcBufferSize(VideoType type, int width, int height);
 
 // TODO(mikhal): Add unit test for these two functions and determine location.
 // Print I420VideoFrame to file
@@ -101,7 +93,7 @@ int PrintI420VideoFrame(const I420VideoFrame& frame, FILE* file);
 //   - buffer      : Pointer to buffer
 // Return value: length of buffer if OK, < 0 otherwise.
 int ExtractBuffer(const I420VideoFrame& input_frame,
-                  int size, uint8_t* buffer);
+                  size_t size, uint8_t* buffer);
 // Convert To I420
 // Input:
 //   - src_video_type   : Type of input video.
@@ -117,10 +109,12 @@ int ExtractBuffer(const I420VideoFrame& input_frame,
 
 int ConvertToI420(VideoType src_video_type,
                   const uint8_t* src_frame,
-                  int crop_x, int crop_y,
-                  int src_width, int src_height,
-                  int sample_size,
-                  VideoRotationMode rotation,
+                  int crop_x,
+                  int crop_y,
+                  int src_width,
+                  int src_height,
+                  size_t sample_size,
+                  VideoRotation rotation,
                   I420VideoFrame* dst_frame);
 
 // Convert From I420
@@ -152,19 +146,6 @@ int ConvertNV12ToRGB565(const uint8_t* src_frame,
                         uint8_t* dst_frame,
                         int width, int height);
 
-// Mirror functions
-// The following 2 functions perform mirroring on a given image
-// (LeftRight/UpDown).
-// Input:
-//    - src_frame   : Pointer to a source frame.
-//    - dst_frame   : Pointer to a destination frame.
-// Return value: 0 if OK, < 0 otherwise.
-// It is assumed that src and dst frames have equal dimensions.
-int MirrorI420LeftRight(const I420VideoFrame* src_frame,
-                        I420VideoFrame* dst_frame);
-int MirrorI420UpDown(const I420VideoFrame* src_frame,
-                     I420VideoFrame* dst_frame);
-
 // Compute PSNR for an I420 frame (all planes).
 // Returns the PSNR in decibel, to a maximum of kInfinitePSNR.
 double I420PSNR(const I420VideoFrame* ref_frame,
@@ -172,17 +153,6 @@ double I420PSNR(const I420VideoFrame* ref_frame,
 // Compute SSIM for an I420 frame (all planes).
 double I420SSIM(const I420VideoFrame* ref_frame,
                 const I420VideoFrame* test_frame);
-
-// TODO(mikhal): Remove these functions and keep only the above functionality.
-// Compute PSNR for an I420 buffer (all planes).
-// Returns the PSNR in decibel, to a maximum of kInfinitePSNR.
-double I420PSNR(const uint8_t* ref_frame,
-                const uint8_t* test_frame,
-                int width, int height);
-// Compute SSIM for an I420 buffer (all planes).
-double I420SSIM(const uint8_t* ref_frame,
-                const uint8_t* test_frame,
-                int width, int height);
 }
 
 #endif  // WEBRTC_COMMON_VIDEO_LIBYUV_INCLUDE_WEBRTC_LIBYUV_H_

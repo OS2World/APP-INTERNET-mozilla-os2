@@ -1,7 +1,4 @@
-const Cc = Components.classes;
-const Ci = Components.interfaces;
-const Cr = Components.results;
-const CC = Components.Constructor;
+var CC = Components.Constructor;
 
 const StreamCopier = CC("@mozilla.org/network/async-stream-copier;1",
                         "nsIAsyncStreamCopier",

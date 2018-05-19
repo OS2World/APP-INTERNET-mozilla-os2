@@ -20,36 +20,50 @@
 #endif
 
 #include "npfunctions.h"
-#include "nsAutoPtr.h"
 #include "nsDataHashtable.h"
 #include "nsHashKeys.h"
 #include "nsRect.h"
-#include "gfxASurface.h"
+#include "PluginDataResolver.h"
 
-#ifdef MOZ_X11
-class gfxXlibSurface;
-#endif
-#include "nsGUIEvent.h"
-#include "mozilla/unused.h"
+#include "mozilla/Unused.h"
+#include "mozilla/EventForwards.h"
+
+class gfxASurface;
+class gfxContext;
+class nsPluginInstanceOwner;
 
 namespace mozilla {
 namespace layers {
+class Image;
 class ImageContainer;
-class CompositionNotifySink;
-}
+class TextureClientRecycleAllocator;
+} // namespace layers
 namespace plugins {
 
 class PBrowserStreamParent;
 class PluginModuleParent;
+class D3D11SurfaceHolder;
 
 class PluginInstanceParent : public PPluginInstanceParent
+                           , public PluginDataResolver
 {
     friend class PluginModuleParent;
     friend class BrowserStreamParent;
     friend class PluginStreamParent;
     friend class StreamNotifyParent;
 
+#if defined(XP_WIN)
 public:
+    /**
+     * Helper method for looking up instances based on a supplied id.
+     */
+    static PluginInstanceParent*
+    LookupPluginInstanceByID(uintptr_t aId);
+#endif // defined(XP_WIN)
+
+public:
+    typedef mozilla::gfx::DrawTarget DrawTarget;
+
     PluginInstanceParent(PluginModuleParent* parent,
                          NPP npp,
                          const nsCString& mimeType,
@@ -57,90 +71,97 @@ public:
 
     virtual ~PluginInstanceParent();
 
-    bool Init();
+    bool InitMetadata(const nsACString& aMimeType,
+                      const nsACString& aSrcAttribute);
     NPError Destroy();
 
-    virtual void ActorDestroy(ActorDestroyReason why) MOZ_OVERRIDE;
+    virtual void ActorDestroy(ActorDestroyReason why) override;
 
     virtual PPluginScriptableObjectParent*
-    AllocPPluginScriptableObject();
+    AllocPPluginScriptableObjectParent() override;
 
     virtual bool
-    RecvPPluginScriptableObjectConstructor(PPluginScriptableObjectParent* aActor) MOZ_OVERRIDE;
+    RecvPPluginScriptableObjectConstructor(PPluginScriptableObjectParent* aActor) override;
 
     virtual bool
-    DeallocPPluginScriptableObject(PPluginScriptableObjectParent* aObject);
+    DeallocPPluginScriptableObjectParent(PPluginScriptableObjectParent* aObject) override;
     virtual PBrowserStreamParent*
-    AllocPBrowserStream(const nsCString& url,
-                        const uint32_t& length,
-                        const uint32_t& lastmodified,
-                        PStreamNotifyParent* notifyData,
-                        const nsCString& headers,
-                        const nsCString& mimeType,
-                        const bool& seekable,
-                        NPError* rv,
-                        uint16_t *stype);
+    AllocPBrowserStreamParent(const nsCString& url,
+                              const uint32_t& length,
+                              const uint32_t& lastmodified,
+                              PStreamNotifyParent* notifyData,
+                              const nsCString& headers) override;
     virtual bool
-    DeallocPBrowserStream(PBrowserStreamParent* stream);
+    DeallocPBrowserStreamParent(PBrowserStreamParent* stream) override;
 
     virtual PPluginStreamParent*
-    AllocPPluginStream(const nsCString& mimeType,
-                       const nsCString& target,
-                       NPError* result);
+    AllocPPluginStreamParent(const nsCString& mimeType,
+                             const nsCString& target,
+                             NPError* result) override;
     virtual bool
-    DeallocPPluginStream(PPluginStreamParent* stream);
+    DeallocPPluginStreamParent(PPluginStreamParent* stream) override;
 
     virtual bool
     AnswerNPN_GetValue_NPNVnetscapeWindow(NativeWindowHandle* value,
-                                          NPError* result);
+                                          NPError* result) override;
     virtual bool
     AnswerNPN_GetValue_NPNVWindowNPObject(
                                        PPluginScriptableObjectParent** value,
-                                       NPError* result);
+                                       NPError* result) override;
     virtual bool
     AnswerNPN_GetValue_NPNVPluginElementNPObject(
                                        PPluginScriptableObjectParent** value,
-                                       NPError* result);
+                                       NPError* result) override;
     virtual bool
-    AnswerNPN_GetValue_NPNVprivateModeBool(bool* value, NPError* result);
+    AnswerNPN_GetValue_NPNVprivateModeBool(bool* value, NPError* result) override;
 
     virtual bool
-    AnswerNPN_GetValue_DrawingModelSupport(const NPNVariable& model, bool* value);
+    AnswerNPN_GetValue_DrawingModelSupport(const NPNVariable& model, bool* value) override;
   
     virtual bool
-    AnswerNPN_GetValue_NPNVdocumentOrigin(nsCString* value, NPError* result);
+    AnswerNPN_GetValue_NPNVdocumentOrigin(nsCString* value, NPError* result) override;
 
     virtual bool
-    AnswerNPN_SetValue_NPPVpluginWindow(const bool& windowed, NPError* result);
+    AnswerNPN_GetValue_SupportsAsyncBitmapSurface(bool* value) override;
+
+    virtual bool
+    AnswerNPN_GetValue_SupportsAsyncDXGISurface(bool* value) override;
+
+    virtual bool
+    AnswerNPN_GetValue_PreferredDXGIAdapter(DxgiAdapterDesc* desc) override;
+
+    virtual bool
+    AnswerNPN_SetValue_NPPVpluginWindow(const bool& windowed, NPError* result) override;
     virtual bool
     AnswerNPN_SetValue_NPPVpluginTransparent(const bool& transparent,
-                                             NPError* result);
+                                             NPError* result) override;
     virtual bool
     AnswerNPN_SetValue_NPPVpluginUsesDOMForCursor(const bool& useDOMForCursor,
-                                                  NPError* result);
+                                                  NPError* result) override;
     virtual bool
     AnswerNPN_SetValue_NPPVpluginDrawingModel(const int& drawingModel,
-                                              OptionalShmem *remoteImageData,
-                                              CrossProcessMutexHandle *mutex,
-                                              NPError* result);
+                                              NPError* result) override;
     virtual bool
     AnswerNPN_SetValue_NPPVpluginEventModel(const int& eventModel,
-                                             NPError* result);
+                                             NPError* result) override;
+    virtual bool
+    AnswerNPN_SetValue_NPPVpluginIsPlayingAudio(const bool& isAudioPlaying,
+                                                NPError* result) override;
 
     virtual bool
     AnswerNPN_GetURL(const nsCString& url, const nsCString& target,
-                     NPError *result);
+                     NPError *result) override;
 
     virtual bool
     AnswerNPN_PostURL(const nsCString& url, const nsCString& target,
                       const nsCString& buffer, const bool& file,
-                      NPError* result);
+                      NPError* result) override;
 
     virtual PStreamNotifyParent*
-    AllocPStreamNotify(const nsCString& url, const nsCString& target,
-                       const bool& post, const nsCString& buffer,
-                       const bool& file,
-                       NPError* result);
+    AllocPStreamNotifyParent(const nsCString& url, const nsCString& target,
+                             const bool& post, const nsCString& buffer,
+                             const bool& file,
+                             NPError* result) override;
 
     virtual bool
     AnswerPStreamNotifyConstructor(PStreamNotifyParent* actor,
@@ -148,43 +169,65 @@ public:
                                    const nsCString& target,
                                    const bool& post, const nsCString& buffer,
                                    const bool& file,
-                                   NPError* result) MOZ_OVERRIDE;
+                                   NPError* result) override;
 
     virtual bool
-    DeallocPStreamNotify(PStreamNotifyParent* notifyData);
+    DeallocPStreamNotifyParent(PStreamNotifyParent* notifyData) override;
 
     virtual bool
-    RecvNPN_InvalidateRect(const NPRect& rect);
+    RecvNPN_InvalidateRect(const NPRect& rect) override;
+
+    virtual bool
+    RecvRevokeCurrentDirectSurface() override;
+
+    virtual bool
+    RecvInitDXGISurface(const gfx::SurfaceFormat& format,
+                         const gfx::IntSize& size,
+                         WindowsHandle* outHandle,
+                         NPError* outError) override;
+    virtual bool
+    RecvFinalizeDXGISurface(const WindowsHandle& handle) override;
+
+    virtual bool
+    RecvShowDirectBitmap(Shmem&& buffer,
+                         const gfx::SurfaceFormat& format,
+                         const uint32_t& stride,
+                         const gfx::IntSize& size,
+                         const gfx::IntRect& dirty) override;
+
+    virtual bool
+    RecvShowDirectDXGISurface(const WindowsHandle& handle,
+                               const gfx::IntRect& rect) override;
 
     // Async rendering
     virtual bool
     RecvShow(const NPRect& updatedRect,
              const SurfaceDescriptor& newSurface,
-             SurfaceDescriptor* prevSurface);
+             SurfaceDescriptor* prevSurface) override;
 
     virtual PPluginSurfaceParent*
-    AllocPPluginSurface(const WindowsSharedMemoryHandle& handle,
-                        const gfxIntSize& size,
-                        const bool& transparent);
+    AllocPPluginSurfaceParent(const WindowsSharedMemoryHandle& handle,
+                              const mozilla::gfx::IntSize& size,
+                              const bool& transparent) override;
 
     virtual bool
-    DeallocPPluginSurface(PPluginSurfaceParent* s);
+    DeallocPPluginSurfaceParent(PPluginSurfaceParent* s) override;
 
     virtual bool
-    AnswerNPN_PushPopupsEnabledState(const bool& aState);
+    AnswerNPN_PushPopupsEnabledState(const bool& aState) override;
 
     virtual bool
-    AnswerNPN_PopPopupsEnabledState();
+    AnswerNPN_PopPopupsEnabledState() override;
 
     virtual bool
     AnswerNPN_GetValueForURL(const NPNURLVariable& variable,
                              const nsCString& url,
-                             nsCString* value, NPError* result) MOZ_OVERRIDE;
+                             nsCString* value, NPError* result) override;
 
     virtual bool
     AnswerNPN_SetValueForURL(const NPNURLVariable& variable,
                              const nsCString& url,
-                             const nsCString& value, NPError* result) MOZ_OVERRIDE;
+                             const nsCString& value, NPError* result) override;
 
     virtual bool
     AnswerNPN_GetAuthenticationInfo(const nsCString& protocol,
@@ -194,7 +237,7 @@ public:
                                     const nsCString& realm,
                                     nsCString* username,
                                     nsCString* password,
-                                    NPError* result) MOZ_OVERRIDE;
+                                    NPError* result) override;
 
     virtual bool
     AnswerNPN_ConvertPoint(const double& sourceX,
@@ -205,21 +248,19 @@ public:
                            const NPCoordinateSpace& destSpace,
                            double *destX,
                            double *destY,
-                           bool *result) MOZ_OVERRIDE;
+                           bool *result) override;
 
     virtual bool
-    AnswerNPN_InitAsyncSurface(const gfxIntSize& size,
-                               const NPImageFormat& format,
-                               NPRemoteAsyncSurface* surfData,
-                               bool* result);
+    RecvRedrawPlugin() override;
 
     virtual bool
-    RecvRedrawPlugin();
+    RecvNegotiatedCarbon() override;
 
     virtual bool
-    RecvNegotiatedCarbon() MOZ_OVERRIDE;
+    RecvAsyncNPP_NewResult(const NPError& aResult) override;
 
-    virtual bool RecvReleaseDXGISharedSurface(const DXGISharedSurfaceHandle &aHandle);
+    virtual bool
+    RecvSetNetscapeWindowAsParent(const NativeWindowHandle& childWindow) override;
 
     NPError NPP_SetWindow(const NPWindow* aWindow);
 
@@ -265,26 +306,67 @@ public:
       return mNPP;
     }
 
+    bool
+    UseSurrogate() const
+    {
+        return mUseSurrogate;
+    }
+
+    void
+    GetSrcAttribute(nsACString& aOutput) const
+    {
+        aOutput = mSrcAttribute;
+    }
+
     virtual bool
-    AnswerPluginFocusChange(const bool& gotFocus);
+    AnswerPluginFocusChange(const bool& gotFocus) override;
 
     nsresult AsyncSetWindow(NPWindow* window);
     nsresult GetImageContainer(mozilla::layers::ImageContainer** aContainer);
     nsresult GetImageSize(nsIntSize* aSize);
 #ifdef XP_MACOSX
     nsresult IsRemoteDrawingCoreAnimation(bool *aDrawing);
+#endif
+#if defined(XP_MACOSX) || defined(XP_WIN)
     nsresult ContentsScaleFactorChanged(double aContentsScaleFactor);
 #endif
     nsresult SetBackgroundUnknown();
     nsresult BeginUpdateBackground(const nsIntRect& aRect,
-                                   gfxContext** aCtx);
-    nsresult EndUpdateBackground(gfxContext* aCtx,
-                                 const nsIntRect& aRect);
-#if defined(MOZ_WIDGET_QT) && (MOZ_PLATFORM_MAEMO == 6)
-    nsresult HandleGUIEvent(const nsGUIEvent& anEvent, bool* handled);
+                                   DrawTarget** aDrawTarget);
+    nsresult EndUpdateBackground(const nsIntRect& aRect);
+#if defined(XP_WIN)
+    nsresult SetScrollCaptureId(uint64_t aScrollCaptureId);
+    nsresult GetScrollCaptureContainer(mozilla::layers::ImageContainer** aContainer);
 #endif
+    void DidComposite();
 
-    void DidComposite() { unused << SendNPP_DidComposite(); }
+    bool IsUsingDirectDrawing();
+
+    virtual PluginAsyncSurrogate* GetAsyncSurrogate() override;
+
+    virtual PluginInstanceParent* GetInstance() override { return this; }
+
+    static PluginInstanceParent* Cast(NPP instance,
+                                      PluginAsyncSurrogate** aSurrogate = nullptr);
+
+    // for IME hook
+    virtual bool
+    RecvGetCompositionString(const uint32_t& aIndex,
+                             nsTArray<uint8_t>* aBuffer,
+                             int32_t* aLength) override;
+    virtual bool
+    RecvSetCandidateWindow(
+        const mozilla::widget::CandidateWindowPosition& aPosition) override;
+    virtual bool
+    RecvRequestCommitOrCancel(const bool& aCommitted) override;
+
+    // for reserved shortcut key handling with windowed plugin on Windows
+    nsresult HandledWindowedPluginKeyEvent(
+      const mozilla::NativeEventData& aKeyEventData,
+      bool aIsConsumed);
+    virtual bool
+    RecvOnWindowedPluginKeyEvent(
+      const mozilla::NativeEventData& aKeyEventData) override;
 
 private:
     // Create an appropriate platform surface for a background of size
@@ -297,70 +379,89 @@ private:
     ImageContainer *GetImageContainer();
 
     virtual PPluginBackgroundDestroyerParent*
-    AllocPPluginBackgroundDestroyer() MOZ_OVERRIDE;
+    AllocPPluginBackgroundDestroyerParent() override;
 
     virtual bool
-    DeallocPPluginBackgroundDestroyer(PPluginBackgroundDestroyerParent* aActor) MOZ_OVERRIDE;
+    DeallocPPluginBackgroundDestroyerParent(PPluginBackgroundDestroyerParent* aActor) override;
 
     bool InternalGetValueForNPObject(NPNVariable aVariable,
                                      PPluginScriptableObjectParent** aValue,
                                      NPError* aResult);
 
-    bool IsAsyncDrawing();
+    nsPluginInstanceOwner* GetOwner();
+
+    void SetCurrentImage(layers::Image* aImage);
+
+    // Update Telemetry with the current drawing model.
+    void RecordDrawingModel();
 
 private:
     PluginModuleParent* mParent;
+    RefPtr<PluginAsyncSurrogate> mSurrogate;
+    bool mUseSurrogate;
     NPP mNPP;
     const NPNetscapeFuncs* mNPNIface;
+    nsCString mSrcAttribute;
     NPWindowType mWindowType;
-    Shmem mRemoteImageDataShmem;
-    nsAutoPtr<CrossProcessMutex> mRemoteImageDataMutex;
-    int16_t            mDrawingModel;
-    nsAutoPtr<mozilla::layers::CompositionNotifySink> mNotifySink;
+    int16_t mDrawingModel;
+
+    // Since plugins may request different drawing models to find a compatible
+    // one, we only record the drawing model after a SetWindow call and if the
+    // drawing model has changed.
+    int mLastRecordedDrawingModel;
 
     nsDataHashtable<nsPtrHashKey<NPObject>, PluginScriptableObjectParent*> mScriptableObjects;
 
+    // This is used to tell the compositor that it should invalidate the ImageLayer.
+    uint32_t mFrameID;
+
+#if defined(XP_WIN)
+    // Note: DXGI 1.1 surface handles are global across all processes, and are not
+    // marshaled. As long as we haven't freed a texture its handle should be valid
+    // as a unique cross-process identifier for the texture.
+    nsRefPtrHashtable<nsPtrHashKey<void>, D3D11SurfaceHolder> mD3D11Surfaces;
+#endif
+
 #if defined(OS_WIN)
 private:
-    // Used in rendering windowless plugins in other processes.
-    bool SharedSurfaceSetWindow(const NPWindow* aWindow, NPRemoteWindow& aRemoteWindow);
-    void SharedSurfaceBeforePaint(RECT &rect, NPRemoteEvent& npremoteevent);
-    void SharedSurfaceAfterPaint(NPEvent* npevent);
-    void SharedSurfaceRelease();
     // Used in handling parent/child forwarding of events.
     static LRESULT CALLBACK PluginWindowHookProc(HWND hWnd, UINT message,
                                                  WPARAM wParam, LPARAM lParam);
     void SubclassPluginWindow(HWND aWnd);
     void UnsubclassPluginWindow();
 
+    bool MaybeCreateAndParentChildPluginWindow();
+    void MaybeCreateChildPopupSurrogate();
+
 private:
-    gfx::SharedDIBWin  mSharedSurfaceDib;
     nsIntRect          mPluginPort;
     nsIntRect          mSharedSize;
     HWND               mPluginHWND;
+    // This is used for the normal child plugin HWND for windowed plugins and,
+    // if needed, also the child popup surrogate HWND for windowless plugins.
+    HWND               mChildPluginHWND;
+    HWND               mChildPluginsParentHWND;
     WNDPROC            mPluginWndProc;
     bool               mNestedEventState;
-
-    // This will automatically release the textures when this object goes away.
-    nsRefPtrHashtable<nsPtrHashKey<void>, ID3D10Texture2D> mTextureMap;
 #endif // defined(XP_WIN)
 #if defined(XP_OS2)
 private:
-    // Used in rendering windowless plugins in other processes.
-    bool SharedSurfaceSetWindow(const NPWindow* aWindow, NPRemoteWindow& aRemoteWindow);
-    void SharedSurfaceBeforePaint(RECTL &rcl, RECTL & dr, HPS parentHps, NPRemoteEvent& npremoteevent);
-    void SharedSurfaceAfterPaint(RECTL & dr, HPS parentHps);
-    void SharedSurfaceRelease();
     // Used in handling parent/child forwarding of events.
     static MRESULT EXPENTRY PluginWindowHookProc(HWND hWnd, ULONG message,
                                                  MPARAM mp1, MPARAM mp2);
     void SubclassPluginWindow(HWND aWnd);
     void UnsubclassPluginWindow();
 
-    gfx::SharedDIBOS2  mSharedSurfaceDib;
+    bool MaybeCreateAndParentChildPluginWindow();
+    void MaybeCreateChildPopupSurrogate();
+
     nsIntRect          mPluginPort;
     nsIntRect          mSharedSize;
     HWND               mPluginHWND;
+    // This is used for the normal child plugin HWND for windowed plugins and,
+    // if needed, also the child popup surrogate HWND for windowless plugins.
+    HWND               mChildPluginHWND;
+    HWND               mChildPluginsParentHWND;
     PFNWP              mPluginWndProc;
     bool               mNestedEventState;
 #endif // defined(XP_OS2)
@@ -375,7 +476,7 @@ private:
 #endif // definied(MOZ_WIDGET_COCOA)
 
     // ObjectFrame layer wrapper
-    nsRefPtr<gfxASurface>    mFrontSurface;
+    RefPtr<gfxASurface>    mFrontSurface;
     // For windowless+transparent instances, this surface contains a
     // "pretty recent" copy of the pixels under its <object> frame.
     // On the plugin side, we use this surface to avoid doing alpha
@@ -385,9 +486,9 @@ private:
     // We have explicitly chosen not to provide any guarantees about
     // the consistency of the pixels in |mBackground|.  A plugin may
     // be able to observe partial updates to the background.
-    nsRefPtr<gfxASurface>    mBackground;
+    RefPtr<gfxASurface>    mBackground;
 
-    nsRefPtr<ImageContainer> mImageContainer;
+    RefPtr<ImageContainer> mImageContainer;
 };
 
 

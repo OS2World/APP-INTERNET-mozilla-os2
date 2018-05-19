@@ -1,6 +1,6 @@
 #include "TestBadActor.h"
 #include "IPDLUnitTests.h"
-#include "mozilla/unused.h"
+#include "mozilla/Unused.h"
 
 namespace mozilla {
 namespace _ipdltest {
@@ -16,11 +16,11 @@ TestBadActorParent::Main()
   if (!child)
     fail("Sending constructor");
 
-  unused << child->Call__delete__(child);
+  Unused << child->Call__delete__(child);
 }
 
 PTestBadActorSubParent*
-TestBadActorParent::AllocPTestBadActorSub()
+TestBadActorParent::AllocPTestBadActorSubParent()
 {
   return new TestBadActorSubParent();
 }
@@ -33,7 +33,7 @@ TestBadActorSubParent::RecvPing()
 }
 
 PTestBadActorSubChild*
-TestBadActorChild::AllocPTestBadActorSub()
+TestBadActorChild::AllocPTestBadActorSubChild()
 {
   return new TestBadActorSubChild();
 }

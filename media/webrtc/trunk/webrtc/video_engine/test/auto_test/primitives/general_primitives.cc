@@ -8,12 +8,12 @@
  *  be found in the AUTHORS file in the root of the source tree.
  */
 
-#include "general_primitives.h"
+#include "webrtc/video_engine/test/auto_test/primitives/general_primitives.h"
 
 #include "webrtc/modules/video_capture/include/video_capture_factory.h"
-#include "vie_autotest.h"
-#include "vie_autotest_defines.h"
-#include "vie_to_file_renderer.h"
+#include "webrtc/video_engine/test/auto_test/interface/vie_autotest.h"
+#include "webrtc/video_engine/test/auto_test/interface/vie_autotest_defines.h"
+#include "webrtc/video_engine/test/libvietest/include/vie_to_file_renderer.h"
 
 void FindCaptureDeviceOnSystem(webrtc::ViECapture* capture,
                                char* device_name,
@@ -63,6 +63,12 @@ void RenderInWindow(webrtc::ViERender* video_render_interface,
             video_render_interface->AddRenderer(frame_provider_id, os_window,
                                                 z_index, 0.0, 0.0, 1.0, 1.0));
   EXPECT_EQ(0, video_render_interface->StartRender(frame_provider_id));
+}
+
+void StopRenderInWindow(webrtc::ViERender* video_render_interface,
+                        int frame_provider_id) {
+  EXPECT_EQ(0, video_render_interface->StopRender(frame_provider_id));
+  EXPECT_EQ(0, video_render_interface->RemoveRenderer(frame_provider_id));
 }
 
 void RenderToFile(webrtc::ViERender* renderer_interface,

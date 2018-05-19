@@ -5,18 +5,20 @@
 
 #include "nsDeviceContextSpecX.h"
 
+#include "mozilla/gfx/PrintTargetCG.h"
+#include "mozilla/RefPtr.h"
 #include "nsCRT.h"
 #include <unistd.h>
 
+#include "nsQueryObject.h"
 #include "nsIServiceManager.h"
-#include "nsIPrintOptions.h"
 #include "nsPrintSettingsX.h"
-
-#include "gfxQuartzSurface.h"
-#include "gfxImageSurface.h"
 
 // This must be the last include:
 #include "nsObjCExceptions.h"
+
+using namespace mozilla;
+using namespace mozilla::gfx;
 
 nsDeviceContextSpecX::nsDeviceContextSpecX()
 : mPrintSession(NULL)
@@ -35,7 +37,7 @@ nsDeviceContextSpecX::~nsDeviceContextSpecX()
   NS_OBJC_END_TRY_ABORT_BLOCK;
 }
 
-NS_IMPL_ISUPPORTS1(nsDeviceContextSpecX, nsIDeviceContextSpec)
+NS_IMPL_ISUPPORTS(nsDeviceContextSpecX, nsIDeviceContextSpec)
 
 NS_IMETHODIMP nsDeviceContextSpecX::Init(nsIWidget *aWidget,
                                          nsIPrintSettings* aPS,
@@ -43,7 +45,7 @@ NS_IMETHODIMP nsDeviceContextSpecX::Init(nsIWidget *aWidget,
 {
   NS_OBJC_BEGIN_TRY_ABORT_BLOCK_NSRESULT;
 
-  nsCOMPtr<nsPrintSettingsX> settings(do_QueryInterface(aPS));
+  RefPtr<nsPrintSettingsX> settings(do_QueryObject(aPS));
   if (!settings)
     return NS_ERROR_NO_INTERFACE;
 
@@ -57,15 +59,17 @@ NS_IMETHODIMP nsDeviceContextSpecX::Init(nsIWidget *aWidget,
   NS_OBJC_END_TRY_ABORT_BLOCK_NSRESULT;
 }
 
-NS_IMETHODIMP nsDeviceContextSpecX::BeginDocument(PRUnichar*  aTitle, 
-                                                  PRUnichar*  aPrintToFileName,
-                                                  int32_t     aStartPage, 
-                                                  int32_t     aEndPage)
+NS_IMETHODIMP nsDeviceContextSpecX::BeginDocument(const nsAString& aTitle, 
+                                                  const nsAString& aPrintToFileName,
+                                                  int32_t          aStartPage, 
+                                                  int32_t          aEndPage)
 {
     NS_OBJC_BEGIN_TRY_ABORT_BLOCK_NSRESULT;
 
-    if (aTitle) {
-      CFStringRef cfString = ::CFStringCreateWithCharacters(NULL, aTitle, NS_strlen(aTitle));
+    if (!aTitle.IsEmpty()) {
+      CFStringRef cfString =
+        ::CFStringCreateWithCharacters(NULL, reinterpret_cast<const UniChar*>(aTitle.BeginReading()),
+                                             aTitle.Length());
       if (cfString) {
         ::PMPrintSettingsSetJobName(mPrintSettings, cfString);
         ::CFRelease(cfString);
@@ -133,7 +137,7 @@ void nsDeviceContextSpecX::GetPaperRect(double* aTop, double* aLeft, double* aBo
     NS_OBJC_END_TRY_ABORT_BLOCK;
 }
 
-NS_IMETHODIMP nsDeviceContextSpecX::GetSurfaceForPrinter(gfxASurface **surface)
+already_AddRefed<PrintTarget> nsDeviceContextSpecX::MakePrintTarget()
 {
     NS_OBJC_BEGIN_TRY_ABORT_BLOCK_NSRESULT;
 
@@ -141,29 +145,21 @@ NS_IMETHODIMP nsDeviceContextSpecX::GetSurfaceForPrinter(gfxASurface **surface)
     GetPaperRect(&top, &left, &bottom, &right);
     const double width = right - left;
     const double height = bottom - top;
+    IntSize size = IntSize::Floor(width, height);
 
     CGContextRef context;
     ::PMSessionGetCGGraphicsContext(mPrintSession, &context);
-
-    nsRefPtr<gfxASurface> newSurface;
 
     if (context) {
         // Initially, origin is at bottom-left corner of the paper.
         // Here, we translate it to top-left corner of the paper.
         CGContextTranslateCTM(context, 0, height);
         CGContextScaleCTM(context, 1.0, -1.0);
-        newSurface = new gfxQuartzSurface(context, gfxSize(width, height), true);
-    } else {
-        newSurface = new gfxQuartzSurface(gfxSize((int32_t)width, (int32_t)height), gfxASurface::ImageFormatARGB32, true);
+        return PrintTargetCG::CreateOrNull(context, size);
     }
 
-    if (!newSurface)
-        return NS_ERROR_FAILURE;
+    // Apparently we do need this branch - bug 368933.
+    return PrintTargetCG::CreateOrNull(size, SurfaceFormat::A8R8G8B8_UINT32);
 
-    *surface = newSurface;
-    NS_ADDREF(*surface);
-
-    return NS_OK;
-
-    NS_OBJC_END_TRY_ABORT_BLOCK_NSRESULT;
+    NS_OBJC_END_TRY_ABORT_BLOCK_NSNULL;
 }

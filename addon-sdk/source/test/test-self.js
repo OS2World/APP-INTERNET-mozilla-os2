@@ -1,65 +1,79 @@
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
-
 "use strict";
 
-const {Cc, Ci, Cu, Cm, components} = require('chrome');
-Cu.import("resource://gre/modules/AddonManager.jsm", this);
 const xulApp = require("sdk/system/xul-app");
+const self = require("sdk/self");
+const { Loader, main, unload, override } = require("toolkit/loader");
+const { PlainTextConsole } = require("sdk/console/plain-text");
+const { Loader: CustomLoader } = require("sdk/test/loader");
+const loaderOptions = require("@loader/options");
 
-exports.testSelf = function(test) {
-  var self = require("sdk/self");
-
-  var source = self.data.load("test-content-symbiont.js");
-  test.assert(source.match(/test-content-symbiont/), "self.data.load() works");
-
+exports.testSelf = function(assert) {
   // Likewise, we can't assert anything about the full URL, because that
   // depends on self.id . We can only assert that it ends in the right
   // thing.
-  var url = self.data.url("test-content-symbiont.js");
-  test.assertEqual(typeof(url), "string", "self.data.url('x') returns string");
-  test.assertEqual(/\/test-content-symbiont\.js$/.test(url), true);
+  var url = self.data.url("test.html");
+  assert.equal(typeof(url), "string", "self.data.url('x') returns string");
+  assert.equal(/\/test\.html$/.test(url), true);
 
   // Make sure 'undefined' is not in url when no string is provided.
   url = self.data.url();
-  test.assertEqual(typeof(url), "string", "self.data.url() returns string");
-  test.assertEqual(/\/undefined$/.test(url), false);
+  assert.equal(typeof(url), "string", "self.data.url() returns string");
+  assert.equal(/\/undefined$/.test(url), false);
 
   // When tests are run on just the api-utils package, self.name is
   // api-utils. When they're run as 'cfx testall', self.name is testpkgs.
-  test.assert(self.name == "addon-sdk", "self.name is addon-sdk");
+  assert.equal(self.name, "addon-sdk", "self.name is addon-sdk");
 
   // loadReason may change here, as we change the way tests addons are installed
   // Bug 854937 fixed loadReason and is now install
   let testLoadReason = xulApp.versionInRange(xulApp.platformVersion,
                                              "23.0a1", "*") ? "install"
                                                             : "startup";
-  test.assertEqual(self.loadReason, testLoadReason,
-                   "self.loadReason is either startup or install on test runs");
+  assert.equal(self.loadReason, testLoadReason,
+               "self.loadReason is either startup or install on test runs");
 
-  test.assertEqual(self.isPrivateBrowsingSupported, false,
-                   'usePrivateBrowsing property is false by default');
+  assert.equal(self.isPrivateBrowsingSupported, false,
+               'usePrivateBrowsing property is false by default');
 };
 
-exports.testSelfID = function(test) {
-  test.waitUntilDone();
+exports.testSelfHandlesLackingLoaderOptions = function (assert) {
+  let root = module.uri.substr(0, module.uri.lastIndexOf('/'));
+  let uri = root + '/fixtures/loader/self/';
+  let sdkPath = loaderOptions.paths[''] + 'sdk';
+  let loader = Loader({ paths: { '': uri, 'sdk': sdkPath }});
+  let program = main(loader, 'main');
+  let self = program.self;
+  assert.pass("No errors thrown when including sdk/self without loader options");
+  assert.equal(self.isPrivateBrowsingSupported, false,
+    "safely checks sdk/self.isPrivateBrowsingSupported");
+  assert.equal(self.packed, false,
+    "safely checks sdk/self.packed");
+  unload(loader);
+};
 
-  var self = require("sdk/self");
-  // We can't assert anything about the ID inside the unit test right now,
-  // because the ID we get depends upon how the test was invoked. The idea
-  // is that it is supposed to come from the main top-level package's
-  // package.json file, from the "id" key.
-  test.assertEqual(typeof(self.id), "string", "self.id is a string");
-  test.assert(self.id.length > 0);
-
-  AddonManager.getAddonByID(self.id, function(addon) {
-    if (!addon) {
-      test.fail("did not find addon with self.id");
-    }
-    else {
-      test.pass("found addon with self.id");
-    }
-    test.done();
+exports.testPreferencesBranch = function (assert) {
+  let options = override(loaderOptions, {
+    preferencesBranch: 'human-readable',
   });
+  let loader = CustomLoader(module, { }, options);
+  let { preferencesBranch } = loader.require('sdk/self');
+  assert.equal(preferencesBranch, 'human-readable',
+    'preferencesBranch is human-readable');
 }
+
+exports.testInvalidPreferencesBranch = function (assert) {
+  let console = new PlainTextConsole(_ => void _);
+  let options = override(loaderOptions, {
+    preferencesBranch: 'invalid^branch*name',
+    id: 'simple@jetpack'
+  });
+  let loader = CustomLoader(module, { console }, options);
+  let { preferencesBranch } = loader.require('sdk/self');
+  assert.equal(preferencesBranch, 'simple@jetpack',
+    'invalid preferencesBranch value ignored');
+}
+
+require("sdk/test").run(exports);

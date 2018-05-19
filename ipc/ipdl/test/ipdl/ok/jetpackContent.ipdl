@@ -1,11 +1,11 @@
 include protocol content;
 include protocol jetpack;
 
-rpc protocol jetpackContent {
+intr protocol jetpackContent {
     bridges jetpack, content;
 
 child:
-    __delete__();
+    async __delete__();
 
 state DEAD:
     send __delete__;

@@ -13,11 +13,11 @@
  * This file includes unit tests for the RtpHeaderExtensionMap.
  */
 
-#include <gtest/gtest.h>
+#include "testing/gtest/include/gtest/gtest.h"
 
-#include "rtp_header_extension.h"
-#include "rtp_rtcp_defines.h"
-#include "typedefs.h"
+#include "webrtc/modules/rtp_rtcp/interface/rtp_rtcp_defines.h"
+#include "webrtc/modules/rtp_rtcp/source/rtp_header_extension.h"
+#include "webrtc/typedefs.h"
 
 namespace webrtc {
 
@@ -27,15 +27,24 @@ class RtpHeaderExtensionTest : public ::testing::Test {
   ~RtpHeaderExtensionTest() {}
 
   RtpHeaderExtensionMap map_;
-  enum {kId = 3};
+  static const uint8_t kId;
 };
+
+const uint8_t RtpHeaderExtensionTest::kId = 3;
 
 TEST_F(RtpHeaderExtensionTest, Register) {
   EXPECT_EQ(0, map_.Size());
   EXPECT_EQ(0, map_.Register(kRtpExtensionTransmissionTimeOffset, kId));
+  EXPECT_TRUE(map_.IsRegistered(kRtpExtensionTransmissionTimeOffset));
   EXPECT_EQ(1, map_.Size());
   EXPECT_EQ(0, map_.Deregister(kRtpExtensionTransmissionTimeOffset));
   EXPECT_EQ(0, map_.Size());
+
+  EXPECT_EQ(0, map_.RegisterInactive(kRtpExtensionTransmissionTimeOffset, kId));
+  EXPECT_EQ(0, map_.Size());
+  EXPECT_TRUE(map_.IsRegistered(kRtpExtensionTransmissionTimeOffset));
+  EXPECT_TRUE(map_.SetActive(kRtpExtensionTransmissionTimeOffset, true));
+  EXPECT_EQ(1, map_.Size());
 }
 
 TEST_F(RtpHeaderExtensionTest, RegisterIllegalArg) {
@@ -44,26 +53,40 @@ TEST_F(RtpHeaderExtensionTest, RegisterIllegalArg) {
   EXPECT_EQ(-1, map_.Register(kRtpExtensionTransmissionTimeOffset, 15));
 }
 
+TEST_F(RtpHeaderExtensionTest, Idempotent) {
+  EXPECT_EQ(0, map_.Register(kRtpExtensionTransmissionTimeOffset, kId));
+  EXPECT_EQ(0, map_.Register(kRtpExtensionTransmissionTimeOffset, kId));
+  EXPECT_EQ(0, map_.Deregister(kRtpExtensionTransmissionTimeOffset));
+  EXPECT_EQ(0, map_.Deregister(kRtpExtensionTransmissionTimeOffset));
+}
+
 TEST_F(RtpHeaderExtensionTest, NonUniqueId) {
   EXPECT_EQ(0, map_.Register(kRtpExtensionTransmissionTimeOffset, kId));
-  EXPECT_EQ(-1, map_.Register(kRtpExtensionTransmissionTimeOffset, kId));
+  EXPECT_EQ(-1, map_.Register(kRtpExtensionAudioLevel, kId));
+  EXPECT_EQ(-1, map_.RegisterInactive(kRtpExtensionAudioLevel, kId));
 }
 
 TEST_F(RtpHeaderExtensionTest, GetTotalLength) {
-  EXPECT_EQ(0, map_.GetTotalLengthInBytes());
+  EXPECT_EQ(0u, map_.GetTotalLengthInBytes());
+  EXPECT_EQ(0, map_.RegisterInactive(kRtpExtensionTransmissionTimeOffset, kId));
+  EXPECT_EQ(0u, map_.GetTotalLengthInBytes());
+
   EXPECT_EQ(0, map_.Register(kRtpExtensionTransmissionTimeOffset, kId));
-  EXPECT_EQ(RTP_ONE_BYTE_HEADER_LENGTH_IN_BYTES +
-            TRANSMISSION_TIME_OFFSET_LENGTH_IN_BYTES,
+  EXPECT_EQ(kRtpOneByteHeaderLength + kTransmissionTimeOffsetLength,
             map_.GetTotalLengthInBytes());
 }
 
 TEST_F(RtpHeaderExtensionTest, GetLengthUntilBlockStart) {
   EXPECT_EQ(-1, map_.GetLengthUntilBlockStartInBytes(
       kRtpExtensionTransmissionTimeOffset));
-  EXPECT_EQ(0, map_.Register(kRtpExtensionTransmissionTimeOffset, kId));
-  EXPECT_EQ(RTP_ONE_BYTE_HEADER_LENGTH_IN_BYTES,
-      map_.GetLengthUntilBlockStartInBytes(
-      kRtpExtensionTransmissionTimeOffset));
+  EXPECT_EQ(0, map_.RegisterInactive(kRtpExtensionTransmissionTimeOffset, kId));
+  EXPECT_EQ(-1, map_.GetLengthUntilBlockStartInBytes(
+                    kRtpExtensionTransmissionTimeOffset));
+
+  EXPECT_TRUE(map_.SetActive(kRtpExtensionTransmissionTimeOffset, true));
+  EXPECT_EQ(static_cast<int>(kRtpOneByteHeaderLength),
+            map_.GetLengthUntilBlockStartInBytes(
+                kRtpExtensionTransmissionTimeOffset));
 }
 
 TEST_F(RtpHeaderExtensionTest, GetType) {
@@ -88,7 +111,11 @@ TEST_F(RtpHeaderExtensionTest, IterateTypes) {
   EXPECT_EQ(kRtpExtensionNone, map_.First());
   EXPECT_EQ(kRtpExtensionNone, map_.Next(kRtpExtensionTransmissionTimeOffset));
 
-  EXPECT_EQ(0, map_.Register(kRtpExtensionTransmissionTimeOffset, kId));
+  EXPECT_EQ(0, map_.RegisterInactive(kRtpExtensionTransmissionTimeOffset, kId));
+
+  EXPECT_EQ(kRtpExtensionNone, map_.First());
+
+  EXPECT_TRUE(map_.SetActive(kRtpExtensionTransmissionTimeOffset, true));
 
   EXPECT_EQ(kRtpExtensionTransmissionTimeOffset, map_.First());
   EXPECT_EQ(kRtpExtensionNone, map_.Next(kRtpExtensionTransmissionTimeOffset));

@@ -1,4 +1,4 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
+/* -*- indent-tabs-mode: nil; js-indent-level: 2 -*- */
 /* vim: set ts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
@@ -40,15 +40,15 @@ const DownloadsButton = {
   /**
    * Location of the indicator overlay.
    */
-  get kIndicatorOverlay()
-      "chrome://browser/content/downloads/indicatorOverlay.xul",
+  get kIndicatorOverlay() {
+    return "chrome://browser/content/downloads/indicatorOverlay.xul";
+  },
 
   /**
    * Returns a reference to the downloads button position placeholder, or null
    * if not available because it has been removed from the toolbars.
    */
-  get _placeholder()
-  {
+  get _placeholder() {
     return document.getElementById("downloads-button");
   },
 
@@ -56,12 +56,10 @@ const DownloadsButton = {
    * This function is called asynchronously just after window initialization.
    *
    * NOTE: This function should limit the input/output it performs to improve
-   *       startup time, and in particular should not cause the Download Manager
-   *       service to start.
+   *       startup time.
    */
-  initializeIndicator: function DB_initializeIndicator()
-  {
-    this._update();
+  initializeIndicator() {
+    DownloadsIndicatorView.ensureInitialized();
   },
 
   /**
@@ -77,65 +75,19 @@ const DownloadsButton = {
    * placeholder is an ordinary button defined in the browser window that can be
    * moved freely between the toolbars and the customization palette.
    */
-  customizeStart: function DB_customizeStart()
-  {
-    // Hide the indicator and prevent it to be displayed as a temporary anchor
+  customizeStart() {
+    // Prevent the indicator from being displayed as a temporary anchor
     // during customization, even if requested using the getAnchor method.
     this._customizing = true;
     this._anchorRequested = false;
-
-    let indicator = DownloadsIndicatorView.indicator;
-    if (indicator) {
-      indicator.collapsed = true;
-    }
-
-    let placeholder = this._placeholder;
-    if (placeholder) {
-      placeholder.collapsed = false;
-    }
   },
 
   /**
    * This function is called when toolbar customization ends.
    */
-  customizeDone: function DB_customizeDone()
-  {
+  customizeDone() {
     this._customizing = false;
-    this._update();
-  },
-
-  /**
-   * This function is called during initialization or when toolbar customization
-   * ends.  It determines if we should enable or disable the object that keeps
-   * the indicator updated, and ensures that the placeholder is hidden unless it
-   * has been moved to the customization palette.
-   *
-   * NOTE: This function is also called on startup, thus it should limit the
-   *       input/output it performs, and in particular should not cause the
-   *       Download Manager service to start.
-   */
-  _update: function DB_update() {
-    this._updatePositionInternal();
-
-    if (!DownloadsCommon.useToolkitUI) {
-      DownloadsIndicatorView.ensureInitialized();
-    } else {
-      DownloadsIndicatorView.ensureTerminated();
-    }
-  },
-
-  /**
-   * Determines the position where the indicator should appear, and moves its
-   * associated element to the new position.  This does not happen if the
-   * indicator is currently being used as the anchor for the panel, to ensure
-   * that the panel doesn't flicker because we move the DOM element to which
-   * it's anchored.
-   */
-  updatePosition: function DB_updatePosition()
-  {
-    if (!this._anchorRequested) {
-      this._updatePositionInternal();
-    }
+    DownloadsIndicatorView.afterCustomize();
   },
 
   /**
@@ -144,37 +96,22 @@ const DownloadsButton = {
    *
    * @return Anchor element, or null if the indicator is not visible.
    */
-  _updatePositionInternal: function DB_updatePositionInternal()
-  {
+  _getAnchorInternal() {
     let indicator = DownloadsIndicatorView.indicator;
     if (!indicator) {
-      // Exit now if the indicator overlay isn't loaded yet.
+      // Exit now if the indicator overlay isn't loaded yet, or if the button
+      // is not in the document.
       return null;
     }
-
-    let placeholder = this._placeholder;
-    if (!placeholder) {
-      // The placeholder has been removed from the browser window.
-      indicator.collapsed = true;
-      // Move the indicator to a safe position on the toolbar, since otherwise
-      // it may break the merge of adjacent items, like back/forward + urlbar.
-      indicator.parentNode.appendChild(indicator);
-      return null;
-    }
-
-    // Position the indicator where the placeholder is located.  We should
-    // update the position even if the placeholder is located on an invisible
-    // toolbar, because the toolbar may be displayed later.
-    placeholder.parentNode.insertBefore(indicator, placeholder);
-    placeholder.collapsed = true;
-    indicator.collapsed = false;
 
     indicator.open = this._anchorRequested;
 
-    // Determine if the placeholder is located on an invisible toolbar.
-    if (!isElementVisible(placeholder.parentNode)) {
-      return null;
-    }
+    let widget = CustomizableUI.getWidget("downloads-button")
+                               .forWindow(window);
+     // Determine if the indicator is located on an invisible toolbar.
+     if (!isElementVisible(indicator.parentNode) && !widget.overflowed) {
+       return null;
+     }
 
     return DownloadsIndicatorView.indicatorAnchor;
   },
@@ -187,18 +124,15 @@ const DownloadsButton = {
    *        Called once the indicator overlay has loaded. Gets a boolean
    *        argument representing the indicator visibility.
    */
-  checkIsVisible: function DB_checkIsVisible(aCallback)
-  {
-    function DB_CEV_callback() {
+  checkIsVisible(aCallback) {
+    DownloadsOverlayLoader.ensureOverlayLoaded(this.kIndicatorOverlay, () => {
       if (!this._placeholder) {
         aCallback(false);
       } else {
         let element = DownloadsIndicatorView.indicator || this._placeholder;
         aCallback(isElementVisible(element.parentNode));
       }
-    }
-    DownloadsOverlayLoader.ensureOverlayLoaded(this.kIndicatorOverlay,
-                                               DB_CEV_callback.bind(this));
+    });
   },
 
   /**
@@ -215,44 +149,43 @@ const DownloadsButton = {
    *        panel should be anchored, or null if an anchor is not available (for
    *        example because both the tab bar and the navigation bar are hidden).
    */
-  getAnchor: function DB_getAnchor(aCallback)
-  {
+  getAnchor(aCallback) {
     // Do not allow anchoring the panel to the element while customizing.
     if (this._customizing) {
       aCallback(null);
       return;
     }
 
-    function DB_GA_callback() {
+    DownloadsOverlayLoader.ensureOverlayLoaded(this.kIndicatorOverlay, () => {
       this._anchorRequested = true;
-      aCallback(this._updatePositionInternal());
-    }
-
-    DownloadsOverlayLoader.ensureOverlayLoaded(this.kIndicatorOverlay,
-                                               DB_GA_callback.bind(this));
+      aCallback(this._getAnchorInternal());
+    });
   },
 
   /**
    * Allows the temporary anchor to be hidden.
    */
-  releaseAnchor: function DB_releaseAnchor()
-  {
+  releaseAnchor() {
     this._anchorRequested = false;
-    this._updatePositionInternal();
+    this._getAnchorInternal();
   },
 
-  get _tabsToolbar()
-  {
+  get _tabsToolbar() {
     delete this._tabsToolbar;
     return this._tabsToolbar = document.getElementById("TabsToolbar");
   },
 
-  get _navBar()
-  {
+  get _navBar() {
     delete this._navBar;
     return this._navBar = document.getElementById("nav-bar");
   }
 };
+
+Object.defineProperty(this, "DownloadsButton", {
+  value: DownloadsButton,
+  enumerable: true,
+  writable: false
+});
 
 ////////////////////////////////////////////////////////////////////////////////
 //// DownloadsIndicatorView
@@ -278,8 +211,7 @@ const DownloadsIndicatorView = {
   /**
    * Prepares the downloads indicator to be displayed.
    */
-  ensureInitialized: function DIV_ensureInitialized()
-  {
+  ensureInitialized() {
     if (this._initialized) {
       return;
     }
@@ -292,8 +224,7 @@ const DownloadsIndicatorView = {
   /**
    * Frees the internal resources related to the indicator.
    */
-  ensureTerminated: function DIV_ensureTerminated()
-  {
+  ensureTerminated() {
     if (!this._initialized) {
       return;
     }
@@ -307,35 +238,42 @@ const DownloadsIndicatorView = {
     this.counter = "";
     this.percentComplete = 0;
     this.paused = false;
-    this.attention = false;
+    this.attention = DownloadsCommon.ATTENTION_NONE;
   },
 
   /**
    * Ensures that the user interface elements required to display the indicator
    * are loaded, then invokes the given callback.
    */
-  _ensureOperational: function DIV_ensureOperational(aCallback)
-  {
+  _ensureOperational(aCallback) {
     if (this._operational) {
-      aCallback();
+      if (aCallback) {
+        aCallback();
+      }
       return;
     }
 
-    function DIV_EO_callback() {
-      this._operational = true;
-
-      // If the view is initialized, we need to update the elements now that
-      // they are finally available in the document.
-      if (this._initialized) {
-        DownloadsCommon.getIndicatorData(window).refreshView(this);
-      }
-
-      aCallback();
+    // If we don't have a _placeholder, there's no chance that the overlay
+    // will load correctly: bail (and don't set _operational to true!)
+    if (!DownloadsButton._placeholder) {
+      return;
     }
 
     DownloadsOverlayLoader.ensureOverlayLoaded(
-                                 DownloadsButton.kIndicatorOverlay,
-                                 DIV_EO_callback.bind(this));
+      DownloadsButton.kIndicatorOverlay,
+      () => {
+        this._operational = true;
+
+        // If the view is initialized, we need to update the elements now that
+        // they are finally available in the document.
+        if (this._initialized) {
+          DownloadsCommon.getIndicatorData(window).refreshView(this);
+        }
+
+        if (aCallback) {
+          aCallback();
+        }
+      });
   },
 
   //////////////////////////////////////////////////////////////////////////////
@@ -347,14 +285,25 @@ const DownloadsIndicatorView = {
   _notificationTimeout: null,
 
   /**
+   * Check if the panel containing aNode is open.
+   * @param aNode
+   *        the node whose panel we're interested in.
+   */
+  _isAncestorPanelOpen(aNode) {
+    while (aNode && aNode.localName != "panel") {
+      aNode = aNode.parentNode;
+    }
+    return aNode && aNode.state == "open";
+  },
+
+  /**
    * If the status indicator is visible in its assigned position, shows for a
    * brief time a visual notification of a relevant event, like a new download.
    *
    * @param aType
    *        Set to "start" for new downloads, "finish" for completed downloads.
    */
-  showEventNotification: function DIV_showEventNotification(aType)
-  {
+  showEventNotification(aType) {
     if (!this._initialized) {
       return;
     }
@@ -368,22 +317,51 @@ const DownloadsIndicatorView = {
       return;
     }
 
-    function DIV_SEN_callback() {
-      if (this._notificationTimeout) {
-        clearTimeout(this._notificationTimeout);
+    let anchor = DownloadsButton._placeholder;
+    let widgetGroup = CustomizableUI.getWidget("downloads-button");
+    let widget = widgetGroup.forWindow(window);
+    if (widget.overflowed || widgetGroup.areaType == CustomizableUI.TYPE_MENU_PANEL) {
+      if (anchor && this._isAncestorPanelOpen(anchor)) {
+        // If the containing panel is open, don't do anything, because the
+        // notification would appear under the open panel. See
+        // https://bugzilla.mozilla.org/show_bug.cgi?id=984023
+        return;
       }
 
-      // Now that the overlay is loaded, place the indicator in its final
-      // position.
-      DownloadsButton.updatePosition();
-
-      let indicator = this.indicator;
-      indicator.setAttribute("notification", aType);
-      this._notificationTimeout = setTimeout(
-        function () indicator.removeAttribute("notification"), 1000);
+      // Otherwise, try to use the anchor of the panel:
+      anchor = widget.anchor;
+    }
+    if (!anchor || !isElementVisible(anchor.parentNode)) {
+      // Our container isn't visible, so can't show the animation:
+      return;
     }
 
-    this._ensureOperational(DIV_SEN_callback.bind(this));
+    if (this._notificationTimeout) {
+      clearTimeout(this._notificationTimeout);
+    }
+
+    // The notification element is positioned to show in the same location as
+    // the downloads button. It's not in the downloads button itself in order to
+    // be able to anchor the notification elsewhere if required, and to ensure
+    // the notification isn't clipped by overflow properties of the anchor's
+    // container.
+    let notifier = this.notifier;
+    if (notifier.style.transform == '') {
+      let anchorRect = anchor.getBoundingClientRect();
+      let notifierRect = notifier.getBoundingClientRect();
+      let topDiff = anchorRect.top - notifierRect.top;
+      let leftDiff = anchorRect.left - notifierRect.left;
+      let heightDiff = anchorRect.height - notifierRect.height;
+      let widthDiff = anchorRect.width - notifierRect.width;
+      let translateX = (leftDiff + .5 * widthDiff) + "px";
+      let translateY = (topDiff + .5 * heightDiff) + "px";
+      notifier.style.transform = "translate(" +  translateX + ", " + translateY + ")";
+    }
+    notifier.setAttribute("notification", aType);
+    this._notificationTimeout = setTimeout(() => {
+      notifier.removeAttribute("notification");
+      notifier.style.transform = '';
+    }, 1000);
   },
 
   //////////////////////////////////////////////////////////////////////////////
@@ -393,23 +371,18 @@ const DownloadsIndicatorView = {
    * Indicates whether the indicator should be shown because there are some
    * downloads to be displayed.
    */
-  set hasDownloads(aValue)
-  {
-    if (this._hasDownloads != aValue) {
+  set hasDownloads(aValue) {
+    if (this._hasDownloads != aValue || (!this._operational && aValue)) {
       this._hasDownloads = aValue;
 
       // If there is at least one download, ensure that the view elements are
-      // loaded before determining the position of the downloads button.
       if (aValue) {
-        this._ensureOperational(function() DownloadsButton.updatePosition());
-      } else {
-        DownloadsButton.updatePosition();
+        this._ensureOperational();
       }
     }
     return aValue;
   },
-  get hasDownloads()
-  {
+  get hasDownloads() {
     return this._hasDownloads;
   },
   _hasDownloads: false,
@@ -418,8 +391,7 @@ const DownloadsIndicatorView = {
    * Status text displayed in the indicator.  If this is set to an empty value,
    * then the small downloads icon is displayed instead of the text.
    */
-  set counter(aValue)
-  {
+  set counter(aValue) {
     if (!this._operational) {
       return this._counter;
     }
@@ -443,8 +415,7 @@ const DownloadsIndicatorView = {
    * progress bar is hidden if the current progress is unknown and no status
    * text is set in the "counter" property.
    */
-  set percentComplete(aValue)
-  {
+  set percentComplete(aValue) {
     if (!this._operational) {
       return this._percentComplete;
     }
@@ -468,8 +439,7 @@ const DownloadsIndicatorView = {
    * Setting this property forces a paused progress bar to be displayed, even if
    * the current progress information is unavailable.
    */
-  set paused(aValue)
-  {
+  set paused(aValue) {
     if (!this._operational) {
       return this._paused;
     }
@@ -489,39 +459,49 @@ const DownloadsIndicatorView = {
   /**
    * Set when the indicator should draw user attention to itself.
    */
-  set attention(aValue)
-  {
+  set attention(aValue) {
     if (!this._operational) {
       return this._attention;
     }
 
     if (this._attention != aValue) {
       this._attention = aValue;
-      if (aValue) {
-        this.indicator.setAttribute("attention", "true");
-      } else {
+
+      // Check if the downloads button is in the menu panel, to determine which
+      // button needs to get a badge.
+      let widgetGroup = CustomizableUI.getWidget("downloads-button");
+      let inMenu = widgetGroup.areaType == CustomizableUI.TYPE_MENU_PANEL;
+
+      if (aValue == DownloadsCommon.ATTENTION_NONE) {
         this.indicator.removeAttribute("attention");
+        if (inMenu) {
+          gMenuButtonBadgeManager.removeBadge(gMenuButtonBadgeManager.BADGEID_DOWNLOAD);
+        }
+      } else {
+        this.indicator.setAttribute("attention", aValue);
+        if (inMenu) {
+          let badgeClass = "download-" + aValue;
+          gMenuButtonBadgeManager.addBadge(gMenuButtonBadgeManager.BADGEID_DOWNLOAD, badgeClass);
+        }
       }
     }
     return aValue;
   },
-  _attention: false,
+  _attention: DownloadsCommon.ATTENTION_NONE,
 
   //////////////////////////////////////////////////////////////////////////////
   //// User interface event functions
 
-  onWindowUnload: function DIV_onWindowUnload()
-  {
+  onWindowUnload() {
     // This function is registered as an event listener, we can't use "this".
     DownloadsIndicatorView.ensureTerminated();
   },
 
-  onCommand: function DIV_onCommand(aEvent)
-  {
-    if (DownloadsCommon.useToolkitUI) {
-      // The panel won't suppress attention for us, we need to clear now.
-      DownloadsCommon.getIndicatorData(window).attention = false;
-      BrowserDownloadsUI();
+  onCommand(aEvent) {
+    // If the downloads button is in the menu panel, open the Library
+    let widgetGroup = CustomizableUI.getWidget("downloads-button");
+    if (widgetGroup.areaType == CustomizableUI.TYPE_MENU_PANEL) {
+      DownloadsPanel.showDownloadsHistory();
     } else {
       DownloadsPanel.showPanel();
     }
@@ -529,66 +509,98 @@ const DownloadsIndicatorView = {
     aEvent.stopPropagation();
   },
 
-  onDragOver: function DIV_onDragOver(aEvent)
-  {
+  onDragOver(aEvent) {
     browserDragAndDrop.dragOver(aEvent);
   },
 
-  onDrop: function DIV_onDrop(aEvent)
-  {
+  onDrop(aEvent) {
     let dt = aEvent.dataTransfer;
     // If dragged item is from our source, do not try to
     // redownload already downloaded file.
     if (dt.mozGetDataAt("application/x-moz-file", 0))
       return;
 
-    let name = {};
-    let url = browserDragAndDrop.drop(aEvent, name);
-    if (url) {
-      if (url.startsWith("about:")) {
-        return;
-      }
-
-      let sourceDoc = dt.mozSourceNode ? dt.mozSourceNode.ownerDocument : document;
-      saveURL(url, name.value, null, true, true, null, sourceDoc);
+    let links = browserDragAndDrop.dropLinks(aEvent);
+    if (!links.length)
+      return;
+    let sourceDoc = dt.mozSourceNode ? dt.mozSourceNode.ownerDocument : document;
+    let handled = false;
+    for (let link of links) {
+      if (link.url.startsWith("about:"))
+        continue;
+      saveURL(link.url, link.name, null, true, true, null, sourceDoc);
+      handled = true;
+    }
+    if (handled) {
       aEvent.preventDefault();
     }
   },
+
+  _indicator: null,
+  __indicatorCounter: null,
+  __indicatorProgress: null,
 
   /**
    * Returns a reference to the main indicator element, or null if the element
    * is not present in the browser window yet.
    */
-  get indicator()
-  {
-    let indicator = document.getElementById("downloads-indicator");
-    if (!indicator) {
+  get indicator() {
+    if (this._indicator) {
+      return this._indicator;
+    }
+
+    let indicator = document.getElementById("downloads-button");
+    if (!indicator || indicator.getAttribute("indicator") != "true") {
       return null;
     }
 
-    // Once the element is loaded, it will never be unloaded.
-    delete this.indicator;
-    return this.indicator = indicator;
+    return this._indicator = indicator;
   },
 
-  get indicatorAnchor()
-  {
-    delete this.indicatorAnchor;
-    return this.indicatorAnchor =
-      document.getElementById("downloads-indicator-anchor");
+  get indicatorAnchor() {
+    let widget = CustomizableUI.getWidget("downloads-button")
+                               .forWindow(window);
+    if (widget.overflowed) {
+      return widget.anchor;
+    }
+    return document.getElementById("downloads-indicator-anchor");
   },
 
-  get _indicatorCounter()
-  {
-    delete this._indicatorCounter;
-    return this._indicatorCounter =
-      document.getElementById("downloads-indicator-counter");
+  get _indicatorCounter() {
+    return this.__indicatorCounter ||
+      (this.__indicatorCounter = document.getElementById("downloads-indicator-counter"));
   },
 
-  get _indicatorProgress()
-  {
-    delete this._indicatorProgress;
-    return this._indicatorProgress =
-      document.getElementById("downloads-indicator-progress");
-  }
+  get _indicatorProgress() {
+    return this.__indicatorProgress ||
+      (this.__indicatorProgress = document.getElementById("downloads-indicator-progress"));
+  },
+
+  get notifier() {
+    return this._notifier ||
+      (this._notifier = document.getElementById("downloads-notification-anchor"));
+  },
+
+  _onCustomizedAway() {
+    this._indicator = null;
+    this.__indicatorCounter = null;
+    this.__indicatorProgress = null;
+  },
+
+  afterCustomize() {
+    // If the cached indicator is not the one currently in the document,
+    // invalidate our references
+    if (this._indicator != document.getElementById("downloads-button")) {
+      this._onCustomizedAway();
+      this._operational = false;
+      this.ensureTerminated();
+      this.ensureInitialized();
+    }
+  },
 };
+
+Object.defineProperty(this, "DownloadsIndicatorView", {
+  value: DownloadsIndicatorView,
+  enumerable: true,
+  writable: false
+});

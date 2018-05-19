@@ -5,10 +5,12 @@ Cu.import("resource://services-sync/constants.js");
 Cu.import("resource://services-sync/service.js");
 Cu.import("resource://services-sync/util.js");
 Cu.import("resource://testing-common/services/sync/fakeservices.js");
+Cu.import("resource://testing-common/services/sync/utils.js");
 
 function test_urls() {
-  _("URL related Service properties corresopnd to preference settings.");
+  _("URL related Service properties correspond to preference settings.");
   try {
+    ensureLegacyIdentityManager();
     do_check_true(!!Service.serverURL); // actual value may change
     do_check_eq(Service.clusterURL, "");
     do_check_eq(Service.userBaseURL, undefined);
@@ -27,7 +29,6 @@ function test_urls() {
 
     Service.serverURL = "http://weave.server/";
     Service.clusterURL = "http://weave.cluster/";
-    do_check_eq(Svc.Prefs.get("clusterURL"), "http://weave.cluster/");
 
     do_check_eq(Service.userBaseURL, "http://weave.cluster/1.1/johndoe/");
     do_check_eq(Service.infoURL,
@@ -61,11 +62,11 @@ function test_urls() {
     _("The 'serverURL' attributes updates/resets preferences.");
     // Identical value doesn't do anything
     Service.serverURL = Service.serverURL;
-    do_check_eq(Svc.Prefs.get("clusterURL"), "http://weave.cluster/");
+    do_check_eq(Service.clusterURL, "http://weave.cluster/");
 
     Service.serverURL = "http://different.auth.node/";
     do_check_eq(Svc.Prefs.get("serverURL"), "http://different.auth.node/");
-    do_check_eq(Svc.Prefs.get("clusterURL"), undefined);
+    do_check_eq(Service.clusterURL, "");
 
   } finally {
     Svc.Prefs.resetBranch("");
@@ -82,12 +83,12 @@ function test_syncID() {
     do_check_eq(Svc.Prefs.get("client.syncID"), undefined);
 
     // Performing the first get on the attribute will generate a new GUID.
-    do_check_eq(Service.syncID, "fake-guid-0");
-    do_check_eq(Svc.Prefs.get("client.syncID"), "fake-guid-0");
+    do_check_eq(Service.syncID, "fake-guid-00");
+    do_check_eq(Svc.Prefs.get("client.syncID"), "fake-guid-00");
 
     Svc.Prefs.set("client.syncID", Utils.makeGUID());
-    do_check_eq(Svc.Prefs.get("client.syncID"), "fake-guid-1");
-    do_check_eq(Service.syncID, "fake-guid-1");
+    do_check_eq(Svc.Prefs.get("client.syncID"), "fake-guid-01");
+    do_check_eq(Service.syncID, "fake-guid-01");
   } finally {
     Svc.Prefs.resetBranch("");
     new FakeGUIDService();

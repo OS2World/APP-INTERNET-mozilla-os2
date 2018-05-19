@@ -21,7 +21,8 @@
 #endif
 
 #if defined(XP_OS2)
-#define INCL_DOSFILEMGR
+#define INCL_BASE
+#define INCL_PM
 #include <os2.h>
 #include <getopt.h>
 #include <errno.h>
@@ -120,7 +121,7 @@ PRInt32 native_thread = 0;
 			native_thread = 1;
 			break;
 		default:
-			PR_ASSERT(!"Invalid scope");
+			PR_NOT_REACHED("Invalid scope");
 			break;
 	}
 	if (native_thread) {
@@ -150,7 +151,7 @@ PRInt32 native_thread = 0;
 						stackSize,
 						(unsigned (__stdcall *)(void *))start,
 						arg,
-						0,
+						STACK_SIZE_PARAM_IS_A_RESERVATION,
 						&tid);		
 		return((PRThread *) thandle);
 #endif

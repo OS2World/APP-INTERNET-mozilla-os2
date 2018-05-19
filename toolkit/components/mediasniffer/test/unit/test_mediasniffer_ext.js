@@ -2,16 +2,17 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-const Ci = Components.interfaces;
-const Cu = Components.utils;
-const Cc = Components.classes;
-const CC = Components.Constructor;
+var Ci = Components.interfaces;
+var Cu = Components.utils;
+var Cc = Components.classes;
+var CC = Components.Constructor;
 
 var BinaryOutputStream = CC("@mozilla.org/binaryoutputstream;1",
                             "nsIBinaryOutputStream",
                             "setOutputStream");
 
 Cu.import("resource://testing-common/httpd.js");
+Cu.import("resource://gre/modules/NetUtil.jsm");
 
 var httpserver = new HttpServer();
 
@@ -27,6 +28,8 @@ const tests = [
   // 1445 bytes to detect with our method.
   { path: "data/id3tags.mp3", expected: "audio/mpeg" },
   { path: "data/notags.mp3", expected: "audio/mpeg" },
+  // MPEG-2 mp3 files.
+  { path: "data/detodos.mp3", expected: "audio/mpeg" },
   // Padding bit flipped in the first header: sniffing should fail.
   { path: "data/notags-bad.mp3", expected: "application/octet-stream" },
   // Garbage before header: sniffing should fail.
@@ -37,6 +40,8 @@ const tests = [
   { path: "data/fl10.mp2", expected: "application/octet-stream" },
   // Truncated ff installer regression test for bug 875769.
   { path: "data/ff-inst.exe", expected: "application/octet-stream" },
+  // MP4 with invalid box size (0) for "ftyp".
+  { path: "data/bug1079747.mp4", expected: "application/octet-stream" },
 ];
 
 // A basic listener that reads checks the if we sniffed properly.
@@ -51,7 +56,7 @@ var listener = {
       var bis = Components.classes["@mozilla.org/binaryinputstream;1"]
                           .createInstance(Components.interfaces.nsIBinaryInputStream);
       bis.setInputStream(stream);
-      var array = bis.readByteArray(bis.available());
+      bis.readByteArray(bis.available());
     } catch (ex) {
       do_throw("Error in onDataAvailable: " + ex);
     }
@@ -64,9 +69,11 @@ var listener = {
 };
 
 function setupChannel(url) {
-  var ios = Components.classes["@mozilla.org/network/io-service;1"].
-                       getService(Ci.nsIIOService);
-  var chan = ios.newChannel("http://localhost:4444" + url, "", null);
+  var chan = NetUtil.newChannel({
+    uri: "http://localhost:" + httpserver.identity.primaryPort + url,
+    loadUsingSystemPrincipal: true,
+    contentPolicyType: Ci.nsIContentPolicy.TYPE_MEDIA
+  });
   var httpChan = chan.QueryInterface(Components.interfaces.nsIHttpChannel);
   return httpChan;
 }
@@ -77,11 +84,10 @@ function runNext() {
     return;
   }
   var channel = setupChannel("/");
-  channel.asyncOpen(listener, channel, null);
+  channel.asyncOpen2(listener);
 }
 
 function getFileContents(aFile) {
-  const PR_RDONLY = 0x01;
   var fileStream = Cc["@mozilla.org/network/file-input-stream;1"]
                       .createInstance(Ci.nsIFileInputStream);
   fileStream.init(aFile, 1, -1, null);
@@ -106,7 +112,7 @@ function handler(metadata, response) {
 function run_test() {
   // We use a custom handler so we can change the header to force sniffing.
   httpserver.registerPathHandler("/", handler);
-  httpserver.start(4444);
+  httpserver.start(-1);
   do_test_pending();
   try {
     runNext();

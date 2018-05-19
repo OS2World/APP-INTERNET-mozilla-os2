@@ -1,9 +1,5 @@
-const Cc = Components.classes;
-const Ci = Components.interfaces;
-const Cu = Components.utils;
-const Cr = Components.results;
-
 Cu.import("resource://testing-common/httpd.js");
+Cu.import("resource://gre/modules/NetUtil.jsm");
 
 var server;
 const BUGID = "263127";
@@ -40,13 +36,13 @@ var listener = {
 function run_test() {
   // start server
   server = new HttpServer();
-  server.start(4444);
+  server.start(-1);
 
   // Initialize downloader
-  var channel = Cc["@mozilla.org/network/io-service;1"]
-                  .getService(Ci.nsIIOService)
-                  .newChannel("http://localhost:4444/", null, null);
-
+  var channel = NetUtil.newChannel({
+    uri: "http://localhost:" + server.identity.primaryPort + "/",
+    loadUsingSystemPrincipal: true
+  });
   var targetFile = Cc["@mozilla.org/file/directory_service;1"]
                      .getService(Ci.nsIProperties)
                      .get("TmpD", Ci.nsIFile);
@@ -59,7 +55,7 @@ function run_test() {
   downloader.init(listener, targetFile);
 
   // Start download
-  channel.asyncOpen(downloader, null);
+  channel.asyncOpen2(downloader);
 
   do_test_pending();
 }

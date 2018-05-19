@@ -1,4 +1,5 @@
-/* -*- Mode: c++; c-basic-offset: 2; indent-tabs-mode: nil; tab-width: 40 -*- */
+/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
+/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -9,11 +10,18 @@
 #include "jsapi.h"
 #include "mozilla/Attributes.h"
 #include "mozilla/Mutex.h"
-#include "mozilla/StandardInteger.h"
+#include <stdint.h>
 #include "nsAutoPtr.h"
 #include "nsCOMPtr.h"
 #include "nsDebug.h"
-#include "nsStringGlue.h"
+#include "nsString.h"
+#include "nsTArray.h"
+
+#include "nsILoadContext.h"
+#include "nsIWeakReferenceUtils.h"
+#include "nsIInterfaceRequestor.h"
+#include "mozilla/dom/ChannelInfo.h"
+#include "mozilla/net/ReferrerPolicy.h"
 
 #define BEGIN_WORKERS_NAMESPACE \
   namespace mozilla { namespace dom { namespace workers {
@@ -24,8 +32,34 @@
 
 #define WORKERS_SHUTDOWN_TOPIC "web-workers-shutdown"
 
+class nsIContentSecurityPolicy;
 class nsIScriptContext;
-class nsPIDOMWindow;
+class nsIGlobalObject;
+class nsPIDOMWindowInner;
+class nsIPrincipal;
+class nsILoadGroup;
+class nsITabChild;
+class nsIChannel;
+class nsIRunnable;
+class nsIURI;
+
+namespace mozilla {
+namespace ipc {
+class PrincipalInfo;
+} // namespace ipc
+
+namespace dom {
+// If you change this, the corresponding list in nsIWorkerDebugger.idl needs to
+// be updated too.
+enum WorkerType
+{
+  WorkerTypeDedicated,
+  WorkerTypeShared,
+  WorkerTypeService
+};
+
+} // namespace dom
+} // namespace mozilla
 
 BEGIN_WORKERS_NAMESPACE
 
@@ -55,11 +89,11 @@ struct JSSettings
     JSSettings_JSGC_HIGH_FREQUENCY_HEAP_GROWTH_MAX,
     JSSettings_JSGC_HIGH_FREQUENCY_LOW_LIMIT,
     JSSettings_JSGC_HIGH_FREQUENCY_HIGH_LIMIT,
-    JSSettings_JSGC_ANALYSIS_PURGE_TRIGGER,
     JSSettings_JSGC_ALLOCATION_THRESHOLD,
     JSSettings_JSGC_SLICE_TIME_BUDGET,
     JSSettings_JSGC_DYNAMIC_HEAP_GROWTH,
     JSSettings_JSGC_DYNAMIC_MARK_SLICE,
+    JSSettings_JSGC_REFRESH_FRAME_SLICES,
     // JSGC_MODE not supported
 
     // This must be last so that we get an accurate count.
@@ -96,27 +130,27 @@ struct JSSettings
   // Settings that change based on chrome/content context.
   struct JSContentChromeSettings
   {
-    uint32_t options;
+    JS::CompartmentOptions compartmentOptions;
     int32_t maxScriptRuntime;
 
     JSContentChromeSettings()
-    : options(0), maxScriptRuntime(0)
+    : compartmentOptions(), maxScriptRuntime(0)
     { }
   };
 
   JSContentChromeSettings chrome;
   JSContentChromeSettings content;
   JSGCSettingsArray gcSettings;
-  bool jitHardening;
+  JS::ContextOptions contextOptions;
+
 #ifdef JS_GC_ZEAL
   uint8_t gcZeal;
   uint32_t gcZealFrequency;
 #endif
 
   JSSettings()
-  : jitHardening(false)
 #ifdef JS_GC_ZEAL
-  , gcZeal(0), gcZealFrequency(0)
+  : gcZeal(0), gcZealFrequency(0)
 #endif
   {
     for (uint32_t index = 0; index < ArrayLength(gcSettings); index++) {
@@ -163,57 +197,158 @@ struct JSSettings
   }
 };
 
-// All of these are implemented in RuntimeService.cpp
-JSBool
-ResolveWorkerClasses(JSContext* aCx, JS::Handle<JSObject*> aObj, JS::Handle<jsid> aId,
-                     unsigned aFlags, JS::MutableHandle<JSObject*> aObjp);
-
-void
-CancelWorkersForWindow(JSContext* aCx, nsPIDOMWindow* aWindow);
-
-void
-SuspendWorkersForWindow(JSContext* aCx, nsPIDOMWindow* aWindow);
-
-void
-ResumeWorkersForWindow(nsIScriptContext* aCx, nsPIDOMWindow* aWindow);
-
-class WorkerTask {
-public:
-    NS_INLINE_DECL_THREADSAFE_REFCOUNTING(WorkerTask)
-
-    virtual ~WorkerTask() { }
-
-    virtual bool RunTask(JSContext* aCx) = 0;
+enum WorkerPreference
+{
+#define WORKER_SIMPLE_PREF(name, getter, NAME) WORKERPREF_ ## NAME,
+#define WORKER_PREF(name, callback)
+#include "mozilla/dom/WorkerPrefs.h"
+#undef WORKER_SIMPLE_PREF
+#undef WORKER_PREF
+  WORKERPREF_COUNT
 };
 
-class WorkerCrossThreadDispatcher {
+// Implemented in WorkerPrivate.cpp
+
+struct WorkerLoadInfo
+{
+  // All of these should be released in WorkerPrivateParent::ForgetMainThreadObjects.
+  nsCOMPtr<nsIURI> mBaseURI;
+  nsCOMPtr<nsIURI> mResolvedScriptURI;
+  nsCOMPtr<nsIPrincipal> mPrincipal;
+  nsCOMPtr<nsIScriptContext> mScriptContext;
+  nsCOMPtr<nsPIDOMWindowInner> mWindow;
+  nsCOMPtr<nsIContentSecurityPolicy> mCSP;
+  nsCOMPtr<nsIChannel> mChannel;
+  nsCOMPtr<nsILoadGroup> mLoadGroup;
+
+  // mLoadFailedAsyncRunnable will execute on main thread if script loading
+  // fails during script loading.  If script loading is never started due to
+  // a synchronous error, then the runnable is never executed.  The runnable
+  // is guaranteed to be released on the main thread.
+  nsCOMPtr<nsIRunnable> mLoadFailedAsyncRunnable;
+
+  class InterfaceRequestor final : public nsIInterfaceRequestor
+  {
+    NS_DECL_ISUPPORTS
+
+  public:
+    InterfaceRequestor(nsIPrincipal* aPrincipal, nsILoadGroup* aLoadGroup);
+    void MaybeAddTabChild(nsILoadGroup* aLoadGroup);
+    NS_IMETHOD GetInterface(const nsIID& aIID, void** aSink) override;
+
+  private:
+    ~InterfaceRequestor() { }
+
+    already_AddRefed<nsITabChild> GetAnyLiveTabChild();
+
+    nsCOMPtr<nsILoadContext> mLoadContext;
+    nsCOMPtr<nsIInterfaceRequestor> mOuterRequestor;
+
+    // Array of weak references to nsITabChild.  We do not want to keep TabChild
+    // actors alive for long after their ActorDestroy() methods are called.
+    nsTArray<nsWeakPtr> mTabChildList;
+  };
+
+  // Only set if we have a custom overriden load group
+  RefPtr<InterfaceRequestor> mInterfaceRequestor;
+
+  nsAutoPtr<mozilla::ipc::PrincipalInfo> mPrincipalInfo;
+  nsCString mDomain;
+
+  nsString mServiceWorkerCacheName;
+
+  ChannelInfo mChannelInfo;
+
+  uint64_t mWindowID;
+  uint64_t mServiceWorkerID;
+
+  net::ReferrerPolicy mReferrerPolicy;
+  bool mFromWindow;
+  bool mEvalAllowed;
+  bool mReportCSPViolations;
+  bool mXHRParamsAllowed;
+  bool mPrincipalIsSystem;
+  bool mStorageAllowed;
+  bool mServiceWorkersTestingInWindow;
+  PrincipalOriginAttributes mOriginAttributes;
+
+  WorkerLoadInfo();
+  ~WorkerLoadInfo();
+
+  void StealFrom(WorkerLoadInfo& aOther);
+};
+
+// All of these are implemented in RuntimeService.cpp
+
+void
+CancelWorkersForWindow(nsPIDOMWindowInner* aWindow);
+
+void
+FreezeWorkersForWindow(nsPIDOMWindowInner* aWindow);
+
+void
+ThawWorkersForWindow(nsPIDOMWindowInner* aWindow);
+
+void
+SuspendWorkersForWindow(nsPIDOMWindowInner* aWindow);
+
+void
+ResumeWorkersForWindow(nsPIDOMWindowInner* aWindow);
+
+// A class that can be used with WorkerCrossThreadDispatcher to run a
+// bit of C++ code on the worker thread.
+class WorkerTask
+{
+protected:
+  WorkerTask()
+  { }
+
+  virtual ~WorkerTask()
+  { }
+
+public:
+  NS_INLINE_DECL_THREADSAFE_REFCOUNTING(WorkerTask)
+
+  // The return value here has the same semantics as the return value
+  // of WorkerRunnable::WorkerRun.
+  virtual bool
+  RunTask(JSContext* aCx) = 0;
+};
+
+class WorkerCrossThreadDispatcher
+{
+   friend class WorkerPrivate;
+
+  // Must be acquired *before* the WorkerPrivate's mutex, when they're both
+  // held.
+  Mutex mMutex;
+  WorkerPrivate* mWorkerPrivate;
+
+private:
+  // Only created by WorkerPrivate.
+  explicit WorkerCrossThreadDispatcher(WorkerPrivate* aWorkerPrivate);
+
+  // Only called by WorkerPrivate.
+  void
+  Forget()
+  {
+    MutexAutoLock lock(mMutex);
+    mWorkerPrivate = nullptr;
+  }
+
+  ~WorkerCrossThreadDispatcher() {}
+
 public:
   NS_INLINE_DECL_THREADSAFE_REFCOUNTING(WorkerCrossThreadDispatcher)
 
-  WorkerCrossThreadDispatcher(WorkerPrivate* aPrivate) :
-    mMutex("WorkerCrossThreadDispatcher"), mPrivate(aPrivate) {}
-  void Forget()
-  {
-    mozilla::MutexAutoLock lock(mMutex);
-    mPrivate = nullptr;
-  }
-
-  /**
-   * Generically useful function for running a bit of C++ code on the worker
-   * thread.
-   */
-  bool PostTask(WorkerTask* aTask);
-
-protected:
-  friend class WorkerPrivate;
-
-  // Must be acquired *before* the WorkerPrivate's mutex, when they're both held.
-  mozilla::Mutex mMutex;
-  WorkerPrivate* mPrivate;
+  // Generically useful function for running a bit of C++ code on the worker
+  // thread.
+  bool
+  PostTask(WorkerTask* aTask);
 };
 
 WorkerCrossThreadDispatcher*
-GetWorkerCrossThreadDispatcher(JSContext* aCx, jsval aWorker);
+GetWorkerCrossThreadDispatcher(JSContext* aCx, const JS::Value& aWorker);
 
 // Random unique constant to facilitate JSPrincipal debugging
 const uint32_t kJSPrincipalsDebugToken = 0x7e2df9d2;
@@ -226,12 +361,21 @@ ThrowDOMExceptionForNSResult(JSContext* aCx, nsresult aNSResult);
 
 } // namespace exceptions
 
+bool
+IsWorkerGlobal(JSObject* global);
+
+bool
+IsDebuggerGlobal(JSObject* global);
+
+bool
+IsDebuggerSandbox(JSObject* object);
+
 // Throws the JSMSG_GETTER_ONLY exception.  This shouldn't be used going
 // forward -- getter-only properties should just use JS_PSG for the setter
 // (implying no setter at all), which will not throw when set in non-strict
 // code but will in strict code.  Old code should use this only for temporary
 // compatibility reasons.
-extern JSBool
+extern bool
 GetterOnlyJSNative(JSContext* aCx, unsigned aArgc, JS::Value* aVp);
 
 END_WORKERS_NAMESPACE

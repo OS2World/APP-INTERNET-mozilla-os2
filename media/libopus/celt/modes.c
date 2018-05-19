@@ -1,11 +1,8 @@
-/* Copyright (c) 2007-2012 IETF Trust, CSIRO, Xiph.Org Foundation,
-                           Gregory Maxwell. All rights reserved.
+/* Copyright (c) 2007-2008 CSIRO
+   Copyright (c) 2007-2009 Xiph.Org Foundation
+   Copyright (c) 2008 Gregory Maxwell
    Written by Jean-Marc Valin and Gregory Maxwell */
 /*
-
-   This file is extracted from RFC6716. Please see that RFC for additional
-   information.
-
    Redistribution and use in source and binary forms, with or without
    modification, are permitted provided that the following conditions
    are met:
@@ -16,11 +13,6 @@
    - Redistributions in binary form must reproduce the above copyright
    notice, this list of conditions and the following disclaimer in the
    documentation and/or other materials provided with the distribution.
-
-   - Neither the name of Internet Society, IETF or IETF Trust, nor the
-   names of specific contributors, may be used to endorse or promote
-   products derived from this software without specific prior written
-   permission.
 
    THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
    ``AS IS'' AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
@@ -45,6 +37,7 @@
 #include "os_support.h"
 #include "stack_alloc.h"
 #include "quant_bands.h"
+#include "cpu_support.h"
 
 static const opus_int16 eband5ms[] = {
 /*0  200 400 600 800  1k 1.2 1.4 1.6  2k 2.4 2.8 3.2  4k 4.8 5.6 6.8  8k 9.6 12k 15.6 */
@@ -237,6 +230,7 @@ CELTMode *opus_custom_mode_create(opus_int32 Fs, int frame_size, int *error)
    opus_val16 *window;
    opus_int16 *logN;
    int LM;
+   int arch = opus_select_arch();
    ALLOC_STACK;
 #if !defined(VAR_ARRAYS) && !defined(USE_ALLOCA)
    if (global_stack==NULL)
@@ -353,6 +347,14 @@ CELTMode *opus_custom_mode_create(opus_int32 Fs, int frame_size, int *error)
    mode->eBands = compute_ebands(Fs, mode->shortMdctSize, res, &mode->nbEBands);
    if (mode->eBands==NULL)
       goto failure;
+#if !defined(SMALL_FOOTPRINT)
+   /* Make sure we don't allocate a band larger than our PVQ table.
+      208 should be enough, but let's be paranoid. */
+   if ((mode->eBands[mode->nbEBands] - mode->eBands[mode->nbEBands-1])<<LM >
+    208) {
+       goto failure;
+   }
+#endif
 
    mode->effEBands = mode->nbEBands;
    while (mode->eBands[mode->effEBands] > mode->shortMdctSize)
@@ -389,7 +391,7 @@ CELTMode *opus_custom_mode_create(opus_int32 Fs, int frame_size, int *error)
    compute_pulse_cache(mode, mode->maxLM);
 
    if (clt_mdct_init(&mode->mdct, 2*mode->shortMdctSize*mode->nbShortMdcts,
-           mode->maxLM) == 0)
+           mode->maxLM, arch) == 0)
       goto failure;
 
    if (error)
@@ -408,6 +410,8 @@ failure:
 #ifdef CUSTOM_MODES
 void opus_custom_mode_destroy(CELTMode *mode)
 {
+   int arch = opus_select_arch();
+
    if (mode == NULL)
       return;
 #ifndef CUSTOM_MODES_ONLY
@@ -431,7 +435,7 @@ void opus_custom_mode_destroy(CELTMode *mode)
    opus_free((opus_int16*)mode->cache.index);
    opus_free((unsigned char*)mode->cache.bits);
    opus_free((unsigned char*)mode->cache.caps);
-   clt_mdct_clear(&mode->mdct);
+   clt_mdct_clear(&mode->mdct, arch);
 
    opus_free((CELTMode *)mode);
 }

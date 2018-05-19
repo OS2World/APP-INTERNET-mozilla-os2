@@ -3,11 +3,11 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #ifndef _CERTUTIL_H
-#define	_CERTUTIL_H
+#define _CERTUTIL_H
 
 extern SECKEYPrivateKey *
 CERTUTIL_GeneratePrivateKey(KeyType keytype,
-                            PK11SlotInfo *slot, 
+                            PK11SlotInfo *slot,
                             int rsasize,
                             int publicExponent,
                             char *noise,
@@ -35,19 +35,23 @@ enum certutilExtns {
     ext_inhibitAnyPolicy,
     ext_subjectKeyID,
     ext_nameConstraints,
+    ext_subjectAltName,
     ext_End
 };
 
 typedef struct ExtensionEntryStr {
     PRBool activated;
-    const char  *arg;
+    const char *arg;
 } ExtensionEntry;
 
 typedef ExtensionEntry certutilExtnList[ext_End];
 
 extern SECStatus
 AddExtensions(void *extHandle, const char *emailAddrs, const char *dnsNames,
-              certutilExtnList extList);
+              certutilExtnList extList, const char *extGeneric);
 
-#endif	/* _CERTUTIL_H */
+extern SECStatus
+GetOidFromString(PLArenaPool *arena, SECItem *to,
+                 const char *from, size_t fromLen);
 
+#endif /* _CERTUTIL_H */

@@ -1,4 +1,5 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
+/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
+/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -11,6 +12,8 @@
 #include "plarena.h"
 #include "nsClassHashtable.h"
 #include "nsICategoryManager.h"
+#include "nsIMemoryReporter.h"
+#include "mozilla/MemoryReporting.h"
 #include "mozilla/Mutex.h"
 #include "mozilla/Attributes.h"
 
@@ -32,9 +35,7 @@ class nsIMemoryReporter;
 class CategoryLeaf : public nsDepCharHashKey
 {
 public:
-  CategoryLeaf(const char* aKey)
-    : nsDepCharHashKey(aKey),
-      value(NULL) { }
+  explicit CategoryLeaf(const char* aKey) : nsDepCharHashKey(aKey), value(nullptr) {}
   const char* value;
 };
 
@@ -47,41 +48,41 @@ public:
 class CategoryNode
 {
 public:
-  NS_METHOD GetLeaf(const char* aEntryName,
-                    char** _retval);
+  nsresult GetLeaf(const char* aEntryName,
+                   char** aResult);
 
-  NS_METHOD AddLeaf(const char* aEntryName,
-                    const char* aValue,
-                    bool aReplace,
-                    char** _retval,
-                    PLArenaPool* aArena);
+  nsresult AddLeaf(const char* aEntryName,
+                   const char* aValue,
+                   bool aReplace,
+                   char** aResult,
+                   PLArenaPool* aArena);
 
   void DeleteLeaf(const char* aEntryName);
 
-  void Clear() {
+  void Clear()
+  {
     mozilla::MutexAutoLock lock(mLock);
     mTable.Clear();
   }
 
-  uint32_t Count() {
+  uint32_t Count()
+  {
     mozilla::MutexAutoLock lock(mLock);
     uint32_t tCount = mTable.Count();
     return tCount;
   }
 
-  NS_METHOD Enumerate(nsISimpleEnumerator** _retval);
+  nsresult Enumerate(nsISimpleEnumerator** aResult);
 
   // CategoryNode is arena-allocated, with the strings
   static CategoryNode* Create(PLArenaPool* aArena);
   ~CategoryNode();
-  void operator delete(void*) { }
+  void operator delete(void*) {}
 
-  size_t SizeOfExcludingThis(nsMallocSizeOfFun aMallocSizeOf);
+  size_t SizeOfExcludingThis(mozilla::MallocSizeOf aMallocSizeOf);
 
 private:
-  CategoryNode()
-    : mLock("CategoryLeaf")
-  { }
+  CategoryNode() : mLock("CategoryLeaf") {}
 
   void* operator new(size_t aSize, PLArenaPool* aArena);
 
@@ -95,25 +96,27 @@ private:
  *
  * This implementation is thread-safe.
  */
-class nsCategoryManager MOZ_FINAL
+class nsCategoryManager final
   : public nsICategoryManager
+  , public nsIMemoryReporter
 {
 public:
   NS_DECL_ISUPPORTS
   NS_DECL_NSICATEGORYMANAGER
+  NS_DECL_NSIMEMORYREPORTER
 
   /**
    * Suppress or unsuppress notifications of category changes to the
    * observer service. This is to be used by nsComponentManagerImpl
    * on startup while reading the stored category list.
    */
-  NS_METHOD SuppressNotifications(bool aSuppress);
+  nsresult SuppressNotifications(bool aSuppress);
 
   void AddCategoryEntry(const char* aCategory,
                         const char* aKey,
                         const char* aValue,
                         bool aReplace = true,
-                        char** aOldValue = NULL);
+                        char** aOldValue = nullptr);
 
   static nsresult Create(nsISupports* aOuter, REFNSIID aIID, void** aResult);
   void InitMemoryReporter();
@@ -121,14 +124,13 @@ public:
   static nsCategoryManager* GetSingleton();
   static void Destroy();
 
-  static int64_t GetCategoryManagerSize();
-  size_t SizeOfIncludingThis(nsMallocSizeOfFun aMallocSizeOf);
-
 private:
   static nsCategoryManager* gCategoryManager;
 
   nsCategoryManager();
   ~nsCategoryManager();
+
+  size_t SizeOfIncludingThis(mozilla::MallocSizeOf aMallocSizeOf);
 
   CategoryNode* get_category(const char* aName);
   void NotifyObservers(const char* aTopic,
@@ -139,8 +141,6 @@ private:
   nsClassHashtable<nsDepCharHashKey, CategoryNode> mTable;
   mozilla::Mutex mLock;
   bool mSuppressNotifications;
-
-  nsIMemoryReporter* mReporter;
 };
 
 #endif

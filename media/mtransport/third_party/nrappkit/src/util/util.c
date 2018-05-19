@@ -45,6 +45,7 @@ static char *RCSSTRING __UNUSED__ ="$Id: util.c,v 1.5 2007/11/21 00:09:13 adamca
 #include <dirent.h>
 #endif
 #include <string.h>
+#include <errno.h>
 #include <ctype.h>
 #include <sys/stat.h>
 #ifdef OPENSSL
@@ -723,6 +724,31 @@ inet_ntop6(const unsigned char *src, char *dst, size_t size)
 }
 #endif /* INET6 */
 
+#ifdef WIN32
+/* Not exactly, will forgive stuff like <addr>:<port> */
+int inet_pton(int af, const char *src, void *dst)
+{
+  struct sockaddr_storage ss;
+  int addrlen = sizeof(ss);
+
+  if (af != AF_INET && af != AF_INET6) {
+    return -1;
+  }
+
+  if (!WSAStringToAddressA(src, af, NULL, (struct sockaddr*)&ss, &addrlen)) {
+    if (af == AF_INET) {
+      struct sockaddr_in *in = (struct sockaddr_in*)&ss;
+      memcpy(dst, &in->sin_addr, sizeof(struct in_addr));
+    } else {
+      struct sockaddr_in6 *in6 = (struct sockaddr_in6*)&ss;
+      memcpy(dst, &in6->sin6_addr, sizeof(struct in6_addr));
+    }
+    return 1;
+  }
+  return 0;
+}
+#endif /* WIN32 */
+
 #endif
 
 #ifdef WIN32
@@ -749,6 +775,7 @@ int gettimeofday(struct timeval *tv, void *tz)
     return 0;
   }
 
+#if _MSC_VER < 1900
 int snprintf(char *buffer, size_t n, const char *format, ...)
 {
   va_list argp;
@@ -759,6 +786,7 @@ int snprintf(char *buffer, size_t n, const char *format, ...)
   va_end(argp);
   return ret;
 }
+#endif
 
 #endif
 

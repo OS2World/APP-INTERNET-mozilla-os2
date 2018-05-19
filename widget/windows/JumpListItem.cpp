@@ -23,27 +23,26 @@ namespace mozilla {
 namespace widget {
 
 // ISUPPORTS Impl's
-NS_IMPL_ISUPPORTS1(JumpListItem,
-                   nsIJumpListItem)
+NS_IMPL_ISUPPORTS(JumpListItem,
+                  nsIJumpListItem)
 
-NS_IMPL_ISUPPORTS_INHERITED1(JumpListSeparator,
-                             JumpListItem,
-                             nsIJumpListSeparator)
+NS_IMPL_ISUPPORTS_INHERITED(JumpListSeparator,
+                            JumpListItem,
+                            nsIJumpListSeparator)
 
-NS_IMPL_ISUPPORTS_INHERITED1(JumpListLink,
-                             JumpListItem,
-                             nsIJumpListLink)
+NS_IMPL_ISUPPORTS_INHERITED(JumpListLink,
+                            JumpListItem,
+                            nsIJumpListLink)
 
 NS_INTERFACE_MAP_BEGIN_CYCLE_COLLECTION(JumpListShortcut)
   NS_INTERFACE_MAP_ENTRY(nsIJumpListShortcut)
 NS_INTERFACE_MAP_END_INHERITING(JumpListItem)
 
-NS_IMPL_CYCLE_COLLECTION_1(JumpListShortcut, mHandlerApp)
+NS_IMPL_CYCLE_COLLECTION(JumpListShortcut, mHandlerApp)
 
 NS_IMPL_CYCLE_COLLECTING_ADDREF(JumpListShortcut)
 NS_IMPL_CYCLE_COLLECTING_RELEASE(JumpListShortcut)
 
-/* attribute short type; */
 NS_IMETHODIMP JumpListItem::GetType(int16_t *aType)
 {
   NS_ENSURE_ARG_POINTER(aType);
@@ -53,7 +52,6 @@ NS_IMETHODIMP JumpListItem::GetType(int16_t *aType)
   return NS_OK;
 }
 
-/* boolean equals(nsIJumpListItem item); */
 NS_IMETHODIMP JumpListItem::Equals(nsIJumpListItem *aItem, bool *aResult)
 {
   NS_ENSURE_ARG_POINTER(aItem);
@@ -75,7 +73,6 @@ NS_IMETHODIMP JumpListItem::Equals(nsIJumpListItem *aItem, bool *aResult)
 
 /* link impl. */
 
-/* attribute nsIURI uri; */
 NS_IMETHODIMP JumpListLink::GetUri(nsIURI **aURI)
 {
   NS_IF_ADDREF(*aURI = mURI);
@@ -90,7 +87,6 @@ NS_IMETHODIMP JumpListLink::SetUri(nsIURI *aURI)
   return NS_OK;
 }
 
-/* attribute AString uriTitle; */
 NS_IMETHODIMP JumpListLink::SetUriTitle(const nsAString &aUriTitle)
 {
   mUriTitle.Assign(aUriTitle);
@@ -105,7 +101,6 @@ NS_IMETHODIMP JumpListLink::GetUriTitle(nsAString& aUriTitle)
   return NS_OK;
 }
 
-/* readonly attribute long uriHash; */
 NS_IMETHODIMP JumpListLink::GetUriHash(nsACString& aUriHash)
 {
   if (!mURI)
@@ -114,7 +109,6 @@ NS_IMETHODIMP JumpListLink::GetUriHash(nsACString& aUriHash)
   return mozilla::widget::FaviconHelper::HashURI(mCryptoHash, mURI, aUriHash);
 }
 
-/* boolean compareHash(in nsIURI uri); */
 NS_IMETHODIMP JumpListLink::CompareHash(nsIURI *aUri, bool *aResult)
 {
   nsresult rv;
@@ -138,7 +132,6 @@ NS_IMETHODIMP JumpListLink::CompareHash(nsIURI *aUri, bool *aResult)
   return NS_OK;
 }
 
-/* boolean equals(nsIJumpListItem item); */
 NS_IMETHODIMP JumpListLink::Equals(nsIJumpListItem *aItem, bool *aResult)
 {
   NS_ENSURE_ARG_POINTER(aItem);
@@ -184,7 +177,6 @@ NS_IMETHODIMP JumpListLink::Equals(nsIJumpListItem *aItem, bool *aResult)
 
 /* shortcut impl. */
 
-/* attribute nsILocalHandlerApp app; */
 NS_IMETHODIMP JumpListShortcut::GetApp(nsILocalHandlerApp **aApp)
 {
   NS_IF_ADDREF(*aApp = mHandlerApp);
@@ -203,7 +195,6 @@ NS_IMETHODIMP JumpListShortcut::SetApp(nsILocalHandlerApp *aApp)
   return NS_OK;
 }
 
-/* attribute long iconIndex; */
 NS_IMETHODIMP JumpListShortcut::GetIconIndex(int32_t *aIconIndex)
 {
   NS_ENSURE_ARG_POINTER(aIconIndex);
@@ -218,7 +209,6 @@ NS_IMETHODIMP JumpListShortcut::SetIconIndex(int32_t aIconIndex)
   return NS_OK;
 }
 
-/* attribute long iconURI; */
 NS_IMETHODIMP JumpListShortcut::GetFaviconPageUri(nsIURI **aFaviconPageURI)
 {
   NS_IF_ADDREF(*aFaviconPageURI = mFaviconPageURI);
@@ -232,7 +222,6 @@ NS_IMETHODIMP JumpListShortcut::SetFaviconPageUri(nsIURI *aFaviconPageURI)
   return NS_OK;
 }
 
-/* boolean equals(nsIJumpListItem item); */
 NS_IMETHODIMP JumpListShortcut::Equals(nsIJumpListItem *aItem, bool *aResult)
 {
   NS_ENSURE_ARG_POINTER(aItem);
@@ -280,13 +269,13 @@ NS_IMETHODIMP JumpListShortcut::Equals(nsIJumpListItem *aItem, bool *aResult)
 /* internal helpers */
 
 // (static) Creates a ShellLink that encapsulate a separator.
-nsresult JumpListSeparator::GetSeparator(nsRefPtr<IShellLinkW>& aShellLink)
+nsresult JumpListSeparator::GetSeparator(RefPtr<IShellLinkW>& aShellLink)
 {
   HRESULT hr;
   IShellLinkW* psl;
 
   // Create a IShellLink.
-  hr = CoCreateInstance(CLSID_ShellLink, NULL, CLSCTX_INPROC_SERVER, 
+  hr = CoCreateInstance(CLSID_ShellLink, nullptr, CLSCTX_INPROC_SERVER, 
                         IID_IShellLinkW, (LPVOID*)&psl);
   if (FAILED(hr))
     return NS_ERROR_UNEXPECTED;
@@ -312,7 +301,7 @@ nsresult JumpListSeparator::GetSeparator(nsRefPtr<IShellLinkW>& aShellLink)
 
 // (static) Creates a ShellLink that encapsulate a shortcut to local apps.
 nsresult JumpListShortcut::GetShellLink(nsCOMPtr<nsIJumpListItem>& item, 
-                                        nsRefPtr<IShellLinkW>& aShellLink,
+                                        RefPtr<IShellLinkW>& aShellLink,
                                         nsCOMPtr<nsIThread> &aIOThread)
 {
   HRESULT hr;
@@ -338,7 +327,7 @@ nsresult JumpListShortcut::GetShellLink(nsCOMPtr<nsIJumpListItem>& item,
   NS_ENSURE_SUCCESS(rv, rv);
 
   // Create a IShellLink 
-  hr = CoCreateInstance(CLSID_ShellLink, NULL, CLSCTX_INPROC_SERVER,
+  hr = CoCreateInstance(CLSID_ShellLink, nullptr, CLSCTX_INPROC_SERVER,
                         IID_IShellLinkW, (LPVOID*)&psl);
   if (FAILED(hr))
     return NS_ERROR_UNEXPECTED;
@@ -359,7 +348,7 @@ nsresult JumpListShortcut::GetShellLink(nsCOMPtr<nsIJumpListItem>& item,
   handlerApp->GetParameterCount(&count);
   for (uint32_t idx = 0; idx < count; idx++) {
     if (idx > 0)
-      appArgs.Append(NS_LITERAL_STRING(" "));
+      appArgs.Append(' ');
     nsAutoString param;
     rv = handlerApp->GetParameter(idx, param);
     if (NS_FAILED(rv))
@@ -429,7 +418,7 @@ nsresult JumpListShortcut::GetShellLink(nsCOMPtr<nsIJumpListItem>& item,
 // If successful fills in the aSame parameter
 // aSame will be true if the path is in our icon cache
 static nsresult IsPathInOurIconCache(nsCOMPtr<nsIJumpListShortcut>& aShortcut, 
-                                     PRUnichar *aPath, bool *aSame)
+                                     wchar_t *aPath, bool *aSame)
 {
   NS_ENSURE_ARG_POINTER(aPath);
   NS_ENSURE_ARG_POINTER(aSame);
@@ -473,10 +462,10 @@ nsresult JumpListShortcut::GetJumpListShortcut(IShellLinkW *pLink, nsCOMPtr<nsIJ
     do_CreateInstance(NS_LOCALHANDLERAPP_CONTRACTID, &rv);
   NS_ENSURE_SUCCESS(rv, rv);
 
-  PRUnichar buf[MAX_PATH];
+  wchar_t buf[MAX_PATH];
 
   // Path
-  hres = pLink->GetPath((LPWSTR)&buf, MAX_PATH, NULL, SLGP_UNCPRIORITY);
+  hres = pLink->GetPath(buf, MAX_PATH, nullptr, SLGP_UNCPRIORITY);
   if (FAILED(hres))
     return NS_ERROR_INVALID_ARG;
 
@@ -489,7 +478,7 @@ nsresult JumpListShortcut::GetJumpListShortcut(IShellLinkW *pLink, nsCOMPtr<nsIJ
   NS_ENSURE_SUCCESS(rv, rv);
 
   // Parameters
-  hres = pLink->GetArguments((LPWSTR)&buf, MAX_PATH);
+  hres = pLink->GetArguments(buf, MAX_PATH);
   if (SUCCEEDED(hres)) {
     LPWSTR *arglist;
     int32_t numArgs;
@@ -511,7 +500,7 @@ nsresult JumpListShortcut::GetJumpListShortcut(IShellLinkW *pLink, nsCOMPtr<nsIJ
 
   // Icon index or file location
   int iconIdx = 0;
-  hres = pLink->GetIconLocation((LPWSTR)&buf, MAX_PATH, &iconIdx);
+  hres = pLink->GetIconLocation(buf, MAX_PATH, &iconIdx);
   if (SUCCEEDED(hres)) {
     // XXX How do we handle converting local files to images here? Do we need to?
     aShortcut->SetIconIndex(iconIdx);
@@ -519,7 +508,7 @@ nsresult JumpListShortcut::GetJumpListShortcut(IShellLinkW *pLink, nsCOMPtr<nsIJ
     // Obtain the local profile directory and construct the output icon file path
     // We only set the Icon Uri if we're sure it was from our icon cache.
     bool isInOurCache;
-    if (NS_SUCCEEDED(IsPathInOurIconCache(aShortcut, buf, &isInOurCache)) && 
+    if (NS_SUCCEEDED(IsPathInOurIconCache(aShortcut, buf, &isInOurCache)) &&
         isInOurCache) {
       nsCOMPtr<nsIURI> iconUri;
       nsAutoString path(buf);
@@ -538,7 +527,7 @@ nsresult JumpListShortcut::GetJumpListShortcut(IShellLinkW *pLink, nsCOMPtr<nsIJ
 
 // (static) ShellItems are used to encapsulate links to things. We currently only support URI links,
 // but more support could be added, such as local file and directory links.
-nsresult JumpListLink::GetShellItem(nsCOMPtr<nsIJumpListItem>& item, nsRefPtr<IShellItem2>& aShellItem)
+nsresult JumpListLink::GetShellItem(nsCOMPtr<nsIJumpListItem>& item, RefPtr<IShellItem2>& aShellItem)
 {
   IShellItem2 *psi = nullptr;
   nsresult rv;
@@ -563,7 +552,8 @@ nsresult JumpListLink::GetShellItem(nsCOMPtr<nsIJumpListItem>& item, nsRefPtr<IS
 
   // Create the IShellItem
   if (FAILED(WinUtils::SHCreateItemFromParsingName(
-               NS_ConvertASCIItoUTF16(spec).get(), NULL, IID_PPV_ARGS(&psi)))) {
+               NS_ConvertASCIItoUTF16(spec).get(),
+               nullptr, IID_PPV_ARGS(&psi)))) {
     return NS_ERROR_INVALID_ARG;
   }
 
@@ -599,7 +589,7 @@ nsresult JumpListLink::GetJumpListLink(IShellItem *pItem, nsCOMPtr<nsIJumpListLi
   // We assume for now these are URI links, but through properties we could
   // query and create other types.
   nsresult rv;
-  LPWSTR lpstrName = NULL;
+  LPWSTR lpstrName = nullptr;
 
   if (SUCCEEDED(pItem->GetDisplayName(SIGDN_URL, &lpstrName))) {
     nsCOMPtr<nsIURI> uri;

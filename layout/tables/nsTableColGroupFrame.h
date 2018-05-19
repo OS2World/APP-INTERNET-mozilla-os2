@@ -8,16 +8,10 @@
 #include "mozilla/Attributes.h"
 #include "nscore.h"
 #include "nsContainerFrame.h"
-#include "nsTableColFrame.h"
+#include "nsTableFrame.h"
+#include "mozilla/WritingModes.h"
 
-class nsTableFrame;
 class nsTableColFrame;
-
-enum nsTableColGroupType {
-  eColGroupContent            = 0, // there is real col group content associated   
-  eColGroupAnonymousCol       = 1, // the result of a col
-  eColGroupAnonymousCell      = 2  // the result of a cell alone
-};
 
 /**
  * nsTableColGroupFrame
@@ -25,7 +19,7 @@ enum nsTableColGroupType {
  *
  * @author  sclark
  */
-class nsTableColGroupFrame : public nsContainerFrame
+class nsTableColGroupFrame final : public nsContainerFrame
 {
 public:
   NS_DECL_FRAMEARENA_HELPERS
@@ -37,20 +31,24 @@ public:
     *
     * @return           the frame that was created
     */
-  friend nsIFrame* NS_NewTableColGroupFrame(nsIPresShell* aPresShell, nsStyleContext* aContext);
+  friend nsTableColGroupFrame* NS_NewTableColGroupFrame(nsIPresShell* aPresShell,
+                                                        nsStyleContext* aContext);
 
-  /** Initialize the colgroup frame with a set of children.
-    * @see nsIFrame::SetInitialChildList
-    */
-  NS_IMETHOD SetInitialChildList(ChildListID     aListID,
-                                 nsFrameList&    aChildList) MOZ_OVERRIDE;
+  nsTableFrame* GetTableFrame() const
+  {
+    nsIFrame* parent = GetParent();
+    MOZ_ASSERT(parent && parent->GetType() == nsGkAtoms::tableFrame);
+    MOZ_ASSERT(!parent->GetPrevInFlow(),
+               "Col group should always be in a first-in-flow table frame");
+    return static_cast<nsTableFrame*>(parent);
+  }
 
   /**
    * ColGroups never paint anything, nor receive events.
    */
   virtual void BuildDisplayList(nsDisplayListBuilder*   aBuilder,
                                 const nsRect&           aDirtyRect,
-                                const nsDisplayListSet& aLists) MOZ_OVERRIDE {}
+                                const nsDisplayListSet& aLists) override {}
 
   /** A colgroup can be caused by three things:
     * 1)	An element with table-column-group display
@@ -78,17 +76,17 @@ public:
   static nsTableColGroupFrame* GetLastRealColGroup(nsTableFrame* aTableFrame);
 
   /** @see nsIFrame::DidSetStyleContext */
-  virtual void DidSetStyleContext(nsStyleContext* aOldStyleContext) MOZ_OVERRIDE;
+  virtual void DidSetStyleContext(nsStyleContext* aOldStyleContext) override;
 
-  /** @see nsIFrame::AppendFrames, InsertFrames, RemoveFrame
-    */
-  NS_IMETHOD AppendFrames(ChildListID     aListID,
-                          nsFrameList&    aFrameList) MOZ_OVERRIDE;
-  NS_IMETHOD InsertFrames(ChildListID     aListID,
-                          nsIFrame*       aPrevFrame,
-                          nsFrameList&    aFrameList) MOZ_OVERRIDE;
-  NS_IMETHOD RemoveFrame(ChildListID     aListID,
-                         nsIFrame*       aOldFrame) MOZ_OVERRIDE;
+  virtual void SetInitialChildList(ChildListID     aListID,
+                                   nsFrameList&    aChildList) override;
+  virtual void AppendFrames(ChildListID     aListID,
+                            nsFrameList&    aFrameList) override;
+  virtual void InsertFrames(ChildListID     aListID,
+                            nsIFrame*       aPrevFrame,
+                            nsFrameList&    aFrameList) override;
+  virtual void RemoveFrame(ChildListID     aListID,
+                           nsIFrame*       aOldFrame) override;
 
   /** remove the column aChild from the column group, if requested renumber
     * the subsequent columns in this column group and all following column
@@ -106,17 +104,20 @@ public:
     * don't play directly in the rendering game.  They do however
     * maintain important state that effects table and cell layout.
     */
-  NS_IMETHOD Reflow(nsPresContext*          aPresContext,
-                    nsHTMLReflowMetrics&     aDesiredSize,
-                    const nsHTMLReflowState& aReflowState,
-                    nsReflowStatus&          aStatus) MOZ_OVERRIDE;
+  virtual void Reflow(nsPresContext*           aPresContext,
+                      ReflowOutput&     aDesiredSize,
+                      const ReflowInput& aReflowInput,
+                      nsReflowStatus&          aStatus) override;
 
   /**
    * Get the "type" of the frame
    *
    * @see nsGkAtoms::tableColGroupFrame
    */
-  virtual nsIAtom* GetType() const MOZ_OVERRIDE;
+  virtual nsIAtom* GetType() const override;
+
+  virtual mozilla::WritingMode GetWritingMode() const override
+    { return GetTableFrame()->GetWritingMode(); }
 
   /** Add column frames to the table storages: colframe cache and cellmap
     * this doesn't change the mFrames of the colgroup frame.
@@ -136,8 +137,8 @@ public:
                           bool                      aResetSubsequentColIndices,
                           const nsFrameList::Slice& aCols);
 
-#ifdef DEBUG
-  NS_IMETHOD GetFrameName(nsAString& aResult) const MOZ_OVERRIDE;
+#ifdef DEBUG_FRAME_DUMP
+  virtual nsresult GetFrameName(nsAString& aResult) const override;
   void Dump(int32_t aIndent);
 #endif
 
@@ -185,34 +186,35 @@ public:
 
   /**
    * Gets inner border widths before collapsing with cell borders
-   * Caller must get left border from previous column
-   * GetContinuousBCBorderWidth will not overwrite aBorder.left
+   * Caller must get istart border from previous column
+   * GetContinuousBCBorderWidth will not overwrite aBorder.IStart
    * see nsTablePainter about continuous borders
    */
-  void GetContinuousBCBorderWidth(nsMargin& aBorder);
+  void GetContinuousBCBorderWidth(mozilla::WritingMode aWM,
+                                  mozilla::LogicalMargin& aBorder);
   /**
    * Set full border widths before collapsing with cell borders
-   * @param aForSide - side to set; only accepts top and bottom
+   * @param aForSide - side to set; only accepts bstart and bend
    */
-  void SetContinuousBCBorderWidth(uint8_t     aForSide,
+  void SetContinuousBCBorderWidth(mozilla::LogicalSide aForSide,
                                   BCPixelSize aPixelValue);
 
-  virtual bool IsFrameOfType(uint32_t aFlags) const MOZ_OVERRIDE
+  virtual bool IsFrameOfType(uint32_t aFlags) const override
   {
     return nsContainerFrame::IsFrameOfType(aFlags & ~(nsIFrame::eTablePart));
   }
   
-  virtual void InvalidateFrame(uint32_t aDisplayItemKey = 0) MOZ_OVERRIDE;
-  virtual void InvalidateFrameWithRect(const nsRect& aRect, uint32_t aDisplayItemKey = 0) MOZ_OVERRIDE;
-  virtual void InvalidateFrameForRemoval() MOZ_OVERRIDE { InvalidateFrameSubtree(); }
+  virtual void InvalidateFrame(uint32_t aDisplayItemKey = 0) override;
+  virtual void InvalidateFrameWithRect(const nsRect& aRect, uint32_t aDisplayItemKey = 0) override;
+  virtual void InvalidateFrameForRemoval() override { InvalidateFrameSubtree(); }
 
 protected:
-  nsTableColGroupFrame(nsStyleContext* aContext);
+  explicit nsTableColGroupFrame(nsStyleContext* aContext);
 
   void InsertColsReflow(int32_t                   aColIndex,
                         const nsFrameList::Slice& aCols);
 
-  virtual int GetSkipSides() const MOZ_OVERRIDE;
+  virtual LogicalSides GetLogicalSkipSides(const ReflowInput* aReflowInput = nullptr) const override;
 
   // data members
   int32_t mColCount;
@@ -220,8 +222,8 @@ protected:
   int32_t mStartColIndex;
 
   // border width in pixels
-  BCPixelSize mTopContBorderWidth;
-  BCPixelSize mBottomContBorderWidth;
+  BCPixelSize mBStartContBorderWidth;
+  BCPixelSize mBEndContBorderWidth;
 };
 
 inline nsTableColGroupFrame::nsTableColGroupFrame(nsStyleContext *aContext)

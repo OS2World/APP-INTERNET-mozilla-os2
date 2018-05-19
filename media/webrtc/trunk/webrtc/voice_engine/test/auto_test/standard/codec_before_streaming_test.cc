@@ -8,7 +8,7 @@
  *  be found in the AUTHORS file in the root of the source tree.
  */
 
-#include "after_initialization_fixture.h"
+#include "webrtc/voice_engine/test/auto_test/fixtures/after_initialization_fixture.h"
 
 class CodecBeforeStreamingTest : public AfterInitializationFixture {
  protected:
@@ -47,6 +47,7 @@ TEST_F(CodecBeforeStreamingTest, GetRecPayloadTypeRecognizesISAC) {
 
 TEST_F(CodecBeforeStreamingTest, SetRecPayloadTypeCanChangeISACPayloadType) {
   strcpy(codec_instance_.plname, "ISAC");
+  codec_instance_.rate = 32000;
 
   codec_instance_.pltype = 123;
   EXPECT_EQ(0, voe_codec_->SetRecPayloadType(channel_, codec_instance_));

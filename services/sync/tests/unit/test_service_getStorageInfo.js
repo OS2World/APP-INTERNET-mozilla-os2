@@ -7,18 +7,20 @@ Cu.import("resource://services-sync/service.js");
 Cu.import("resource://services-sync/util.js");
 Cu.import("resource://testing-common/services/sync/utils.js");
 
-let collections = {steam:  65.11328,
+var httpProtocolHandler = Cc["@mozilla.org/network/protocol;1?name=http"]
+                          .getService(Ci.nsIHttpProtocolHandler);
+
+var collections = {steam:  65.11328,
                    petrol: 82.488281,
                    diesel: 2.25488281};
 
 function run_test() {
-  setBasicCredentials("johndoe", "ilovejane");
-  Service.serverURL = TEST_SERVER_URL;
-  Service.clusterURL = TEST_CLUSTER_URL;
-
-  Log4Moz.repository.getLogger("Sync.Service").level = Log4Moz.Level.Trace;
-  Log4Moz.repository.getLogger("Sync.StorageRequest").level = Log4Moz.Level.Trace;
+  Log.repository.getLogger("Sync.Service").level = Log.Level.Trace;
+  Log.repository.getLogger("Sync.StorageRequest").level = Log.Level.Trace;
   initTestLogging();
+
+  ensureLegacyIdentityManager();
+  setBasicCredentials("johndoe", "ilovejane");
 
   run_next_test();
 }
@@ -26,6 +28,8 @@ function run_test() {
 add_test(function test_success() {
   let handler = httpd_handler(200, "OK", JSON.stringify(collections));
   let server = httpd_setup({"/1.1/johndoe/info/collections": handler});
+  Service.serverURL = server.baseURI + "/";
+  Service.clusterURL = server.baseURI + "/";
 
   let request = Service.getStorageInfo("collections", function (error, info) {
     do_check_eq(error, null);
@@ -36,6 +40,7 @@ add_test(function test_success() {
                                      Service.identity.username,
                                      Service.identity.basicPassword));
     let expectedUA = Services.appinfo.name + "/" + Services.appinfo.version +
+                     " (" + httpProtocolHandler.oscpu + ")" +
                      " FxSync/" + WEAVE_VERSION + "." +
                      Services.appinfo.appBuildID + ".desktop";
     do_check_eq(handler.request.getHeader("User-Agent"), expectedUA);
@@ -65,6 +70,8 @@ add_test(function test_network_error() {
 add_test(function test_http_error() {
   let handler = httpd_handler(500, "Oh noez", "Something went wrong!");
   let server = httpd_setup({"/1.1/johndoe/info/collections": handler});
+  Service.serverURL = server.baseURI + "/";
+  Service.clusterURL = server.baseURI + "/";
 
   let request = Service.getStorageInfo(INFO_COLLECTIONS, function (error, info) {
     do_check_eq(error.status, 500);
@@ -76,10 +83,11 @@ add_test(function test_http_error() {
 add_test(function test_invalid_json() {
   let handler = httpd_handler(200, "OK", "Invalid JSON");
   let server = httpd_setup({"/1.1/johndoe/info/collections": handler});
+  Service.serverURL = server.baseURI + "/";
+  Service.clusterURL = server.baseURI + "/";
 
   let request = Service.getStorageInfo(INFO_COLLECTIONS, function (error, info) {
     do_check_eq(error.name, "SyntaxError");
-    do_check_eq(error.message, "JSON.parse: unexpected character");
     do_check_eq(info, null);
     server.stop(run_next_test);
   });

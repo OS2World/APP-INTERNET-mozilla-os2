@@ -15,7 +15,7 @@
 
   <script type="application/javascript"><![CDATA[
     var imports = [ "SimpleTest", "is", "isnot", "ok"];
-    for each (var name in imports) {
+    for (var name of imports) {
       window[name] = window.opener.wrappedJSObject[name];
     }
 
@@ -66,7 +66,7 @@
 
       // Load a page with a no-store header
       gBrowser.loadURI(nostoreURI);
-      yield;
+      yield undefined;
 
 
       // Now that the page has loaded, amend the form contents
@@ -92,12 +92,12 @@
       var simple = "data:text/html,<html><head><title>test2</title></head>" +
                      "<body>test2</body></html>";
       gBrowser.loadURI(simple);
-      yield;
+      yield undefined;
 
 
       // Now go back in history. First page should not have been cached.
       gBrowser.goBack();
-      yield;
+      yield undefined;
 
 
       // First uncacheable page will now be reloaded. Check scroll position
@@ -113,9 +113,10 @@
       // https no-cache
       testName = "[nocache]";
 
-      // Load a page with a no-cache header
+      // Load a page with a no-cache header. This should not be
+      // restricted like no-store (bug 567365)
       gBrowser.loadURI(nocacheURI);
-      yield;
+      yield undefined;
 
 
       // Now that the page has loaded, amend the form contents
@@ -138,27 +139,27 @@
             testName + " failed to scroll window vertically");
 
       gBrowser.loadURI(simple);
-      yield;
+      yield undefined;
 
 
-      // Now go back in history. First page should not have been cached.
+      // Now go back in history to the cached page.
       gBrowser.goBack();
-      yield;
+      yield undefined;
 
 
-      // First uncacheable page will now be reloaded. Check scroll position
-      // restored, and form contents not
+      // First page will now be reloaded. Check scroll position
+      // and form contents are restored
       is(gBrowser.contentWindow.scrollX, scrollX, testName +
          " horizontal axis scroll position not correctly restored");
       is(gBrowser.contentWindow.scrollY, scrollY, testName +
          " vertical axis scroll position not correctly restored");
       var formValue = gBrowser.contentDocument.getElementById("inp").value;
-      isnot(formValue, text, testName + " form value incorrectly restored");
+      is(formValue, text, testName + " form value not correctly restored");
       
       // nextTest has to be called from here, as no events are fired in this
       // step
       setTimeout(nextTest, 0);
-      yield;
+      yield undefined;
     }
   ]]></script>
 

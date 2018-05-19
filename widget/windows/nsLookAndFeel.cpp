@@ -10,12 +10,38 @@
 #include "nsUXThemeData.h"
 #include "nsUXThemeConstants.h"
 #include "gfxFont.h"
-#include "gfxWindowsPlatform.h"
 #include "WinUtils.h"
 #include "mozilla/Telemetry.h"
+#include "mozilla/WindowsVersion.h"
+#include "gfxFontConstants.h"
 
+using namespace mozilla;
 using namespace mozilla::widget;
-using mozilla::LookAndFeel;
+
+//static
+LookAndFeel::OperatingSystemVersion
+nsLookAndFeel::GetOperatingSystemVersion()
+{
+  static OperatingSystemVersion version = eOperatingSystemVersion_Unknown;
+
+  if (version != eOperatingSystemVersion_Unknown) {
+    return version;
+  }
+
+  if (IsWin10OrLater()) {
+    version = eOperatingSystemVersion_Windows10;
+  } else if (IsWin8OrLater()) {
+    version = eOperatingSystemVersion_Windows8;
+  } else if (IsWin7OrLater()) {
+    version = eOperatingSystemVersion_Windows7;
+  } else if (IsVistaOrLater()) {
+    version = eOperatingSystemVersion_WindowsVista;
+  } else {
+    version = eOperatingSystemVersion_WindowsXP;
+  }
+
+  return version;
+}
 
 static nsresult GetColorFromTheme(nsUXThemeClass cls,
                            int32_t aPart,
@@ -35,26 +61,16 @@ static nsresult GetColorFromTheme(nsUXThemeClass cls,
 
 static int32_t GetSystemParam(long flag, int32_t def)
 {
-    DWORD value; 
+    DWORD value;
     return ::SystemParametersInfo(flag, 0, &value, 0) ? value : def;
 }
 
-namespace mozilla {
-namespace widget {
-// This is in use here and in nsDOMTouchEvent.cpp
-int32_t IsTouchDeviceSupportPresent()
-{
-  int32_t touchCapabilities;
-  touchCapabilities = ::GetSystemMetrics(SM_DIGITIZER);
-  return ((touchCapabilities & NID_READY) && 
-          (touchCapabilities & (NID_EXTERNAL_TOUCH | NID_INTEGRATED_TOUCH)));
-}
-} }
-
-nsLookAndFeel::nsLookAndFeel() : nsXPLookAndFeel()
+nsLookAndFeel::nsLookAndFeel()
+  : nsXPLookAndFeel()
+  , mUseAccessibilityTheme(0)
 {
   mozilla::Telemetry::Accumulate(mozilla::Telemetry::TOUCH_ENABLED_DEVICE,
-                                 IsTouchDeviceSupportPresent());
+                                 WinUtils::IsTouchDeviceSupportPresent());
 }
 
 nsLookAndFeel::~nsLookAndFeel()
@@ -167,8 +183,7 @@ nsLookAndFeel::NativeGetColor(ColorID aID, nscolor &aColor)
       idx = COLOR_HIGHLIGHT;
       break;
     case eColorID__moz_menubarhovertext:
-      if (WinUtils::GetWindowsVersion() < WinUtils::VISTA_VERSION ||
-          !IsAppThemed())
+      if (!IsVistaOrLater() || !IsAppThemed())
       {
         idx = nsUXThemeData::sFlatMenus ?
                 COLOR_HIGHLIGHTTEXT :
@@ -177,8 +192,7 @@ nsLookAndFeel::NativeGetColor(ColorID aID, nscolor &aColor)
       }
       // Fall through
     case eColorID__moz_menuhovertext:
-      if (WinUtils::GetWindowsVersion() >= WinUtils::VISTA_VERSION &&
-          IsAppThemed())
+      if (IsVistaOrLater() && IsAppThemed())
       {
         res = ::GetColorFromTheme(eUXMenu,
                                   MENU_POPUPITEM, MPI_HOT, TMT_TEXTCOLOR, aColor);
@@ -254,8 +268,7 @@ nsLookAndFeel::NativeGetColor(ColorID aID, nscolor &aColor)
       idx = COLOR_3DFACE;
       break;
     case eColorID__moz_win_mediatext:
-      if (WinUtils::GetWindowsVersion() >= WinUtils::VISTA_VERSION &&
-          IsAppThemed()) {
+      if (IsVistaOrLater() && IsAppThemed()) {
         res = ::GetColorFromTheme(eUXMediaToolbar,
                                   TP_BUTTON, TS_NORMAL, TMT_TEXTCOLOR, aColor);
         if (NS_SUCCEEDED(res))
@@ -265,8 +278,7 @@ nsLookAndFeel::NativeGetColor(ColorID aID, nscolor &aColor)
       idx = COLOR_WINDOWTEXT;
       break;
     case eColorID__moz_win_communicationstext:
-      if (WinUtils::GetWindowsVersion() >= WinUtils::VISTA_VERSION &&
-          IsAppThemed())
+      if (IsVistaOrLater() && IsAppThemed())
       {
         res = ::GetColorFromTheme(eUXCommunicationsToolbar,
                                   TP_BUTTON, TS_NORMAL, TMT_TEXTCOLOR, aColor);
@@ -320,7 +332,7 @@ nsLookAndFeel::GetIntImpl(IntID aID, int32_t &aResult)
         break;
     case eIntID_SelectTextfieldsOnKeyFocus:
         // Select textfield content when focused by kbd
-        // used by nsEventStateManager::sTextfieldSelectModel
+        // used by EventStateManager::sTextfieldSelectModel
         aResult = 1;
         break;
     case eIntID_SubmenuDelay:
@@ -346,14 +358,19 @@ nsLookAndFeel::GetIntImpl(IntID aID, int32_t &aResult)
         aResult = ::GetSystemMetrics(SM_CYDRAG) - 1;
         break;
     case eIntID_UseAccessibilityTheme:
-        // High contrast is a misnomer under Win32 -- any theme can be used with it, 
+        // High contrast is a misnomer under Win32 -- any theme can be used with it,
         // e.g. normal contrast with large fonts, low contrast, etc.
         // The high contrast flag really means -- use this theme and don't override it.
-        HIGHCONTRAST contrastThemeInfo;
-        contrastThemeInfo.cbSize = sizeof(contrastThemeInfo);
-        ::SystemParametersInfo(SPI_GETHIGHCONTRAST, 0, &contrastThemeInfo, 0);
-
-        aResult = ((contrastThemeInfo.dwFlags & HCF_HIGHCONTRASTON) != 0);
+        if (XRE_IsContentProcess()) {
+          // If we're running in the content process, then the parent should
+          // have sent us the accessibility state when nsLookAndFeel
+          // initialized, and stashed it in the mUseAccessibilityTheme cache.
+          aResult = mUseAccessibilityTheme;
+        } else {
+          // Otherwise, we can ask the OS to see if we're using High Contrast
+          // mode.
+          aResult = nsUXThemeData::IsHighContrastOn();
+        }
         break;
     case eIntID_ScrollArrowStyle:
         aResult = eScrollArrowStyle_Single;
@@ -380,7 +397,7 @@ nsLookAndFeel::GetIntImpl(IntID aID, int32_t &aResult)
         aResult = !IsAppThemed();
         break;
     case eIntID_TouchEnabled:
-        aResult = IsTouchDeviceSupportPresent();
+        aResult = WinUtils::IsTouchDeviceSupportPresent();
         break;
     case eIntID_WindowsDefaultTheme:
         aResult = nsUXThemeData::IsDefaultWindowTheme();
@@ -388,9 +405,14 @@ nsLookAndFeel::GetIntImpl(IntID aID, int32_t &aResult)
     case eIntID_WindowsThemeIdentifier:
         aResult = nsUXThemeData::GetNativeThemeId();
         break;
+
+    case eIntID_OperatingSystemVersionIdentifier:
+    {
+        aResult = GetOperatingSystemVersion();
+        break;
+    }
+
     case eIntID_MacGraphiteTheme:
-    case eIntID_MacLionTheme:
-    case eIntID_MaemoClassic:
         aResult = 0;
         res = NS_ERROR_NOT_IMPLEMENTED;
         break;
@@ -399,16 +421,15 @@ nsLookAndFeel::GetIntImpl(IntID aID, int32_t &aResult)
         break;
     case eIntID_WindowsGlass:
         // Aero Glass is only available prior to Windows 8 when DWM is used.
-        aResult = (nsUXThemeData::CheckForCompositor() &&
-                   WinUtils::GetWindowsVersion() < WinUtils::WIN8_VERSION);
+        aResult = (nsUXThemeData::CheckForCompositor() && !IsWin8OrLater());
         break;
     case eIntID_AlertNotificationOrigin:
         aResult = 0;
         {
           // Get task bar window handle
-          HWND shellWindow = FindWindowW(L"Shell_TrayWnd", NULL);
+          HWND shellWindow = FindWindowW(L"Shell_TrayWnd", nullptr);
 
-          if (shellWindow != NULL)
+          if (shellWindow != nullptr)
           {
             // Determine position
             APPBARDATA appBarData;
@@ -458,6 +479,28 @@ nsLookAndFeel::GetIntImpl(IntID aID, int32_t &aResult)
     case eIntID_SwipeAnimationEnabled:
         aResult = 0;
         break;
+    case eIntID_ColorPickerAvailable:
+        aResult = true;
+        break;
+    case eIntID_UseOverlayScrollbars:
+        aResult = false;
+        break;
+    case eIntID_AllowOverlayScrollbarsOverlap:
+        aResult = 0;
+        break;
+    case eIntID_ScrollbarDisplayOnMouseMove:
+        aResult = 1;
+        break;
+    case eIntID_ScrollbarFadeBeginDelay:
+        aResult = 2500;
+        break;
+    case eIntID_ScrollbarFadeDuration:
+        aResult = 350;
+        break;
+    case eIntID_ContextMenuOffsetVertical:
+    case eIntID_ContextMenuOffsetHorizontal:
+        aResult = 2;
+        break;
     default:
         aResult = 0;
         res = NS_ERROR_FAILURE;
@@ -492,13 +535,13 @@ GetSysFontInfo(HDC aHDC, LookAndFeel::FontID anID,
                nsString &aFontName,
                gfxFontStyle &aFontStyle)
 {
-  LOGFONTW* ptrLogFont = NULL;
+  LOGFONTW* ptrLogFont = nullptr;
   LOGFONTW logFont;
   NONCLIENTMETRICSW ncm;
-  HGDIOBJ hGDI;
-  PRUnichar name[LF_FACESIZE];
+  char16_t name[LF_FACESIZE];
+  bool useShellDlg = false;
 
-  // Depending on which stock font we want, there are three different
+  // Depending on which stock font we want, there are a couple of
   // places we might have to look it up.
   switch (anID) {
   case LookAndFeel::eFont_Icon:
@@ -509,11 +552,7 @@ GetSysFontInfo(HDC aHDC, LookAndFeel::FontID anID,
     ptrLogFont = &logFont;
     break;
 
-  case LookAndFeel::eFont_Menu:
-  case LookAndFeel::eFont_MessageBox:
-  case LookAndFeel::eFont_SmallCaption:
-  case LookAndFeel::eFont_StatusBar:
-  case LookAndFeel::eFont_Tooltips:
+  default:
     ncm.cbSize = sizeof(NONCLIENTMETRICSW);
     if (!::SystemParametersInfoW(SPI_GETNONCLIENTMETRICS,
                                  sizeof(ncm), (PVOID)&ncm, 0))
@@ -521,10 +560,11 @@ GetSysFontInfo(HDC aHDC, LookAndFeel::FontID anID,
 
     switch (anID) {
     case LookAndFeel::eFont_Menu:
+    case LookAndFeel::eFont_PullDownMenu:
       ptrLogFont = &ncm.lfMenuFont;
       break;
-    case LookAndFeel::eFont_MessageBox:
-      ptrLogFont = &ncm.lfMessageFont;
+    case LookAndFeel::eFont_Caption:
+      ptrLogFont = &ncm.lfCaptionFont;
       break;
     case LookAndFeel::eFont_SmallCaption:
       ptrLogFont = &ncm.lfSmCaptionFont;
@@ -533,34 +573,28 @@ GetSysFontInfo(HDC aHDC, LookAndFeel::FontID anID,
     case LookAndFeel::eFont_Tooltips:
       ptrLogFont = &ncm.lfStatusFont;
       break;
+    case LookAndFeel::eFont_Widget:
+    case LookAndFeel::eFont_Dialog:
+    case LookAndFeel::eFont_Button:
+    case LookAndFeel::eFont_Field:
+    case LookAndFeel::eFont_List:
+      // XXX It's not clear to me whether this is exactly the right
+      // set of LookAndFeel values to map to the dialog font; we may
+      // want to add or remove cases here after reviewing the visual
+      // results under various Windows versions.
+      useShellDlg = true;
+      // Fall through so that we can get size from lfMessageFont;
+      // but later we'll use the (virtual) "MS Shell Dlg 2" font name
+      // instead of the LOGFONT's.
+    default:
+      ptrLogFont = &ncm.lfMessageFont;
+      break;
     }
-    break;
-
-  case LookAndFeel::eFont_Widget:
-  case LookAndFeel::eFont_Window:      // css3
-  case LookAndFeel::eFont_Document:
-  case LookAndFeel::eFont_Workspace:
-  case LookAndFeel::eFont_Desktop:
-  case LookAndFeel::eFont_Info:
-  case LookAndFeel::eFont_Dialog:
-  case LookAndFeel::eFont_Button:
-  case LookAndFeel::eFont_PullDownMenu:
-  case LookAndFeel::eFont_List:
-  case LookAndFeel::eFont_Field:
-  case LookAndFeel::eFont_Caption:
-    hGDI = ::GetStockObject(DEFAULT_GUI_FONT);
-    if (!hGDI)
-      return false;
-
-    if (::GetObjectW(hGDI, sizeof(logFont), &logFont) <= 0)
-      return false;
-
-    ptrLogFont = &logFont;
     break;
   }
 
   // Get scaling factor from physical to logical pixels
-  float pixelScale = 1.0f / gfxWindowsPlatform::GetPlatform()->GetDPIScale();
+  double pixelScale = 1.0 / WinUtils::SystemScaleFactor();
 
   // The lfHeight is in pixels, and it needs to be adjusted for the
   // device it will be displayed on.
@@ -609,9 +643,12 @@ GetSysFontInfo(HDC aHDC, LookAndFeel::FontID anID,
 
   aFontStyle.systemFont = true;
 
-  name[0] = 0;
-  memcpy(name, ptrLogFont->lfFaceName, LF_FACESIZE*sizeof(PRUnichar));
-  aFontName = name;
+  if (useShellDlg) {
+    aFontName = NS_LITERAL_STRING("MS Shell Dlg 2");
+  } else {
+    memcpy(name, ptrLogFont->lfFaceName, LF_FACESIZE*sizeof(char16_t));
+    aFontName = name;
+  }
 
   return true;
 }
@@ -621,18 +658,44 @@ nsLookAndFeel::GetFontImpl(FontID anID, nsString &aFontName,
                            gfxFontStyle &aFontStyle,
                            float aDevPixPerCSSPixel)
 {
-  HDC tdc = GetDC(NULL);
+  HDC tdc = GetDC(nullptr);
   bool status = GetSysFontInfo(tdc, anID, aFontName, aFontStyle);
-  ReleaseDC(NULL, tdc);
+  ReleaseDC(nullptr, tdc);
   // now convert the logical font size from GetSysFontInfo into device pixels for layout
   aFontStyle.size *= aDevPixPerCSSPixel;
   return status;
 }
 
 /* virtual */
-PRUnichar
+char16_t
 nsLookAndFeel::GetPasswordCharacterImpl()
 {
 #define UNICODE_BLACK_CIRCLE_CHAR 0x25cf
   return UNICODE_BLACK_CIRCLE_CHAR;
 }
+
+nsTArray<LookAndFeelInt>
+nsLookAndFeel::GetIntCacheImpl()
+{
+  nsTArray<LookAndFeelInt> lookAndFeelIntCache =
+    nsXPLookAndFeel::GetIntCacheImpl();
+
+  LookAndFeelInt useAccessibilityTheme;
+  useAccessibilityTheme.id = eIntID_UseAccessibilityTheme;
+  useAccessibilityTheme.value = GetInt(eIntID_UseAccessibilityTheme);
+  lookAndFeelIntCache.AppendElement(useAccessibilityTheme);
+
+  return lookAndFeelIntCache;
+}
+
+void
+nsLookAndFeel::SetIntCacheImpl(const nsTArray<LookAndFeelInt>& aLookAndFeelIntCache)
+{
+  for (auto entry : aLookAndFeelIntCache) {
+    if (entry.id == eIntID_UseAccessibilityTheme) {
+      mUseAccessibilityTheme = entry.value;
+      break;
+    }
+  }
+}
+

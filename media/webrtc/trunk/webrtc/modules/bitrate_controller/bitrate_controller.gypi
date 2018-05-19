@@ -10,52 +10,23 @@
   'targets': [
     {
       'target_name': 'bitrate_controller',
-      'type': '<(library)',
+      'type': 'static_library',
       'dependencies': [
-        '<(webrtc_root)/system_wrappers/source/system_wrappers.gyp:system_wrappers',
+        '<(webrtc_root)/system_wrappers/system_wrappers.gyp:system_wrappers',
       ],
-      'include_dirs': [
-        '../interface',
-      ],
-      'direct_dependent_settings': {
-        'include_dirs': [
-          '../interface',
-          '<(webrtc_root)/modules/rtp_rtcp/interface',
-        ],
-      },
       'sources': [
+        'bitrate_allocator.cc',
         'bitrate_controller_impl.cc',
         'bitrate_controller_impl.h',
         'include/bitrate_controller.h',
+        'include/bitrate_allocator.h',
         'send_side_bandwidth_estimation.cc',
         'send_side_bandwidth_estimation.h',
+        'send_time_history.cc',
+        'send_time_history.h',
       ],
+      # TODO(jschuh): Bug 1348: fix size_t to int truncations.
+      'msvs_disabled_warnings': [ 4267, ],
     },
   ], # targets
-
-  'conditions': [
-    ['include_tests==1', {
-      'targets' : [
-        {
-          'target_name': 'bitrate_controller_unittests',
-          'type': 'executable',
-          'dependencies': [
-            'bitrate_controller',
-            '<(webrtc_root)/test/test.gyp:test_support_main',
-            '<(DEPTH)/testing/gtest.gyp:gtest',
-          ],
-          'sources': [
-            'bitrate_controller_unittest.cc',
-           ],
-         },
-       ], # targets
-    }], # include_tests
-  ], # conditions
-
 }
-
-# Local Variables:
-# tab-width:2
-# indent-tabs-mode:nil
-# End:
-# vim: set expandtab tabstop=2 shiftwidth=2

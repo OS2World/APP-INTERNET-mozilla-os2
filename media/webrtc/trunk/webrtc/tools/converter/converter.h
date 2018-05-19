@@ -13,8 +13,8 @@
 
 #include <string>
 
-#include "libyuv/convert.h"
-#include "libyuv/compare.h"
+#include "libyuv/compare.h"  // NOLINT
+#include "libyuv/convert.h"  // NOLINT
 
 namespace webrtc {
 namespace test {

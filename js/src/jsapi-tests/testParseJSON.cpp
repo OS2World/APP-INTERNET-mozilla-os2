@@ -5,23 +5,23 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-
 #include <limits>
-#include <math.h>
+#include <string.h>
 
-#include "tests.h"
+#include "jsprf.h"
 #include "jsstr.h"
-#include "vm/String.h"
+
+#include "jsapi-tests/tests.h"
 
 using namespace js;
 
 class AutoInflatedString {
     JSContext * const cx;
-    jschar *chars_;
+    char16_t* chars_;
     size_t length_;
 
   public:
-    AutoInflatedString(JSContext *cx) : cx(cx), chars_(NULL), length_(0) { }
+    explicit AutoInflatedString(JSContext* cx) : cx(cx), chars_(nullptr), length_(0) { }
     ~AutoInflatedString() {
         JS_free(cx, chars_);
     }
@@ -33,75 +33,76 @@ class AutoInflatedString {
             abort();
     }
 
-    const jschar *chars() const { return chars_; }
+    void operator=(const char* str) {
+        length_ = strlen(str);
+        chars_ = InflateString(cx, str, &length_);
+        if (!chars_)
+            abort();
+    }
+
+    const char16_t* chars() const { return chars_; }
     size_t length() const { return length_; }
 };
-
-template<size_t N> JSFlatString *
-NewString(JSContext *cx, const jschar (&chars)[N])
-{
-    return js_NewStringCopyN<CanGC>(cx, chars, N);
-}
 
 BEGIN_TEST(testParseJSON_success)
 {
     // Primitives
     JS::RootedValue expected(cx);
-    expected = JSVAL_TRUE;
+    expected = JS::TrueValue();
     CHECK(TryParse(cx, "true", expected));
 
-    expected = JSVAL_FALSE;
+    expected = JS::FalseValue();
     CHECK(TryParse(cx, "false", expected));
 
-    expected = JSVAL_NULL;
+    expected = JS::NullValue();
     CHECK(TryParse(cx, "null", expected));
 
-    expected = INT_TO_JSVAL(0);
+    expected.setInt32(0);
     CHECK(TryParse(cx, "0", expected));
 
-    expected = INT_TO_JSVAL(1);
+    expected.setInt32(1);
     CHECK(TryParse(cx, "1", expected));
 
-    expected = INT_TO_JSVAL(-1);
+    expected.setInt32(-1);
     CHECK(TryParse(cx, "-1", expected));
 
-    expected = DOUBLE_TO_JSVAL(1);
+    expected.setDouble(1);
     CHECK(TryParse(cx, "1", expected));
 
-    expected = DOUBLE_TO_JSVAL(1.75);
+    expected.setDouble(1.75);
     CHECK(TryParse(cx, "1.75", expected));
 
-    expected = DOUBLE_TO_JSVAL(9e9);
+    expected.setDouble(9e9);
     CHECK(TryParse(cx, "9e9", expected));
 
-    expected = DOUBLE_TO_JSVAL(std::numeric_limits<double>::infinity());
+    expected.setDouble(std::numeric_limits<double>::infinity());
     CHECK(TryParse(cx, "9e99999", expected));
 
     JS::Rooted<JSFlatString*> str(cx);
 
-    const jschar emptystr[] = { '\0' };
-    str = js_NewStringCopyN<CanGC>(cx, emptystr, 0);
+    const char16_t emptystr[] = { '\0' };
+    str = js::NewStringCopyN<CanGC>(cx, emptystr, 0);
     CHECK(str);
-    expected = STRING_TO_JSVAL(str);
+    expected = JS::StringValue(str);
     CHECK(TryParse(cx, "\"\"", expected));
 
-    const jschar nullstr[] = { '\0' };
+    const char16_t nullstr[] = { '\0' };
     str = NewString(cx, nullstr);
     CHECK(str);
-    expected = STRING_TO_JSVAL(str);
+    expected = JS::StringValue(str);
     CHECK(TryParse(cx, "\"\\u0000\"", expected));
 
-    const jschar backstr[] = { '\b' };
+    const char16_t backstr[] = { '\b' };
     str = NewString(cx, backstr);
     CHECK(str);
-    expected = STRING_TO_JSVAL(str);
+    expected = JS::StringValue(str);
     CHECK(TryParse(cx, "\"\\b\"", expected));
     CHECK(TryParse(cx, "\"\\u0008\"", expected));
 
-    const jschar newlinestr[] = { '\n', };
+    const char16_t newlinestr[] = { '\n', };
     str = NewString(cx, newlinestr);
     CHECK(str);
-    expected = STRING_TO_JSVAL(str);
+    expected = JS::StringValue(str);
     CHECK(TryParse(cx, "\"\\n\"", expected));
     CHECK(TryParse(cx, "\"\\u000A\"", expected));
 
@@ -110,41 +111,53 @@ BEGIN_TEST(testParseJSON_success)
     JS::RootedValue v(cx), v2(cx);
     JS::RootedObject obj(cx);
 
+    bool isArray;
+
     CHECK(Parse(cx, "[]", &v));
-    CHECK(!JSVAL_IS_PRIMITIVE(v));
-    obj = JSVAL_TO_OBJECT(v);
-    CHECK(JS_IsArrayObject(cx, obj));
-    CHECK(JS_GetProperty(cx, obj, "length", v2.address()));
-    CHECK_SAME(v2, JSVAL_ZERO);
+    CHECK(v.isObject());
+    obj = &v.toObject();
+    CHECK(JS_IsArrayObject(cx, obj, &isArray));
+    CHECK(isArray);
+    CHECK(JS_GetProperty(cx, obj, "length", &v2));
+    CHECK(v2.isInt32(0));
 
     CHECK(Parse(cx, "[1]", &v));
-    CHECK(!JSVAL_IS_PRIMITIVE(v));
-    obj = JSVAL_TO_OBJECT(v);
-    CHECK(JS_IsArrayObject(cx, obj));
-    CHECK(JS_GetProperty(cx, obj, "0", v2.address()));
-    CHECK_SAME(v2, JSVAL_ONE);
-    CHECK(JS_GetProperty(cx, obj, "length", v2.address()));
-    CHECK_SAME(v2, JSVAL_ONE);
+    CHECK(v.isObject());
+    obj = &v.toObject();
+    CHECK(JS_IsArrayObject(cx, obj, &isArray));
+    CHECK(isArray);
+    CHECK(JS_GetProperty(cx, obj, "0", &v2));
+    CHECK(v2.isInt32(1));
+    CHECK(JS_GetProperty(cx, obj, "length", &v2));
+    CHECK(v2.isInt32(1));
 
 
     // Objects
     CHECK(Parse(cx, "{}", &v));
-    CHECK(!JSVAL_IS_PRIMITIVE(v));
-    obj = JSVAL_TO_OBJECT(v);
-    CHECK(!JS_IsArrayObject(cx, obj));
+    CHECK(v.isObject());
+    obj = &v.toObject();
+    CHECK(JS_IsArrayObject(cx, obj, &isArray));
+    CHECK(!isArray);
 
     CHECK(Parse(cx, "{ \"f\": 17 }", &v));
-    CHECK(!JSVAL_IS_PRIMITIVE(v));
-    obj = JSVAL_TO_OBJECT(v);
-    CHECK(!JS_IsArrayObject(cx, obj));
-    CHECK(JS_GetProperty(cx, obj, "f", v2.address()));
-    CHECK_SAME(v2, INT_TO_JSVAL(17));
+    CHECK(v.isObject());
+    obj = &v.toObject();
+    CHECK(JS_IsArrayObject(cx, obj, &isArray));
+    CHECK(!isArray);
+    CHECK(JS_GetProperty(cx, obj, "f", &v2));
+    CHECK(v2.isInt32(17));
 
     return true;
 }
 
+template<size_t N> static JSFlatString*
+NewString(JSContext* cx, const char16_t (&chars)[N])
+{
+    return js::NewStringCopyN<CanGC>(cx, chars, N);
+}
+
 template<size_t N> inline bool
-Parse(JSContext *cx, const char (&input)[N], JS::MutableHandleValue vp)
+Parse(JSContext* cx, const char (&input)[N], JS::MutableHandleValue vp)
 {
     AutoInflatedString str(cx);
     str = input;
@@ -153,7 +166,7 @@ Parse(JSContext *cx, const char (&input)[N], JS::MutableHandleValue vp)
 }
 
 template<size_t N> inline bool
-TryParse(JSContext *cx, const char (&input)[N], JS::HandleValue expected)
+TryParse(JSContext* cx, const char (&input)[N], JS::HandleValue expected)
 {
     AutoInflatedString str(cx);
     RootedValue v(cx);
@@ -166,79 +179,160 @@ END_TEST(testParseJSON_success)
 
 BEGIN_TEST(testParseJSON_error)
 {
-    CHECK(Error(cx, "["));
-    CHECK(Error(cx, "[,]"));
-    CHECK(Error(cx, "[1,]"));
-    CHECK(Error(cx, "{a:2}"));
-    CHECK(Error(cx, "{\"a\":2,}"));
-    CHECK(Error(cx, "]"));
-    CHECK(Error(cx, "'bad string'"));
-    CHECK(Error(cx, "\""));
-    CHECK(Error(cx, "{]"));
-    CHECK(Error(cx, "[}"));
+    CHECK(Error(cx, ""                                  , 1, 1));
+    CHECK(Error(cx, "\n"                                , 2, 1));
+    CHECK(Error(cx, "\r"                                , 2, 1));
+    CHECK(Error(cx, "\r\n"                              , 2, 1));
+
+    CHECK(Error(cx, "["                                 , 1, 2));
+    CHECK(Error(cx, "[,]"                               , 1, 2));
+    CHECK(Error(cx, "[1,]"                              , 1, 4));
+    CHECK(Error(cx, "{a:2}"                             , 1, 2));
+    CHECK(Error(cx, "{\"a\":2,}"                        , 1, 8));
+    CHECK(Error(cx, "]"                                 , 1, 1));
+    CHECK(Error(cx, "\""                                , 1, 2));
+    CHECK(Error(cx, "{]"                                , 1, 2));
+    CHECK(Error(cx, "[}"                                , 1, 2));
+    CHECK(Error(cx, "'wrongly-quoted string'"           , 1, 1));
+
+    CHECK(Error(cx, "{\"a\":2 \n b:3}"                  , 2, 2));
+    CHECK(Error(cx, "\n["                               , 2, 2));
+    CHECK(Error(cx, "\n[,]"                             , 2, 2));
+    CHECK(Error(cx, "\n[1,]"                            , 2, 4));
+    CHECK(Error(cx, "\n{a:2}"                           , 2, 2));
+    CHECK(Error(cx, "\n{\"a\":2,}"                      , 2, 8));
+    CHECK(Error(cx, "\n]"                               , 2, 1));
+    CHECK(Error(cx, "\"bad string\n\""                  , 1, 12));
+    CHECK(Error(cx, "\r'wrongly-quoted string'"         , 2, 1));
+    CHECK(Error(cx, "\n\""                              , 2, 2));
+    CHECK(Error(cx, "\n{]"                              , 2, 2));
+    CHECK(Error(cx, "\n[}"                              , 2, 2));
+    CHECK(Error(cx, "{\"a\":[2,3],\n\"b\":,5,6}"        , 2, 5));
+
+    CHECK(Error(cx, "{\"a\":2 \r b:3}"                  , 2, 2));
+    CHECK(Error(cx, "\r["                               , 2, 2));
+    CHECK(Error(cx, "\r[,]"                             , 2, 2));
+    CHECK(Error(cx, "\r[1,]"                            , 2, 4));
+    CHECK(Error(cx, "\r{a:2}"                           , 2, 2));
+    CHECK(Error(cx, "\r{\"a\":2,}"                      , 2, 8));
+    CHECK(Error(cx, "\r]"                               , 2, 1));
+    CHECK(Error(cx, "\"bad string\r\""                  , 1, 12));
+    CHECK(Error(cx, "\r'wrongly-quoted string'"         , 2, 1));
+    CHECK(Error(cx, "\r\""                              , 2, 2));
+    CHECK(Error(cx, "\r{]"                              , 2, 2));
+    CHECK(Error(cx, "\r[}"                              , 2, 2));
+    CHECK(Error(cx, "{\"a\":[2,3],\r\"b\":,5,6}"        , 2, 5));
+
+    CHECK(Error(cx, "{\"a\":2 \r\n b:3}"                , 2, 2));
+    CHECK(Error(cx, "\r\n["                             , 2, 2));
+    CHECK(Error(cx, "\r\n[,]"                           , 2, 2));
+    CHECK(Error(cx, "\r\n[1,]"                          , 2, 4));
+    CHECK(Error(cx, "\r\n{a:2}"                         , 2, 2));
+    CHECK(Error(cx, "\r\n{\"a\":2,}"                    , 2, 8));
+    CHECK(Error(cx, "\r\n]"                             , 2, 1));
+    CHECK(Error(cx, "\"bad string\r\n\""                , 1, 12));
+    CHECK(Error(cx, "\r\n'wrongly-quoted string'"       , 2, 1));
+    CHECK(Error(cx, "\r\n\""                            , 2, 2));
+    CHECK(Error(cx, "\r\n{]"                            , 2, 2));
+    CHECK(Error(cx, "\r\n[}"                            , 2, 2));
+    CHECK(Error(cx, "{\"a\":[2,3],\r\n\"b\":,5,6}"      , 2, 5));
+
+    CHECK(Error(cx, "\n\"bad string\n\""                , 2, 12));
+    CHECK(Error(cx, "\r\"bad string\r\""                , 2, 12));
+    CHECK(Error(cx, "\r\n\"bad string\r\n\""            , 2, 12));
+
+    CHECK(Error(cx, "{\n\"a\":[2,3],\r\"b\":,5,6}"      , 3, 5));
+    CHECK(Error(cx, "{\r\"a\":[2,3],\n\"b\":,5,6}"      , 3, 5));
+    CHECK(Error(cx, "[\"\\t\\q"                         , 1, 6));
+    CHECK(Error(cx, "[\"\\t\x00"                        , 1, 5));
+    CHECK(Error(cx, "[\"\\t\x01"                        , 1, 5));
+    CHECK(Error(cx, "[\"\\t\\\x00"                      , 1, 6));
+    CHECK(Error(cx, "[\"\\t\\\x01"                      , 1, 6));
+
+    // Unicode escape errors are messy.  The first bad character could be
+    // non-hexadecimal, or it could be absent entirely.  Include tests where
+    // there's a bad character, followed by zero to as many characters as are
+    // needed to form a complete Unicode escape sequence, plus one.  (The extra
+    // characters beyond are valuable because our implementation checks for
+    // too-few subsequent characters first, before checking for subsequent
+    // non-hexadecimal characters.  So \u<END>, \u0<END>, \u00<END>, and
+    // \u000<END> are all *detected* as invalid by the same code path, but the
+    // process of computing the first invalid character follows a different
+    // code path for each.  And \uQQQQ, \u0QQQ, \u00QQ, and \u000Q are detected
+    // as invalid by the same code path [ignoring which precise subexpression
+    // triggers failure of a single condition], but the computation of the
+    // first invalid character follows a different code path for each.)
+    CHECK(Error(cx, "[\"\\t\\u"                         , 1, 7));
+    CHECK(Error(cx, "[\"\\t\\uZ"                        , 1, 7));
+    CHECK(Error(cx, "[\"\\t\\uZZ"                       , 1, 7));
+    CHECK(Error(cx, "[\"\\t\\uZZZ"                      , 1, 7));
+    CHECK(Error(cx, "[\"\\t\\uZZZZ"                     , 1, 7));
+    CHECK(Error(cx, "[\"\\t\\uZZZZZ"                    , 1, 7));
+
+    CHECK(Error(cx, "[\"\\t\\u0"                        , 1, 8));
+    CHECK(Error(cx, "[\"\\t\\u0Z"                       , 1, 8));
+    CHECK(Error(cx, "[\"\\t\\u0ZZ"                      , 1, 8));
+    CHECK(Error(cx, "[\"\\t\\u0ZZZ"                     , 1, 8));
+    CHECK(Error(cx, "[\"\\t\\u0ZZZZ"                    , 1, 8));
+
+    CHECK(Error(cx, "[\"\\t\\u00"                       , 1, 9));
+    CHECK(Error(cx, "[\"\\t\\u00Z"                      , 1, 9));
+    CHECK(Error(cx, "[\"\\t\\u00ZZ"                     , 1, 9));
+    CHECK(Error(cx, "[\"\\t\\u00ZZZ"                    , 1, 9));
+
+    CHECK(Error(cx, "[\"\\t\\u000"                      , 1, 10));
+    CHECK(Error(cx, "[\"\\t\\u000Z"                     , 1, 10));
+    CHECK(Error(cx, "[\"\\t\\u000ZZ"                    , 1, 10));
+
     return true;
 }
 
 template<size_t N> inline bool
-Error(JSContext *cx, const char (&input)[N])
+Error(JSContext* cx, const char (&input)[N], uint32_t expectedLine,
+      uint32_t expectedColumn)
 {
     AutoInflatedString str(cx);
     RootedValue dummy(cx);
     str = input;
 
-    ContextPrivate p = {0, 0};
-    CHECK(!JS_GetContextPrivate(cx));
-    JS_SetContextPrivate(cx, &p);
-    JSErrorReporter old = JS_SetErrorReporter(cx, reportJSONEror);
-    JSBool ok = JS_ParseJSON(cx, str.chars(), str.length(), &dummy);
-    JS_SetErrorReporter(cx, old);
-    JS_SetContextPrivate(cx, NULL);
-
+    bool ok = JS_ParseJSON(cx, str.chars(), str.length(), &dummy);
     CHECK(!ok);
-    CHECK(!p.unexpectedErrorCount);
-    CHECK(p.expectedErrorCount == 1);
+
+    RootedValue exn(cx);
+    CHECK(JS_GetPendingException(cx, &exn));
+    JS_ClearPendingException(cx);
+
+    js::ErrorReport report(cx);
+    CHECK(report.init(cx, exn, js::ErrorReport::WithSideEffects));
+    CHECK(report.report()->errorNumber == JSMSG_JSON_BAD_PARSE);
+
+    const char* lineAndColumnASCII = JS_smprintf("line %d column %d", expectedLine, expectedColumn);
+    CHECK(strstr(report.toStringResult().c_str(), lineAndColumnASCII) != nullptr);
+    js_free((void*)lineAndColumnASCII);
 
     /* We do not execute JS, so there should be no exception thrown. */
     CHECK(!JS_IsExceptionPending(cx));
 
     return true;
 }
-
-struct ContextPrivate {
-    unsigned unexpectedErrorCount;
-    unsigned expectedErrorCount;
-};
-
-static void
-reportJSONEror(JSContext *cx, const char *message, JSErrorReport *report)
-{
-    ContextPrivate *p = static_cast<ContextPrivate *>(JS_GetContextPrivate(cx));
-    if (report->errorNumber == JSMSG_JSON_BAD_PARSE)
-        p->expectedErrorCount++;
-    else
-        p->unexpectedErrorCount++;
-}
-
 END_TEST(testParseJSON_error)
 
-static JSBool
-Censor(JSContext *cx, unsigned argc, jsval *vp)
+static bool
+Censor(JSContext* cx, unsigned argc, JS::Value* vp)
 {
-    JS_ASSERT(argc == 2);
-#ifdef DEBUG
-    jsval *argv = JS_ARGV(cx, vp);
-    JS_ASSERT(JSVAL_IS_STRING(argv[0]));
-#endif
-    JS_SET_RVAL(cx, vp, JSVAL_NULL);
+    JS::CallArgs args = JS::CallArgsFromVp(argc, vp);
+    MOZ_RELEASE_ASSERT(args.length() == 2);
+    MOZ_RELEASE_ASSERT(args[0].isString());
+    args.rval().setNull();
     return true;
 }
 
 BEGIN_TEST(testParseJSON_reviver)
 {
-    JSFunction *fun = JS_NewFunction(cx, Censor, 0, 0, global, "censor");
+    JSFunction* fun = JS_NewFunction(cx, Censor, 0, 0, "censor");
     CHECK(fun);
 
-    JS::RootedValue filter(cx, OBJECT_TO_JSVAL(JS_GetFunctionObject(fun)));
+    JS::RootedValue filter(cx, JS::ObjectValue(*JS_GetFunctionObject(fun)));
 
     CHECK(TryParse(cx, "true", filter));
     CHECK(TryParse(cx, "false", filter));
@@ -252,13 +346,13 @@ BEGIN_TEST(testParseJSON_reviver)
 }
 
 template<size_t N> inline bool
-TryParse(JSContext *cx, const char (&input)[N], JS::HandleValue filter)
+TryParse(JSContext* cx, const char (&input)[N], JS::HandleValue filter)
 {
     AutoInflatedString str(cx);
     JS::RootedValue v(cx);
     str = input;
-    CHECK(JS_ParseJSONWithReviver(cx, str.chars(), str.length(), filter, v.address()));
-    CHECK_SAME(v, JSVAL_NULL);
+    CHECK(JS_ParseJSONWithReviver(cx, str.chars(), str.length(), filter, &v));
+    CHECK(v.isNull());
     return true;
 }
 END_TEST(testParseJSON_reviver)

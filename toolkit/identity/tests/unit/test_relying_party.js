@@ -236,7 +236,7 @@ function test_logout() {
   });
 }
 
-let TESTS = [
+var TESTS = [
   test_watch_loggedin_ready,
   test_watch_loggedin_login,
   test_watch_loggedin_logout,
@@ -245,7 +245,7 @@ let TESTS = [
   test_request,
   test_request_forceAuthentication,
   test_request_forceIssuer,
-  test_logout
+  test_logout,
 ];
 
 TESTS.forEach(add_test);

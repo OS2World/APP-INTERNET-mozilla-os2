@@ -1,6 +1,7 @@
 #include "TestActorPunning.h"
 
 #include "IPDLUnitTests.h"      // fail etc.
+#include "mozilla/Unused.h"
 
 namespace mozilla {
 namespace _ipdltest {
@@ -25,26 +26,26 @@ TestActorPunningParent::RecvPun(PTestActorPunningSubParent* a, const Bad& bad)
 }
 
 PTestActorPunningPunnedParent*
-TestActorPunningParent::AllocPTestActorPunningPunned()
+TestActorPunningParent::AllocPTestActorPunningPunnedParent()
 {
     return new TestActorPunningPunnedParent();
 }
 
 bool
-TestActorPunningParent::DeallocPTestActorPunningPunned(PTestActorPunningPunnedParent* a)
+TestActorPunningParent::DeallocPTestActorPunningPunnedParent(PTestActorPunningPunnedParent* a)
 {
     delete a;
     return true;
 }
 
 PTestActorPunningSubParent*
-TestActorPunningParent::AllocPTestActorPunningSub()
+TestActorPunningParent::AllocPTestActorPunningSubParent()
 {
     return new TestActorPunningSubParent();
 }
 
 bool
-TestActorPunningParent::DeallocPTestActorPunningSub(PTestActorPunningSubParent* a)
+TestActorPunningParent::DeallocPTestActorPunningSubParent(PTestActorPunningSubParent* a)
 {
     delete a;
     return true;
@@ -54,26 +55,26 @@ TestActorPunningParent::DeallocPTestActorPunningSub(PTestActorPunningSubParent* 
 // child
 
 PTestActorPunningPunnedChild*
-TestActorPunningChild::AllocPTestActorPunningPunned()
+TestActorPunningChild::AllocPTestActorPunningPunnedChild()
 {
     return new TestActorPunningPunnedChild();
 }
 
 bool
-TestActorPunningChild::DeallocPTestActorPunningPunned(PTestActorPunningPunnedChild*)
+TestActorPunningChild::DeallocPTestActorPunningPunnedChild(PTestActorPunningPunnedChild*)
 {
     fail("should have died by now");
     return true;
 }
 
 PTestActorPunningSubChild*
-TestActorPunningChild::AllocPTestActorPunningSub()
+TestActorPunningChild::AllocPTestActorPunningSubChild()
 {
     return new TestActorPunningSubChild();
 }
 
 bool
-TestActorPunningChild::DeallocPTestActorPunningSub(PTestActorPunningSubChild*)
+TestActorPunningChild::DeallocPTestActorPunningSubChild(PTestActorPunningSubChild*)
 {
     fail("should have died by now");
     return true;
@@ -109,9 +110,8 @@ using namespace mozilla::ipc;
 /*static*/ void
 ParamTraits<Bad>::Write(Message* aMsg, const paramType& aParam)
 {
-    char* ptr = aMsg->BeginWriteData(4);
-    ptr -= intptr_t(sizeof(int));
-    ptr -= intptr_t(sizeof(ActorHandle));
+    // Skip past the sentinel for the actor as well as the actor.
+    int32_t* ptr = aMsg->GetInt32PtrForTest(2 * sizeof(int32_t));
     ActorHandle* ah = reinterpret_cast<ActorHandle*>(ptr);
     if (ah->mId != -3)
         fail("guessed wrong offset (value is %d, should be -3)", ah->mId);
@@ -119,11 +119,8 @@ ParamTraits<Bad>::Write(Message* aMsg, const paramType& aParam)
 }
 
 /*static*/ bool
-ParamTraits<Bad>::Read(const Message* aMsg, void** aIter, paramType* aResult)
+ParamTraits<Bad>::Read(const Message* aMsg, PickleIterator* aIter, paramType* aResult)
 {
-    const char* ptr;
-    int len;
-    aMsg->ReadData(aIter, &ptr, &len);
     return true;
 }
 

@@ -1,7 +1,7 @@
 /* Any copyright is dedicated to the Public Domain.
  * http://creativecommons.org/publicdomain/zero/1.0/ */
 
-Cu.import("resource://services-common/log4moz.js");
+Cu.import("resource://gre/modules/Log.jsm");
 Cu.import("resource://services-sync/constants.js");
 Cu.import("resource://services-sync/keys.js");
 Cu.import("resource://services-sync/service.js");
@@ -10,8 +10,9 @@ Cu.import("resource://testing-common/services/sync/fakeservices.js");
 Cu.import("resource://testing-common/services/sync/utils.js");
 
 function run_test() {
-  let logger = Log4Moz.repository.rootLogger;
-  Log4Moz.repository.rootLogger.addAppender(new Log4Moz.DumpAppender());
+  validate_all_future_pings();
+  let logger = Log.repository.rootLogger;
+  Log.repository.rootLogger.addAppender(new Log.DumpAppender());
 
   let guidSvc = new FakeGUIDService();
   let clients = new ServerCollection();
@@ -53,20 +54,32 @@ function run_test() {
     return_timestamp(request, response, ts);
   }
 
-  let server = httpd_setup({
+  const GLOBAL_PATH = "/1.1/johndoe/storage/meta/global";
+  const INFO_PATH = "/1.1/johndoe/info/collections";
+
+  let handlers = {
     "/1.1/johndoe/storage": storageHandler,
     "/1.1/johndoe/storage/crypto/keys": upd("crypto", keysWBO.handler()),
     "/1.1/johndoe/storage/crypto": upd("crypto", cryptoColl.handler()),
     "/1.1/johndoe/storage/clients": upd("clients", clients.handler()),
-    "/1.1/johndoe/storage/meta/global": upd("meta", wasCalledHandler(meta_global)),
     "/1.1/johndoe/storage/meta": upd("meta", wasCalledHandler(metaColl)),
+    "/1.1/johndoe/storage/meta/global": upd("meta", wasCalledHandler(meta_global)),
     "/1.1/johndoe/info/collections": collectionsHelper.handler
-  });
+  };
+
+  function mockHandler(path, mock) {
+    server.registerPathHandler(path, mock(handlers[path]));
+    return {
+      restore() { server.registerPathHandler(path, handlers[path]); }
+    }
+  }
+
+  let server = httpd_setup(handlers);
 
   try {
     _("Log in.");
-    Service.serverURL = TEST_SERVER_URL;
-    Service.clusterURL = TEST_CLUSTER_URL;
+    ensureLegacyIdentityManager();
+    Service.serverURL = server.baseURI;
 
     _("Checking Status.sync with no credentials.");
     Service.verifyAndFetchSymmetricKeys();
@@ -81,14 +94,70 @@ function run_test() {
     let syncKey = Service.identity.syncKey;
     Service.startOver();
 
-    Service.serverURL = TEST_SERVER_URL;
-    Service.clusterURL = TEST_CLUSTER_URL;
+    Service.serverURL = server.baseURI;
     Service.login("johndoe", "ilovejane", syncKey);
     do_check_true(Service.isLoggedIn);
 
     _("Checking that remoteSetup returns true when credentials have changed.");
     Service.recordManager.get(Service.metaURL).payload.syncID = "foobar";
     do_check_true(Service._remoteSetup());
+
+    let returnStatusCode = (method, code) => (oldMethod) => (req, res) => {
+      if (req.method === method) {
+        res.setStatusLine(req.httpVersion, code, "");
+      } else {
+        oldMethod(req, res);
+      }
+    };
+
+    let mock = mockHandler(GLOBAL_PATH, returnStatusCode("GET", 401));
+    Service.recordManager.del(Service.metaURL);
+    _("Checking that remoteSetup returns false on 401 on first get /meta/global.");
+    do_check_false(Service._remoteSetup());
+    mock.restore();
+
+    Service.login("johndoe", "ilovejane", syncKey);
+    mock = mockHandler(GLOBAL_PATH, returnStatusCode("GET", 503));
+    Service.recordManager.del(Service.metaURL);
+    _("Checking that remoteSetup returns false on 503 on first get /meta/global.");
+    do_check_false(Service._remoteSetup());
+    do_check_eq(Service.status.sync, METARECORD_DOWNLOAD_FAIL);
+    mock.restore();
+
+    mock = mockHandler(GLOBAL_PATH, returnStatusCode("GET", 404));
+    Service.recordManager.del(Service.metaURL);
+    _("Checking that remoteSetup recovers on 404 on first get /meta/global.");
+    do_check_true(Service._remoteSetup());
+    mock.restore();
+
+    let makeOutdatedMeta = () => {
+      Service.metaModified = 0;
+      let infoResponse = Service._fetchInfo();
+      return {
+        status: infoResponse.status,
+        obj: {
+          crypto: infoResponse.obj.crypto,
+          clients: infoResponse.obj.clients,
+          meta: 1
+        }
+      };
+    }
+
+    _("Checking that remoteSetup recovers on 404 on get /meta/global after clear cached one.");
+    mock = mockHandler(GLOBAL_PATH, returnStatusCode("GET", 404));
+    Service.recordManager.set(Service.metaURL, { isNew: false });
+    do_check_true(Service._remoteSetup(makeOutdatedMeta()));
+    mock.restore();
+
+    _("Checking that remoteSetup returns false on 503 on get /meta/global after clear cached one.");
+    mock = mockHandler(GLOBAL_PATH, returnStatusCode("GET", 503));
+    Service.status.sync = "";
+    Service.recordManager.set(Service.metaURL, { isNew: false });
+    do_check_false(Service._remoteSetup(makeOutdatedMeta()));
+    do_check_eq(Service.status.sync, "");
+    mock.restore();
+
+    metaColl.delete({});
 
     _("Do an initial sync.");
     let beforeSync = Date.now()/1000;
@@ -161,7 +230,6 @@ function run_test() {
 
     do_check_false(Service.verifyAndFetchSymmetricKeys());
     do_check_eq(Service.status.login, LOGIN_FAILED_INVALID_PASSPHRASE);
-
   } finally {
     Svc.Prefs.resetBranch("");
     server.stop(do_test_finished);

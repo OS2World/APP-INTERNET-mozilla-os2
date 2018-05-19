@@ -1,9 +1,5 @@
 /***********************************************************************
-Copyright (c) 2006-2012 IETF Trust and Skype Limited. All rights reserved.
-
-This file is extracted from RFC6716. Please see that RFC for additional
-information.
-
+Copyright (c) 2006-2011, Skype Limited. All rights reserved.
 Redistribution and use in source and binary forms, with or without
 modification, are permitted provided that the following conditions
 are met:
@@ -16,7 +12,7 @@ documentation and/or other materials provided with the distribution.
 names of specific contributors, may be used to endorse or promote
 products derived from this software without specific prior written
 permission.
-THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS “AS IS”
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
 AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
 IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
 ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE
@@ -34,6 +30,7 @@ POSSIBILITY OF SUCH DAMAGE.
 #endif
 
 #include "main.h"
+#include "stack_alloc.h"
 #include "PLC.h"
 
 /****************/
@@ -45,15 +42,17 @@ opus_int silk_decode_frame(
     opus_int16                  pOut[],                         /* O    Pointer to output speech frame              */
     opus_int32                  *pN,                            /* O    Pointer to size of output frame             */
     opus_int                    lostFlag,                       /* I    0: no loss, 1 loss, 2 decode fec            */
-    opus_int                    condCoding                      /* I    The type of conditional coding to use       */
+    opus_int                    condCoding,                     /* I    The type of conditional coding to use       */
+    int                         arch                            /* I    Run-time architecture                       */
 )
 {
-    silk_decoder_control sDecCtrl;
+    VARDECL( silk_decoder_control, psDecCtrl );
     opus_int         L, mv_len, ret = 0;
-    opus_int         pulses[ MAX_FRAME_LENGTH ];
+    SAVE_STACK;
 
     L = psDec->frame_length;
-    sDecCtrl.LTP_scale_Q14 = 0;
+    ALLOC( psDecCtrl, 1, silk_decoder_control );
+    psDecCtrl->LTP_scale_Q14 = 0;
 
     /* Safety checks */
     silk_assert( L > 0 && L <= MAX_FRAME_LENGTH );
@@ -61,6 +60,9 @@ opus_int silk_decode_frame(
     if(   lostFlag == FLAG_DECODE_NORMAL ||
         ( lostFlag == FLAG_DECODE_LBRR && psDec->LBRR_flags[ psDec->nFramesDecoded ] == 1 ) )
     {
+        VARDECL( opus_int16, pulses );
+        ALLOC( pulses, (L + SHELL_CODEC_FRAME_LENGTH - 1) &
+                       ~(SHELL_CODEC_FRAME_LENGTH - 1), opus_int16 );
         /*********************************************/
         /* Decode quantization indices of side info  */
         /*********************************************/
@@ -75,20 +77,17 @@ opus_int silk_decode_frame(
         /********************************************/
         /* Decode parameters and pulse signal       */
         /********************************************/
-        silk_decode_parameters( psDec, &sDecCtrl, condCoding );
-
-        /* Update length. Sampling frequency may have changed */
-        L = psDec->frame_length;
+        silk_decode_parameters( psDec, psDecCtrl, condCoding );
 
         /********************************************************/
         /* Run inverse NSQ                                      */
         /********************************************************/
-        silk_decode_core( psDec, &sDecCtrl, pOut, pulses );
+        silk_decode_core( psDec, psDecCtrl, pOut, pulses, arch );
 
         /********************************************************/
         /* Update PLC state                                     */
         /********************************************************/
-        silk_PLC( psDec, &sDecCtrl, pOut, 0 );
+        silk_PLC( psDec, psDecCtrl, pOut, 0, arch );
 
         psDec->lossCnt = 0;
         psDec->prevSignalType = psDec->indices.signalType;
@@ -98,7 +97,7 @@ opus_int silk_decode_frame(
         psDec->first_frame_after_reset = 0;
     } else {
         /* Handle packet loss by extrapolation */
-        silk_PLC( psDec, &sDecCtrl, pOut, 1 );
+        silk_PLC( psDec, psDecCtrl, pOut, 1, arch );
     }
 
     /*************************/
@@ -109,21 +108,22 @@ opus_int silk_decode_frame(
     silk_memmove( psDec->outBuf, &psDec->outBuf[ psDec->frame_length ], mv_len * sizeof(opus_int16) );
     silk_memcpy( &psDec->outBuf[ mv_len ], pOut, psDec->frame_length * sizeof( opus_int16 ) );
 
+    /************************************************/
+    /* Comfort noise generation / estimation        */
+    /************************************************/
+    silk_CNG( psDec, psDecCtrl, pOut, L );
+
     /****************************************************************/
     /* Ensure smooth connection of extrapolated and good frames     */
     /****************************************************************/
     silk_PLC_glue_frames( psDec, pOut, L );
 
-    /************************************************/
-    /* Comfort noise generation / estimation        */
-    /************************************************/
-    silk_CNG( psDec, &sDecCtrl, pOut, L );
-
     /* Update some decoder state variables */
-    psDec->lagPrev = sDecCtrl.pitchL[ psDec->nb_subfr - 1 ];
+    psDec->lagPrev = psDecCtrl->pitchL[ psDec->nb_subfr - 1 ];
 
     /* Set output frame length */
     *pN = L;
 
+    RESTORE_STACK;
     return ret;
 }

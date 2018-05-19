@@ -3,6 +3,9 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+#ifndef mozInlineSpellWordUtil_h
+#define mozInlineSpellWordUtil_h
+
 #include "nsCOMPtr.h"
 #include "nsIDOMDocument.h"
 #include "nsIDocument.h"
@@ -43,6 +46,14 @@ public:
     
     NodeOffset(nsINode* aNode, int32_t aOffset) :
       mNode(aNode), mOffset(aOffset) {}
+
+    bool operator==(const NodeOffset& aOther) const {
+      return mNode == aOther.mNode && mOffset == aOther.mOffset;
+    }
+
+    bool operator!=(const NodeOffset& aOther) const {
+      return !(*this == aOther);
+    }
   };
 
   mozInlineSpellWordUtil()
@@ -114,11 +125,16 @@ private:
   // A list of the "real words" in mSoftText, ordered by mSoftTextOffset
   struct RealWord {
     int32_t      mSoftTextOffset;
-    int32_t      mLength;
-    bool mCheckableWord;
+    uint32_t      mLength : 31;
+    uint32_t mCheckableWord : 1;
     
-    RealWord(int32_t aOffset, int32_t aLength, bool aCheckable)
-      : mSoftTextOffset(aOffset), mLength(aLength), mCheckableWord(aCheckable) {}
+    RealWord(int32_t aOffset, uint32_t aLength, bool aCheckable)
+      : mSoftTextOffset(aOffset), mLength(aLength), mCheckableWord(aCheckable)
+    {
+      static_assert(sizeof(RealWord) == 8, "RealWord should be limited to 8 bytes");
+      MOZ_ASSERT(aLength < INT32_MAX, "Word length is too large to fit in the bitfield");
+    }
+
     int32_t EndOffset() const { return mSoftTextOffset + mLength; }
   };
   nsTArray<RealWord> mRealWords;
@@ -127,7 +143,7 @@ private:
   bool mSoftTextValid;
 
   void InvalidateWords() { mSoftTextValid = false; }
-  void EnsureWords();
+  nsresult EnsureWords();
   
   int32_t MapDOMPositionToSoftTextOffset(NodeOffset aNodeOffset);
   // Map an offset into mSoftText to a DOM position. Note that two DOM positions
@@ -151,11 +167,13 @@ private:
   // build mSoftText and mSoftTextDOMMapping
   void BuildSoftText();
   // Build mRealWords array
-  void BuildRealWords();
+  nsresult BuildRealWords();
 
-  void SplitDOMWord(int32_t aStart, int32_t aEnd);
+  nsresult SplitDOMWord(int32_t aStart, int32_t aEnd);
 
   // Convenience functions, object must be initialized
   nsresult MakeRange(NodeOffset aBegin, NodeOffset aEnd, nsRange** aRange);
   nsresult MakeRangeForWord(const RealWord& aWord, nsRange** aRange);
 };
+
+#endif

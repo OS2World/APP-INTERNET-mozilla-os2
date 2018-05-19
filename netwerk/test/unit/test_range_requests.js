@@ -11,16 +11,15 @@
 //   4) the cached entry does not have a Content-Encoding (see bug #613159)
 //   5) the request does not have a conditional-request header set by client
 //   6) nsHttpResponseHead::IsResumable() is true for the cached entry
+//   7) a basic positive test that makes sure byte ranges work
+//   8) ensure NS_ERROR_CORRUPTED_CONTENT is thrown when total entity size
+//      of 206 does not match content-length of 200
 //
 //  The test has one handler for each case and run_tests() fires one request
 //  for each. None of the handlers should see a Range-header.
 
-const Cc = Components.classes;
-const Ci = Components.interfaces;
-const Cu = Components.utils;
-const Cr = Components.results;
-
 Cu.import("resource://testing-common/httpd.js");
+Cu.import("resource://gre/modules/NetUtil.jsm");
 
 var httpserver = null;
 
@@ -33,12 +32,11 @@ const decodedBody = [0x54, 0x68, 0x69, 0x73, 0x20, 0x69, 0x73, 0x20, 0x61, 0x20,
                      0x6c, 0x79, 0x20, 0x6c, 0x6f, 0x6e, 0x67, 0x65, 0x72, 0x20, 0x74, 0x65, 0x73, 0x74, 0x0a, 0x0a];
 
 const partial_data_length = 4;
+var port = null; // set in run_test
 
 function make_channel(url, callback, ctx) {
-  var ios = Cc["@mozilla.org/network/io-service;1"].
-            getService(Ci.nsIIOService);
-  var chan = ios.newChannel(url, "", null);
-  return chan.QueryInterface(Ci.nsIHttpChannel);
+  return NetUtil.newChannel({uri: url, loadUsingSystemPrincipal: true})
+                .QueryInterface(Ci.nsIHttpChannel);
 }
 
 // StreamListener which cancels its request on first data available
@@ -87,6 +85,29 @@ MyListener.prototype = {
   }
 };
 
+var case_8_range_request = false;
+function FailedChannelListener(continueFn) {
+  this.continueFn = continueFn;
+}
+FailedChannelListener.prototype = {
+  QueryInterface: function(iid) {
+    if (iid.equals(Ci.nsIStreamListener) ||
+        iid.equals(Ci.nsIRequestObserver) ||
+        iid.equals(Ci.nsISupports))
+      return this;
+    throw Components.results.NS_ERROR_NO_INTERFACE;
+  },
+  onStartRequest: function(request, context) { },
+
+  onDataAvailable: function(request, context, stream, offset, count) { },
+
+  onStopRequest: function(request, context, status) {
+    if (case_8_range_request)
+      do_check_eq(status, Components.results.NS_ERROR_CORRUPTED_CONTENT);
+    this.continueFn(request, null);
+  }
+};
+
 function received_cleartext(request, data) {
   do_check_eq(clearTextBody, data);
   testFinished();
@@ -107,8 +128,8 @@ function handler_2(metadata, response) {
 }
 function received_partial_2(request, data) {
   do_check_eq(data, undefined);
-  var chan = make_channel("http://localhost:4444/test_2");
-  chan.asyncOpen(new ChannelListener(received_cleartext, null), null);
+  var chan = make_channel("http://localhost:" + port + "/test_2");
+  chan.asyncOpen2(new ChannelListener(received_cleartext, null));
 }
 
 var case_3_request_no = 0;
@@ -135,8 +156,8 @@ function handler_3(metadata, response) {
 }
 function received_partial_3(request, data) {
   do_check_eq(partial_data_length, data.length);
-  var chan = make_channel("http://localhost:4444/test_3");
-  chan.asyncOpen(new ChannelListener(received_cleartext, null), null);
+  var chan = make_channel("http://localhost:" + port + "/test_3");
+  chan.asyncOpen2(new ChannelListener(received_cleartext, null));
 }
 
 var case_4_request_no = 0;
@@ -168,8 +189,8 @@ function handler_4(metadata, response) {
 function received_partial_4(request, data) {
 // checking length does not work with encoded data
 //  do_check_eq(partial_data_length, data.length);
-  var chan = make_channel("http://localhost:4444/test_4");
-  chan.asyncOpen(new MyListener(received_cleartext), null);
+  var chan = make_channel("http://localhost:" + port + "/test_4");
+  chan.asyncOpen2(new MyListener(received_cleartext));
 }
 
 var case_5_request_no = 0;
@@ -195,9 +216,9 @@ function handler_5(metadata, response) {
 }
 function received_partial_5(request, data) {
   do_check_eq(partial_data_length, data.length);
-  var chan = make_channel("http://localhost:4444/test_5");
+  var chan = make_channel("http://localhost:" + port + "/test_5");
   chan.setRequestHeader("If-Match", "Some eTag", false);
-  chan.asyncOpen(new ChannelListener(received_cleartext, null), null);
+  chan.asyncOpen2(new ChannelListener(received_cleartext, null));
 }
 
 var case_6_request_no = 0;
@@ -226,14 +247,137 @@ function handler_6(metadata, response) {
 function received_partial_6(request, data) {
 // would like to verify that the response does not have Accept-Ranges
   do_check_eq(partial_data_length, data.length);
-  var chan = make_channel("http://localhost:4444/test_6");
-  chan.asyncOpen(new ChannelListener(received_cleartext, null), null);
+  var chan = make_channel("http://localhost:" + port + "/test_6");
+  chan.asyncOpen2(new ChannelListener(received_cleartext, null));
+}
+
+const simpleBody = "0123456789";
+
+function received_simple(request, data) {
+  do_check_eq(simpleBody, data);
+  testFinished();
+}
+
+var case_7_request_no = 0;
+function handler_7(metadata, response) {
+  switch (case_7_request_no) {
+    case 0:
+      do_check_false(metadata.hasHeader("Range"));
+      response.setHeader("Content-Type", "text/plain", false);
+      response.setHeader("ETag", "test7Etag");
+      response.setHeader("Accept-Ranges", "bytes");
+      response.setHeader("Cache-Control", "max-age=360000");
+      response.setHeader("Content-Length", "10");
+      response.processAsync();
+      response.bodyOutputStream.write(simpleBody.slice(0, 4), 4);
+      response.finish();
+      break;
+    case 1:
+      response.setHeader("Content-Type", "text/plain", false);
+      response.setHeader("ETag", "test7Etag");
+      if (metadata.hasHeader("Range")) {
+	  do_check_true(metadata.hasHeader("If-Range"));
+	  response.setStatusLine(metadata.httpVersion, 206, "Partial Content");
+	  response.setHeader("Content-Range", "4-9/10");
+	  response.setHeader("Content-Length", "6");
+	  response.bodyOutputStream.write(simpleBody.slice(4), 6);
+      } else {
+	  response.setHeader("Content-Length", "10");
+	  response.bodyOutputStream.write(simpleBody, 10);
+      }
+      break;
+    default:
+      response.setStatusLine(metadata.httpVersion, 404, "Not Found");
+  }
+  case_7_request_no++;
+}
+function received_partial_7(request, data) {
+  // make sure we get the first 4 bytes
+  do_check_eq(4, data.length);
+  // do it again to get the rest
+  var chan = make_channel("http://localhost:" + port + "/test_7");
+  chan.asyncOpen2(new ChannelListener(received_simple, null));
+}
+
+var case_8_request_no = 0;
+function handler_8(metadata, response) {
+  switch (case_8_request_no) {
+    case 0:
+      do_check_false(metadata.hasHeader("Range"));
+      response.setHeader("Content-Type", "text/plain", false);
+      response.setHeader("ETag", "test8Etag");
+      response.setHeader("Accept-Ranges", "bytes");
+      response.setHeader("Cache-Control", "max-age=360000");
+      response.setHeader("Content-Length", "10");
+      response.processAsync();
+      response.bodyOutputStream.write(simpleBody.slice(0, 4), 4);
+      response.finish();
+      break;
+    case 1:
+      if (metadata.hasHeader("Range")) {
+	  do_check_true(metadata.hasHeader("If-Range"));
+	  case_8_range_request = true;
+      }
+      response.setStatusLine(metadata.httpVersion, 206, "Partial Content");
+      response.setHeader("Content-Type", "text/plain", false);
+      response.setHeader("ETag", "test8Etag");
+      response.setHeader("Content-Range", "4-8/9"); // intentionally broken
+      response.setHeader("Content-Length", "5");
+      response.bodyOutputStream.write(simpleBody.slice(4), 5);
+      break;
+    default:
+      response.setStatusLine(metadata.httpVersion, 404, "Not Found");
+  }
+  case_8_request_no++;
+}
+function received_partial_8(request, data) {
+  // make sure we get the first 4 bytes
+  do_check_eq(4, data.length);
+  // do it again to get the rest
+  var chan = make_channel("http://localhost:" + port + "/test_8");
+  chan.asyncOpen2(new FailedChannelListener(testFinished, null, CL_EXPECT_LATE_FAILURE));
+}
+
+var case_9_request_no = 0;
+function handler_9(metadata, response) {
+  switch (case_9_request_no) {
+    case 0:
+      do_check_false(metadata.hasHeader("Range"));
+      response.setHeader("Content-Type", "text/plain", false);
+      response.setHeader("ETag", "W/test9WeakEtag");
+      response.setHeader("Accept-Ranges", "bytes");
+      response.setHeader("Cache-Control", "max-age=360000");
+      response.setHeader("Content-Length", "10");
+      response.processAsync();
+      response.bodyOutputStream.write(simpleBody.slice(0, 4), 4);
+      response.finish(); // truncated response
+      break;
+    case 1:
+      do_check_false(metadata.hasHeader("Range"));
+      response.setHeader("Content-Type", "text/plain", false);
+      response.setHeader("ETag", "W/test9WeakEtag");
+      response.setHeader("Accept-Ranges", "bytes");
+      response.setHeader("Cache-Control", "max-age=360000");
+      response.setHeader("Content-Length", "10");
+      response.processAsync();
+      response.bodyOutputStream.write(simpleBody, 10);
+      response.finish(); // full response
+      break;
+    default:
+      response.setStatusLine(metadata.httpVersion, 404, "Not Found");
+  }
+  case_9_request_no++;
+}
+function received_partial_9(request, data) {
+  do_check_eq(partial_data_length, data.length);
+  var chan = make_channel("http://localhost:" + port + "/test_9");
+  chan.asyncOpen2(new ChannelListener(received_simple, null));
 }
 
 // Simple mechanism to keep track of tests and stop the server
 var numTestsFinished = 0;
 function testFinished() {
-  if (++numTestsFinished == 5)
+  if (++numTestsFinished == 7)
     httpserver.stop(do_test_finished);
 }
 
@@ -244,30 +388,47 @@ function run_test() {
   httpserver.registerPathHandler("/test_4", handler_4);
   httpserver.registerPathHandler("/test_5", handler_5);
   httpserver.registerPathHandler("/test_6", handler_6);
-  httpserver.start(4444);
+  httpserver.registerPathHandler("/test_7", handler_7);
+  httpserver.registerPathHandler("/test_8", handler_8);
+  httpserver.registerPathHandler("/test_9", handler_9);
+  httpserver.start(-1);
+
+  port = httpserver.identity.primaryPort;
 
   // wipe out cached content
   evict_cache_entries();
 
   // Case 2: zero-length partial entry must not trigger range-request
-  var chan = make_channel("http://localhost:4444/test_2");
-  chan.asyncOpen(new Canceler(received_partial_2), null);
+  var chan = make_channel("http://localhost:" + port + "/test_2");
+  chan.asyncOpen2(new Canceler(received_partial_2));
 
   // Case 3: no-store response must not trigger range-request
-  var chan = make_channel("http://localhost:4444/test_3");
-  chan.asyncOpen(new MyListener(received_partial_3), null);
+  var chan = make_channel("http://localhost:" + port + "/test_3");
+  chan.asyncOpen2(new MyListener(received_partial_3));
 
   // Case 4: response with content-encoding must not trigger range-request
-  var chan = make_channel("http://localhost:4444/test_4");
-  chan.asyncOpen(new MyListener(received_partial_4), null);
+  var chan = make_channel("http://localhost:" + port + "/test_4");
+  chan.asyncOpen2(new MyListener(received_partial_4));
 
   // Case 5: conditional request-header set by client
-  var chan = make_channel("http://localhost:4444/test_5");
-  chan.asyncOpen(new MyListener(received_partial_5), null);
+  var chan = make_channel("http://localhost:" + port + "/test_5");
+  chan.asyncOpen2(new MyListener(received_partial_5));
 
   // Case 6: response is not resumable (drop the Accept-Ranges header)
-  var chan = make_channel("http://localhost:4444/test_6");
-  chan.asyncOpen(new MyListener(received_partial_6), null);
+  var chan = make_channel("http://localhost:" + port + "/test_6");
+  chan.asyncOpen2(new MyListener(received_partial_6));
+
+  // Case 7: a basic positive test
+  var chan = make_channel("http://localhost:" + port + "/test_7");
+  chan.asyncOpen2(new MyListener(received_partial_7));
+
+  // Case 8: check that mismatched 206 and 200 sizes throw error
+  var chan = make_channel("http://localhost:" + port + "/test_8");
+  chan.asyncOpen2(new MyListener(received_partial_8));
+
+  // Case 9: check that weak etag is not used for a range request
+  var chan = make_channel("http://localhost:" + port + "/test_9");
+  chan.asyncOpen2(new MyListener(received_partial_9));
 
   do_test_pending();
 }

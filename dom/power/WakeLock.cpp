@@ -1,40 +1,39 @@
-/* -*- Mode: C++; tab-width: 40; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
+/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
+/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "WakeLock.h"
 #include "mozilla/dom/ContentParent.h"
+#include "mozilla/dom/Event.h" // for nsIDOMEvent::InternalDOMEvent()
+#include "mozilla/dom/MozWakeLockBinding.h"
 #include "mozilla/Hal.h"
 #include "mozilla/HalWakeLock.h"
-#include "nsDOMClassInfoID.h"
-#include "nsDOMEvent.h"
 #include "nsError.h"
 #include "nsIDocument.h"
 #include "nsIDOMWindow.h"
 #include "nsIDOMEvent.h"
 #include "nsPIDOMWindow.h"
-#include "PowerManager.h"
-
-DOMCI_DATA(MozWakeLock, mozilla::dom::power::WakeLock)
+#include "nsIPropertyBag2.h"
 
 using namespace mozilla::hal;
 
 namespace mozilla {
 namespace dom {
-namespace power {
 
-NS_INTERFACE_MAP_BEGIN(WakeLock)
-  NS_INTERFACE_MAP_ENTRY(nsIDOMMozWakeLock)
-  NS_INTERFACE_MAP_ENTRY_AMBIGUOUS(nsISupports, nsIDOMMozWakeLock)
+NS_IMPL_CYCLE_COLLECTION_WRAPPERCACHE_0(WakeLock)
+
+NS_INTERFACE_MAP_BEGIN_CYCLE_COLLECTION(WakeLock)
+  NS_WRAPPERCACHE_INTERFACE_MAP_ENTRY
+  NS_INTERFACE_MAP_ENTRY_AMBIGUOUS(nsISupports, nsIDOMEventListener)
   NS_INTERFACE_MAP_ENTRY(nsIDOMEventListener)
   NS_INTERFACE_MAP_ENTRY(nsIObserver)
   NS_INTERFACE_MAP_ENTRY(nsISupportsWeakReference)
-  NS_DOM_INTERFACE_MAP_ENTRY_CLASSINFO(MozWakeLock)
 NS_INTERFACE_MAP_END
 
-NS_IMPL_ADDREF(WakeLock)
-NS_IMPL_RELEASE(WakeLock)
+NS_IMPL_CYCLE_COLLECTING_ADDREF(WakeLock)
+NS_IMPL_CYCLE_COLLECTING_RELEASE(WakeLock)
 
 WakeLock::WakeLock()
   : mLocked(false)
@@ -49,8 +48,14 @@ WakeLock::~WakeLock()
   DetachEventListener();
 }
 
+JSObject*
+WakeLock::WrapObject(JSContext* aCx, JS::Handle<JSObject*> aGivenProto)
+{
+  return MozWakeLockBinding::Wrap(aCx, this, aGivenProto);
+}
+
 nsresult
-WakeLock::Init(const nsAString &aTopic, nsIDOMWindow *aWindow)
+WakeLock::Init(const nsAString &aTopic, nsPIDOMWindowInner* aWindow)
 {
   // Don't Init() a WakeLock twice.
   MOZ_ASSERT(mTopic.IsEmpty());
@@ -62,14 +67,13 @@ WakeLock::Init(const nsAString &aTopic, nsIDOMWindow *aWindow)
   mTopic.Assign(aTopic);
 
   mWindow = do_GetWeakReference(aWindow);
-  nsCOMPtr<nsPIDOMWindow> window = do_QueryInterface(aWindow);
 
   /**
    * Null windows are allowed. A wake lock without associated window
    * is always considered invisible.
    */
-  if (window) {
-    nsCOMPtr<nsIDocument> doc = window->GetExtantDoc();
+  if (aWindow) {
+    nsCOMPtr<nsIDocument> doc = aWindow->GetExtantDoc();
     NS_ENSURE_STATE(doc);
     mHidden = doc->Hidden();
   }
@@ -105,7 +109,7 @@ WakeLock::Init(const nsAString& aTopic, ContentParent* aContentParent)
 }
 
 NS_IMETHODIMP
-WakeLock::Observe(nsISupports* aSubject, const char* aTopic, const PRUnichar* data)
+WakeLock::Observe(nsISupports* aSubject, const char* aTopic, const char16_t* data)
 {
   // If this wake lock was acquired on behalf of another process, unlock it
   // when that process dies.
@@ -167,9 +171,7 @@ WakeLock::DoUnlock()
 void
 WakeLock::AttachEventListener()
 {
-  nsCOMPtr<nsPIDOMWindow> window = do_QueryReferent(mWindow);
-
-  if (window) {
+  if (nsCOMPtr<nsPIDOMWindowInner> window = do_QueryReferent(mWindow)) {
     nsCOMPtr<nsIDocument> doc = window->GetExtantDoc();
     if (doc) {
       doc->AddSystemEventListener(NS_LITERAL_STRING("visibilitychange"),
@@ -193,9 +195,7 @@ WakeLock::AttachEventListener()
 void
 WakeLock::DetachEventListener()
 {
-  nsCOMPtr<nsPIDOMWindow> window = do_QueryReferent(mWindow);
-
-  if (window) {
+  if (nsCOMPtr<nsPIDOMWindowInner> window = do_QueryReferent(mWindow)) {
     nsCOMPtr<nsIDocument> doc = window->GetExtantDoc();
     if (doc) {
       doc->RemoveSystemEventListener(NS_LITERAL_STRING("visibilitychange"),
@@ -212,27 +212,25 @@ WakeLock::DetachEventListener()
   }
 }
 
-NS_IMETHODIMP
-WakeLock::Unlock()
+void
+WakeLock::Unlock(ErrorResult& aRv)
 {
   /*
    * We throw NS_ERROR_DOM_INVALID_STATE_ERR on double unlock.
    */
   if (!mLocked) {
-    return NS_ERROR_DOM_INVALID_STATE_ERR;
+    aRv.Throw(NS_ERROR_DOM_INVALID_STATE_ERR);
+    return;
   }
 
   DoUnlock();
   DetachEventListener();
-
-  return NS_OK;
 }
 
-NS_IMETHODIMP
+void
 WakeLock::GetTopic(nsAString &aTopic)
 {
   aTopic.Assign(mTopic);
-  return NS_OK;
 }
 
 NS_IMETHODIMP
@@ -272,6 +270,12 @@ WakeLock::HandleEvent(nsIDOMEvent *aEvent)
   return NS_OK;
 }
 
-} // power
-} // dom
-} // mozilla
+nsPIDOMWindowInner*
+WakeLock::GetParentObject() const
+{
+  nsCOMPtr<nsPIDOMWindowInner> window = do_QueryInterface(mWindow);
+  return window;
+}
+
+} // namespace dom
+} // namespace mozilla

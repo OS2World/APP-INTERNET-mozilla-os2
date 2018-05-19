@@ -11,13 +11,12 @@
 #include "nsIFile.h"
 #include "nsIFileURL.h"
 #include "nsEscape.h"
-#include "nsNetUtil.h"
 #include "nsIURILoader.h"
 #include "nsCURILoader.h"
 
 // nsISupports methods
-NS_IMPL_THREADSAFE_ADDREF(nsMIMEInfoBase)
-NS_IMPL_THREADSAFE_RELEASE(nsMIMEInfoBase)
+NS_IMPL_ADDREF(nsMIMEInfoBase)
+NS_IMPL_RELEASE(nsMIMEInfoBase)
 
 NS_INTERFACE_MAP_BEGIN(nsMIMEInfoBase)
     NS_INTERFACE_MAP_ENTRY(nsIHandlerInfo)
@@ -265,13 +264,18 @@ nsMIMEInfoBase::GetLocalFileFromURI(nsIURI *aURI, nsIFile **aFile)
   nsresult rv;
 
   nsCOMPtr<nsIFileURL> fileUrl = do_QueryInterface(aURI, &rv);
-  if (NS_FAILED(rv)) return rv;
+  if (NS_FAILED(rv)) {
+    return rv;
+  }
 
   nsCOMPtr<nsIFile> file;
   rv = fileUrl->GetFile(getter_AddRefs(file));
-  if (NS_FAILED(rv)) return rv;    
+  if (NS_FAILED(rv)) {
+    return rv;
+  }
 
-  return CallQueryInterface(file, aFile);
+  file.forget(aFile);
+  return NS_OK;
 }
 
 NS_IMETHODIMP
@@ -381,7 +385,7 @@ nsMIMEInfoBase::LaunchWithIProcess(nsIFile* aApp, const nsString& aArg)
   if (NS_FAILED(rv))
     return rv;
 
-  const PRUnichar *string = aArg.get();
+  const char16_t *string = aArg.get();
 
   return process->Runw(false, &string, 1);
 }

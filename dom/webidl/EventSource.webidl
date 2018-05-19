@@ -4,14 +4,14 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  *
  * The origin of this IDL file is
- * http://www.whatwg.org/specs/web-apps/current-work/
+ * https://html.spec.whatwg.org/multipage/comms.html#the-eventsource-interface
  *
  * © Copyright 2004-2011 Apple Computer, Inc., Mozilla Foundation, and
  * Opera Software ASA. You are granted a license to use, reproduce
  * and create derivative works of this document.
  */
 
-[Constructor(DOMString url, optional EventSourceInit eventSourceInitDict), PrefControlled]
+[Constructor(USVString url, optional EventSourceInit eventSourceInitDict)]
 interface EventSource : EventTarget {
   [Constant]
   readonly attribute DOMString url;
@@ -25,12 +25,9 @@ interface EventSource : EventTarget {
   readonly attribute unsigned short readyState;
 
   // networking
-  [SetterThrows]
-           attribute EventHandler onopen;
-  [SetterThrows]
-           attribute EventHandler onmessage;
-  [SetterThrows]
-           attribute EventHandler onerror;
+  attribute EventHandler onopen;
+  attribute EventHandler onmessage;
+  attribute EventHandler onerror;
   void close();
 };
 

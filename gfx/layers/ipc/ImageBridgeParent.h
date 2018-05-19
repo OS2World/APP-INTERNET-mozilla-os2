@@ -3,88 +3,153 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#include "mozilla/layers/PImageBridgeParent.h"
+#ifndef gfx_layers_ipc_ImageBridgeParent_h_
+#define gfx_layers_ipc_ImageBridgeParent_h_
+
+#include <stddef.h>                     // for size_t
+#include <stdint.h>                     // for uint32_t, uint64_t
 #include "CompositableTransactionParent.h"
+#include "ImageContainerParent.h"
+#include "mozilla/Assertions.h"         // for MOZ_ASSERT_HELPER2
+#include "mozilla/Attributes.h"         // for override
+#include "mozilla/ipc/ProtocolUtils.h"
+#include "mozilla/ipc/SharedMemory.h"   // for SharedMemory, etc
+#include "mozilla/layers/CompositorThread.h"
+#include "mozilla/layers/PImageBridgeParent.h"
+#include "nsISupportsImpl.h"
+#include "nsTArrayForwardDeclare.h"     // for InfallibleTArray
 
 class MessageLoop;
 
+namespace base {
+class Thread;
+} // namespace base
+
 namespace mozilla {
+namespace ipc {
+class Shmem;
+} // namespace ipc
+
 namespace layers {
 
-class CompositorParent;
 /**
  * ImageBridgeParent is the manager Protocol of ImageContainerParent.
  * It's purpose is mainly to setup the IPDL connection. Most of the
  * interesting stuff is in ImageContainerParent.
  */
-class ImageBridgeParent : public PImageBridgeParent,
-                          public CompositableParentManager
+class ImageBridgeParent final : public PImageBridgeParent,
+                                public CompositableParentManager,
+                                public ShmemAllocator
 {
-  NS_INLINE_DECL_THREADSAFE_REFCOUNTING(ImageBridgeParent)
-
 public:
   typedef InfallibleTArray<CompositableOperation> EditArray;
+  typedef InfallibleTArray<OpDestroy> OpDestroyArray;
   typedef InfallibleTArray<EditReply> EditReplyArray;
 
-  ImageBridgeParent(MessageLoop* aLoop, Transport* aTransport);
+protected:
+  ImageBridgeParent(MessageLoop* aLoop, ProcessId aChildProcessId);
+
+public:
   ~ImageBridgeParent();
 
-  virtual void ActorDestroy(ActorDestroyReason aWhy) MOZ_OVERRIDE;
+  /**
+   * Creates the globals of ImageBridgeParent.
+   */
+  static void Setup();
 
-  static PImageBridgeParent*
-  Create(Transport* aTransport, ProcessId aOtherProcess);
+  static ImageBridgeParent* CreateSameProcess();
+  static bool CreateForGPUProcess(Endpoint<PImageBridgeParent>&& aEndpoint);
+  static bool CreateForContent(Endpoint<PImageBridgeParent>&& aEndpoint);
 
-  virtual PGrallocBufferParent*
-  AllocPGrallocBuffer(const gfxIntSize&, const uint32_t&, const uint32_t&,
-                      MaybeMagicGrallocBufferHandle*) MOZ_OVERRIDE;
+  virtual ShmemAllocator* AsShmemAllocator() override { return this; }
 
-  virtual bool
-  DeallocPGrallocBuffer(PGrallocBufferParent* actor) MOZ_OVERRIDE;
+  virtual void ActorDestroy(ActorDestroyReason aWhy) override;
+
+  // CompositableParentManager
+  virtual void SendAsyncMessage(const InfallibleTArray<AsyncParentMessageData>& aMessage) override;
+
+  virtual void NotifyNotUsed(PTextureParent* aTexture, uint64_t aTransactionId) override;
+
+  virtual base::ProcessId GetChildProcessId() override
+  {
+    return OtherPid();
+  }
 
   // PImageBridge
-  virtual bool RecvUpdate(const EditArray& aEdits, EditReplyArray* aReply);
-  virtual bool RecvUpdateNoSwap(const EditArray& aEdits);
+  virtual bool RecvImageBridgeThreadId(const PlatformThreadId& aThreadId) override;
+  virtual bool RecvUpdate(EditArray&& aEdits, OpDestroyArray&& aToDestroy,
+                          const uint64_t& aFwdTransactionId,
+                          EditReplyArray* aReply) override;
+  virtual bool RecvUpdateNoSwap(EditArray&& aEdits, OpDestroyArray&& aToDestroy,
+                                const uint64_t& aFwdTransactionId) override;
 
-  PCompositableParent* AllocPCompositable(const TextureInfo& aInfo,
-                                          uint64_t*) MOZ_OVERRIDE;
-  bool DeallocPCompositable(PCompositableParent* aActor) MOZ_OVERRIDE;
+  PCompositableParent* AllocPCompositableParent(const TextureInfo& aInfo,
+                                                PImageContainerParent* aImageContainer,
+                                                uint64_t*) override;
+  bool DeallocPCompositableParent(PCompositableParent* aActor) override;
 
-  bool RecvStop() MOZ_OVERRIDE;
+  virtual PTextureParent* AllocPTextureParent(const SurfaceDescriptor& aSharedData,
+                                              const LayersBackend& aLayersBackend,
+                                              const TextureFlags& aFlags,
+                                              const uint64_t& aSerial) override;
+  virtual bool DeallocPTextureParent(PTextureParent* actor) override;
 
-  MessageLoop * GetMessageLoop();
+  PMediaSystemResourceManagerParent* AllocPMediaSystemResourceManagerParent() override;
+  bool DeallocPMediaSystemResourceManagerParent(PMediaSystemResourceManagerParent* aActor) override;
+  virtual PImageContainerParent* AllocPImageContainerParent() override;
+  virtual bool DeallocPImageContainerParent(PImageContainerParent* actor) override;
 
+  // Shutdown step 1
+  virtual bool RecvWillClose() override;
 
-  // ISurfaceAllocator
+  MessageLoop* GetMessageLoop() const { return mMessageLoop; }
 
-  bool AllocShmem(size_t aSize,
-                  ipc::SharedMemory::SharedMemoryType aType,
-                  ipc::Shmem* aShmem) MOZ_OVERRIDE
-  {
-    return AllocShmem(aSize, aType, aShmem);
-  }
+  // ShmemAllocator
 
-  bool AllocUnsafeShmem(size_t aSize,
-                        ipc::SharedMemory::SharedMemoryType aType,
-                        ipc::Shmem* aShmem) MOZ_OVERRIDE
-  {
-    return AllocUnsafeShmem(aSize, aType, aShmem);
-  }
+  virtual bool AllocShmem(size_t aSize,
+                          ipc::SharedMemory::SharedMemoryType aType,
+                          ipc::Shmem* aShmem) override;
 
-  void DeallocShmem(ipc::Shmem& aShmem) MOZ_OVERRIDE
-  {
-    PImageBridgeParent::DeallocShmem(aShmem);
-  }
+  virtual bool AllocUnsafeShmem(size_t aSize,
+                                ipc::SharedMemory::SharedMemoryType aType,
+                                ipc::Shmem* aShmem) override;
+
+  virtual void DeallocShmem(ipc::Shmem& aShmem) override;
+
+  virtual bool IsSameProcess() const override;
+
+  static RefPtr<ImageBridgeParent> GetInstance(ProcessId aId);
+
+  static bool NotifyImageComposites(nsTArray<ImageCompositeNotification>& aNotifications);
+
+  virtual bool UsesImageBridge() const override { return true; }
+
+  virtual bool IPCOpen() const override { return !mClosed; }
+
+protected:
+  void OnChannelConnected(int32_t pid) override;
+
+  void Bind(Endpoint<PImageBridgeParent>&& aEndpoint);
 
 private:
   void DeferredDestroy();
-
   MessageLoop* mMessageLoop;
-  Transport* mTransport;
   // This keeps us alive until ActorDestroy(), at which point we do a
   // deferred destruction of ourselves.
-  nsRefPtr<ImageBridgeParent> mSelfRef;
+  RefPtr<ImageBridgeParent> mSelfRef;
+
+  bool mSetChildThreadPriority;
+  bool mClosed;
+
+  /**
+   * Map of all living ImageBridgeParent instances
+   */
+  static std::map<base::ProcessId, ImageBridgeParent*> sImageBridges;
+
+  RefPtr<CompositorThreadHolder> mCompositorThreadHolder;
 };
 
-} // layers
-} // mozilla
+} // namespace layers
+} // namespace mozilla
 
+#endif // gfx_layers_ipc_ImageBridgeParent_h_

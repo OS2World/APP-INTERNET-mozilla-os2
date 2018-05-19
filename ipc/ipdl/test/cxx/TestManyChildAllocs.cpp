@@ -38,14 +38,14 @@ TestManyChildAllocsParent::RecvDone()
 }
 
 bool
-TestManyChildAllocsParent::DeallocPTestManyChildAllocsSub(
+TestManyChildAllocsParent::DeallocPTestManyChildAllocsSubParent(
     PTestManyChildAllocsSubParent* __a)
 {
     delete __a; return true;
 }
 
 PTestManyChildAllocsSubParent*
-TestManyChildAllocsParent::AllocPTestManyChildAllocsSub()
+TestManyChildAllocsParent::AllocPTestManyChildAllocsSubParent()
 {
     return new TestManyChildAllocsSubParent();
 }
@@ -76,7 +76,7 @@ bool TestManyChildAllocsChild::RecvGo()
             fail("can't send Hello()");
     }
 
-    size_t len = ManagedPTestManyChildAllocsSubChild().Length();
+    size_t len = ManagedPTestManyChildAllocsSubChild().Count();
     if (NALLOCS != len)
         fail("expected %lu kids, got %lu", NALLOCS, len);
 
@@ -87,14 +87,14 @@ bool TestManyChildAllocsChild::RecvGo()
 }
 
 bool
-TestManyChildAllocsChild::DeallocPTestManyChildAllocsSub(
+TestManyChildAllocsChild::DeallocPTestManyChildAllocsSubChild(
     PTestManyChildAllocsSubChild* __a)
 {
     delete __a; return true;
 }
 
 PTestManyChildAllocsSubChild*
-TestManyChildAllocsChild::AllocPTestManyChildAllocsSub()
+TestManyChildAllocsChild::AllocPTestManyChildAllocsSubChild()
 {
     return new TestManyChildAllocsSubChild();
 }

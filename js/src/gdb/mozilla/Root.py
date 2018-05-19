@@ -18,6 +18,10 @@ class Common(object):
     # the template member holds the referent directly.
     handle = False
 
+    # If True, we should strip typedefs from our referent type. (Rooted<T>
+    # uses template magic that gives the referent a noisy type.)
+    strip_typedefs = False
+
     # Initialize a pretty-printer for |value|, using |cache|.
     #
     # If given, |content_printer| is a pretty-printer constructor to use for
@@ -42,6 +46,8 @@ class Common(object):
         ptr = self.value[self.member]
         if self.handle:
             ptr = ptr.dereference()
+        if self.strip_typedefs:
+            ptr = ptr.cast(ptr.type.strip_typedefs())
         if self.content_printer:
             return self.content_printer(ptr, self.cache).to_string()
         else:
@@ -53,7 +59,7 @@ class Common(object):
 
 @template_pretty_printer("JS::Rooted")
 class Rooted(Common):
-    pass
+    strip_typedefs = True
 
 @template_pretty_printer("JS::Handle")
 class Handle(Common):
@@ -63,24 +69,22 @@ class Handle(Common):
 class MutableHandle(Common):
     handle = True
 
-@template_pretty_printer("js::EncapsulatedPtr")
-class EncapsulatedPtr(Common):
-    member = 'value'
-
-@pretty_printer("js::EncapsulatedValue")
-class EncapsulatedValue(Common):
+@template_pretty_printer("js::BarrieredBase")
+class BarrieredBase(Common):
     member = 'value'
 
 # Return the referent of a HeapPtr, Rooted, or Handle.
 def deref(root):
     tag = root.type.strip_typedefs().tag
     if not tag:
-        raise TypeError, "Can't dereference type with no structure tag: %s" % (root.type,)
+        raise TypeError("Can't dereference type with no structure tag: %s" % (root.type,))
     elif tag.startswith('js::HeapPtr<'):
         return root['value']
     elif tag.startswith('JS::Rooted<'):
         return root['ptr']
     elif tag.startswith('JS::Handle<'):
         return root['ptr']
+    elif tag.startswith('js::GCPtr<'):
+        return root['value']
     else:
-        raise NotImplementedError
+        raise NotImplementedError("Unrecognized tag: " + tag)

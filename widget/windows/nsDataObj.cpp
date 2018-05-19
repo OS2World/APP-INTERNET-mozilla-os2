@@ -3,12 +3,13 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#include "mozilla/Util.h"
+#include "mozilla/ArrayUtils.h"
 
 #include <ole2.h>
 #include <shlobj.h>
 
 #include "nsDataObj.h"
+#include "nsArrayUtils.h"
 #include "nsClipboard.h"
 #include "nsReadableUtils.h"
 #include "nsITransferable.h"
@@ -23,16 +24,21 @@
 #include "nsEscape.h"
 #include "nsIURL.h"
 #include "nsNetUtil.h"
+#include "mozilla/Services.h"
+#include "nsIOutputStream.h"
 #include "nsXPCOMStrings.h"
 #include "nscore.h"
-#include "prtypes.h"
 #include "nsDirectoryServiceDefs.h"
 #include "nsITimer.h"
 #include "nsThreadUtils.h"
 #include "mozilla/Preferences.h"
+#include "nsIContentPolicy.h"
+#include "nsContentUtils.h"
+#include "nsIPrincipal.h"
 
 #include "WinUtils.h"
 #include "mozilla/LazyIdleThread.h"
+#include "mozilla/WindowsVersion.h"
 #include <algorithm>
 
 
@@ -41,7 +47,7 @@ using namespace mozilla::widget;
 
 #define DEFAULT_THREAD_TIMEOUT_MS 30000
 
-NS_IMPL_ISUPPORTS1(nsDataObj::CStream, nsIStreamListener)
+NS_IMPL_ISUPPORTS(nsDataObj::CStream, nsIStreamListener)
 
 //-----------------------------------------------------------------------------
 // CStream implementation
@@ -58,14 +64,26 @@ nsDataObj::CStream::~CStream()
 
 //-----------------------------------------------------------------------------
 // helper - initializes the stream
-nsresult nsDataObj::CStream::Init(nsIURI *pSourceURI)
+nsresult nsDataObj::CStream::Init(nsIURI *pSourceURI,
+                                  uint32_t aContentPolicyType,
+                                  nsIPrincipal* aRequestingPrincipal)
 {
+  // we can not create a channel without a requestingPrincipal
+  if (!aRequestingPrincipal) {
+    return NS_ERROR_FAILURE;
+  }
   nsresult rv;
-  rv = NS_NewChannel(getter_AddRefs(mChannel), pSourceURI,
-                     nullptr, nullptr, nullptr,
+  rv = NS_NewChannel(getter_AddRefs(mChannel),
+                     pSourceURI,
+                     aRequestingPrincipal,
+                     nsILoadInfo::SEC_ALLOW_CROSS_ORIGIN_DATA_INHERITS,
+                     aContentPolicyType,
+                     nullptr,   // loadGroup
+                     nullptr,   // aCallbacks
                      nsIRequest::LOAD_FROM_CACHE);
+
   NS_ENSURE_SUCCESS(rv, rv);
-  rv = mChannel->AsyncOpen(this, nullptr);
+  rv = mChannel->AsyncOpen2(this);
   NS_ENSURE_SUCCESS(rv, rv);
   return NS_OK;
 }
@@ -75,7 +93,7 @@ nsresult nsDataObj::CStream::Init(nsIURI *pSourceURI)
 // IUnknown and nsIStreamListener.
 STDMETHODIMP nsDataObj::CStream::QueryInterface(REFIID refiid, void** ppvResult)
 {
-  *ppvResult = NULL;
+  *ppvResult = nullptr;
   if (IID_IUnknown == refiid ||
       refiid == IID_IStream)
 
@@ -83,7 +101,7 @@ STDMETHODIMP nsDataObj::CStream::QueryInterface(REFIID refiid, void** ppvResult)
     *ppvResult = this;
   }
 
-  if (NULL != *ppvResult)
+  if (nullptr != *ppvResult)
   {
     ((LPUNKNOWN)*ppvResult)->AddRef();
     return S_OK;
@@ -101,9 +119,10 @@ nsDataObj::CStream::OnDataAvailable(nsIRequest *aRequest,
                                     uint32_t aCount) // bytes available on this call
 {
     // Extend the write buffer for the incoming data.
-    uint8_t* buffer = mChannelData.AppendElements(aCount);
-    if (buffer == NULL)
+    uint8_t* buffer = mChannelData.AppendElements(aCount, fallible);
+    if (!buffer) {
       return NS_ERROR_OUT_OF_MEMORY;
+    }
     NS_ASSERTION((mChannelData.Length() == (aOffset + aCount)),
       "stream length mismatch w/write buffer");
 
@@ -215,7 +234,7 @@ STDMETHODIMP nsDataObj::CStream::Seek(LARGE_INTEGER nMove,
                                       DWORD dwOrigin,
                                       ULARGE_INTEGER* nNewPos)
 {
-  if (nNewPos == NULL)
+  if (nNewPos == nullptr)
     return STG_E_INVALIDPOINTER;
 
   if (nMove.LowPart == 0 && nMove.HighPart == 0 &&
@@ -237,7 +256,7 @@ STDMETHODIMP nsDataObj::CStream::SetSize(ULARGE_INTEGER nNewSize)
 //-----------------------------------------------------------------------------
 STDMETHODIMP nsDataObj::CStream::Stat(STATSTG* statstg, DWORD dwFlags)
 {
-  if (statstg == NULL)
+  if (statstg == nullptr)
     return STG_E_INVALIDPOINTER;
 
   if (!mChannel || NS_FAILED(WaitForCompletion()))
@@ -324,7 +343,14 @@ HRESULT nsDataObj::CreateStream(IStream **outStream)
 
   pStream->AddRef();
 
-  rv = pStream->Init(sourceURI);
+  // query the requestingPrincipal from the transferable and add it to the new channel
+  nsCOMPtr<nsIPrincipal> requestingPrincipal;
+  mTransferable->GetRequestingPrincipal(getter_AddRefs(requestingPrincipal));
+  MOZ_ASSERT(requestingPrincipal, "can not create channel without a principal");
+  // default transferable content policy is nsIContentPolicy::TYPE_OTHER
+  uint32_t contentPolicyType = nsIContentPolicy::TYPE_OTHER;
+  mTransferable->GetContentPolicyType(&contentPolicyType);
+  rv = pStream->Init(sourceURI, contentPolicyType, requestingPrincipal);
   if (NS_FAILED(rv))
   {
     pStream->Release();
@@ -394,7 +420,7 @@ nsDataObj::~nsDataObj()
 //-----------------------------------------------------
 STDMETHODIMP nsDataObj::QueryInterface(REFIID riid, void** ppv)
 {
-	*ppv=NULL;
+	*ppv=nullptr;
 
 	if ( (IID_IUnknown == riid) || (IID_IDataObject	== riid) ) {
 		*ppv = this;
@@ -440,7 +466,7 @@ STDMETHODIMP_(ULONG) nsDataObj::Release()
       return AddRef();
     }
     mCachedTempFile->Remove(false);
-    mCachedTempFile = NULL;
+    mCachedTempFile = nullptr;
   }
 
 	delete this;
@@ -494,7 +520,7 @@ STDMETHODIMP nsDataObj::GetData(LPFORMATETC aFormat, LPSTGMEDIUM pSTM)
          && dfInx < mDataFlavors.Length()) {
     nsCString& df = mDataFlavors.ElementAt(dfInx);
     if (FormatsMatch(fe, *aFormat)) {
-      pSTM->pUnkForRelease = NULL;        // caller is responsible for deleting this data
+      pSTM->pUnkForRelease = nullptr;     // caller is responsible for deleting this data
       CLIPFORMAT format = aFormat->cfFormat;
       switch(format) {
 
@@ -526,7 +552,7 @@ STDMETHODIMP nsDataObj::GetData(LPFORMATETC aFormat, LPSTGMEDIUM pSTM)
           return GetFileContents ( *aFormat, *pSTM );
         if ( format == PreferredDropEffect )
           return GetPreferredDropEffect( *aFormat, *pSTM );
-        //PR_LOG(gWindowsLog, PR_LOG_ALWAYS, 
+        //MOZ_LOG(gWindowsLog, LogLevel::Info, 
         //       ("***** nsDataObj::GetData - Unknown format %u\n", format));
         return GetText(df, *aFormat, *pSTM);
       } //switch
@@ -573,7 +599,7 @@ STDMETHODIMP nsDataObj::QueryGetData(LPFORMATETC pFE)
 STDMETHODIMP nsDataObj::GetCanonicalFormatEtc
 	 (LPFORMATETC pFEIn, LPFORMATETC pFEOut)
 {
-  return E_FAIL;
+  return E_NOTIMPL;
 }
 
 //-----------------------------------------------------
@@ -618,9 +644,9 @@ STDMETHODIMP nsDataObj::SetData(LPFORMATETC aFormat, LPSTGMEDIUM aMedium, BOOL s
 bool
 nsDataObj::LookupArbitraryFormat(FORMATETC *aFormat, LPDATAENTRY *aDataEntry, BOOL aAddorUpdate)
 {
-  *aDataEntry = NULL;
+  *aDataEntry = nullptr;
 
-  if (aFormat->ptd != NULL)
+  if (aFormat->ptd != nullptr)
     return false;
 
   // See if it's already in our list. If so return the data entry.
@@ -711,10 +737,10 @@ STDMETHODIMP nsDataObj::EnumFormatEtc(DWORD dwDir, LPENUMFORMATETC *ppEnum)
     case DATADIR_SET:
       // fall through
     default:
-      *ppEnum = NULL;
+      *ppEnum = nullptr;
   } // switch
 
-  if (NULL == *ppEnum)
+  if (nullptr == *ppEnum)
     return E_FAIL;
 
   (*ppEnum)->Reset();
@@ -726,20 +752,20 @@ STDMETHODIMP nsDataObj::EnumFormatEtc(DWORD dwDir, LPENUMFORMATETC *ppEnum)
 STDMETHODIMP nsDataObj::DAdvise(LPFORMATETC pFE, DWORD dwFlags,
 										            LPADVISESINK pIAdviseSink, DWORD* pdwConn)
 {
-  return E_FAIL;
+  return OLE_E_ADVISENOTSUPPORTED;
 }
 
 
 //-----------------------------------------------------
 STDMETHODIMP nsDataObj::DUnadvise(DWORD dwConn)
 {
-  return E_FAIL;
+  return OLE_E_ADVISENOTSUPPORTED;
 }
 
 //-----------------------------------------------------
 STDMETHODIMP nsDataObj::EnumDAdvise(LPENUMSTATDATA *ppEnum)
 {
-  return E_FAIL;
+  return OLE_E_ADVISENOTSUPPORTED;
 }
 
 // IAsyncOperation methods
@@ -812,8 +838,11 @@ nsDataObj::GetDib(const nsACString& inFlavor,
     // This might not be necessary any more, but could be useful for backwards
     // compatibility.
     nsCOMPtr<nsISupportsInterfacePointer> ptr(do_QueryInterface(genericDataWrapper));
-    if ( ptr )
-      ptr->GetData(getter_AddRefs(image));
+    if ( ptr ) {
+      nsCOMPtr<nsISupports> supports;
+      ptr->GetData(getter_AddRefs(supports));
+      image = do_QueryInterface(supports);
+    }
   }
   
   if ( image ) {
@@ -912,7 +941,7 @@ MangleTextToValidFilename(nsString & aText)
     nameLen = (uint32_t) strlen(forbiddenNames[n]);
     if (aText.EqualsIgnoreCase(forbiddenNames[n], nameLen)) {
       // invalid name is either the entire string, or a prefix with a period
-      if (aText.Length() == nameLen || aText.CharAt(nameLen) == PRUnichar('.')) {
+      if (aText.Length() == nameLen || aText.CharAt(nameLen) == char16_t('.')) {
         aText.Truncate();
         break;
       }
@@ -949,7 +978,7 @@ CreateFilenameFromTextA(nsString & aText, const char * aExtension,
   do {
     currLen = WideCharToMultiByte(CP_ACP, 
       WC_COMPOSITECHECK|WC_DEFAULTCHAR,
-      aText.get(), textLen--, aFilename, maxUsableFilenameLen, &defaultChar, NULL);
+      aText.get(), textLen--, aFilename, maxUsableFilenameLen, &defaultChar, nullptr);
   }
   while (currLen == 0 && textLen > 0 && GetLastError() == ERROR_INSUFFICIENT_BUFFER);
   if (currLen > 0 && textLen > 0) {
@@ -984,7 +1013,7 @@ CreateFilenameFromTextW(nsString & aText, const wchar_t * aExtension,
 #define PAGEINFO_PROPERTIES "chrome://navigator/locale/pageInfo.properties"
 
 static bool
-GetLocalizedString(const PRUnichar * aName, nsXPIDLString & aString)
+GetLocalizedString(const char16_t * aName, nsXPIDLString & aString)
 {
   nsCOMPtr<nsIStringBundleService> stringService =
     mozilla::services::GetStringBundleService();
@@ -1030,7 +1059,7 @@ nsDataObj :: GetFileDescriptorInternetShortcutA ( FORMATETC& aFE, STGMEDIUM& aST
   if (!CreateFilenameFromTextA(title, ".URL", 
                                fileGroupDescA->fgd[0].cFileName, NS_MAX_FILEDESCRIPTOR)) {
     nsXPIDLString untitled;
-    if (!GetLocalizedString(NS_LITERAL_STRING("noPageTitle").get(), untitled) ||
+    if (!GetLocalizedString(u"noPageTitle", untitled) ||
         !CreateFilenameFromTextA(untitled, ".URL", 
                                  fileGroupDescA->fgd[0].cFileName, NS_MAX_FILEDESCRIPTOR)) {
       strcpy(fileGroupDescA->fgd[0].cFileName, "Untitled.URL");
@@ -1068,13 +1097,13 @@ nsDataObj :: GetFileDescriptorInternetShortcutW ( FORMATETC& aFE, STGMEDIUM& aST
 
   // get a valid filename in the following order: 1) from the page title, 
   // 2) localized string for an untitled page, 3) just use "Untitled.URL"
-  if (!CreateFilenameFromTextW(title, NS_LITERAL_STRING(".URL").get(), 
+  if (!CreateFilenameFromTextW(title, L".URL",
                                fileGroupDescW->fgd[0].cFileName, NS_MAX_FILEDESCRIPTOR)) {
     nsXPIDLString untitled;
-    if (!GetLocalizedString(NS_LITERAL_STRING("noPageTitle").get(), untitled) ||
-        !CreateFilenameFromTextW(untitled, NS_LITERAL_STRING(".URL").get(), 
+    if (!GetLocalizedString(u"noPageTitle", untitled) ||
+        !CreateFilenameFromTextW(untitled, L".URL",
                                  fileGroupDescW->fgd[0].cFileName, NS_MAX_FILEDESCRIPTOR)) {
-      wcscpy(fileGroupDescW->fgd[0].cFileName, NS_LITERAL_STRING("Untitled.URL").get());
+      wcscpy(fileGroupDescW->fgd[0].cFileName, L"Untitled.URL");
     }
   }
 
@@ -1104,32 +1133,34 @@ nsDataObj :: GetFileContentsInternetShortcut ( FORMATETC& aFE, STGMEDIUM& aSTG )
   if ( NS_FAILED(ExtractShortcutURL(url)) )
     return E_OUTOFMEMORY;
 
-  // will need to change if we ever support iDNS
-  nsAutoCString asciiUrl;
-  LossyCopyUTF16toASCII(url, asciiUrl);
-
-  nsCOMPtr<nsIFile> icoFile;
   nsCOMPtr<nsIURI> aUri;
-  NS_NewURI(getter_AddRefs(aUri), url);
+  nsresult rv = NS_NewURI(getter_AddRefs(aUri), url);
+  if (NS_FAILED(rv)) {
+    return E_FAIL;
+  }
+
+  nsAutoCString asciiUrl;
+  rv = aUri->GetAsciiSpec(asciiUrl);
+  if (NS_FAILED(rv)) {
+    return E_FAIL;
+  }
 
   const char *shortcutFormatStr;
   int totalLen;
   nsCString path;
   if (!Preferences::GetBool(kShellIconPref, true) ||
-      WinUtils::GetWindowsVersion() < WinUtils::VISTA_VERSION) {
+      !IsVistaOrLater()) {
     shortcutFormatStr = "[InternetShortcut]\r\nURL=%s\r\n";
     const int formatLen = strlen(shortcutFormatStr) - 2;  // don't include %s
     totalLen = formatLen + asciiUrl.Length();  // don't include null character
   } else {
     nsCOMPtr<nsIFile> icoFile;
-    nsCOMPtr<nsIURI> aUri;
-    NS_NewURI(getter_AddRefs(aUri), url);
 
     nsAutoString aUriHash;
 
     mozilla::widget::FaviconHelper::ObtainCachedIconFile(aUri, aUriHash, mIOThread, true);
 
-    nsresult rv = mozilla::widget::FaviconHelper::GetOutputIconPath(aUri, icoFile, true);
+    rv = mozilla::widget::FaviconHelper::GetOutputIconPath(aUri, icoFile, true);
     NS_ENSURE_SUCCESS(rv, E_FAIL);
     rv = icoFile->GetNativePath(path);
     NS_ENSURE_SUCCESS(rv, E_FAIL);
@@ -1178,17 +1209,15 @@ bool nsDataObj :: IsFlavourPresent(const char *inFlavour)
   NS_ENSURE_TRUE(mTransferable, false);
   
   // get the list of flavors available in the transferable
-  nsCOMPtr<nsISupportsArray> flavorList;
+  nsCOMPtr<nsIArray> flavorList;
   mTransferable->FlavorsTransferableCanExport(getter_AddRefs(flavorList));
   NS_ENSURE_TRUE(flavorList, false);
 
   // try to find requested flavour
   uint32_t cnt;
-  flavorList->Count(&cnt);
+  flavorList->GetLength(&cnt);
   for (uint32_t i = 0; i < cnt; ++i) {
-    nsCOMPtr<nsISupports> genericFlavor;
-    flavorList->GetElementAt (i, getter_AddRefs(genericFlavor));
-    nsCOMPtr<nsISupportsCString> currentFlavor (do_QueryInterface(genericFlavor));
+    nsCOMPtr<nsISupportsCString> currentFlavor = do_QueryElementAt(flavorList, i);
     if (currentFlavor) {
       nsAutoCString flavorStr;
       currentFlavor->GetData(flavorStr);
@@ -1206,8 +1235,8 @@ HRESULT nsDataObj::GetPreferredDropEffect ( FORMATETC& aFE, STGMEDIUM& aSTG )
 {
   HRESULT res = S_OK;
   aSTG.tymed = TYMED_HGLOBAL;
-  aSTG.pUnkForRelease = NULL;    
-  HGLOBAL hGlobalMemory = NULL;
+  aSTG.pUnkForRelease = nullptr;    
+  HGLOBAL hGlobalMemory = nullptr;
   hGlobalMemory = ::GlobalAlloc(GMEM_MOVEABLE, sizeof(DWORD));
   if (hGlobalMemory) {
     DWORD* pdw = (DWORD*) GlobalLock(hGlobalMemory);
@@ -1231,13 +1260,13 @@ HRESULT nsDataObj::GetPreferredDropEffect ( FORMATETC& aFE, STGMEDIUM& aSTG )
 //-----------------------------------------------------
 HRESULT nsDataObj::GetText(const nsACString & aDataFlavor, FORMATETC& aFE, STGMEDIUM& aSTG)
 {
-  void* data = NULL;
+  void* data = nullptr;
   uint32_t   len;
   
   // if someone asks for text/plain, look up text/unicode instead in the transferable.
   const char* flavorStr;
   const nsPromiseFlatCString& flat = PromiseFlatCString(aDataFlavor);
-  if ( aDataFlavor.Equals("text/plain") )
+  if (aDataFlavor.EqualsLiteral("text/plain"))
     flavorStr = kUnicodeMime;
   else
     flavorStr = flat.get();
@@ -1251,10 +1280,10 @@ HRESULT nsDataObj::GetText(const nsACString & aDataFlavor, FORMATETC& aFE, STGME
   if ( !data )
     return E_FAIL;
 
-  HGLOBAL     hGlobalMemory = NULL;
+  HGLOBAL     hGlobalMemory = nullptr;
 
   aSTG.tymed          = TYMED_HGLOBAL;
-  aSTG.pUnkForRelease = NULL;
+  aSTG.pUnkForRelease = nullptr;
 
   // We play games under the hood and advertise flavors that we know we
   // can support, only they require a bit of conversion or munging of the data.
@@ -1262,25 +1291,25 @@ HRESULT nsDataObj::GetText(const nsACString & aDataFlavor, FORMATETC& aFE, STGME
   //
   // The transferable gives us data that is null-terminated, but this isn't reflected in
   // the |len| parameter. Windoze apps expect this null to be there so bump our data buffer
-  // by the appropriate size to account for the null (one char for CF_TEXT, one PRUnichar for
+  // by the appropriate size to account for the null (one char for CF_TEXT, one char16_t for
   // CF_UNICODETEXT).
   DWORD allocLen = (DWORD)len;
   if ( aFE.cfFormat == CF_TEXT ) {
     // Someone is asking for text/plain; convert the unicode (assuming it's present)
     // to text with the correct platform encoding.
-    char* plainTextData = nullptr;
-    PRUnichar* castedUnicode = reinterpret_cast<PRUnichar*>(data);
-    int32_t plainTextLen = 0;
-    nsPrimitiveHelpers::ConvertUnicodeToPlatformPlainText ( castedUnicode, len / 2, &plainTextData, &plainTextLen );
-   
+    size_t bufferSize = sizeof(char)*(len + 2);
+    char* plainTextData = static_cast<char*>(moz_xmalloc(bufferSize));
+    char16_t* castedUnicode = reinterpret_cast<char16_t*>(data);
+    int32_t plainTextLen = WideCharToMultiByte(CP_ACP, 0, (LPCWSTR)castedUnicode, len / 2 + 1, plainTextData, bufferSize, NULL, NULL);
     // replace the unicode data with our plaintext data. Recall that |plainTextLen| doesn't include
     // the null in the length.
-    nsMemory::Free(data);
-    if ( plainTextData ) {
+    free(data);
+    if ( plainTextLen ) {
       data = plainTextData;
-      allocLen = plainTextLen + sizeof(char);
+      allocLen = plainTextLen;
     }
     else {
+      free(plainTextData);
       NS_WARNING ( "Oh no, couldn't convert unicode to plain text" );
       return S_OK;
     }
@@ -1288,11 +1317,11 @@ HRESULT nsDataObj::GetText(const nsACString & aDataFlavor, FORMATETC& aFE, STGME
   else if ( aFE.cfFormat == nsClipboard::CF_HTML ) {
     // Someone is asking for win32's HTML flavor. Convert our html fragment
     // from unicode to UTF-8 then put it into a format specified by msft.
-    NS_ConvertUTF16toUTF8 converter ( reinterpret_cast<PRUnichar*>(data) );
+    NS_ConvertUTF16toUTF8 converter ( reinterpret_cast<char16_t*>(data) );
     char* utf8HTML = nullptr;
     nsresult rv = BuildPlatformHTML ( converter.get(), &utf8HTML );      // null terminates
     
-    nsMemory::Free(data);
+    free(data);
     if ( NS_SUCCEEDED(rv) && utf8HTML ) {
       // replace the unicode data with our HTML data. Don't forget the null.
       data = utf8HTML;
@@ -1303,10 +1332,10 @@ HRESULT nsDataObj::GetText(const nsACString & aDataFlavor, FORMATETC& aFE, STGME
       return S_OK;
     }
   }
-  else {
+  else if ( aFE.cfFormat != nsClipboard::CF_CUSTOMTYPES ) {
     // we assume that any data that isn't caught above is unicode. This may
     // be an erroneous assumption, but is true so far.
-    allocLen += sizeof(PRUnichar);
+    allocLen += sizeof(char16_t);
   }
 
   hGlobalMemory = (HGLOBAL)GlobalAlloc(GMEM_MOVEABLE, allocLen);
@@ -1321,7 +1350,7 @@ HRESULT nsDataObj::GetText(const nsACString & aDataFlavor, FORMATETC& aFE, STGME
   aSTG.hGlobal = hGlobalMemory;
 
   // Now, delete the memory that was created by CreateDataFromPrimitive (or our text/plain data)
-  nsMemory::Free(data);
+  free(data);
 
   return S_OK;
 }
@@ -1359,15 +1388,18 @@ HRESULT nsDataObj::DropFile(FORMATETC& aFE, STGMEDIUM& aSTG)
   if (!file)
   {
     nsCOMPtr<nsISupportsInterfacePointer> ptr(do_QueryInterface(genericDataWrapper));
-    if (ptr)
-      ptr->GetData(getter_AddRefs(file));
+    if (ptr) {
+      nsCOMPtr<nsISupports> supports;
+      ptr->GetData(getter_AddRefs(supports));
+      file = do_QueryInterface(supports);
+    }
   }
 
   if (!file)
     return E_FAIL;
 
   aSTG.tymed = TYMED_HGLOBAL;
-  aSTG.pUnkForRelease = NULL;
+  aSTG.pUnkForRelease = nullptr;
 
   nsAutoString path;
   rv = file->GetPath(path);
@@ -1375,11 +1407,11 @@ HRESULT nsDataObj::DropFile(FORMATETC& aFE, STGMEDIUM& aSTG)
     return E_FAIL;
 
   uint32_t allocLen = path.Length() + 2;
-  HGLOBAL hGlobalMemory = NULL;
-  PRUnichar *dest;
+  HGLOBAL hGlobalMemory = nullptr;
+  char16_t *dest;
 
   hGlobalMemory = GlobalAlloc(GMEM_MOVEABLE, sizeof(DROPFILES) +
-                                             allocLen * sizeof(PRUnichar));
+                                             allocLen * sizeof(char16_t));
   if (!hGlobalMemory)
     return E_FAIL;
 
@@ -1393,8 +1425,8 @@ HRESULT nsDataObj::DropFile(FORMATETC& aFE, STGMEDIUM& aSTG)
   pDropFile->fWide  = TRUE;
 
   // Copy the filename right after the DROPFILES structure
-  dest = (PRUnichar*)(((char*)pDropFile) + pDropFile->pFiles);
-  memcpy(dest, path.get(), (allocLen - 1) * sizeof(PRUnichar));
+  dest = (char16_t*)(((char*)pDropFile) + pDropFile->pFiles);
+  memcpy(dest, path.get(), (allocLen - 1) * sizeof(char16_t));
 
   // Two null characters are needed at the end of the file name.
   // Lookup the CF_HDROP shell clipboard format for more info.
@@ -1423,8 +1455,11 @@ HRESULT nsDataObj::DropImage(FORMATETC& aFE, STGMEDIUM& aSTG)
       // This might not be necessary any more, but could be useful for backwards
       // compatibility.
       nsCOMPtr<nsISupportsInterfacePointer> ptr(do_QueryInterface(genericDataWrapper));
-      if (ptr)
-        ptr->GetData(getter_AddRefs(image));
+      if (ptr) {
+        nsCOMPtr<nsISupports> supports;
+        ptr->GetData(getter_AddRefs(supports));
+        image = do_QueryInterface(supports);
+      }
     }
 
     if (!image) 
@@ -1512,14 +1547,14 @@ HRESULT nsDataObj::DropImage(FORMATETC& aFE, STGMEDIUM& aSTG)
     return E_FAIL;
 
   // Two null characters are needed to terminate the file name list.
-  HGLOBAL hGlobalMemory = NULL;
+  HGLOBAL hGlobalMemory = nullptr;
 
   uint32_t allocLen = path.Length() + 2;
 
   aSTG.tymed = TYMED_HGLOBAL;
-  aSTG.pUnkForRelease = NULL;
+  aSTG.pUnkForRelease = nullptr;
 
-  hGlobalMemory = GlobalAlloc(GMEM_MOVEABLE, sizeof(DROPFILES) + allocLen * sizeof(PRUnichar));
+  hGlobalMemory = GlobalAlloc(GMEM_MOVEABLE, sizeof(DROPFILES) + allocLen * sizeof(char16_t));
   if (!hGlobalMemory)
     return E_FAIL;
 
@@ -1533,8 +1568,8 @@ HRESULT nsDataObj::DropImage(FORMATETC& aFE, STGMEDIUM& aSTG)
   pDropFile->fWide  = TRUE;
 
   // Copy the filename right after the DROPFILES structure.
-  PRUnichar* dest = (PRUnichar*)(((char*)pDropFile) + pDropFile->pFiles);
-  memcpy(dest, path.get(), (allocLen - 1) * sizeof(PRUnichar)); // Copies the null character in path as well.
+  char16_t* dest = (char16_t*)(((char*)pDropFile) + pDropFile->pFiles);
+  memcpy(dest, path.get(), (allocLen - 1) * sizeof(char16_t)); // Copies the null character in path as well.
 
   // Two null characters are needed at the end of the file name.  
   // Lookup the CF_HDROP shell clipboard format for more info.
@@ -1585,7 +1620,7 @@ HRESULT nsDataObj::DropTempFile(FORMATETC& aFE, STGMEDIUM& aSTG)
     if (NS_FAILED(rv))
       return E_FAIL;
 
-    IStream *pStream = NULL;
+    IStream *pStream = nullptr;
     nsDataObj::CreateStream(&pStream);
     NS_ENSURE_TRUE(pStream, E_FAIL);
 
@@ -1615,12 +1650,12 @@ HRESULT nsDataObj::DropTempFile(FORMATETC& aFE, STGMEDIUM& aSTG)
   uint32_t allocLen = path.Length() + 2;
 
   // Two null characters are needed to terminate the file name list.
-  HGLOBAL hGlobalMemory = NULL;
+  HGLOBAL hGlobalMemory = nullptr;
 
   aSTG.tymed = TYMED_HGLOBAL;
-  aSTG.pUnkForRelease = NULL;
+  aSTG.pUnkForRelease = nullptr;
 
-  hGlobalMemory = GlobalAlloc(GMEM_MOVEABLE, sizeof(DROPFILES) + allocLen * sizeof(PRUnichar));
+  hGlobalMemory = GlobalAlloc(GMEM_MOVEABLE, sizeof(DROPFILES) + allocLen * sizeof(char16_t));
   if (!hGlobalMemory)
     return E_FAIL;
 
@@ -1634,8 +1669,8 @@ HRESULT nsDataObj::DropTempFile(FORMATETC& aFE, STGMEDIUM& aSTG)
   pDropFile->fWide  = TRUE;
 
   // Copy the filename right after the DROPFILES structure.
-  PRUnichar* dest = (PRUnichar*)(((char*)pDropFile) + pDropFile->pFiles);
-  memcpy(dest, path.get(), (allocLen - 1) * sizeof(PRUnichar)); // Copies the null character in path as well.
+  char16_t* dest = (char16_t*)(((char*)pDropFile) + pDropFile->pFiles);
+  memcpy(dest, path.get(), (allocLen - 1) * sizeof(char16_t)); // Copies the null character in path as well.
 
   // Two null characters are needed at the end of the file name.  
   // Lookup the CF_HDROP shell clipboard format for more info.
@@ -1964,7 +1999,7 @@ nsDataObj::ExtractUniformResourceLocatorW(FORMATETC& aFE, STGMEDIUM& aSTG )
   if (NS_FAILED(ExtractShortcutURL(url)))
     return E_OUTOFMEMORY;
 
-  const int totalLen = (url.Length() + 1) * sizeof(PRUnichar);
+  const int totalLen = (url.Length() + 1) * sizeof(char16_t);
   HGLOBAL hGlobalMemory = GlobalAlloc(GMEM_ZEROINIT|GMEM_SHARE, totalLen);
   if (!hGlobalMemory)
     return E_OUTOFMEMORY;
@@ -2108,14 +2143,14 @@ HRESULT nsDataObj::GetFileDescriptor_IStreamW(FORMATETC& aFE, STGMEDIUM& aSTG)
 
 HRESULT nsDataObj::GetFileContents_IStream(FORMATETC& aFE, STGMEDIUM& aSTG)
 {
-  IStream *pStream = NULL;
+  IStream *pStream = nullptr;
 
   nsDataObj::CreateStream(&pStream);
   NS_ENSURE_TRUE(pStream, E_FAIL);
 
   aSTG.tymed = TYMED_ISTREAM;
   aSTG.pstm = pStream;
-  aSTG.pUnkForRelease = NULL;
+  aSTG.pUnkForRelease = nullptr;
 
   return S_OK;
 }
@@ -2125,7 +2160,7 @@ void nsDataObj::RemoveTempFile(nsITimer* aTimer, void* aClosure)
   nsDataObj *timedDataObj = static_cast<nsDataObj *>(aClosure);
   if (timedDataObj->mCachedTempFile) {
     timedDataObj->mCachedTempFile->Remove(false);
-    timedDataObj->mCachedTempFile = NULL;
+    timedDataObj->mCachedTempFile = nullptr;
   }
   timedDataObj->Release();
 }

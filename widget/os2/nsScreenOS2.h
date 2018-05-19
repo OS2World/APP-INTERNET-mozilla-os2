@@ -6,11 +6,11 @@
 #ifndef nsScreenOS2_h___
 #define nsScreenOS2_h___
 
-#include "nsBaseScreen.h"
-
-#define INCL_WIN
-#define INCL_DOS
+#define INCL_BASE
+#define INCL_PM
 #include <os2.h>
+
+#include "nsBaseScreen.h"
 
 //------------------------------------------------------------------------
 
@@ -19,6 +19,8 @@ class nsScreenOS2 : public nsBaseScreen
 public:
   nsScreenOS2 ( );
   virtual ~nsScreenOS2();
+
+  NS_IMETHOD GetId(uint32_t* aId);
 
   NS_IMETHOD GetRect(int32_t* aLeft, int32_t* aTop, int32_t* aWidth, int32_t* aHeight);
   NS_IMETHOD GetAvailRect(int32_t* aLeft, int32_t* aTop, int32_t* aWidth, int32_t* aHeight);

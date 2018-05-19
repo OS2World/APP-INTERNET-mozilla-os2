@@ -3,17 +3,17 @@
 #include "IPDLUnitTests.h"      // fail etc.
 
 using namespace mozilla::ipc;
-typedef mozilla::ipc::RPCChannel::Message Message;
-typedef mozilla::ipc::RPCChannel::RacyRPCPolicy RacyRPCPolicy;
+typedef mozilla::ipc::MessageChannel::Message Message;
+typedef mozilla::ipc::MessageChannel::MessageInfo MessageInfo;
 
 namespace mozilla {
 namespace _ipdltest {
 
-static RacyRPCPolicy
-MediateRace(const Message& parent, const Message& child)
+static RacyInterruptPolicy
+MediateRace(const MessageInfo& parent, const MessageInfo& child)
 {
     return (PTestRaceDeferral::Msg_Win__ID == parent.type()) ?
-        RPCChannel::RRPParentWins : RPCChannel::RRPChildWins;
+        RIPParentWins : RIPChildWins;
 }
 
 //-----------------------------------------------------------------------------
@@ -67,9 +67,9 @@ TestRaceDeferralParent::AnswerLose()
     return true;
 }
 
-RacyRPCPolicy
-TestRaceDeferralParent::MediateRPCRace(const Message& parent,
-                                       const Message& child)
+RacyInterruptPolicy
+TestRaceDeferralParent::MediateInterruptRace(const MessageInfo& parent,
+                                             const MessageInfo& child)
 {
     return MediateRace(parent, child);
 }
@@ -107,9 +107,9 @@ TestRaceDeferralChild::AnswerRpc()
     return true;
 }
 
-RacyRPCPolicy
-TestRaceDeferralChild::MediateRPCRace(const Message& parent,
-                                      const Message& child)
+RacyInterruptPolicy
+TestRaceDeferralChild::MediateInterruptRace(const MessageInfo& parent,
+                                            const MessageInfo& child)
 {
     return MediateRace(parent, child);
 }

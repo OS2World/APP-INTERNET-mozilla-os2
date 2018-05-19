@@ -1,6 +1,7 @@
 /* Any copyright is dedicated to the Public Domain.
    http://creativecommons.org/publicdomain/zero/1.0/ */
 
+Cu.import("resource://gre/modules/PlacesUtils.jsm");
 Cu.import("resource://gre/modules/XPCOMUtils.jsm");
 Cu.import("resource://services-common/async.js");
 Cu.import("resource://services-sync/engines/history.js");
@@ -61,18 +62,18 @@ function ensureThrows(func) {
     try {
       func.apply(this, arguments);
     } catch (ex) {
-      PlacesUtils.history.removeAllPages();
+      PlacesTestUtils.clearHistory();
       do_throw(ex);
     }
   };
 }
 
-let store = new HistoryEngine(Service)._store;
+var store = new HistoryEngine(Service)._store;
 function applyEnsureNoFailures(records) {
   do_check_eq(store.applyIncomingBatch(records).length, 0);
 }
 
-let fxuri, fxguid, tburi, tbguid;
+var fxuri, fxguid, tburi, tbguid;
 
 function run_test() {
   initTestLogging("Trace");
@@ -188,8 +189,8 @@ add_test(function test_invalid_records() {
                               .DBConnection;
   let stmt = connection.createAsyncStatement(
     "INSERT INTO moz_places "
-  + "(url, title, rev_host, visit_count, last_visit_date) "
-  + "VALUES ('invalid-uri', 'Invalid URI', '.', 1, " + TIMESTAMP3 + ")"
+  + "(url, url_hash, title, rev_host, visit_count, last_visit_date) "
+  + "VALUES ('invalid-uri', hash('invalid-uri'), 'Invalid URI', '.', 1, " + TIMESTAMP3 + ")"
   );
   Async.querySpinningly(stmt);
   stmt.finalize();
@@ -197,7 +198,7 @@ add_test(function test_invalid_records() {
   stmt = connection.createAsyncStatement(
     "INSERT INTO moz_historyvisits "
   + "(place_id, visit_date, visit_type, session) "
-  + "VALUES ((SELECT id FROM moz_places WHERE url = 'invalid-uri'), "
+  + "VALUES ((SELECT id FROM moz_places WHERE url_hash = hash('invalid-uri') AND url = 'invalid-uri'), "
   + TIMESTAMP3 + ", " + Ci.nsINavHistoryService.TRANSITION_TYPED + ", 1)"
   );
   Async.querySpinningly(stmt);
@@ -225,7 +226,7 @@ add_test(function test_invalid_records() {
                type: Ci.nsINavHistoryService.TRANSITION_EMBED}]}
   ]);
 
-  _("Make sure we report records with invalid visits, gracefully handle non-integer dates.");
+  _("Make sure we handle records with invalid visit codes or visit dates, gracefully ignoring those visits.");
   let no_date_visit_guid = Utils.makeGUID();
   let no_type_visit_guid = Utils.makeGUID();
   let invalid_type_visit_guid = Utils.makeGUID();
@@ -234,11 +235,11 @@ add_test(function test_invalid_records() {
     {id: no_date_visit_guid,
      histUri: "http://no.date.visit/",
      title: "Visit has no date",
-     visits: [{date: TIMESTAMP3}]},
+     visits: [{type: Ci.nsINavHistoryService.TRANSITION_EMBED}]},
     {id: no_type_visit_guid,
      histUri: "http://no.type.visit/",
      title: "Visit has no type",
-     visits: [{type: Ci.nsINavHistoryService.TRANSITION_EMBED}]},
+     visits: [{date: TIMESTAMP3}]},
     {id: invalid_type_visit_guid,
      histUri: "http://invalid.type.visit/",
      title: "Visit has invalid type",
@@ -250,14 +251,7 @@ add_test(function test_invalid_records() {
      visits: [{date: 1234.567,
                type: Ci.nsINavHistoryService.TRANSITION_EMBED}]}
   ]);
-  do_check_eq(failed.length, 3);
-  failed.sort();
-  let expected = [no_date_visit_guid,
-                  no_type_visit_guid,
-                  invalid_type_visit_guid].sort();
-  for (let i = 0; i < expected.length; i++) {
-    do_check_eq(failed[i], expected[i]);
-  }
+  do_check_eq(failed.length, 0);
 
   _("Make sure we handle records with javascript: URLs gracefully.");
   applyEnsureNoFailures([
@@ -299,6 +293,5 @@ add_test(function test_remove() {
 
 add_test(function cleanup() {
   _("Clean up.");
-  PlacesUtils.history.removeAllPages();
-  run_next_test();
+  PlacesTestUtils.clearHistory().then(run_next_test);
 });

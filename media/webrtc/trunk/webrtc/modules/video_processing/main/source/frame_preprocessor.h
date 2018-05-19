@@ -11,78 +11,66 @@
 /*
  * frame_preprocessor.h
  */
-#ifndef VPM_FRAME_PREPROCESSOR_H
-#define VPM_FRAME_PREPROCESSOR_H
+#ifndef WEBRTC_MODULES_VIDEO_PROCESSING_MAIN_SOURCE_FRAME_PREPROCESSOR_H
+#define WEBRTC_MODULES_VIDEO_PROCESSING_MAIN_SOURCE_FRAME_PREPROCESSOR_H
 
-#include "typedefs.h"
-#include "video_processing.h"
-#include "content_analysis.h"
-#include "spatial_resampler.h"
-#include "video_decimator.h"
+#include "webrtc/modules/video_processing/main/interface/video_processing.h"
+#include "webrtc/modules/video_processing/main/source/content_analysis.h"
+#include "webrtc/modules/video_processing/main/source/spatial_resampler.h"
+#include "webrtc/modules/video_processing/main/source/video_decimator.h"
+#include "webrtc/typedefs.h"
 
 namespace webrtc {
 
+class VPMFramePreprocessor {
+ public:
+  VPMFramePreprocessor();
+  ~VPMFramePreprocessor();
 
-class VPMFramePreprocessor
-{
-public:
+  void Reset();
 
-    VPMFramePreprocessor();
-    ~VPMFramePreprocessor();
+  // Enable temporal decimation.
+  void EnableTemporalDecimation(bool enable);
 
-    WebRtc_Word32 ChangeUniqueId(const WebRtc_Word32 id);
+  void SetInputFrameResampleMode(VideoFrameResampling resampling_mode);
 
-    void Reset();
+  // Enable content analysis.
+  void EnableContentAnalysis(bool enable);
 
-    // Enable temporal decimation
-    void EnableTemporalDecimation(bool enable);
+  // Set target resolution: frame rate and dimension.
+  int32_t SetTargetResolution(uint32_t width, uint32_t height,
+                              uint32_t frame_rate);
 
-    void SetInputFrameResampleMode(VideoFrameResampling resamplingMode);
+  // Update incoming frame rate/dimension.
+  void UpdateIncomingframe_rate();
 
-    //Enable content analysis
-    void EnableContentAnalysis(bool enable);
+  int32_t updateIncomingFrameSize(uint32_t width, uint32_t height);
 
-    //Set max frame rate
-    WebRtc_Word32 SetMaxFrameRate(WebRtc_UWord32 maxFrameRate);
+  // Set decimated values: frame rate/dimension.
+  uint32_t Decimatedframe_rate();
+  uint32_t DecimatedWidth() const;
+  uint32_t DecimatedHeight() const;
 
-    //Set target resolution: frame rate and dimension
-    WebRtc_Word32 SetTargetResolution(WebRtc_UWord32 width,
-                                      WebRtc_UWord32 height,
-                                      WebRtc_UWord32 frameRate);
+  // Preprocess output:
+  int32_t PreprocessFrame(const I420VideoFrame& frame,
+                          I420VideoFrame** processed_frame);
+  VideoContentMetrics* ContentMetrics() const;
 
-    //Update incoming frame rate/dimension
-    void UpdateIncomingFrameRate();
+ private:
+  // The content does not change so much every frame, so to reduce complexity
+  // we can compute new content metrics every |kSkipFrameCA| frames.
+  enum { kSkipFrameCA = 2 };
 
-    WebRtc_Word32 updateIncomingFrameSize(WebRtc_UWord32 width,
-                                          WebRtc_UWord32 height);
+  VideoContentMetrics* content_metrics_;
+  I420VideoFrame resampled_frame_;
+  VPMSpatialResampler* spatial_resampler_;
+  VPMContentAnalysis* ca_;
+  VPMVideoDecimator* vd_;
+  bool enable_ca_;
+  int frame_cnt_;
 
-    //Set decimated values: frame rate/dimension
-    WebRtc_UWord32 DecimatedFrameRate();
-    WebRtc_UWord32 DecimatedWidth() const;
-    WebRtc_UWord32 DecimatedHeight() const;
+};
 
-    //Preprocess output:
-    WebRtc_Word32 PreprocessFrame(const I420VideoFrame& frame,
-                                  I420VideoFrame** processedFrame);
-    VideoContentMetrics* ContentMetrics() const;
+}  // namespace webrtc
 
-private:
-    // The content does not change so much every frame, so to reduce complexity
-    // we can compute new content metrics every |kSkipFrameCA| frames.
-    enum { kSkipFrameCA = 2 };
-
-    WebRtc_Word32              _id;
-    VideoContentMetrics*      _contentMetrics;
-    WebRtc_UWord32             _maxFrameRate;
-    I420VideoFrame           _resampledFrame;
-    VPMSpatialResampler*     _spatialResampler;
-    VPMContentAnalysis*      _ca;
-    VPMVideoDecimator*       _vd;
-    bool                     _enableCA;
-    int                      _frameCnt;
-    
-}; // end of VPMFramePreprocessor class definition
-
-} //namespace
-
-#endif // VPM_FRAME_PREPROCESS_H
+#endif // WEBRTC_MODULES_VIDEO_PROCESSING_MAIN_SOURCE_FRAME_PREPROCESSOR_H

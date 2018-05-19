@@ -1,5 +1,5 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim:set ts=2 sw=2 sts=2 et cindent: */
+/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
+/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -10,60 +10,90 @@
 #include "nsIClassInfoImpl.h"
 #include "nsTArray.h"
 #include "nsAutoPtr.h"
-#include "nsCycleCollectorUtils.h"
+#include "mozilla/ThreadLocal.h"
+#ifdef MOZ_CANARY
+#include <fcntl.h>
+#include <unistd.h>
+#endif
+
+#include "MainThreadIdlePeriod.h"
 
 using namespace mozilla;
 
-#ifdef XP_WIN
-#include <windows.h>
-DWORD gTLSThreadIDIndex = TlsAlloc();
-#elif defined(NS_TLS)
-NS_TLS mozilla::threads::ID gTLSThreadID = mozilla::threads::Generic;
-#endif
+static MOZ_THREAD_LOCAL(bool) sTLSIsMainThread;
 
-typedef nsTArray< nsRefPtr<nsThread> > nsThreadArray;
+bool
+NS_IsMainThread()
+{
+  return sTLSIsMainThread.get();
+}
+
+void
+NS_SetMainThread()
+{
+  if (!sTLSIsMainThread.init()) {
+    MOZ_CRASH();
+  }
+  sTLSIsMainThread.set(true);
+  MOZ_ASSERT(NS_IsMainThread());
+}
+
+typedef nsTArray<NotNull<RefPtr<nsThread>>> nsThreadArray;
 
 //-----------------------------------------------------------------------------
 
 static void
-ReleaseObject(void *data)
+ReleaseObject(void* aData)
 {
-  static_cast<nsISupports *>(data)->Release();
-}
-
-static PLDHashOperator
-AppendAndRemoveThread(PRThread *key, nsRefPtr<nsThread> &thread, void *arg)
-{
-  nsThreadArray *threads = static_cast<nsThreadArray *>(arg);
-  threads->AppendElement(thread);
-  return PL_DHASH_REMOVE;
+  static_cast<nsISupports*>(aData)->Release();
 }
 
 // statically allocated instance
-NS_IMETHODIMP_(nsrefcnt) nsThreadManager::AddRef() { return 2; }
-NS_IMETHODIMP_(nsrefcnt) nsThreadManager::Release() { return 1; }
-NS_IMPL_CLASSINFO(nsThreadManager, NULL,
+NS_IMETHODIMP_(MozExternalRefCountType)
+nsThreadManager::AddRef()
+{
+  return 2;
+}
+NS_IMETHODIMP_(MozExternalRefCountType)
+nsThreadManager::Release()
+{
+  return 1;
+}
+NS_IMPL_CLASSINFO(nsThreadManager, nullptr,
                   nsIClassInfo::THREADSAFE | nsIClassInfo::SINGLETON,
                   NS_THREADMANAGER_CID)
-NS_IMPL_QUERY_INTERFACE1_CI(nsThreadManager, nsIThreadManager)
-NS_IMPL_CI_INTERFACE_GETTER1(nsThreadManager, nsIThreadManager)
+NS_IMPL_QUERY_INTERFACE_CI(nsThreadManager, nsIThreadManager)
+NS_IMPL_CI_INTERFACE_GETTER(nsThreadManager, nsIThreadManager)
 
 //-----------------------------------------------------------------------------
 
 nsresult
 nsThreadManager::Init()
 {
-  mThreadsByPRThread.Init();
+  // Child processes need to initialize the thread manager before they
+  // initialize XPCOM in order to set up the crash reporter. This leads to
+  // situations where we get initialized twice.
+  if (mInitialized) {
+    return NS_OK;
+  }
 
-  if (PR_NewThreadPrivateIndex(&mCurThreadIndex, ReleaseObject) == PR_FAILURE)
+  if (PR_NewThreadPrivateIndex(&mCurThreadIndex, ReleaseObject) == PR_FAILURE) {
     return NS_ERROR_FAILURE;
+  }
 
-  mLock = new Mutex("nsThreadManager.mLock");
+
+#ifdef MOZ_CANARY
+  const int flags = O_WRONLY | O_APPEND | O_CREAT | O_NONBLOCK;
+  const mode_t mode = S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH;
+  char* env_var_flag = getenv("MOZ_KILL_CANARIES");
+  sCanaryOutputFD =
+    env_var_flag ? (env_var_flag[0] ? open(env_var_flag, flags, mode) :
+                                      STDERR_FILENO) :
+                   0;
+#endif
 
   // Setup "main" thread
   mMainThread = new nsThread(nsThread::MAIN_THREAD, 0);
-  if (!mMainThread)
-    return NS_ERROR_OUT_OF_MEMORY;
 
   nsresult rv = mMainThread->InitCurrentThread();
   if (NS_FAILED(rv)) {
@@ -71,15 +101,14 @@ nsThreadManager::Init()
     return rv;
   }
 
+  {
+    nsCOMPtr<nsIIdlePeriod> idlePeriod = new MainThreadIdlePeriod();
+    mMainThread->RegisterIdlePeriod(idlePeriod.forget());
+  }
+
   // We need to keep a pointer to the current thread, so we can satisfy
   // GetIsMainThread calls that occur post-Shutdown.
   mMainThread->GetPRThread(&mMainPRThread);
-
-#ifdef XP_WIN
-  TlsSetValue(gTLSThreadIDIndex, (void*) mozilla::threads::Main);
-#elif defined(NS_TLS)
-  gTLSThreadID = mozilla::threads::Main;
-#endif
 
   mInitialized = true;
   return NS_OK;
@@ -92,8 +121,10 @@ nsThreadManager::Shutdown()
 
   // Prevent further access to the thread manager (no more new threads!)
   //
-  // XXX What happens if shutdown happens before NewThread completes?
-  //     Fortunately, NewThread is only called on the main thread for now.
+  // What happens if shutdown happens before NewThread completes?
+  // We Shutdown() the new thread, and return error if we've started Shutdown
+  // between when NewThread started, and when the thread finished initializing
+  // and registering with ThreadManager.
   //
   mInitialized = false;
 
@@ -104,25 +135,36 @@ nsThreadManager::Shutdown()
   // holding the hashtable lock while calling nsIThread::Shutdown.
   nsThreadArray threads;
   {
-    MutexAutoLock lock(*mLock);
-    mThreadsByPRThread.Enumerate(AppendAndRemoveThread, &threads);
+    OffTheBooksMutexAutoLock lock(mLock);
+    for (auto iter = mThreadsByPRThread.Iter(); !iter.Done(); iter.Next()) {
+      RefPtr<nsThread>& thread = iter.Data();
+      threads.AppendElement(WrapNotNull(thread));
+      iter.Remove();
+    }
   }
 
   // It's tempting to walk the list of threads here and tell them each to stop
   // accepting new events, but that could lead to badness if one of those
   // threads is stuck waiting for a response from another thread.  To do it
   // right, we'd need some way to interrupt the threads.
-  // 
+  //
   // Instead, we process events on the current thread while waiting for threads
   // to shutdown.  This means that we have to preserve a mostly functioning
   // world until such time as the threads exit.
 
   // Shutdown all threads that require it (join with threads that we created).
   for (uint32_t i = 0; i < threads.Length(); ++i) {
-    nsThread *thread = threads[i];
-    if (thread->ShutdownRequired())
+    NotNull<nsThread*> thread = threads[i];
+    if (thread->ShutdownRequired()) {
       thread->Shutdown();
+    }
   }
+
+  // NB: It's possible that there are events in the queue that want to *start*
+  // an asynchronous shutdown. But we have already shutdown the threads above,
+  // so there's no need to worry about them. We only have to wait for all
+  // in-flight asynchronous thread shutdowns to complete.
+  mMainThread->WaitForAllAsynchronousShutdowns();
 
   // In case there are any more events somehow...
   NS_ProcessPendingEvents(mMainThread);
@@ -131,7 +173,7 @@ nsThreadManager::Shutdown()
 
   // Clear the table of threads.
   {
-    MutexAutoLock lock(*mLock);
+    OffTheBooksMutexAutoLock lock(mLock);
     mThreadsByPRThread.Clear();
   }
 
@@ -143,148 +185,158 @@ nsThreadManager::Shutdown()
 
   // Release main thread object.
   mMainThread = nullptr;
-  mLock = nullptr;
 
   // Remove the TLS entry for the main thread.
   PR_SetThreadPrivate(mCurThreadIndex, nullptr);
 }
 
 void
-nsThreadManager::RegisterCurrentThread(nsThread *thread)
+nsThreadManager::RegisterCurrentThread(nsThread& aThread)
 {
-  MOZ_ASSERT(thread->GetPRThread() == PR_GetCurrentThread(), "bad thread");
+  MOZ_ASSERT(aThread.GetPRThread() == PR_GetCurrentThread(), "bad aThread");
 
-  MutexAutoLock lock(*mLock);
+  OffTheBooksMutexAutoLock lock(mLock);
 
   ++mCurrentNumberOfThreads;
   if (mCurrentNumberOfThreads > mHighestNumberOfThreads) {
     mHighestNumberOfThreads = mCurrentNumberOfThreads;
   }
 
-  mThreadsByPRThread.Put(thread->GetPRThread(), thread);  // XXX check OOM?
+  mThreadsByPRThread.Put(aThread.GetPRThread(), &aThread);  // XXX check OOM?
 
-  NS_ADDREF(thread);  // for TLS entry
-  PR_SetThreadPrivate(mCurThreadIndex, thread);
+  aThread.AddRef();  // for TLS entry
+  PR_SetThreadPrivate(mCurThreadIndex, &aThread);
 }
 
 void
-nsThreadManager::UnregisterCurrentThread(nsThread *thread)
+nsThreadManager::UnregisterCurrentThread(nsThread& aThread)
 {
-  MOZ_ASSERT(thread->GetPRThread() == PR_GetCurrentThread(), "bad thread");
+  MOZ_ASSERT(aThread.GetPRThread() == PR_GetCurrentThread(), "bad aThread");
 
-  MutexAutoLock lock(*mLock);
+  OffTheBooksMutexAutoLock lock(mLock);
 
   --mCurrentNumberOfThreads;
-  mThreadsByPRThread.Remove(thread->GetPRThread());
+  mThreadsByPRThread.Remove(aThread.GetPRThread());
 
   PR_SetThreadPrivate(mCurThreadIndex, nullptr);
   // Ref-count balanced via ReleaseObject
 }
 
-nsThread *
+nsThread*
 nsThreadManager::GetCurrentThread()
 {
   // read thread local storage
-  void *data = PR_GetThreadPrivate(mCurThreadIndex);
-  if (data)
-    return static_cast<nsThread *>(data);
+  void* data = PR_GetThreadPrivate(mCurThreadIndex);
+  if (data) {
+    return static_cast<nsThread*>(data);
+  }
 
   if (!mInitialized) {
     return nullptr;
   }
 
   // OK, that's fine.  We'll dynamically create one :-)
-  nsRefPtr<nsThread> thread = new nsThread(nsThread::NOT_MAIN_THREAD, 0);
-  if (!thread || NS_FAILED(thread->InitCurrentThread()))
+  RefPtr<nsThread> thread = new nsThread(nsThread::NOT_MAIN_THREAD, 0);
+  if (!thread || NS_FAILED(thread->InitCurrentThread())) {
     return nullptr;
+  }
 
   return thread.get();  // reference held in TLS
 }
 
 NS_IMETHODIMP
-nsThreadManager::NewThread(uint32_t creationFlags,
-                           uint32_t stackSize,
-                           nsIThread **result)
+nsThreadManager::NewThread(uint32_t aCreationFlags,
+                           uint32_t aStackSize,
+                           nsIThread** aResult)
 {
+  // Note: can be called from arbitrary threads
+  
   // No new threads during Shutdown
-  NS_ENSURE_TRUE(mInitialized, NS_ERROR_NOT_INITIALIZED);
+  if (NS_WARN_IF(!mInitialized)) {
+    return NS_ERROR_NOT_INITIALIZED;
+  }
 
-  nsThread *thr = new nsThread(nsThread::NOT_MAIN_THREAD, stackSize);
-  if (!thr)
-    return NS_ERROR_OUT_OF_MEMORY;
-  NS_ADDREF(thr);
-
-  nsresult rv = thr->Init();
+  RefPtr<nsThread> thr = new nsThread(nsThread::NOT_MAIN_THREAD, aStackSize);
+  nsresult rv = thr->Init();  // Note: blocks until the new thread has been set up
   if (NS_FAILED(rv)) {
-    NS_RELEASE(thr);
     return rv;
   }
 
-  // At this point, we expect that the thread has been registered in mThread;
+  // At this point, we expect that the thread has been registered in mThreadByPRThread;
   // however, it is possible that it could have also been replaced by now, so
-  // we cannot really assert that it was added.
+  // we cannot really assert that it was added.  Instead, kill it if we entered
+  // Shutdown() during/before Init()
 
-  *result = thr;
-  return NS_OK;
-}
-
-NS_IMETHODIMP
-nsThreadManager::GetThreadFromPRThread(PRThread *thread, nsIThread **result)
-{
-  // Keep this functioning during Shutdown
-  NS_ENSURE_TRUE(mMainThread, NS_ERROR_NOT_INITIALIZED);
-  NS_ENSURE_ARG_POINTER(thread);
-
-  nsRefPtr<nsThread> temp;
-  {
-    MutexAutoLock lock(*mLock);
-    mThreadsByPRThread.Get(thread, getter_AddRefs(temp));
+  if (NS_WARN_IF(!mInitialized)) {
+    if (thr->ShutdownRequired()) {
+      thr->Shutdown(); // ok if it happens multiple times
+    }
+    return NS_ERROR_NOT_INITIALIZED;
   }
 
-  NS_IF_ADDREF(*result = temp);
+  thr.forget(aResult);
   return NS_OK;
 }
 
 NS_IMETHODIMP
-nsThreadManager::GetMainThread(nsIThread **result)
+nsThreadManager::GetThreadFromPRThread(PRThread* aThread, nsIThread** aResult)
 {
   // Keep this functioning during Shutdown
-  NS_ENSURE_TRUE(mMainThread, NS_ERROR_NOT_INITIALIZED);
-  NS_ADDREF(*result = mMainThread);
+  if (NS_WARN_IF(!mMainThread)) {
+    return NS_ERROR_NOT_INITIALIZED;
+  }
+  if (NS_WARN_IF(!aThread)) {
+    return NS_ERROR_INVALID_ARG;
+  }
+
+  RefPtr<nsThread> temp;
+  {
+    OffTheBooksMutexAutoLock lock(mLock);
+    mThreadsByPRThread.Get(aThread, getter_AddRefs(temp));
+  }
+
+  NS_IF_ADDREF(*aResult = temp);
   return NS_OK;
 }
 
 NS_IMETHODIMP
-nsThreadManager::GetCurrentThread(nsIThread **result)
+nsThreadManager::GetMainThread(nsIThread** aResult)
 {
   // Keep this functioning during Shutdown
-  NS_ENSURE_TRUE(mMainThread, NS_ERROR_NOT_INITIALIZED);
-  *result = GetCurrentThread();
-  if (!*result)
+  if (NS_WARN_IF(!mMainThread)) {
+    return NS_ERROR_NOT_INITIALIZED;
+  }
+  NS_ADDREF(*aResult = mMainThread);
+  return NS_OK;
+}
+
+NS_IMETHODIMP
+nsThreadManager::GetCurrentThread(nsIThread** aResult)
+{
+  // Keep this functioning during Shutdown
+  if (NS_WARN_IF(!mMainThread)) {
+    return NS_ERROR_NOT_INITIALIZED;
+  }
+  *aResult = GetCurrentThread();
+  if (!*aResult) {
     return NS_ERROR_OUT_OF_MEMORY;
-  NS_ADDREF(*result);
+  }
+  NS_ADDREF(*aResult);
   return NS_OK;
 }
 
 NS_IMETHODIMP
-nsThreadManager::GetIsMainThread(bool *result)
+nsThreadManager::GetIsMainThread(bool* aResult)
 {
   // This method may be called post-Shutdown
 
-  *result = (PR_GetCurrentThread() == mMainPRThread);
-  return NS_OK;
-}
-
-NS_IMETHODIMP
-nsThreadManager::GetIsCycleCollectorThread(bool *result)
-{
-  *result = bool(NS_IsCycleCollectorThread());
+  *aResult = (PR_GetCurrentThread() == mMainPRThread);
   return NS_OK;
 }
 
 uint32_t
 nsThreadManager::GetHighestNumberOfThreads()
 {
-  MutexAutoLock lock(*mLock);
+  OffTheBooksMutexAutoLock lock(mLock);
   return mHighestNumberOfThreads;
 }

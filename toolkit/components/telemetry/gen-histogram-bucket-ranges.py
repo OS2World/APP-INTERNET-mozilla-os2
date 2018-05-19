@@ -11,20 +11,14 @@ import re
 import histogram_tools
 import json
 
-# For compatibility with python 2.6
-try:
-    from collections import OrderedDict
-except ImportError:
-    from simplejson import OrderedDict
-
-# Keep this in sync with TelemetryPing.
-startup_histogram_re = re.compile("SQLITE|HTTP|SPDY|CACHE|DNS")
+from collections import OrderedDict
 
 def main(argv):
-    filename = argv[0]
+    filenames = argv
+
     all_histograms = OrderedDict()
 
-    for histogram in histogram_tools.from_file(filename):
+    for histogram in histogram_tools.from_files(filenames):
         name = histogram.name()
         parameters = OrderedDict()
         table = {
@@ -32,7 +26,8 @@ def main(argv):
             'flag': '3',
             'enumerated': '1',
             'linear': '1',
-            'exponential': '0'
+            'exponential': '0',
+            'count': '4',
             }
         # Use __setitem__ because Python lambdas are so limited.
         histogram_tools.table_dispatch(histogram.kind(), table,
@@ -51,9 +46,6 @@ def main(argv):
             continue
 
         all_histograms.update({ name: parameters });
-
-        if startup_histogram_re.search(name) is not None:
-            all_histograms.update({ "STARTUP_" + name: parameters })
 
     print json.dumps({ 'histograms': all_histograms})
 

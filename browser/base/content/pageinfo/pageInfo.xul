@@ -47,26 +47,8 @@
     <command id="cmd_selectall" oncommand="doSelectAll();"/>
 
     <!-- permissions tab -->
-    <command id="cmd_imageDef"      oncommand="onCheckboxClick('image');"/>
-    <command id="cmd_popupDef"      oncommand="onCheckboxClick('popup');"/>
-    <command id="cmd_cookieDef"     oncommand="onCheckboxClick('cookie');"/>
-    <command id="cmd_desktop-notificationDef" oncommand="onCheckboxClick('desktop-notification');"/>
-    <command id="cmd_installDef"    oncommand="onCheckboxClick('install');"/>
-    <command id="cmd_fullscreenDef" oncommand="onCheckboxClick('fullscreen');"/>
-    <command id="cmd_geoDef"        oncommand="onCheckboxClick('geo');"/>
-    <command id="cmd_indexedDBDef"  oncommand="onCheckboxClick('indexedDB');"/>
     <command id="cmd_pluginsDef"    oncommand="onCheckboxClick('plugins');"/>
-    <command id="cmd_imageToggle"   oncommand="onRadioClick('image');"/>
-    <command id="cmd_popupToggle"   oncommand="onRadioClick('popup');"/>
-    <command id="cmd_cookieToggle"  oncommand="onRadioClick('cookie');"/>
-    <command id="cmd_desktop-notificationToggle" oncommand="onRadioClick('desktop-notification');"/>
-    <command id="cmd_installToggle" oncommand="onRadioClick('install');"/>
-    <command id="cmd_fullscreenToggle" oncommand="onRadioClick('fullscreen');"/>
-    <command id="cmd_geoToggle"     oncommand="onRadioClick('geo');"/>
-    <command id="cmd_indexedDBToggle" oncommand="onRadioClick('indexedDB');"/>
     <command id="cmd_pluginsToggle" oncommand="onPluginRadioClick(event);"/>
-    <command id="cmd_pointerLockDef"    oncommand="onCheckboxClick('pointerLock');"/>
-    <command id="cmd_pointerLockToggle" oncommand="onRadioClick('pointerLock');"/>
   </commandset>
 
   <keyset id="pageInfoKeySet">
@@ -106,7 +88,6 @@
   <deck id="mainDeck" flex="1">
     <!-- General page information -->
     <vbox id="generalPanel">
-      <textbox class="header" readonly="true" id="titletext"/>
       <grid id="generalGrid">
         <columns>
           <column/>
@@ -114,6 +95,11 @@
           <column flex="1"/>
         </columns>
         <rows id="generalRows">
+          <row id="generalTitle">
+            <label control="titletext" value="&generalTitle;"/>
+            <separator/>
+            <textbox readonly="true" id="titletext"/>
+          </row>
           <row id="generalURLRow">
             <label control="urltext" value="&generalURL;"/>
             <separator/>
@@ -133,7 +119,7 @@
             <textbox readonly="true" crop="end" id="modetext"/>
           </row>
           <row id="generalEncodingRow">
-            <label control="encodingtext" value="&generalEncoding;"/>
+            <label control="encodingtext" value="&generalEncoding2;"/>
             <separator/>
             <textbox readonly="true" id="encodingtext"/>
           </row>
@@ -173,16 +159,9 @@
           <treechildren id="metatreechildren" flex="1"/>
         </tree>        
       </groupbox>
-      <groupbox id="securityBox">
-        <caption id="securityBoxCaption" label="&securityHeader;"/>
-        <description id="general-security-identity" class="header"/>
-        <description id="general-security-privacy"  class="header"/>
-        <hbox id="securityDetailsButtonBox" align="right">
-          <button id="security-view-details" label="&generalSecurityDetails;"
-                  accesskey="&generalSecurityDetails.accesskey;"
-                  oncommand="onClickMore();"/>
-        </hbox>
-      </groupbox>
+      <hbox pack="end">
+        <button command="cmd_help" label="&helpButton.label;" dlgtype="help"/>
+      </hbox>
     </vbox>
 
     <!-- Media information -->
@@ -260,6 +239,9 @@
             <label control="thepreviewimage" value="&mediaPreview;" class="header"/>
           </vbox>
           <spacer id="imageSaveBoxSpacer" flex="1"/>
+          <button label="&selectall.label;" accesskey="&selectall.accesskey;"
+                  id="selectallbutton"
+                  oncommand="doSelectAllMedia();"/>
           <button label="&mediaSaveAs;" accesskey="&mediaSaveAs.accesskey;"
                   icon="save" id="imagesaveasbutton"
                   oncommand="saveMedia();"/>
@@ -279,6 +261,9 @@
                 icon="save" id="mediasaveasbutton"
                 oncommand="saveMedia();"/>
       </hbox>
+      <hbox pack="end">
+        <button command="cmd_help" label="&helpButton.label;" dlgtype="help"/>
+      </hbox>
     </vbox>
 
     <!-- Feeds -->
@@ -295,102 +280,15 @@
       </hbox>
 
       <vbox id="permList" flex="1">
-        <vbox class="permission" id="permImageRow">
-          <label class="permissionLabel" id="permImageLabel"
-                 value="&permImage;" control="imageRadioGroup"/>
-          <hbox id="permImageBox" role="group" aria-labelledby="permImageLabel">
-            <checkbox id="imageDef" command="cmd_imageDef" label="&permUseDefault;"/>
-            <spacer flex="1"/>
-            <radiogroup id="imageRadioGroup" orient="horizontal">
-              <radio id="image#1" command="cmd_imageToggle" label="&permAllow;"/>
-              <radio id="image#2" command="cmd_imageToggle" label="&permBlock;"/>
-            </radiogroup>
-          </hbox>
-        </vbox>
-        <vbox class="permission" id="permPopupRow">
-          <label class="permissionLabel" id="permPopupLabel"
-                 value="&permPopup;" control="popupRadioGroup"/>
-          <hbox id="permPopupBox" role="group" aria-labelledby="permPopupLabel">
-            <checkbox id="popupDef" command="cmd_popupDef" label="&permUseDefault;"/>
-            <spacer flex="1"/>
-            <radiogroup id="popupRadioGroup" orient="horizontal">
-              <radio id="popup#1" command="cmd_popupToggle" label="&permAllow;"/>
-              <radio id="popup#2" command="cmd_popupToggle" label="&permBlock;"/>
-            </radiogroup>
-          </hbox>
-        </vbox>
-        <vbox class="permission" id="permCookieRow">
-          <label class="permissionLabel" id="permCookieLabel"
-                 value="&permCookie;" control="cookieRadioGroup"/>
-          <hbox id="permCookieBox" role="group" aria-labelledby="permCookieLabel">
-            <checkbox id="cookieDef" command="cmd_cookieDef" label="&permUseDefault;"/>
-            <spacer flex="1"/>
-            <radiogroup id="cookieRadioGroup" orient="horizontal">
-              <radio id="cookie#1" command="cmd_cookieToggle" label="&permAllow;"/>
-              <radio id="cookie#8" command="cmd_cookieToggle" label="&permAllowSession;"/>
-              <radio id="cookie#2" command="cmd_cookieToggle" label="&permBlock;"/>
-            </radiogroup>
-          </hbox>
-        </vbox>
-        <vbox class="permission" id="permNotificationRow">
-          <label class="permissionLabel" id="permNotificationLabel"
-                 value="&permNotifications;" control="desktop-notificationRadioGroup"/>
-          <hbox role="group" aria-labelledby="permNotificationLabel">
-            <checkbox id="desktop-notificationDef" command="cmd_desktop-notificationDef" label="&permUseDefault;"/>
-            <spacer flex="1"/>
-            <radiogroup id="desktop-notificationRadioGroup" orient="horizontal">
-              <radio id="desktop-notification#1" command="cmd_desktop-notificationToggle" label="&permAllow;"/>
-              <radio id="desktop-notification#2" command="cmd_desktop-notificationToggle" label="&permBlock;"/>
-            </radiogroup>
-          </hbox>
-        </vbox>
-        <vbox class="permission" id="permInstallRow">
-          <label class="permissionLabel" id="permInstallLabel"
-                 value="&permInstall;" control="installRadioGroup"/>
-          <hbox id="permInstallBox" role="group" aria-labelledby="permInstallLabel">
-            <checkbox id="installDef" command="cmd_installDef" label="&permUseDefault;"/>
-            <spacer flex="1"/>
-            <radiogroup id="installRadioGroup" orient="horizontal">
-              <radio id="install#1" command="cmd_installToggle" label="&permAllow;"/>
-              <radio id="install#2" command="cmd_installToggle" label="&permBlock;"/>
-            </radiogroup>
-          </hbox>
-        </vbox>
-        <vbox class="permission" id="permGeoRow" >
-          <label class="permissionLabel" id="permGeoLabel"
-                 value="&permGeo;" control="geoRadioGroup"/>
-          <hbox id="permGeoBox" role="group" aria-labelledby="permGeoLabel">
-            <checkbox id="geoDef" command="cmd_geoDef" label="&permAskAlways;"/>
-            <spacer flex="1"/>
-            <radiogroup id="geoRadioGroup" orient="horizontal">
-              <radio id="geo#1" command="cmd_geoToggle" label="&permAllow;"/>
-              <radio id="geo#2" command="cmd_geoToggle" label="&permBlock;"/>
-            </radiogroup>
-          </hbox>
-        </vbox>
-        <vbox class="permission" id="permIndexedDBRow">
-          <label class="permissionLabel" id="permIndexedDBLabel"
-                 value="&permIndexedDB;" control="indexedDBRadioGroup"/>
-          <hbox id="permIndexedDBBox" role="group" aria-labelledby="permIndexedDBLabel">
-            <checkbox id="indexedDBDef" command="cmd_indexedDBDef" label="&permUseDefault;"/>
-            <spacer flex="1"/>
-            <radiogroup id="indexedDBRadioGroup" orient="horizontal">
-              <!-- Ask and Allow are purposefully reversed here! -->
-              <radio id="indexedDB#1" command="cmd_indexedDBToggle" label="&permAskAlways;"/>
-              <radio id="indexedDB#0" command="cmd_indexedDBToggle" label="&permAllow;"/>
-              <radio id="indexedDB#2" command="cmd_indexedDBToggle" label="&permBlock;"/>
-            </radiogroup>
-          </hbox>
-          <hbox id="permIndexedDBBox2">
-            <spacer flex="1"/>
-            <vbox id="permIndexedDBStatusBox" pack="center">
-              <label id="indexedDBStatus" control="indexedDBClear" hidden="true"/>
-            </vbox>
-            <button id="indexedDBClear" label="&permClearStorage;" hidden="true"
-                    accesskey="&permClearStorage.accesskey;" onclick="onIndexedDBClear();"/>
-          </hbox>
-        </vbox>
-        <vbox class="permission" id="permPluginsRow">
+        <hbox id="perm-indexedDB-extras">
+          <spacer flex="1"/>
+          <vbox id="permIndexedDBStatusBox" pack="center">
+            <label id="indexedDBStatus" control="indexedDBClear" hidden="true"/>
+          </vbox>
+          <button id="indexedDBClear" label="&permClearStorage;" hidden="true"
+                  accesskey="&permClearStorage.accesskey;" onclick="onIndexedDBClear();"/>
+        </hbox>
+        <vbox class="permission" id="perm-plugins-row">
           <label class="permissionLabel" id="permPluginsLabel"
                  value="&permPlugins;" control="pluginsRadioGroup"/>
           <hbox id="permPluginTemplate" role="group" aria-labelledby="permPluginsLabel" align="baseline">
@@ -404,32 +302,10 @@
             </radiogroup>
           </hbox>
         </vbox>
-        <vbox class="permission" id="permFullscreenRow">
-          <label class="permissionLabel" id="permFullscreenLabel"
-                 value="&permFullscreen;" control="fullscreenRadioGroup"/>
-          <hbox id="permFullscreenBox" role="group" aria-labelledby="permFullscreenLabel">
-            <checkbox id="fullscreenDef" command="cmd_fullscreenDef" label="&permUseDefault;"/>
-            <spacer flex="1"/>
-            <radiogroup id="fullscreenRadioGroup" orient="horizontal">
-              <radio id="fullscreen#0" command="cmd_fullscreenToggle" label="&permAskAlways;"/>
-              <radio id="fullscreen#1" command="cmd_fullscreenToggle" label="&permAllow;"/>
-              <radio id="fullscreen#2" command="cmd_fullscreenToggle" label="&permBlock;"/>
-            </radiogroup>
-          </hbox>
-        </vbox>
-        <vbox class="permission" id="permPointerLockRow" >
-          <label class="permissionLabel" id="permPointerLockLabel"
-                 value="&permPointerLock2;" control="pointerLockRadioGroup"/>
-          <hbox id="permPointerLockBox" role="group" aria-labelledby="permPointerLockLabel">
-            <checkbox id="pointerLockDef" command="cmd_pointerLockDef" label="&permAskAlways;"/>
-            <spacer flex="1"/>
-            <radiogroup id="pointerLockRadioGroup" orient="horizontal">
-              <radio id="pointerLock#1" command="cmd_pointerLockToggle" label="&permAllow;"/>
-              <radio id="pointerLock#2" command="cmd_pointerLockToggle" label="&permBlock;"/>
-            </radiogroup>
-          </hbox>
-        </vbox>
       </vbox>
+      <hbox pack="end">
+        <button command="cmd_help" label="&helpButton.label;" dlgtype="help"/>
+      </hbox>
     </vbox>
 
     <!-- Security & Privacy -->
@@ -545,8 +421,12 @@
           <label id="security-technical-shortform" class="fieldValue"/>
           <description id="security-technical-longform1" class="fieldLabel"/>
           <description id="security-technical-longform2" class="fieldLabel"/>
+          <description id="security-technical-certificate-transparency" class="fieldLabel"/>
         </vbox>
       </groupbox>
+      <hbox pack="end">
+        <button command="cmd_help" label="&helpButton.label;" dlgtype="help"/>
+      </hbox>
     </vbox>
     <!-- Others added by overlay -->
   </deck>

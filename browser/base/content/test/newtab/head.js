@@ -2,178 +2,234 @@
    http://creativecommons.org/publicdomain/zero/1.0/ */
 
 const PREF_NEWTAB_ENABLED = "browser.newtabpage.enabled";
+const PREF_NEWTAB_DIRECTORYSOURCE = "browser.newtabpage.directory.source";
 
 Services.prefs.setBoolPref(PREF_NEWTAB_ENABLED, true);
 
-let tmp = {};
+var tmp = {};
 Cu.import("resource://gre/modules/NewTabUtils.jsm", tmp);
+Cu.import("resource:///modules/DirectoryLinksProvider.jsm", tmp);
+Cu.import("resource://testing-common/PlacesTestUtils.jsm", tmp);
 Cc["@mozilla.org/moz/jssubscript-loader;1"]
   .getService(Ci.mozIJSSubScriptLoader)
   .loadSubScript("chrome://browser/content/sanitize.js", tmp);
+var {NewTabUtils, Sanitizer, DirectoryLinksProvider, PlacesTestUtils} = tmp;
 
-let {NewTabUtils, Sanitizer} = tmp;
+var gWindow = window;
 
-let uri = Services.io.newURI("about:newtab", null, null);
-let principal = Services.scriptSecurityManager.getNoAppCodebasePrincipal(uri);
+// Default to dummy/empty directory links
+var gDirectorySource = 'data:application/json,{"test":1}';
+var gOrigDirectorySource;
 
-let gWindow = window;
+// The tests assume all 3 rows and all 3 columns of sites are shown, but the
+// window may be too small to actually show everything.  Resize it if necessary.
+var requiredSize = {};
+requiredSize.innerHeight =
+  40 + 32 + // undo container + bottom margin
+  44 + 32 + // search bar + bottom margin
+  (3 * (180 + 32)) + // 3 rows * (tile height + title and bottom margin)
+  100; // breathing room
+requiredSize.innerWidth =
+  (3 * (290 + 20)) + // 3 cols * (tile width + side margins)
+  100; // breathing room
+
+var oldSize = {};
+Object.keys(requiredSize).forEach(prop => {
+  info([prop, gBrowser.contentWindow[prop], requiredSize[prop]]);
+  if (gBrowser.contentWindow[prop] < requiredSize[prop]) {
+    oldSize[prop] = gBrowser.contentWindow[prop];
+    info("Changing browser " + prop + " from " + oldSize[prop] + " to " +
+         requiredSize[prop]);
+    gBrowser.contentWindow[prop] = requiredSize[prop];
+  }
+});
+
+var screenHeight = {};
+var screenWidth = {};
+Cc["@mozilla.org/gfx/screenmanager;1"].
+  getService(Ci.nsIScreenManager).
+  primaryScreen.
+  GetAvailRectDisplayPix({}, {}, screenWidth, screenHeight);
+screenHeight = screenHeight.value;
+screenWidth = screenWidth.value;
+
+if (screenHeight < gBrowser.contentWindow.outerHeight) {
+  info("Warning: Browser outer height is now " +
+       gBrowser.contentWindow.outerHeight + ", which is larger than the " +
+       "available screen height, " + screenHeight +
+       ". That may cause problems.");
+}
+
+if (screenWidth < gBrowser.contentWindow.outerWidth) {
+  info("Warning: Browser outer width is now " +
+       gBrowser.contentWindow.outerWidth + ", which is larger than the " +
+       "available screen width, " + screenWidth +
+       ". That may cause problems.");
+}
 
 registerCleanupFunction(function () {
   while (gWindow.gBrowser.tabs.length > 1)
     gWindow.gBrowser.removeTab(gWindow.gBrowser.tabs[1]);
 
+  Object.keys(oldSize).forEach(prop => {
+    if (oldSize[prop]) {
+      gBrowser.contentWindow[prop] = oldSize[prop];
+    }
+  });
+
+  // Stop any update timers to prevent unexpected updates in later tests
+  let timer = NewTabUtils.allPages._scheduleUpdateTimeout;
+  if (timer) {
+    clearTimeout(timer);
+    delete NewTabUtils.allPages._scheduleUpdateTimeout;
+  }
+
   Services.prefs.clearUserPref(PREF_NEWTAB_ENABLED);
+  Services.prefs.setCharPref(PREF_NEWTAB_DIRECTORYSOURCE, gOrigDirectorySource);
+
+  return watchLinksChangeOnce();
 });
 
-/**
- * Provide the default test function to start our test runner.
- */
-function test() {
-  TestRunner.run();
+function pushPrefs(...aPrefs) {
+  return new Promise(resolve =>
+                     SpecialPowers.pushPrefEnv({"set": aPrefs}, resolve));
 }
 
 /**
- * The test runner that controls the execution flow of our tests.
+ * Resolves promise when directory links are downloaded and written to disk
  */
-let TestRunner = {
-  /**
-   * Starts the test runner.
-   */
-  run: function () {
-    waitForExplicitFinish();
-
-    this._iter = runTests();
-    this.next();
-  },
-
-  /**
-   * Runs the next available test or finishes if there's no test left.
-   */
-  next: function () {
-    try {
-      TestRunner._iter.next();
-    } catch (e if e instanceof StopIteration) {
-      TestRunner.finish();
-    }
-  },
-
-  /**
-   * Finishes all tests and cleans up.
-   */
-  finish: function () {
-    function cleanupAndFinish() {
-      clearHistory(function () {
-        whenPagesUpdated(finish);
-        NewTabUtils.restore();
-      });
-    }
-
-    let callbacks = NewTabUtils.links._populateCallbacks;
-    let numCallbacks = callbacks.length;
-
-    if (numCallbacks)
-      callbacks.splice(0, numCallbacks, cleanupAndFinish);
-    else
-      cleanupAndFinish();
-  }
-};
-
-/**
- * Returns the selected tab's content window.
- * @return The content window.
- */
-function getContentWindow() {
-  return gWindow.gBrowser.selectedBrowser.contentWindow;
+function watchLinksChangeOnce() {
+  return new Promise(resolve => {
+    let observer = {
+      onManyLinksChanged: () => {
+        DirectoryLinksProvider.removeObserver(observer);
+        resolve();
+      }
+    };
+    observer.onDownloadFail = observer.onManyLinksChanged;
+    DirectoryLinksProvider.addObserver(observer);
+  });
 }
 
-/**
- * Returns the selected tab's content document.
- * @return The content document.
- */
-function getContentDocument() {
-  return gWindow.gBrowser.selectedBrowser.contentDocument;
-}
+add_task(function* setup() {
+  registerCleanupFunction(function() {
+    return new Promise(resolve => {
+      function cleanupAndFinish() {
+        PlacesTestUtils.clearHistory().then(() => {
+          whenPagesUpdated().then(resolve);
+          NewTabUtils.restore();
+        });
+      }
 
-/**
- * Returns the newtab grid of the selected tab.
- * @return The newtab grid.
- */
-function getGrid() {
-  return getContentWindow().gGrid;
-}
+      let callbacks = NewTabUtils.links._populateCallbacks;
+      let numCallbacks = callbacks.length;
 
-/**
- * Returns the cell at the given index of the selected tab's newtab grid.
- * @param aIndex The cell index.
- * @return The newtab cell.
- */
-function getCell(aIndex) {
-  return getGrid().cells[aIndex];
+      if (numCallbacks)
+        callbacks.splice(0, numCallbacks, cleanupAndFinish);
+      else
+        cleanupAndFinish();
+    });
+  });
+
+  let promiseReady = Task.spawn(function*() {
+    yield watchLinksChangeOnce();
+    yield whenPagesUpdated();
+  });
+
+  // Save the original directory source (which is set globally for tests)
+  gOrigDirectorySource = Services.prefs.getCharPref(PREF_NEWTAB_DIRECTORYSOURCE);
+  Services.prefs.setCharPref(PREF_NEWTAB_DIRECTORYSOURCE, gDirectorySource);
+  yield promiseReady;
+});
+
+/** Perform an action on a cell within the newtab page.
+  * @param aIndex index of cell
+  * @param aFn function to call in child process or tab.
+  * @returns result of calling the function.
+  */
+function performOnCell(aIndex, aFn) {
+  return ContentTask.spawn(gWindow.gBrowser.selectedBrowser,
+                           { index: aIndex, fn: aFn.toString() }, function* (args) {
+    let cell = content.gGrid.cells[args.index];
+    return eval(args.fn)(cell);
+  });
 }
 
 /**
  * Allows to provide a list of links that is used to construct the grid.
  * @param aLinksPattern the pattern (see below)
  *
- * Example: setLinks("1,2,3")
- * Result: [{url: "http://example.com/#1", title: "site#1"},
- *          {url: "http://example.com/#2", title: "site#2"}
- *          {url: "http://example.com/#3", title: "site#3"}]
+ * Example: setLinks("-1,0,1,2,3")
+ * Result: [{url: "http://example.com/", title: "site#-1"},
+ *          {url: "http://example0.com/", title: "site#0"},
+ *          {url: "http://example1.com/", title: "site#1"},
+ *          {url: "http://example2.com/", title: "site#2"},
+ *          {url: "http://example3.com/", title: "site#3"}]
  */
 function setLinks(aLinks) {
-  let links = aLinks;
+  return new Promise(resolve => {
+    let links = aLinks;
 
-  if (typeof links == "string") {
-    links = aLinks.split(/\s*,\s*/).map(function (id) {
-      return {url: "http://example.com/#" + id, title: "site#" + id};
-    });
-  }
+    if (typeof links == "string") {
+      links = aLinks.split(/\s*,\s*/).map(function (id) {
+        return {url: "http://example" + (id != "-1" ? id : "") + ".com/",
+                title: "site#" + id};
+      });
+    }
 
-  // Call populateCache() once to make sure that all link fetching that is
-  // currently in progress has ended. We clear the history, fill it with the
-  // given entries and call populateCache() now again to make sure the cache
-  // has the desired contents.
-  NewTabUtils.links.populateCache(function () {
-    clearHistory(function () {
-      fillHistory(links, function () {
-        NewTabUtils.links.populateCache(function () {
-          NewTabUtils.allPages.update();
-          TestRunner.next();
-        }, true);
+    // Call populateCache() once to make sure that all link fetching that is
+    // currently in progress has ended. We clear the history, fill it with the
+    // given entries and call populateCache() now again to make sure the cache
+    // has the desired contents.
+    NewTabUtils.links.populateCache(function () {
+      PlacesTestUtils.clearHistory().then(() => {
+        fillHistory(links).then(() => {
+          NewTabUtils.links.populateCache(function () {
+            NewTabUtils.allPages.update();
+            resolve();
+          }, true);
+        });
       });
     });
   });
 }
 
-function clearHistory(aCallback) {
-  Services.obs.addObserver(function observe(aSubject, aTopic, aData) {
-    Services.obs.removeObserver(observe, aTopic);
-    executeSoon(aCallback);
-  }, PlacesUtils.TOPIC_EXPIRATION_FINISHED, false);
+function fillHistory(aLinks) {
+  return new Promise(resolve => {
+    let numLinks = aLinks.length;
+    if (!numLinks) {
+      executeSoon(resolve);
+      return;
+    }
 
-  PlacesUtils.history.removeAllPages();
-}
+    let transitionLink = Ci.nsINavHistoryService.TRANSITION_LINK;
 
-function fillHistory(aLinks, aCallback) {
-  let numLinks = aLinks.length;
-  let transitionLink = Ci.nsINavHistoryService.TRANSITION_LINK;
+    // Important: To avoid test failures due to clock jitter on Windows XP, call
+    // Date.now() once here, not each time through the loop.
+    let now = Date.now() * 1000;
 
-  for (let link of aLinks.reverse()) {
-    let place = {
-      uri: makeURI(link.url),
-      title: link.title,
-      visits: [{visitDate: Date.now() * 1000, transitionType: transitionLink}]
-    };
+    for (let i = 0; i < aLinks.length; i++) {
+      let link = aLinks[i];
+      let place = {
+        uri: makeURI(link.url),
+        title: link.title,
+        // Links are secondarily sorted by visit date descending, so decrease the
+        // visit date as we progress through the array so that links appear in the
+        // grid in the order they're present in the array.
+        visits: [{visitDate: now - i, transitionType: transitionLink}]
+      };
 
-    PlacesUtils.asyncHistory.updatePlaces(place, {
-      handleError: function () ok(false, "couldn't add visit to history"),
-      handleResult: function () {},
-      handleCompletion: function () {
-        if (--numLinks == 0)
-          aCallback();
-      }
-    });
-  }
+      PlacesUtils.asyncHistory.updatePlaces(place, {
+        handleError: () => ok(false, "couldn't add visit to history"),
+        handleResult: function () {},
+        handleCompletion: function () {
+          if (--numLinks == 0) {
+            resolve();
+          }
+        }
+      });
+    }
+  });
 }
 
 /**
@@ -182,7 +238,7 @@ function fillHistory(aLinks, aCallback) {
  * @param aLinksPattern the pattern (see below)
  *
  * Example: setPinnedLinks("3,,1")
- * Result: 'http://example.com/#3' is pinned in the first cell. 'http://example.com/#1' is
+ * Result: 'http://example3.com/' is pinned in the first cell. 'http://example1.com/' is
  *         pinned in the third cell.
  */
 function setPinnedLinks(aLinks) {
@@ -191,7 +247,10 @@ function setPinnedLinks(aLinks) {
   if (typeof links == "string") {
     links = aLinks.split(/\s*,\s*/).map(function (id) {
       if (id)
-        return {url: "http://example.com/#" + id, title: "site#" + id};
+        return {url: "http://example" + (id != "-1" ? id : "") + ".com/",
+                title: "site#" + id,
+                type: "history"};
+      return undefined;
     });
   }
 
@@ -209,72 +268,95 @@ function setPinnedLinks(aLinks) {
  * Restore the grid state.
  */
 function restore() {
-  whenPagesUpdated();
-  NewTabUtils.restore();
+  return new Promise(resolve => {
+    whenPagesUpdated().then(resolve);
+    NewTabUtils.restore();
+  });
+}
+
+/**
+ * Wait until a given condition becomes true.
+ */
+function waitForCondition(aConditionFn, aMaxTries=50, aCheckInterval=100) {
+  return new Promise((resolve, reject) => {
+    let tries = 0;
+
+    function tryNow() {
+      tries++;
+
+      if (aConditionFn()) {
+        resolve();
+      } else if (tries < aMaxTries) {
+        tryAgain();
+      } else {
+        reject("Condition timed out: " + aConditionFn.toSource());
+      }
+    }
+
+    function tryAgain() {
+      setTimeout(tryNow, aCheckInterval);
+    }
+
+    tryAgain();
+  });
 }
 
 /**
  * Creates a new tab containing 'about:newtab'.
  */
-function addNewTabPageTab() {
-  let tab = gWindow.gBrowser.selectedTab = gWindow.gBrowser.addTab("about:newtab");
+function* addNewTabPageTab() {
+  let tab = yield BrowserTestUtils.openNewForegroundTab(gWindow.gBrowser, "about:newtab", false);
   let browser = tab.linkedBrowser;
 
-  function whenNewTabLoaded() {
+  // Wait for the document to become visible in case it was preloaded.
+  yield waitForCondition(() => !browser.contentDocument.hidden)
+
+  yield new Promise(resolve => {
     if (NewTabUtils.allPages.enabled) {
       // Continue when the link cache has been populated.
       NewTabUtils.links.populateCache(function () {
-        executeSoon(TestRunner.next);
+        whenSearchInitDone().then(resolve);
       });
     } else {
-      // It's important that we call next() asynchronously.
-      // 'yield addNewTabPageTab()' would fail if next() is called
-      // synchronously because the iterator is already executing.
-      executeSoon(TestRunner.next);
+      resolve();
     }
-  }
+  });
 
-  // The new tab page might have been preloaded in the background.
-  if (browser.contentDocument.readyState == "complete") {
-    whenNewTabLoaded();
-    return;
-  }
-
-  // Wait for the new tab page to be loaded.
-  browser.addEventListener("load", function onLoad() {
-    browser.removeEventListener("load", onLoad, true);
-    whenNewTabLoaded();
-  }, true);
+  return tab;
 }
 
 /**
  * Compares the current grid arrangement with the given pattern.
  * @param the pattern (see below)
- * @param the array of sites to compare with (optional)
  *
  * Example: checkGrid("3p,2,,1p")
- * Result: We expect the first cell to contain the pinned site 'http://example.com/#3'.
- *         The second cell contains 'http://example.com/#2'. The third cell is empty.
- *         The fourth cell contains the pinned site 'http://example.com/#4'.
+ * Result: We expect the first cell to contain the pinned site 'http://example3.com/'.
+ *         The second cell contains 'http://example2.com/'. The third cell is empty.
+ *         The fourth cell contains the pinned site 'http://example4.com/'.
  */
-function checkGrid(aSitesPattern, aSites) {
-  let length = aSitesPattern.split(",").length;
-  let sites = (aSites || getGrid().sites).slice(0, length);
-  let current = sites.map(function (aSite) {
-    if (!aSite)
-      return "";
+function* checkGrid(pattern) {
+  let length = pattern.split(",").length;
 
-    let pinned = aSite.isPinned();
-    let pinButton = aSite.node.querySelector(".newtab-control-pin");
-    let hasPinnedAttr = pinButton.hasAttribute("pinned");
+  yield ContentTask.spawn(gWindow.gBrowser.selectedBrowser,
+                          { length, pattern }, function* (args) {
+    let grid = content.wrappedJSObject.gGrid;
 
-    if (pinned != hasPinnedAttr)
-      ok(false, "invalid state (site.isPinned() != site[pinned])");
+    let sites = grid.sites.slice(0, args.length);
+    let foundPattern = sites.map(function (aSite) {
+      if (!aSite)
+        return "";
 
-    return aSite.url.replace(/^http:\/\/example\.com\/#(\d+)$/, "$1") + (pinned ? "p" : "");
+      let pinned = aSite.isPinned();
+      let hasPinnedAttr = aSite.node.hasAttribute("pinned");
+
+      if (pinned != hasPinnedAttr)
+        ok(false, "invalid state (site.isPinned() != site[pinned])");
+
+      return aSite.url.replace(/^http:\/\/example(\d+)\.com\/$/, "$1") + (pinned ? "p" : "");
+    });
+
+    Assert.equal(foundPattern, args.pattern, "grid status = " + args.pattern);
   });
-
-  is(current, aSitesPattern, "grid status = " + aSitesPattern);
 }
 
 /**
@@ -282,8 +364,12 @@ function checkGrid(aSitesPattern, aSites) {
  * @param aIndex The cell index.
  */
 function blockCell(aIndex) {
-  whenPagesUpdated();
-  getCell(aIndex).site.block();
+  return new Promise(resolve => {
+    whenPagesUpdated().then(resolve);
+    performOnCell(aIndex, cell => {
+      return cell.site.block();
+    });
+  });
 }
 
 /**
@@ -291,8 +377,10 @@ function blockCell(aIndex) {
  * @param aIndex The cell index.
  * @param aPinIndex The index the defines where the site should be pinned.
  */
-function pinCell(aIndex, aPinIndex) {
-  getCell(aIndex).site.pin(aPinIndex);
+function pinCell(aIndex) {
+  performOnCell(aIndex, cell => {
+    cell.site.pin();
+  });
 }
 
 /**
@@ -300,91 +388,165 @@ function pinCell(aIndex, aPinIndex) {
  * @param aIndex The cell index.
  */
 function unpinCell(aIndex) {
-  whenPagesUpdated();
-  getCell(aIndex).site.unpin();
+  return new Promise(resolve => {
+    whenPagesUpdated().then(resolve);
+    performOnCell(aIndex, cell => {
+      cell.site.unpin();
+    });
+  });
 }
 
 /**
- * Simulates a drop and drop operation.
- * @param aDropIndex The cell index of the drop target.
- * @param aDragIndex The cell index containing the dragged site (optional).
+ * Simulates a drag and drop operation. Instead of rearranging a site that is
+ * is already contained in the newtab grid, this is used to simulate dragging
+ * an external link onto the grid e.g. the text from the URL bar.
+ * @param aDestIndex The cell index of the drop target.
  */
-function simulateDrop(aDropIndex, aDragIndex) {
-  let draggedSite;
-  let {gDrag: drag, gDrop: drop} = getContentWindow();
-  let event = createDragEvent("drop", "http://example.com/#99\nblank");
+function* simulateExternalDrop(aDestIndex) {
+  let pagesUpdatedPromise = whenPagesUpdated();
 
-  if (typeof aDragIndex != "undefined")
-    draggedSite = getCell(aDragIndex).site;
+  yield ContentTask.spawn(gWindow.gBrowser.selectedBrowser, aDestIndex, function*(dropIndex) {
+    return new Promise(resolve => {
+      const url = "data:text/html;charset=utf-8," +
+                  "<a id='link' href='http://example99.com/'>link</a>";
 
-  if (draggedSite)
-    drag.start(draggedSite, event);
+      let doc = content.document;
+      let iframe = doc.createElement("iframe");
 
-  whenPagesUpdated();
-  drop.drop(getCell(aDropIndex), event);
+      function iframeLoaded() {
+        let dataTransfer = new iframe.contentWindow.DataTransfer("dragstart", false);
+        dataTransfer.mozSetDataAt("text/x-moz-url", "http://example99.com/", 0);
 
-  if (draggedSite)
-    drag.end(draggedSite);
-}
+        let event = content.document.createEvent("DragEvent");
+        event.initDragEvent("drop", true, true, content, 0, 0, 0, 0, 0,
+                            false, false, false, false, 0, null, dataTransfer);
 
-/**
- * Sends a custom drag event to a given DOM element.
- * @param aEventType The drag event's type.
- * @param aTarget The DOM element that the event is dispatched to.
- * @param aData The event's drag data (optional).
- */
-function sendDragEvent(aEventType, aTarget, aData) {
-  let event = createDragEvent(aEventType, aData);
-  let ifaceReq = getContentWindow().QueryInterface(Ci.nsIInterfaceRequestor);
-  let windowUtils = ifaceReq.getInterface(Ci.nsIDOMWindowUtils);
-  windowUtils.dispatchDOMEventViaPresShell(aTarget, event, true);
-}
+        let target = content.gGrid.cells[dropIndex].node;
+        target.dispatchEvent(event);
 
-/**
- * Creates a custom drag event.
- * @param aEventType The drag event's type.
- * @param aData The event's drag data (optional).
- * @return The drag event.
- */
-function createDragEvent(aEventType, aData) {
-  let dataTransfer = {
-    mozUserCancelled: false,
-    setData: function () null,
-    setDragImage: function () null,
-    getData: function () aData,
+        iframe.remove();
 
-    types: {
-      contains: function (aType) aType == "text/x-moz-url"
-    },
+        resolve();
+      }
 
-    mozGetDataAt: function (aType, aIndex) {
-      if (aIndex || aType != "text/x-moz-url")
-        return null;
+      iframe.addEventListener("load", function onLoad() {
+        iframe.removeEventListener("load", onLoad);
+        content.setTimeout(iframeLoaded, 0);
+      });
 
-      return aData;
-    }
-  };
+      iframe.setAttribute("src", url);
+      iframe.style.width = "50px";
+      iframe.style.height = "50px";
+      iframe.style.position = "absolute";
+      iframe.style.zIndex = 50;
 
-  let event = getContentDocument().createEvent("DragEvents");
-  event.initDragEvent(aEventType, true, true, getContentWindow(), 0, 0, 0, 0, 0,
-                      false, false, false, false, 0, null, dataTransfer);
+      // the frame has to be attached to a visible element
+      let margin = doc.getElementById("newtab-search-container");
+      margin.appendChild(iframe);
+    });
+  });
 
-  return event;
+  yield pagesUpdatedPromise;
 }
 
 /**
  * Resumes testing when all pages have been updated.
  */
-function whenPagesUpdated(aCallback) {
-  let page = {
-    update: function () {
-      NewTabUtils.allPages.unregister(this);
-      executeSoon(aCallback || TestRunner.next);
-    }
-  };
+function whenPagesUpdated() {
+  return new Promise(resolve => {
+    let page = {
+      observe: _ => _,
 
-  NewTabUtils.allPages.register(page);
-  registerCleanupFunction(function () {
-    NewTabUtils.allPages.unregister(page);
+      update() {
+        NewTabUtils.allPages.unregister(this);
+        executeSoon(resolve);
+      }
+    };
+
+    NewTabUtils.allPages.register(page);
+    registerCleanupFunction(function () {
+      NewTabUtils.allPages.unregister(page);
+    });
+  });
+}
+
+/**
+ * Waits for the response to the page's initial search state request.
+ */
+function whenSearchInitDone() {
+  return ContentTask.spawn(gWindow.gBrowser.selectedBrowser, {}, function*() {
+    return new Promise(resolve => {
+      if (content.gSearch) {
+        let searchController = content.gSearch._contentSearchController;
+        if (searchController.defaultEngine) {
+          resolve();
+          return;
+        }
+      }
+
+      let eventName = "ContentSearchService";
+      content.addEventListener(eventName, function onEvent(event) {
+        if (event.detail.type == "State") {
+          content.removeEventListener(eventName, onEvent);
+          let resolver = function() {
+            // Wait for the search controller to receive the event, then resolve.
+            if (content.gSearch._contentSearchController.defaultEngine) {
+              resolve();
+              return;
+            }
+          }
+          content.setTimeout(resolver, 0);
+        }
+      });
+    });
+  });
+}
+
+/**
+ * Changes the newtab customization option and waits for the panel to open and close
+ *
+ * @param {string} aTheme
+ *        Can be any of("blank"|"classic"|"enhanced")
+ */
+function customizeNewTabPage(aTheme) {
+  return ContentTask.spawn(gWindow.gBrowser.selectedBrowser, aTheme, function*(aTheme) {
+
+    let document = content.document;
+    let panel = document.getElementById("newtab-customize-panel");
+    let customizeButton = document.getElementById("newtab-customize-button");
+
+    function panelOpened(opened) {
+      return new Promise( (resolve) => {
+        let options = {attributes: true, oldValue: true};
+        let observer = new content.MutationObserver(function(mutations) {
+          mutations.forEach(function(mutation) {
+            document.getElementById("newtab-customize-" + aTheme).click();
+            observer.disconnect();
+            if (opened == panel.hasAttribute("open")) {
+              resolve();
+            }
+          });
+        });
+        observer.observe(panel, options);
+      });
+    }
+
+    let opened = panelOpened(true);
+    customizeButton.click();
+    yield opened;
+
+    let closed = panelOpened(false);
+    customizeButton.click();
+    yield closed;
+  });
+}
+
+/**
+ * Reports presence of a scrollbar
+ */
+function hasScrollbar() {
+  return ContentTask.spawn(gWindow.gBrowser.selectedBrowser, {}, function* () {
+    let docElement = content.document.documentElement;
+    return docElement.scrollHeight > docElement.clientHeight;
   });
 }

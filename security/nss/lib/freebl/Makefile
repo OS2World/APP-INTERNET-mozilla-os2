@@ -46,11 +46,22 @@ ifeq ($(FREEBL_NO_DEPEND),1)
 endif
 
 ifeq ($(FREEBL_LOWHASH),1)
+	DEFINES += -DFREEBL_LOWHASH
 	LOWHASH_SRCS = nsslowhash.c
 	LOWHASH_EXPORTS = nsslowhash.h
-	MAPFILE_SOURCE = freebl_hash.def
+	MAPFILE_SOURCE = freebl_hash_vector.def
+	NEED_STUB_BUILD = 1
 else
 	MAPFILE_SOURCE = freebl.def
+endif
+
+ifdef USE_STUB_BUILD
+	CSRCS           = lowhash_vector.c
+	SIMPLE_OBJS     = $(CSRCS:.c=$(OBJ_SUFFIX))
+	OBJS            = $(addprefix $(OBJDIR)/$(PROG_PREFIX), $(SIMPLE_OBJS))
+	ALL_TRASH :=    $(TARGETS) $(OBJS) $(OBJDIR) LOGS TAGS $(GARBAGE) \
+                $(NOSUCHFILE) so_locations
+	MAPFILE_SOURCE = freebl_hash.def
 endif
 
 # FREEBL_USE_PRELINK
@@ -87,6 +98,10 @@ ifdef LINUX
 	DEFINES += -D__GNU_SOURCE=1
 endif
 endif
+ifdef NSS_NO_INIT_SUPPORT
+    DEFINES += -DNSS_NO_INIT_SUPPORT
+endif
+
 ifdef FREEBL_PRELINK_COMMAND
 	DEFINES +=-DFREEBL_PRELINK_COMMAND=\"$(FREEBL_PRELINK_COMMAND)\"
 endif
@@ -95,7 +110,7 @@ endif
 # NSS_X86_OR_X64 means the target is either x86 or x64
 ifeq (,$(filter-out i386 x386 x86 x86_64,$(CPU_ARCH)))
         DEFINES += -DNSS_X86_OR_X64
-ifdef USE_64
+ifneq (,$(USE_64)$(USE_X32))
         DEFINES += -DNSS_X64
 else
         DEFINES += -DNSS_X86
@@ -112,7 +127,7 @@ ifeq (OS2,$(OS_TARGET))
     DEFINES += -DMP_ASSEMBLY_MULTIPLY -DMP_ASSEMBLY_SQUARE 
     DEFINES += -DMP_ASSEMBLY_DIV_2DX1D
     DEFINES += -DMP_USE_UINT_DIGIT -DMP_NO_MP_WORD
-    DEFINES += -DMP_CHAR_STORE_SLOW -DMP_IS_LITTLE_ENDIAN
+    DEFINES += -DMP_IS_LITTLE_ENDIAN
 endif
 
 ifeq (,$(filter-out WINNT WIN95,$(OS_TARGET)))
@@ -135,10 +150,20 @@ else
     ifdef BUILD_OPT
 	OPTIMIZER += -Ox  # maximum optimization for freebl
     endif
+    # The Intel AES assembly code requires Visual C++ 2010.
+    # if $(_MSC_VER) >= 1600 (Visual C++ 2010)
+    ifeq ($(firstword $(sort $(_MSC_VER) 1600)),1600)
+	DEFINES += -DUSE_HW_AES -DINTEL_GCM
+	ASFILES += intel-aes-x86-masm.asm intel-gcm-x86-masm.asm
+	EXTRA_SRCS += intel-gcm-wrap.c
+	ifeq ($(CLANG_CL),1)
+	    INTEL_GCM_CLANG_CL = 1
+	endif
+    endif
 endif
 else
     # -DMP_NO_MP_WORD
-    DEFINES += -DMP_CHAR_STORE_SLOW -DMP_IS_LITTLE_ENDIAN
+    DEFINES += -DMP_IS_LITTLE_ENDIAN
 ifdef NS_USE_GCC
 # Ideally, we should use amd64 assembly code, but it's not yet mingw-w64
 # compatible.
@@ -150,6 +175,16 @@ else
     ASFILES  = arcfour-amd64-masm.asm mpi_amd64_masm.asm mp_comba_amd64_masm.asm
     DEFINES += -DNSS_BEVAND_ARCFOUR -DMPI_AMD64 -DMP_ASSEMBLY_MULTIPLY
     DEFINES += -DNSS_USE_COMBA
+    # The Intel AES assembly code requires Visual C++ 2010 (10.0). The _xgetbv
+    # compiler intrinsic function requires Visual C++ 2010 (10.0) SP1.
+    ifeq ($(_MSC_VER_GE_10SP1),1)
+	DEFINES += -DUSE_HW_AES -DINTEL_GCM
+	ASFILES += intel-aes-x64-masm.asm intel-gcm-x64-masm.asm
+	EXTRA_SRCS += intel-gcm-wrap.c
+	ifeq ($(CLANG_CL),1)
+	    INTEL_GCM_CLANG_CL = 1
+	endif
+    endif
     MPI_SRCS += mpi_amd64.c
 endif
 endif
@@ -180,13 +215,13 @@ endif # Darwin
 ifeq ($(OS_TARGET),Linux)
 ifeq ($(CPU_ARCH),x86_64)
     ASFILES  = arcfour-amd64-gas.s mpi_amd64_gas.s
-    ASFLAGS += -m64 -fPIC -Wa,--noexecstack
+    ASFLAGS += -fPIC -Wa,--noexecstack
     DEFINES += -DNSS_BEVAND_ARCFOUR -DMPI_AMD64 -DMP_ASSEMBLY_MULTIPLY
     DEFINES += -DNSS_USE_COMBA
-    DEFINES += -DMP_CHAR_STORE_SLOW -DMP_IS_LITTLE_ENDIAN
+    DEFINES += -DMP_IS_LITTLE_ENDIAN
 #   DEFINES += -DMPI_AMD64_ADD
-    # comment the next two lines to turn off intel HW accelleration
-    DEFINES += -DUSE_HW_AES
+    # comment the next four lines to turn off Intel HW acceleration.
+    DEFINES += -DUSE_HW_AES -DINTEL_GCM
     ASFILES += intel-aes.s intel-gcm.s
     EXTRA_SRCS += intel-gcm-wrap.c
     INTEL_GCM = 1
@@ -195,8 +230,8 @@ endif
 ifeq ($(CPU_ARCH),x86)
     ASFILES  = mpi_x86.s
     DEFINES += -DMP_ASSEMBLY_MULTIPLY -DMP_ASSEMBLY_SQUARE 
-    DEFINES += -DMP_ASSEMBLY_DIV_2DX1D
-    DEFINES += -DMP_CHAR_STORE_SLOW -DMP_IS_LITTLE_ENDIAN
+    DEFINES += -DMP_ASSEMBLY_DIV_2DX1D -DMP_USE_UINT_DIGIT
+    DEFINES += -DMP_IS_LITTLE_ENDIAN
     # The floating point ECC code doesn't work on Linux x86 (bug 311432).
     #ECL_USE_FP = 1
 endif
@@ -206,6 +241,11 @@ ifeq ($(CPU_ARCH),arm)
     DEFINES += -DSHA_NO_LONG_LONG # avoid 64-bit arithmetic in SHA512
     MPI_SRCS += mpi_arm.c
 endif
+ifeq ($(CPU_ARCH),ppc)
+ifdef USE_64
+    DEFINES += -DNSS_NO_INIT_SUPPORT
+endif # USE_64
+endif # ppc
 endif # Linux
 
 ifeq ($(OS_TARGET),AIX)
@@ -419,6 +459,11 @@ else
 	    ASFILES  = arcfour-amd64-gas.s mpi_amd64_gas.s
 	    ASFLAGS += -march=opteron -m64 -fPIC
 	    MPI_SRCS += mp_comba.c
+	    # comment the next four lines to turn off Intel HW acceleration
+	    ASFILES += intel-gcm.s
+	    EXTRA_SRCS += intel-gcm-wrap.c
+	    INTEL_GCM = 1
+	    DEFINES += -DINTEL_GCM
 	else
 	    ASFILES  = arcfour-amd64-sun.s mpi_amd64_sun.s sha-fast-amd64-sun.s
  	    ASFILES += mp_comba_amd64_sun.s mpcpucache_amd64.s
@@ -426,14 +471,13 @@ else
             SOL_CFLAGS += -xprefetch=no
 	    SHA_SRCS =
  	    MPCPU_SRCS =
+	    # Intel acceleration for GCM does not build currently with Studio
 	endif
 	DEFINES += -DNSS_BEVAND_ARCFOUR -DMPI_AMD64 -DMP_ASSEMBLY_MULTIPLY
-	DEFINES += -DNSS_USE_COMBA -DMP_CHAR_STORE_SLOW -DMP_IS_LITTLE_ENDIAN
-	# comment the next two lines to turn off intel HW accelleration
+	DEFINES += -DNSS_USE_COMBA -DMP_IS_LITTLE_ENDIAN
+	# comment the next two lines to turn off Intel HW acceleration
 	DEFINES += -DUSE_HW_AES
-	ASFILES += intel-aes.s intel-gcm.s
-        EXTRA_SRCS += intel-gcm-wrap.c
-        INTEL_GCM = 1
+	ASFILES += intel-aes.s
 	MPI_SRCS += mpi_amd64.c
     else
 	# Solaris x86
@@ -449,14 +493,64 @@ else
 endif # Solaris for non-sparc family CPUs
 endif # target == SunOS
 
-ifdef NSS_ENABLE_ECC
+ifndef NSS_DISABLE_ECC
     ifdef ECL_USE_FP
 	#enable floating point ECC code	
 	DEFINES  += -DECL_USE_FP
 	ECL_SRCS += ecp_fp160.c ecp_fp192.c ecp_fp224.c ecp_fp.c
 	ECL_HDRS += ecp_fp.h
     endif
-endif # NSS_ENABLE_ECC
+endif
+
+# poly1305-donna-x64-sse2-incremental-source.c requires __int128 support
+# in GCC 4.6.0.
+ifdef USE_64
+    ifdef CC_IS_CLANG
+            HAVE_INT128_SUPPORT = 1
+            DEFINES += -DHAVE_INT128_SUPPORT
+    else ifeq (1,$(CC_IS_GCC))
+        ifneq (,$(filter 4.6 4.7 4.8 4.9,$(word 1,$(GCC_VERSION)).$(word 2,$(GCC_VERSION))))
+            HAVE_INT128_SUPPORT = 1
+            DEFINES += -DHAVE_INT128_SUPPORT
+        endif
+        ifeq (,$(filter 0 1 2 3 4,$(word 1,$(GCC_VERSION))))
+            HAVE_INT128_SUPPORT = 1
+            DEFINES += -DHAVE_INT128_SUPPORT
+        endif
+    endif
+endif
+
+ifndef NSS_DISABLE_CHACHAPOLY
+    ifeq ($(CPU_ARCH),x86_64)
+        ifdef HAVE_INT128_SUPPORT
+            EXTRA_SRCS += poly1305-donna-x64-sse2-incremental-source.c
+        else
+            EXTRA_SRCS += poly1305.c
+        endif
+
+        ifneq (1,$(CC_IS_GCC))
+            EXTRA_SRCS += chacha20.c
+        else
+            EXTRA_SRCS += chacha20_vec.c
+        endif
+    else
+        EXTRA_SRCS += poly1305.c
+        EXTRA_SRCS += chacha20.c
+    endif # x86_64
+endif # NSS_DISABLE_CHACHAPOLY
+
+ifeq (,$(filter-out i386 x386 x86 x86_64,$(CPU_ARCH)))
+    # All intel architectures get the 64 bit version
+    # With custom uint128 if necessary (faster than generic 32 bit version).
+    ECL_SRCS += curve25519_64.c
+else
+    # All non intel architectures get the generic 32 bit implementation (slow!)
+    ECL_SRCS += curve25519_32.c
+endif
+
+ifndef HAVE_INT128_SUPPORT
+    ECL_SRCS += uint128.c
+endif
 
 #######################################################################
 # (5) Execute "global" rules. (OPTIONAL)                              #
@@ -538,13 +632,24 @@ SINGLE_SHLIB_DIR = $(OBJDIR)/$(OS_TARGET)_SINGLE_SHLIB
 ALL_TRASH += $(SINGLE_SHLIB_DIR) 
 
 $(SINGLE_SHLIB_DIR):
-	-mkdir $(SINGLE_SHLIB_DIR)
+	-mkdir -p $(SINGLE_SHLIB_DIR)
 
 release_md libs:: $(SINGLE_SHLIB_DIR)
 	$(MAKE) FREEBL_CHILD_BUILD=1 \
  OBJDIR=$(SINGLE_SHLIB_DIR) $@
 ######################## common stuff #########################
 
+endif
+
+ifdef NEED_STUB_BUILD
+SINGLE_SHLIB_DIR = $(OBJDIR)/$(OS_TARGET)_SINGLE_SHLIB
+ALL_TRASH += $(SINGLE_SHLIB_DIR) 
+$(SINGLE_SHLIB_DIR):
+	-mkdir $(SINGLE_SHLIB_DIR)
+
+release_md libs:: $(SINGLE_SHLIB_DIR)
+	$(MAKE) FREEBL_CHILD_BUILD=1 USE_STUB_BUILD=1 \
+ OBJDIR=$(SINGLE_SHLIB_DIR) $@
 endif
 
 # multiple shared libraries
@@ -646,7 +751,14 @@ $(OBJDIR)/$(PROG_PREFIX)intel-gcm-wrap$(OBJ_SUFFIX): CFLAGS += -mssse3
 # symbolic names to registers, for example,
 #     .set  Htbl, %rdi
 # So we can't use Clang's integrated assembler with intel-gcm.s.
-ifneq (,$(findstring clang,$(AS)))
-$(OBJDIR)/$(PROG_PREFIX)intel-gcm$(OBJ_SUFFIX): ASFLAGS += -no-integrated-as
+ifdef CC_IS_CLANG
+$(OBJDIR)/$(PROG_PREFIX)intel-gcm$(OBJ_SUFFIX): CFLAGS += -no-integrated-as
 endif
+endif
+
+ifdef INTEL_GCM_CLANG_CL
+#
+# clang-cl needs -mssse3
+#
+$(OBJDIR)/$(PROG_PREFIX)intel-gcm-wrap$(OBJ_SUFFIX): CFLAGS += -mssse3
 endif

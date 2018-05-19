@@ -5,24 +5,15 @@
 
 #include "nsTextFrameUtils.h"
 
-#include "nsContentUtils.h"
-#include "nsIWordBreaker.h"
-#include "gfxFont.h"
-#include "nsUnicharUtils.h"
 #include "nsBidiUtils.h"
+#include "nsCharTraits.h"
 #include "nsIContent.h"
 #include "nsStyleStruct.h"
+#include "nsTextFragment.h"
+#include "nsUnicharUtils.h"
 #include <algorithm>
 
-// XXX TODO implement transform of backslash to yen that nsTextTransform does
-// when requested by PresContext->LanguageSpecificTransformType(). Do it with
-// a new factory type that just munges the input stream. But first, check
-// that we really still need this, it's only enabled via a hidden pref
-// which defaults false...
-
-#define UNICODE_ZWSP 0x200B
-  
-static bool IsDiscardable(PRUnichar ch, uint32_t* aFlags)
+static bool IsDiscardable(char16_t ch, uint32_t* aFlags)
 {
   // Unlike IS_DISCARDABLE, we don't discard \r. \r will be ignored by gfxTextRun
   // and discarding it would force us to copy text in many cases of preformatted
@@ -31,11 +22,7 @@ static bool IsDiscardable(PRUnichar ch, uint32_t* aFlags)
     *aFlags |= nsTextFrameUtils::TEXT_HAS_SHY;
     return true;
   }
-  if ((ch & 0xFF00) != 0x2000) {
-    // Not a Bidi control character
-    return false;
-  }
-  return IS_BIDI_CONTROL_CHAR(ch);
+  return IsBidiControl(ch);
 }
 
 static bool IsDiscardable(uint8_t ch, uint32_t* aFlags)
@@ -47,34 +34,41 @@ static bool IsDiscardable(uint8_t ch, uint32_t* aFlags)
   return false;
 }
 
-PRUnichar*
-nsTextFrameUtils::TransformText(const PRUnichar* aText, uint32_t aLength,
-                                PRUnichar* aOutput,
+char16_t*
+nsTextFrameUtils::TransformText(const char16_t* aText, uint32_t aLength,
+                                char16_t* aOutput,
                                 CompressionMode aCompression,
                                 uint8_t* aIncomingFlags,
-                                gfxSkipCharsBuilder* aSkipChars,
+                                gfxSkipChars* aSkipChars,
                                 uint32_t* aAnalysisFlags)
 {
   uint32_t flags = 0;
-  PRUnichar* outputStart = aOutput;
+  char16_t* outputStart = aOutput;
 
   bool lastCharArabic = false;
 
   if (aCompression == COMPRESS_NONE ||
-      aCompression == DISCARD_NEWLINE) {
+      aCompression == COMPRESS_NONE_TRANSFORM_TO_SPACE) {
     // Skip discardables.
     uint32_t i;
     for (i = 0; i < aLength; ++i) {
-      PRUnichar ch = *aText++;
-      if (IsDiscardable(ch, &flags) ||
-          (ch == '\n' && aCompression == DISCARD_NEWLINE)) {
+      char16_t ch = aText[i];
+      if (IsDiscardable(ch, &flags)) {
         aSkipChars->SkipChar();
       } else {
         aSkipChars->KeepChar();
         if (ch > ' ') {
           lastCharArabic = IS_ARABIC_CHAR(ch);
-        } else if (ch == '\t') {
-          flags |= TEXT_HAS_TAB;
+        } else if (aCompression == COMPRESS_NONE_TRANSFORM_TO_SPACE) {
+          if (ch == '\t' || ch == '\n') {
+            ch = ' ';
+            flags |= TEXT_WAS_TRANSFORMED;
+          }
+        } else {
+          // aCompression == COMPRESS_NONE
+          if (ch == '\t') {
+            flags |= TEXT_HAS_TAB;
+          }
         }
         *aOutput++ = ch;
       }
@@ -89,17 +83,38 @@ nsTextFrameUtils::TransformText(const PRUnichar* aText, uint32_t aLength,
     bool inWhitespace = (*aIncomingFlags & INCOMING_WHITESPACE) != 0;
     uint32_t i;
     for (i = 0; i < aLength; ++i) {
-      PRUnichar ch = *aText++;
+      char16_t ch = aText[i];
       bool nowInWhitespace;
       if (ch == ' ' &&
           (i + 1 >= aLength ||
-           !IsSpaceCombiningSequenceTail(aText, aLength - (i + 1)))) {
+           !IsSpaceCombiningSequenceTail(&aText[i + 1], aLength - (i + 1)))) {
         nowInWhitespace = true;
       } else if (ch == '\n' && aCompression == COMPRESS_WHITESPACE_NEWLINE) {
-        if (i > 0 && IS_CJ_CHAR(aText[-1]) &&
-            i + 1 < aLength && IS_CJ_CHAR(aText[1])) {
-          // Discard newlines between CJK chars.
-          // XXX this really requires more context to get right!
+        if ((i > 0 && IS_ZERO_WIDTH_SPACE(aText[i - 1])) ||
+            (i + 1 < aLength && IS_ZERO_WIDTH_SPACE(aText[i + 1]))) {
+          aSkipChars->SkipChar();
+          continue;
+        }
+        uint32_t ucs4before;
+        uint32_t ucs4after;
+        if (i > 1 &&
+            NS_IS_LOW_SURROGATE(aText[i - 1]) &&
+            NS_IS_HIGH_SURROGATE(aText[i - 2])) {
+          ucs4before = SURROGATE_TO_UCS4(aText[i - 2], aText[i - 1]);
+        } else if (i > 0) {
+          ucs4before = aText[i - 1];
+        }
+        if (i + 2 < aLength &&
+            NS_IS_HIGH_SURROGATE(aText[i + 1]) &&
+            NS_IS_LOW_SURROGATE(aText[i + 2])) {
+          ucs4after = SURROGATE_TO_UCS4(aText[i + 1], aText[i + 2]);
+        } else if (i + 1 < aLength) {
+          ucs4after = aText[i + 1];
+        }
+        if (i > 0 && IsSegmentBreakSkipChar(ucs4before) &&
+            i + 1 < aLength && IsSegmentBreakSkipChar(ucs4after)) {
+          // Discard newlines between characters that have F, W, or H
+          // EastAsianWidth property and neither side is Hangul.
           aSkipChars->SkipChar();
           continue;
         }
@@ -154,25 +169,32 @@ nsTextFrameUtils::TransformText(const uint8_t* aText, uint32_t aLength,
                                 uint8_t* aOutput,
                                 CompressionMode aCompression,
                                 uint8_t* aIncomingFlags,
-                                gfxSkipCharsBuilder* aSkipChars,
+                                gfxSkipChars* aSkipChars,
                                 uint32_t* aAnalysisFlags)
 {
   uint32_t flags = 0;
   uint8_t* outputStart = aOutput;
 
   if (aCompression == COMPRESS_NONE ||
-      aCompression == DISCARD_NEWLINE) {
+      aCompression == COMPRESS_NONE_TRANSFORM_TO_SPACE) {
     // Skip discardables.
     uint32_t i;
     for (i = 0; i < aLength; ++i) {
-      uint8_t ch = *aText++;
-      if (IsDiscardable(ch, &flags) ||
-          (ch == '\n' && aCompression == DISCARD_NEWLINE)) {
+      uint8_t ch = aText[i];
+      if (IsDiscardable(ch, &flags)) {
         aSkipChars->SkipChar();
       } else {
         aSkipChars->KeepChar();
-        if (ch == '\t') {
-          flags |= TEXT_HAS_TAB;
+        if (aCompression == COMPRESS_NONE_TRANSFORM_TO_SPACE) {
+          if (ch == '\t' || ch == '\n') {
+            ch = ' ';
+            flags |= TEXT_WAS_TRANSFORMED;
+          }
+        } else {
+          // aCompression == COMPRESS_NONE
+          if (ch == '\t') {
+            flags |= TEXT_HAS_TAB;
+          }
         }
         *aOutput++ = ch;
       }
@@ -182,7 +204,7 @@ nsTextFrameUtils::TransformText(const uint8_t* aText, uint32_t aLength,
     bool inWhitespace = (*aIncomingFlags & INCOMING_WHITESPACE) != 0;
     uint32_t i;
     for (i = 0; i < aLength; ++i) {
-      uint8_t ch = *aText++;
+      uint8_t ch = aText[i];
       bool nowInWhitespace = ch == ' ' || ch == '\t' ||
         (ch == '\n' && aCompression == COMPRESS_WHITESPACE_NEWLINE);
       if (!nowInWhitespace) {
@@ -235,7 +257,7 @@ nsTextFrameUtils::ComputeApproximateLengthWithWhitespaceCompression(
     bool is2b = frag->Is2b();
     union {
       const char *s1b;
-      const PRUnichar *s2b;
+      const char16_t *s2b;
     } u;
     if (is2b) {
       u.s2b = frag->Get2b();
@@ -247,7 +269,7 @@ nsTextFrameUtils::ComputeApproximateLengthWithWhitespaceCompression(
                         // exactly right
     len = 0;
     for (uint32_t i = 0, i_end = frag->GetLength(); i < i_end; ++i) {
-      PRUnichar c = is2b ? u.s2b[i] : u.s1b[i];
+      char16_t c = is2b ? u.s2b[i] : u.s1b[i];
       if (c == ' ' || c == '\n' || c == '\t' || c == '\r') {
         if (!prevWS) {
           ++len;

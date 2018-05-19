@@ -1,3 +1,5 @@
+/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
+/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 // Copyright (c) 2006-2008 The Chromium Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
@@ -15,9 +17,12 @@
 #define BUILD_BUILD_CONFIG_H_
 
 // A set of macros to use for platform detection.
-#if defined(__APPLE__)
+#if defined(ANDROID)
+#define OS_ANDROID 1
+#define OS_LINUX 1
+#elif defined(__APPLE__)
 #define OS_MACOSX 1
-#elif defined(__linux__) || defined(ANDROID)
+#elif defined(__linux__)
 #define OS_LINUX 1
 #elif defined(__DragonFly__)
 #define OS_DRAGONFLY 1
@@ -44,7 +49,7 @@
 
 // For access to standard POSIX features, use OS_POSIX instead of a more
 // specific macro.
-#if defined(OS_MACOSX) || defined(OS_LINUX) || defined(OS_BSD)
+#if defined(OS_MACOSX) || defined(OS_LINUX) || defined(OS_BSD) || defined(OS_OS2)
 #define OS_POSIX 1
 #endif
 
@@ -86,6 +91,9 @@
 #elif defined(__sparc__)
 #define ARCH_CPU_SPARC 1
 #define ARCH_CPU_32_BITS 1
+#elif defined(__mips64) && defined(__LP64__)
+#define ARCH_CPU_MIPS 1
+#define ARCH_CPU_64_BITS 1
 #elif defined(__mips__)
 #define ARCH_CPU_MIPS 1
 #define ARCH_CPU_32_BITS 1
@@ -103,6 +111,10 @@
 #define ARCH_CPU_32_BITS 1
 #elif defined(__alpha__)
 #define ARCH_CPU_ALPHA 1
+#define ARCH_CPU_64_BITS 1
+#elif defined(__aarch64__)
+#define ARCH_CPU_ARM_FAMILY 1
+#define ARCH_CPU_ARM64 1
 #define ARCH_CPU_64_BITS 1
 #else
 #error Please add support for your architecture in build/build_config.h

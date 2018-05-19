@@ -6,8 +6,11 @@
 #ifndef ctypes_Library_h
 #define ctypes_Library_h
 
-#include "jsapi.h"
+#include "mozilla/Attributes.h"
 
+#include "js/TypeDecls.h"
+
+struct JSCTypesCallbacks;
 struct PRLibrary;
 
 namespace js {
@@ -20,17 +23,17 @@ enum LibrarySlot {
 
 namespace Library
 {
-  JSBool Name(JSContext* cx, unsigned argc, jsval *vp);
+  MOZ_MUST_USE bool Name(JSContext* cx, unsigned argc, JS::Value* vp);
 
-  JSObject* Create(JSContext* cx, jsval path, JSCTypesCallbacks* callbacks);
+  JSObject* Create(JSContext* cx, JS::HandleValue path, const JSCTypesCallbacks* callbacks);
 
   bool IsLibrary(JSObject* obj);
   PRLibrary* GetLibrary(JSObject* obj);
 
-  JSBool Open(JSContext* cx, unsigned argc, jsval* vp);
-}
+  MOZ_MUST_USE bool Open(JSContext* cx, unsigned argc, JS::Value* vp);
+} // namespace Library
 
-}
-}
+} // namespace ctypes
+} // namespace js
 
 #endif /* ctypes_Library_h */

@@ -10,7 +10,8 @@
  * liability, trademark and document use rules apply.
  */
 
-[Constructor]
+[Constructor,
+ Exposed=(Window,Worker,System)]
 interface FileReader : EventTarget {
   // async read methods
   [Throws]
@@ -39,17 +40,11 @@ interface FileReader : EventTarget {
   readonly attribute DOMError? error;
 
   // event handler attributes
-  [SetterThrows]
   attribute EventHandler onloadstart;
-  [SetterThrows]
   attribute EventHandler onprogress;
-  [SetterThrows]
   attribute EventHandler onload;
-  [SetterThrows]
   attribute EventHandler onabort;
-  [SetterThrows]
   attribute EventHandler onerror;
-  [SetterThrows]
   attribute EventHandler onloadend;
 };
 

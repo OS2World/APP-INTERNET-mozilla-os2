@@ -11,39 +11,43 @@
 #ifndef WEBRTC_MODULES_AUDIO_PROCESSING_LEVEL_ESTIMATOR_IMPL_H_
 #define WEBRTC_MODULES_AUDIO_PROCESSING_LEVEL_ESTIMATOR_IMPL_H_
 
-#include "audio_processing.h"
-#include "processing_component.h"
+#include "webrtc/modules/audio_processing/include/audio_processing.h"
+#include "webrtc/modules/audio_processing/processing_component.h"
+#include "webrtc/modules/audio_processing/rms_level.h"
 
 namespace webrtc {
-class AudioProcessingImpl;
+
 class AudioBuffer;
+class CriticalSectionWrapper;
 
 class LevelEstimatorImpl : public LevelEstimator,
                            public ProcessingComponent {
  public:
-  explicit LevelEstimatorImpl(const AudioProcessingImpl* apm);
+  LevelEstimatorImpl(const AudioProcessing* apm,
+                     CriticalSectionWrapper* crit);
   virtual ~LevelEstimatorImpl();
 
   int ProcessStream(AudioBuffer* audio);
 
   // LevelEstimator implementation.
-  virtual bool is_enabled() const;
+  bool is_enabled() const override;
 
  private:
   // LevelEstimator implementation.
-  virtual int Enable(bool enable);
-  virtual int RMS();
+  int Enable(bool enable) override;
+  int RMS() override;
 
   // ProcessingComponent implementation.
-  virtual void* CreateHandle() const;
-  virtual int InitializeHandle(void* handle) const;
-  virtual int ConfigureHandle(void* handle) const;
-  virtual int DestroyHandle(void* handle) const;
-  virtual int num_handles_required() const;
-  virtual int GetHandleError(void* handle) const;
+  void* CreateHandle() const override;
+  int InitializeHandle(void* handle) const override;
+  int ConfigureHandle(void* handle) const override;
+  void DestroyHandle(void* handle) const override;
+  int num_handles_required() const override;
+  int GetHandleError(void* handle) const override;
 
-  const AudioProcessingImpl* apm_;
+  CriticalSectionWrapper* crit_;
 };
+
 }  // namespace webrtc
 
 #endif  // WEBRTC_MODULES_AUDIO_PROCESSING_LEVEL_ESTIMATOR_IMPL_H_

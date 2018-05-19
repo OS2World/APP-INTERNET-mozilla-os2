@@ -11,25 +11,51 @@
  * related or neighboring rights to this work.
  */
 
-[PrefControlled, Constructor(DOMString title, optional NotificationOptions options)]
+[Constructor(DOMString title, optional NotificationOptions options),
+ Exposed=(Window,Worker),
+ Func="mozilla::dom::Notification::PrefEnabled",
+ UnsafeInPrerendering]
 interface Notification : EventTarget {
   [GetterThrows]
   static readonly attribute NotificationPermission permission;
 
-  [Throws]
-  static void requestPermission(optional NotificationPermissionCallback permissionCallback);
+  [Throws, Func="mozilla::dom::Notification::RequestPermissionEnabledForScope"]
+  static Promise<NotificationPermission> requestPermission(optional NotificationPermissionCallback permissionCallback);
 
-  [SetterThrows]
+  [Throws, Func="mozilla::dom::Notification::IsGetEnabled"]
+  static Promise<sequence<Notification>> get(optional GetNotificationOptions filter);
+
   attribute EventHandler onclick;
 
-  [SetterThrows]
   attribute EventHandler onshow;
 
-  [SetterThrows]
   attribute EventHandler onerror;
 
-  [SetterThrows]
   attribute EventHandler onclose;
+
+  [Pure]
+  readonly attribute DOMString title;
+
+  [Pure]
+  readonly attribute NotificationDirection dir;
+
+  [Pure]
+  readonly attribute DOMString? lang;
+
+  [Pure]
+  readonly attribute DOMString? body;
+
+  [Constant]
+  readonly attribute DOMString? tag;
+
+  [Pure]
+  readonly attribute DOMString? icon;
+
+  [Constant, Func="mozilla::dom::Notification::RequireInteractionEnabled"]
+  readonly attribute boolean requireInteraction;
+
+  [Constant]
+  readonly attribute any data;
 
   void close();
 };
@@ -38,8 +64,23 @@ dictionary NotificationOptions {
   NotificationDirection dir = "auto";
   DOMString lang = "";
   DOMString body = "";
-  DOMString tag;
+  DOMString tag = "";
   DOMString icon = "";
+  boolean requireInteraction = false;
+  any data = null;
+  NotificationBehavior mozbehavior = null;
+};
+
+dictionary GetNotificationOptions {
+  DOMString tag = "";
+};
+
+dictionary NotificationBehavior {
+  boolean noscreen = false;
+  boolean noclear = false;
+  boolean showOnlyOnce = false;
+  DOMString soundFile = "";
+  sequence<unsigned long> vibrationPattern;
 };
 
 enum NotificationPermission {
@@ -56,3 +97,9 @@ enum NotificationDirection {
   "rtl"
 };
 
+partial interface ServiceWorkerRegistration {
+  [Throws, Func="mozilla::dom::ServiceWorkerRegistration::NotificationAPIVisible"]
+  Promise<void> showNotification(DOMString title, optional NotificationOptions options);
+  [Throws, Func="mozilla::dom::ServiceWorkerRegistration::NotificationAPIVisible"]
+  Promise<sequence<Notification>> getNotifications(optional GetNotificationOptions filter);
+};

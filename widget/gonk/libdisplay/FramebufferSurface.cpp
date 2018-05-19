@@ -29,7 +29,9 @@
 #include <EGL/egl.h>
 
 #include <hardware/hardware.h>
+#if ANDROID_VERSION == 17
 #include <gui/SurfaceTextureClient.h>
+#endif
 #include <ui/GraphicBuffer.h>
 
 #include "FramebufferSurface.h"
@@ -47,29 +49,57 @@ namespace android {
  * This implements the (main) framebuffer management. This class
  * was adapted from the version in SurfaceFlinger
  */
-
-FramebufferSurface::FramebufferSurface(int disp, uint32_t width, uint32_t height, uint32_t format, sp<IGraphicBufferAlloc>& alloc) :
-    ConsumerBase(new BufferQueue(true, alloc)),
-    mDisplayType(disp),
-    mCurrentBufferSlot(-1),
-    mCurrentBuffer(0)
+FramebufferSurface::FramebufferSurface(int disp,
+                                       uint32_t width,
+                                       uint32_t height,
+                                       uint32_t format,
+                                       const sp<StreamConsumer>& sc)
+    : DisplaySurface(sc)
+    , mDisplayType(disp)
+    , mCurrentBufferSlot(-1)
+    , mCurrentBuffer(0)
 {
     mName = "FramebufferSurface";
-    mBufferQueue->setConsumerName(mName);
-    mBufferQueue->setConsumerUsageBits(GRALLOC_USAGE_HW_FB |
-                                       GRALLOC_USAGE_HW_RENDER |
-                                       GRALLOC_USAGE_HW_COMPOSER);
-    mBufferQueue->setDefaultBufferFormat(format);
-    mBufferQueue->setDefaultBufferSize(width,  height);
-    mBufferQueue->setSynchronousMode(true);
-    mBufferQueue->setDefaultMaxBufferCount(NUM_FRAMEBUFFER_SURFACE_BUFFERS);
+
+#if ANDROID_VERSION >= 19
+    sp<IGraphicBufferConsumer> consumer = mConsumer;
+#else
+    sp<BufferQueue> consumer = mBufferQueue;
+    consumer->setSynchronousMode(true);
+#endif
+    consumer->setConsumerName(mName);
+    consumer->setConsumerUsageBits(GRALLOC_USAGE_HW_FB |
+                                   GRALLOC_USAGE_HW_RENDER |
+                                   GRALLOC_USAGE_HW_COMPOSER);
+    consumer->setDefaultBufferFormat(format);
+    consumer->setDefaultBufferSize(width, height);
+    consumer->setDefaultMaxBufferCount(NUM_FRAMEBUFFER_SURFACE_BUFFERS);
+}
+
+status_t FramebufferSurface::beginFrame(bool /*mustRecompose*/) {
+    return NO_ERROR;
+}
+
+status_t FramebufferSurface::prepareFrame(CompositionType /*compositionType*/) {
+    return NO_ERROR;
+}
+
+status_t FramebufferSurface::advanceFrame() {
+    // Once we remove FB HAL support, we can call nextBuffer() from here
+    // instead of using onFrameAvailable(). No real benefit, except it'll be
+    // more like VirtualDisplaySurface.
+    return NO_ERROR;
 }
 
 status_t FramebufferSurface::nextBuffer(sp<GraphicBuffer>& outBuffer, sp<Fence>& outFence) {
     Mutex::Autolock lock(mMutex);
 
     BufferQueue::BufferItem item;
+#if ANDROID_VERSION >= 19
+    status_t err = acquireBufferLocked(&item, 0);
+#else
     status_t err = acquireBufferLocked(&item);
+#endif
     if (err == BufferQueue::NO_BUFFER_AVAILABLE) {
         outBuffer = mCurrentBuffer;
         return NO_ERROR;
@@ -89,9 +119,14 @@ status_t FramebufferSurface::nextBuffer(sp<GraphicBuffer>& outBuffer, sp<Fence>&
     if (mCurrentBufferSlot != BufferQueue::INVALID_BUFFER_SLOT &&
         item.mBuf != mCurrentBufferSlot) {
         // Release the previous buffer.
+#if ANDROID_VERSION >= 19
+        err = releaseBufferLocked(mCurrentBufferSlot, mCurrentBuffer,
+                EGL_NO_DISPLAY, EGL_NO_SYNC_KHR);
+#else
         err = releaseBufferLocked(mCurrentBufferSlot, EGL_NO_DISPLAY,
                 EGL_NO_SYNC_KHR);
-        if (err != NO_ERROR && err != BufferQueue::STALE_BUFFER_SLOT) {
+#endif
+        if (err != NO_ERROR && err != StreamConsumer::STALE_BUFFER_SLOT) {
             ALOGE("error releasing buffer: %s (%d)", strerror(-err), err);
             return err;
         }
@@ -104,7 +139,11 @@ status_t FramebufferSurface::nextBuffer(sp<GraphicBuffer>& outBuffer, sp<Fence>&
 }
 
 // Overrides ConsumerBase::onFrameAvailable(), does not call base class impl.
+#if ANDROID_VERSION >= 22
+void FramebufferSurface::onFrameAvailable(const ::android::BufferItem &item) {
+#else
 void FramebufferSurface::onFrameAvailable() {
+#endif
     sp<GraphicBuffer> buf;
     sp<Fence> acquireFence;
     status_t err = nextBuffer(buf, acquireFence);
@@ -113,10 +152,10 @@ void FramebufferSurface::onFrameAvailable() {
                 strerror(-err), err);
         return;
     }
-    if (acquireFence.get())
-        lastFenceFD = acquireFence->dup();
+    if (acquireFence.get() && acquireFence->isValid())
+        mPrevFBAcquireFence = new Fence(acquireFence->dup());
     else
-        lastFenceFD = -1;
+        mPrevFBAcquireFence = Fence::NO_FENCE;
 
     lastHandle = buf->handle;
 }
@@ -133,7 +172,11 @@ status_t FramebufferSurface::setReleaseFenceFd(int fenceFd) {
     if (fenceFd >= 0) {
         sp<Fence> fence(new Fence(fenceFd));
         if (mCurrentBufferSlot != BufferQueue::INVALID_BUFFER_SLOT) {
+#if ANDROID_VERSION >= 19
+            status_t err = addReleaseFence(mCurrentBufferSlot, mCurrentBuffer,  fence);
+#else
             status_t err = addReleaseFence(mCurrentBufferSlot, fence);
+#endif
             ALOGE_IF(err, "setReleaseFenceFd: failed to add the fence: %s (%d)",
                     strerror(-err), err);
         }
@@ -141,18 +184,22 @@ status_t FramebufferSurface::setReleaseFenceFd(int fenceFd) {
     return err;
 }
 
-status_t FramebufferSurface::setUpdateRectangle(const Rect& r)
-{
-    return INVALID_OPERATION;
+int FramebufferSurface::GetPrevDispAcquireFd() {
+    if (mPrevFBAcquireFence.get() && mPrevFBAcquireFence->isValid()) {
+        return mPrevFBAcquireFence->dup();
+    }
+    return -1;
+}
+
+void FramebufferSurface::onFrameCommitted() {
+  // XXX This role is almost same to setReleaseFenceFd().
 }
 
 status_t FramebufferSurface::compositionComplete()
 {
+    // Actual implementaiton is in GonkDisplay::SwapBuffers()
+    // XXX need to move that to here.
     return NO_ERROR;
-}
-
-void FramebufferSurface::dump(String8& result) {
-    ConsumerBase::dump(result);
 }
 
 // ----------------------------------------------------------------------------

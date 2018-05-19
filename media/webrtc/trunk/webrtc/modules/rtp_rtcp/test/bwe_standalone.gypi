@@ -15,11 +15,7 @@
         'matlab_plotting',
         'rtp_rtcp',
         'udp_transport',
-        '<(webrtc_root)/system_wrappers/source/system_wrappers.gyp:system_wrappers',
-      ],
-      'include_dirs': [
-        '../interface',
-        '../../interface',
+        '<(webrtc_root)/system_wrappers/system_wrappers.gyp:system_wrappers',
       ],
       'sources': [
         'BWEStandAlone/BWEStandAlone.cc',
@@ -36,31 +32,18 @@
               },
            ],
           ],
-
-      'include_dirs': [
-          ],
-      'link_settings': {
-          },
     },
 
     {
       'target_name': 'matlab_plotting',
-      'type': '<(library)',
+      'type': 'static_library',
       'dependencies': [
         'matlab_plotting_include',
-        '<(webrtc_root)/system_wrappers/source/system_wrappers.gyp:system_wrappers',
+        '<(webrtc_root)/system_wrappers/system_wrappers.gyp:system_wrappers',
       ],
       'include_dirs': [
           '/opt/matlab2010a/extern/include',
           ],
-      # 'direct_dependent_settings': {
-      #     'defines': [
-      #         'MATLAB',
-      #         ],
-      #     'include_dirs': [
-      #         'BWEStandAlone',
-      #         ],
-      #     },
       'export_dependent_settings': [
           'matlab_plotting_include',
           ],
@@ -93,9 +76,6 @@
       'target_name': 'matlab_plotting_include',
       'type': 'none',
       'direct_dependent_settings': {
-          'defines': [
-#              'MATLAB',
-              ],
           'include_dirs': [
               'BWEStandAlone',
               ],
@@ -103,9 +83,3 @@
       },
   ],
 }
-
-# Local Variables:
-# tab-width:2
-# indent-tabs-mode:nil
-# End:
-# vim: set expandtab tabstop=2 shiftwidth=2:

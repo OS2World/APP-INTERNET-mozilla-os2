@@ -13,8 +13,8 @@
 
 #include <stdio.h>
 
+#include "webrtc/base/scoped_ptr.h"
 #include "webrtc/system_wrappers/interface/file_wrapper.h"
-#include "webrtc/system_wrappers/interface/scoped_ptr.h"
 
 namespace webrtc {
 
@@ -23,34 +23,39 @@ class RWLockWrapper;
 class FileWrapperImpl : public FileWrapper {
  public:
   FileWrapperImpl();
-  virtual ~FileWrapperImpl();
+  ~FileWrapperImpl() override;
 
-  virtual int FileName(char* file_name_utf8,
-                       size_t size) const;
+  int FileName(char* file_name_utf8, size_t size) const override;
 
-  virtual bool Open() const;
+  bool Open() const override;
 
-  virtual int OpenFile(const char* file_name_utf8,
-                       bool read_only,
-                       bool loop = false,
-                       bool text = false);
+  int OpenFile(const char* file_name_utf8,
+               bool read_only,
+               bool loop = false,
+               bool text = false) override;
 
-  virtual int CloseFile();
-  virtual int SetMaxFileSize(size_t bytes);
-  virtual int Flush();
+  int OpenFromFileHandle(FILE* handle,
+                         bool manage_file,
+                         bool read_only,
+                         bool loop = false) override;
 
-  virtual int Read(void* buf, int length);
-  virtual bool Write(const void* buf, int length);
-  virtual int WriteText(const char* format, ...);
-  virtual int Rewind();
+  int CloseFile() override;
+  int SetMaxFileSize(size_t bytes) override;
+  int Flush() override;
+
+  int Read(void* buf, size_t length) override;
+  bool Write(const void* buf, size_t length) override;
+  int WriteText(const char* format, ...) override;
+  int Rewind() override;
 
  private:
   int CloseFileImpl();
   int FlushImpl();
 
-  scoped_ptr<RWLockWrapper> rw_lock_;
+  rtc::scoped_ptr<RWLockWrapper> rw_lock_;
 
   FILE* id_;
+  bool managed_file_handle_;
   bool open_;
   bool looping_;
   bool read_only_;
@@ -59,6 +64,6 @@ class FileWrapperImpl : public FileWrapper {
   char file_name_utf8_[kMaxFileNameSize];
 };
 
-} // namespace webrtc
+}  // namespace webrtc
 
 #endif  // WEBRTC_SYSTEM_WRAPPERS_SOURCE_FILE_IMPL_H_

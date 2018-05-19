@@ -8,78 +8,81 @@
 #ifndef gc_Nursery_inl_h
 #define gc_Nursery_inl_h
 
-#ifdef JSGC_GENERATIONAL
-
-#include "gc/Heap.h"
 #include "gc/Nursery.h"
 
-namespace js {
-namespace gc {
+#include "jscntxt.h"
 
-/*
- * This structure overlays a Cell in the Nursery and re-purposes its memory
- * for managing the Nursery collection process.
- */
-class RelocationOverlay
+#include "gc/Heap.h"
+#include "gc/Zone.h"
+#include "js/TracingAPI.h"
+#include "vm/Runtime.h"
+
+MOZ_ALWAYS_INLINE bool
+js::Nursery::getForwardedPointer(JSObject** ref) const
 {
-    friend struct MinorCollectionTracer;
-
-    /* The low bit is set so this should never equal a normal pointer. */
-    const static uintptr_t Relocated = uintptr_t(0xbad0bad1);
-
-    /* Set to Relocated when moved. */
-    uintptr_t magic_;
-
-    /* The location |this| was moved to. */
-    Cell *newLocation_;
-
-    /* A list entry to track all relocated things. */
-    RelocationOverlay *next_;
-
-  public:
-    static RelocationOverlay *fromCell(Cell *cell) {
-        JS_ASSERT(!cell->isTenured());
-        return reinterpret_cast<RelocationOverlay *>(cell);
-    }
-
-    bool isForwarded() const {
-        return magic_ == Relocated;
-    }
-
-    Cell *forwardingAddress() const {
-        JS_ASSERT(isForwarded());
-        return newLocation_;
-    }
-
-    void forwardTo(Cell *cell) {
-        JS_ASSERT(!isForwarded());
-        magic_ = Relocated;
-        newLocation_ = cell;
-        next_ = NULL;
-    }
-
-    RelocationOverlay *next() const {
-        return next_;
-    }
-};
-
-} /* namespace gc */
-} /* namespace js */
-
-template <typename T>
-JS_ALWAYS_INLINE bool
-js::Nursery::getForwardedPointer(T **ref)
-{
-    JS_ASSERT(ref);
-    JS_ASSERT(isInside(*ref));
-    const gc::RelocationOverlay *overlay = reinterpret_cast<const gc::RelocationOverlay *>(*ref);
+    MOZ_ASSERT(ref);
+    MOZ_ASSERT(isInside((void*)*ref));
+    const gc::RelocationOverlay* overlay = reinterpret_cast<const gc::RelocationOverlay*>(*ref);
     if (!overlay->isForwarded())
         return false;
-    /* This static cast from Cell* restricts T to valid (GC thing) types. */
-    *ref = static_cast<T *>(overlay->forwardingAddress());
+    *ref = static_cast<JSObject*>(overlay->forwardingAddress());
     return true;
 }
 
-#endif /* JSGC_GENERATIONAL */
+namespace js {
+
+// The allocation methods below will not run the garbage collector. If the
+// nursery cannot accomodate the allocation, the malloc heap will be used
+// instead.
+
+template <typename T>
+static inline T*
+AllocateObjectBuffer(ExclusiveContext* cx, uint32_t count)
+{
+    if (cx->isJSContext()) {
+        Nursery& nursery = cx->asJSContext()->runtime()->gc.nursery;
+        size_t nbytes = JS_ROUNDUP(count * sizeof(T), sizeof(Value));
+        T* buffer = static_cast<T*>(nursery.allocateBuffer(cx->zone(), nbytes));
+        if (!buffer)
+            ReportOutOfMemory(cx);
+        return buffer;
+    }
+    return cx->zone()->pod_malloc<T>(count);
+}
+
+template <typename T>
+static inline T*
+AllocateObjectBuffer(ExclusiveContext* cx, JSObject* obj, uint32_t count)
+{
+    if (cx->isJSContext()) {
+        Nursery& nursery = cx->asJSContext()->runtime()->gc.nursery;
+        size_t nbytes = JS_ROUNDUP(count * sizeof(T), sizeof(Value));
+        T* buffer = static_cast<T*>(nursery.allocateBuffer(obj, nbytes));
+        if (!buffer)
+            ReportOutOfMemory(cx);
+        return buffer;
+    }
+    return obj->zone()->pod_malloc<T>(count);
+}
+
+// If this returns null then the old buffer will be left alone.
+template <typename T>
+static inline T*
+ReallocateObjectBuffer(ExclusiveContext* cx, JSObject* obj, T* oldBuffer,
+                       uint32_t oldCount, uint32_t newCount)
+{
+    if (cx->isJSContext()) {
+        Nursery& nursery = cx->asJSContext()->runtime()->gc.nursery;
+        T* buffer =  static_cast<T*>(nursery.reallocateBuffer(obj, oldBuffer,
+                                                              oldCount * sizeof(T),
+                                                              newCount * sizeof(T)));
+        if (!buffer)
+            ReportOutOfMemory(cx);
+        return buffer;
+    }
+    return obj->zone()->pod_realloc<T>(oldBuffer, oldCount, newCount);
+}
+
+} // namespace js
 
 #endif /* gc_Nursery_inl_h */

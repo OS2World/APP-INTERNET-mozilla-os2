@@ -8,10 +8,8 @@
 #include <os2safe.h>
 #endif
 
+#define INCL_BASE
 #define INCL_PM
-#define INCL_GPI
-#define INCL_DOS
-#define INCL_DOSERRORS
 #include <os2.h>
 
 #include "nsNativeAppSupportBase.h"
@@ -30,6 +28,8 @@
 #include "nsXPCOM.h"
 #include "nsISupportsPrimitives.h"
 #include "nsIWindowWatcher.h"
+#include "nsPIDOMWindow.h"
+#include "nsGlobalWindow.h"
 #include "nsIDocShell.h"
 #include "nsIDocShellTreeItem.h"
 #include "nsIBaseWindow.h"
@@ -73,7 +73,7 @@ static HWND hwndForDOMWindow( nsISupports * );
 
 static
 nsresult
-GetMostRecentWindow(const PRUnichar* aType, nsIDOMWindow** aWindow) {
+GetMostRecentWindow(const char16_t* aType, nsIDOMWindow** aWindow) {
     nsresult rv;
     nsCOMPtr<nsIWindowMediator> med( do_GetService( NS_WINDOWMEDIATOR_CONTRACTID, &rv ) );
     if ( NS_FAILED( rv ) )
@@ -107,7 +107,8 @@ activateWindow( nsIDOMWindow *win ) {
                          SWP_SHOW | SWP_RESTORE | SWP_ACTIVATE );
     } else {
         // Use internal method.
-        win->Focus();
+        nsCOMPtr<nsPIDOMWindow> piWin = do_QueryInterface(win);
+        piWin->Focus();
     }
 }
 
@@ -117,9 +118,9 @@ activateWindow( nsIDOMWindow *win ) {
 #define MOZ_DEBUG_DDE 1
 #endif
 
-// Simple Win32 mutex wrapper.
-struct Mutex {
-    Mutex( const char *name )
+// Simple OS/2 mutex wrapper.
+struct OS2Mutex {
+    OS2Mutex( const char *name )
         : mName( name ),
           mHandle( 0 ),
           mState( 0xFFFF ) {
@@ -132,7 +133,7 @@ struct Mutex {
 #endif
         }
     }
-    ~Mutex() {
+    ~OS2Mutex() {
         if ( mHandle ) {
             // Make sure we release it if we own it.
             Unlock();
@@ -277,6 +278,7 @@ public:
     void CheckConsole();
 
 private:
+    ~nsNativeAppSupportOS2() {}
     static HDDEDATA APIENTRY HandleDDENotification( ULONG    idInst,
                                                     USHORT   uType,
                                                     USHORT   uFmt,
@@ -388,54 +390,6 @@ int DdeCmpStringHandles( HSZ hsz1, HSZ hsz2 )
   return(rc);
 }
 
-
-char *GetCommandLine()
-{
-   /* This function is meant to be like the Window's GetCommandLine() function.
-    * The value returned by pPIB->pib_pchcmd is of the format:
-    * <executable>\0<command line parameters>.  So the first string is the
-    * .exe and the second string is what followed on the command line.  Dorky,
-    * but I guess it'll have to do.
-    */
-   PTIB pTIB = NULL;
-   PPIB pPIB = NULL;
-   APIRET rc = NO_ERROR;
-   char *pchParam = NULL;
-
-   rc = DosGetInfoBlocks( &pTIB, &pPIB );
-   if( rc == NO_ERROR )
-   {
-      INT iLen = 0;
-      char *pchTemp = NULL;
-      pchParam = pPIB->pib_pchcmd;
-      strcpy( szCommandLine, pchParam );
-      iLen = strlen( pchParam );
-
-      /* szCommandLine[iLen] is '\0', so see what's next.  Probably be another
-       * '\0', a space or start of the arguments
-       */
-      pchTemp = &(pchParam[iLen+1]);
-
-      /* At this point, szCommandLine holds just the program name.  Now we
-       * go for the parameters.  If our next value is a space, ignore it
-       * and go for the next character
-       */
-      if( *pchTemp )
-      {
-         szCommandLine[iLen] = ' ';
-         iLen++;
-         if( *pchTemp == ' ' )
-         {
-            pchTemp++;
-         }
-         strcpy( &(szCommandLine[iLen]), pchTemp );
-      }
-
-   }
-
-   return( szCommandLine );
-}
-
 typedef struct _DDEMLFN
 {
    PFN   *fn;
@@ -469,7 +423,7 @@ DDEMLFN ddemlfnTable[] =
    { (PFN *)&WinDdeReconnect            ,123 },
    { (PFN *)&WinDdeSetUserHandle        ,124 },
    { (PFN *)&WinDdeUninitialize         ,126 },
-   { (PFN *)NULL                           ,  0 }
+   { (PFN *)nullptr                     ,  0 }
 };
 
 /* SetupOS2ddeml makes sure that we can get pointers to all of the DDEML 
@@ -482,7 +436,7 @@ BOOL SetupOS2ddeml()
     HMODULE hmodDDEML = NULLHANDLE;
     APIRET rc = NO_ERROR;
 
-    rc = DosLoadModule( NULL, 0, "PMDDEML", &hmodDDEML );
+    rc = DosLoadModule( nullptr, 0, "PMDDEML", &hmodDDEML );
     if( rc == NO_ERROR )
     {
        int i;
@@ -490,7 +444,7 @@ BOOL SetupOS2ddeml()
        bRC = TRUE;
        for( i=0; ddemlfnTable[i].ord != 0; i++ )
        {
-          rc = DosQueryProcAddr( hmodDDEML, ddemlfnTable[i].ord, NULL,
+          rc = DosQueryProcAddr( hmodDDEML, ddemlfnTable[i].ord, nullptr,
                                  ddemlfnTable[i].fn );
           if( rc != NO_ERROR )
           {
@@ -580,15 +534,15 @@ struct MessageWindow {
         const char * pszClassName = className();
         mHandle = WinCreateWindow( HWND_OBJECT,
                                    pszClassName,
-                                   NULL,        // name
+                                   nullptr,     // name
                                    WS_DISABLED, // style
                                    0,0,     // x, y
                                    0,0,       // cx,cy
                                    HWND_DESKTOP,// owner
                                    HWND_BOTTOM,  // hwndbehind
                                    (USHORT)mMsgWindowAtom, // id
-                                   NULL,        // pCtlData
-                                   NULL );      // pres params
+                                   nullptr,     // pCtlData
+                                   nullptr );   // pres params
 
 #if MOZ_DEBUG_DDE
         printf( "Message window = 0x%08X\n", (int)mHandle );
@@ -609,7 +563,7 @@ struct MessageWindow {
             //  the same thread.
             BOOL desRes = WinDestroyWindow( mHandle );
             if ( FALSE != desRes ) {
-                mHandle = NULL;
+                mHandle = NULLHANDLE;
             }
             else {
                 retval = NS_ERROR_FAILURE;
@@ -622,7 +576,7 @@ struct MessageWindow {
     // SendRequest: Construct a data buffer <commandline>\0<workingdir>\0,
     // then pass the string via WM_COPYDATA to the message window.
 
-    NS_IMETHOD SendRequest( const char *cmd )
+    NS_IMETHOD SendRequest( int argc, const char* const* argv )
     {
     /* Nothing like WM_COPYDATA in OS/2, where the OS allows pointers to be
      * passed to a different process and automatically accessible by that
@@ -632,28 +586,58 @@ struct MessageWindow {
     */
 
         COPYDATASTRUCT *pcds;
-        PVOID pvData = NULL;
+        PVOID pvData = nullptr;
 
-        if (!cmd)
-            return NS_ERROR_FAILURE;
+        // Step 1: count the command line size according to MS spec so that
+        // nsNativeAppSupportOS2::HandleCommandLine() can break it back in
+        // individual arguments when handling the requiest.
+        uint32_t cmdLineSize = 0, bSlashCount = 0;
+        for (int i = 0; i < argc; ++i) {
+            if (i)
+                cmdLineSize++; // space between args
+            uint32_t len = strlen(argv[i]);
+            cmdLineSize += len;
+            bool needQuotes = false;
+            for (uint32_t j = 0; j < len; j++) {
+                if (argv[i][j] == '\\') {
+                    // count backslashes (strange MS spec requirement to
+                    // escape them when followed by a double quote)
+                    bSlashCount++;
+                } else if (argv[i][j] == '"') {
+                    cmdLineSize++; // backslash before each quote
+                    cmdLineSize += bSlashCount; // and before each preceding backslash
+                    bSlashCount = 0;
+                } else {
+                    if (!needQuotes && argv[i][j] == ' ') {
+                        needQuotes = true;
+                        cmdLineSize += 2; // pair of quotes
+                    }
+                    bSlashCount = 0;
+                }
+            }
+            if (needQuotes && bSlashCount) {
+                cmdLineSize += bSlashCount; // backslash before each preceding backslash
+            }
+        }
 
-        ULONG ulSize = sizeof(COPYDATASTRUCT)+strlen(cmd)+1+CCHMAXPATH;
+        ULONG ulSize = sizeof(COPYDATASTRUCT)+cmdLineSize+1+CCHMAXPATH;
+
 #ifdef MOZ_OS2_HIGH_MEMORY
-        APIRET rc = DosAllocSharedMem( &pvData, NULL, ulSize,
+        APIRET rc = DosAllocSharedMem( &pvData, nullptr, ulSize,
                                        PAG_COMMIT | PAG_READ | PAG_WRITE | OBJ_GETTABLE | OBJ_ANY);
         if (rc != NO_ERROR) { // Did the kernel handle OBJ_ANY?
             // Try again without OBJ_ANY and if the first failure was not caused
             // by OBJ_ANY then we will get the same failure, else we have taken
             // care of pre-FP13 systems where the kernel couldn't handle it.
-            rc = DosAllocSharedMem( &pvData, NULL, ulSize,
+            rc = DosAllocSharedMem( &pvData, nullptr, ulSize,
                                     PAG_COMMIT | PAG_READ | PAG_WRITE | OBJ_GETTABLE);
             if (rc != NO_ERROR) {
                 return NS_ERROR_OUT_OF_MEMORY;
             }
         }
 #else
-        if (DosAllocSharedMem( &pvData, NULL, ulSize,
-                               PAG_COMMIT | PAG_READ | PAG_WRITE | OBJ_GETTABLE | OBJ_ANY))
+        if (DosAllocSharedMem( &pvData, nullptr, ulSize,
+                               PAG_COMMIT | PAG_READ | PAG_WRITE | OBJ_GETTABLE))
             return NS_ERROR_OUT_OF_MEMORY;
 #endif
 
@@ -666,15 +650,45 @@ struct MessageWindow {
 
         char * ptr = &(pcds->chBuff);
         pcds->lpData = ptr;
-        strcpy( ptr, cmd);
-        pcds->cbData = strlen( ptr) + 1;
-        ptr += pcds->cbData;
+
+        // Step 2: flatten command line aguments according to MS spec
+        bSlashCount = 0;
+        for (int i = 0; i < argc; ++i) {
+            if (i)
+                *ptr++ = ' '; // space between args
+            bool needQuotes = !!strchr(argv[i], ' ');
+            if (needQuotes)
+                *ptr++ = '"'; // opening quote
+            for (uint32_t j = 0; j < strlen(argv[i]); j++) {
+                if (argv[i][j] == '\\') {
+                    bSlashCount++;
+                } else if (argv[i][j] == '"') {
+                    bSlashCount++; // backslash before each quote
+                    while (bSlashCount) { // and before each preceding backslash
+                        *ptr++ = '\\';
+                        bSlashCount--;
+                    }
+                } else {
+                    bSlashCount = 0;
+                }
+                *ptr++ = argv[i][j];
+            }
+            if (needQuotes) {
+                while (bSlashCount) { // backslash before each preceding backslash
+                    *ptr++ = '\\';
+                    bSlashCount--;
+                }
+                *ptr++ = '"'; // closing quote
+            }
+        }
+        *ptr++ = '\0';
+        pcds->cbData = (ptr - (char*)pcds->lpData);
 
         if (DosQueryPathInfo( ".", FIL_QUERYFULLNAME, ptr, CCHMAXPATH)) {
             ptr[0] = '.';
             ptr[1] = '\0';
         }
-        pcds->cbData += strlen( ptr) + 1;
+        pcds->cbData += strlen(ptr) + 1;
 
         WinSendMsg( mHandle, WM_COPYDATA, 0, (MPARAM)pcds );
         DosFreeMem( pvData );
@@ -770,7 +784,7 @@ nsNativeAppSupportOS2::Start( bool *aResult ) {
 
     // Build mutex name from app name.
     PR_snprintf( mMutexName, sizeof mMutexName, "%s%s", gAppData->name, MOZ_STARTUP_MUTEX_NAME );
-    Mutex startupLock = Mutex( mMutexName );
+    OS2Mutex startupLock = OS2Mutex( mMutexName );
 
     NS_ENSURE_TRUE( startupLock.Lock( MOZ_DDE_START_TIMEOUT ), NS_ERROR_FAILURE );
 
@@ -792,8 +806,7 @@ nsNativeAppSupportOS2::Start( bool *aResult ) {
     MessageWindow msgWindow;
     if ( msgWindow.getHWND() ) {
         // We are a client process.  Pass request to message window.
-        char *cmd = GetCommandLine();
-        rv = msgWindow.SendRequest( cmd );
+        rv = msgWindow.SendRequest(gArgc, gArgv);
     } else {
         // We will be server.
         rv = msgWindow.Create();
@@ -900,7 +913,7 @@ nsNativeAppSupportOS2::Stop( bool *aResult ) {
        return rv;
     }
 
-    Mutex ddeLock( mMutexName );
+    OS2Mutex ddeLock( mMutexName );
 
     if ( ddeLock.Lock( MOZ_DDE_STOP_TIMEOUT ) ) {
         if ( mConversations == 0 ) {
@@ -922,7 +935,7 @@ nsNativeAppSupportOS2::Stop( bool *aResult ) {
 
 NS_IMETHODIMP
 nsNativeAppSupportOS2::Observe(nsISupports* aSubject, const char* aTopic,
-                               const PRUnichar* aData)
+                               const char16_t* aData)
 {
     if (strcmp(aTopic, "quit-application") == 0) {
         Quit();
@@ -940,7 +953,7 @@ nsNativeAppSupportOS2::Quit() {
     // to wait to hold the lock, in which case they will not find the
     // window as we will destroy ours under our lock.
     // When the mutex goes off the stack, it is unlocked via destructor.
-    Mutex mutexLock(mMutexName);
+    OS2Mutex mutexLock(mMutexName);
     NS_ENSURE_TRUE(mutexLock.Lock(MOZ_DDE_START_TIMEOUT), NS_ERROR_FAILURE);
 
     // If we've got a message window to receive IPC or new window requests,
@@ -1017,7 +1030,7 @@ static nsCString uTypeDesc( UINT uType ) {
 static nsCString hszValue( DWORD instance, HSZ hsz ) {
     // Extract string from HSZ.
     nsCString result("[");
-    DWORD len = WinDdeQueryString( hsz, NULL, NULL, CP_WINANSI );
+    DWORD len = WinDdeQueryString( hsz, nullptr, 0, CP_WINANSI );
     if ( len ) {
         char buffer[ 256 ];
         WinDdeQueryString( hsz, buffer, sizeof buffer, CP_WINANSI );
@@ -1040,7 +1053,7 @@ static void escapeQuotes( nsAString &aString ) {
            break;
        } else {
            // Insert back-slash ahead of the '"'.
-           aString.Insert( PRUnichar('\\'), offset );
+           aString.Insert( char16_t('\\'), offset );
            // Increment offset because we just inserted a slash
            offset++;
        }
@@ -1130,26 +1143,21 @@ nsNativeAppSupportOS2::HandleDDENotification( ULONG idInst,     // DDEML instanc
                     do {
                         // Get most recently used Nav window.
                         nsCOMPtr<nsIDOMWindow> navWin;
-                        GetMostRecentWindow( NS_LITERAL_STRING( "navigator:browser" ).get(),
+                        GetMostRecentWindow( MOZ_UTF16( "navigator:browser" ),
                                              getter_AddRefs( navWin ) );
-                        if ( !navWin ) {
+                        nsCOMPtr<nsPIDOMWindow> piNavWin = do_QueryInterface(navWin);
+                        if ( !piNavWin ) {
                             // There is not a window open
                             break;
                         }
                         // Get content window.
-                        nsCOMPtr<nsIDOMWindow> content;
-                        navWin->GetContent( getter_AddRefs( content ) );
-                        if ( !content ) {
-                            break;
-                        }
-                        // Convert that to internal interface.
-                        nsCOMPtr<nsPIDOMWindow> internalContent( do_QueryInterface( content ) );
+                        nsCOMPtr<nsIDOMWindow> internalContent_ = nsGlobalWindow::Cast(piNavWin)->GetContent();
+                        nsCOMPtr<nsPIDOMWindow> internalContent = do_QueryInterface(internalContent_);
                         if ( !internalContent ) {
                             break;
                         }
                         // Get location.
-                        nsCOMPtr<nsIDOMLocation> location;
-                        internalContent->GetLocation( getter_AddRefs( location ) );
+                        nsCOMPtr<nsIDOMLocation> location = internalContent->GetLocation();
                         if ( !location ) {
                             break;
                         }
@@ -1357,7 +1365,7 @@ void nsNativeAppSupportOS2::ParseDDEArg( const char* args, int index, nsCString&
 
 // Utility to parse out argument from a DDE item string.
 void nsNativeAppSupportOS2::ParseDDEArg( HSZ args, int index, nsCString& aString) {
-    DWORD argLen = WinDdeQueryString( args, NULL, NULL, CP_WINANSI );
+    DWORD argLen = WinDdeQueryString( args, nullptr, 0, CP_WINANSI );
     // there wasn't any string, so return empty string
     if ( !argLen ) return;
     nsAutoCString temp;
@@ -1372,7 +1380,7 @@ void nsNativeAppSupportOS2::ParseDDEArg( HSZ args, int index, nsCString& aString
 
 void nsNativeAppSupportOS2::ActivateLastWindow() {
     nsCOMPtr<nsIDOMWindow> navWin;
-    GetMostRecentWindow( NS_LITERAL_STRING("navigator:browser").get(), getter_AddRefs( navWin ) );
+    GetMostRecentWindow( MOZ_UTF16("navigator:browser"), getter_AddRefs( navWin ) );
     if ( navWin )
         // Activate that window.
         activateWindow( navWin );
@@ -1419,6 +1427,9 @@ nsNativeAppSupportOS2::HandleCommandLine(const char* aCmdLineString,
         return;
     }
 
+    // Parse command line args according to MS spec
+    // (see "Parsing C++ Command-Line Arguments" at
+    // https://docs.microsoft.com/en-us/cpp/cpp/parsing-cpp-command-line-arguments).
     // We loop if we've not finished the second pass through.
     while ( 1 ) {
         // Initialize if required.
@@ -1627,7 +1638,7 @@ nsNativeAppSupportOS2::OpenBrowserWindow()
     // browser window.
 
     nsCOMPtr<nsIDOMWindow> navWin;
-    GetMostRecentWindow( NS_LITERAL_STRING( "navigator:browser" ).get(), getter_AddRefs( navWin ) );
+    GetMostRecentWindow( MOZ_UTF16( "navigator:browser" ), getter_AddRefs( navWin ) );
 
     // This isn't really a loop.  We just use "break" statements to fall
     // out to the OpenWindow call when things go awry.
@@ -1645,7 +1656,8 @@ nsNativeAppSupportOS2::OpenBrowserWindow()
           if ( navItem ) {
             nsCOMPtr<nsIDocShellTreeItem> rootItem;
             navItem->GetRootTreeItem( getter_AddRefs( rootItem ) );
-            nsCOMPtr<nsIDOMWindow> rootWin( do_GetInterface( rootItem ) );
+            nsCOMPtr<nsIDOMWindow> rootWin =
+              rootItem ? rootItem->GetWindow() : nullptr;
             nsCOMPtr<nsIDOMChromeWindow> chromeWin(do_QueryInterface(rootWin));
             if ( chromeWin )
               chromeWin->GetBrowserDOMWindow( getter_AddRefs ( bwin ) );

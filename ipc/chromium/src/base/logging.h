@@ -1,3 +1,5 @@
+/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
+/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 // Copyright (c) 2006-2008 The Chromium Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
@@ -9,7 +11,7 @@
 #include <cstring>
 
 #include "base/basictypes.h"
-#include "prlog.h"
+#include "mozilla/Logging.h"
 
 #ifdef NO_CHROMIUM_LOGGING
 #include <sstream>
@@ -45,8 +47,8 @@ public:
   void printf(const char* fmt, ...);
 
 private:
-  static PRLogModuleInfo* gChromiumPRLog;
-  static PRLogModuleInfo* GetLog();
+  static mozilla::LazyLogModule gChromiumPRLog;
+//  static PRLogModuleInfo* GetLog();
 
   LogSeverity mSeverity;
   const char* mFile;
@@ -89,17 +91,17 @@ const mozilla::EmptyLog& operator <<(const mozilla::EmptyLog& log, const T&)
 }
 
 #ifdef NO_CHROMIUM_LOGGING
-#define LOG(info) std::stringstream()
+#define CHROMIUM_LOG(info) std::stringstream()
 #define LOG_IF(info, condition) if (!(condition)) std::stringstream()
 #else
-#define LOG(info) mozilla::LogWrapper(mozilla::LOG_ ## info, __FILE__, __LINE__)
+#define CHROMIUM_LOG(info) mozilla::LogWrapper(mozilla::LOG_ ## info, __FILE__, __LINE__)
 #define LOG_IF(info, condition) \
   if (!(condition)) mozilla::LogWrapper(mozilla::LOG_ ## info, __FILE__, __LINE__)
 #endif
 
 
 #ifdef DEBUG
-#define DLOG(info) LOG(info)
+#define DLOG(info) CHROMIUM_LOG(info)
 #define DLOG_IF(info) LOG_IF(info)
 #define DCHECK(condition) CHECK(condition)
 #else
@@ -108,13 +110,15 @@ const mozilla::EmptyLog& operator <<(const mozilla::EmptyLog& log, const T&)
 #define DCHECK(condition) while (false && (condition)) mozilla::EmptyLog()
 #endif
 
+#undef LOG_ASSERT
 #define LOG_ASSERT(cond) CHECK(0)
 #define DLOG_ASSERT(cond) DCHECK(0)
 
-#define NOTREACHED() LOG(ERROR)
-#define NOTIMPLEMENTED() LOG(ERROR)
+#define NOTREACHED() CHROMIUM_LOG(ERROR)
+#define NOTIMPLEMENTED() CHROMIUM_LOG(ERROR)
 
-#define CHECK(condition) LOG_IF(FATAL, condition)
+#undef CHECK
+#define CHECK(condition) LOG_IF(WARNING, condition)
 
 #define DCHECK_EQ(v1, v2) DCHECK((v1) == (v2))
 #define DCHECK_NE(v1, v2) DCHECK((v1) != (v2))

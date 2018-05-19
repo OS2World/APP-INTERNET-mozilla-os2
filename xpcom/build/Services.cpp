@@ -1,25 +1,30 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
+/* vim: set ts=8 sts=2 et sw=2 tw=80: */
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+#include "mozilla/Likely.h"
 #include "mozilla/Services.h"
 #include "nsComponentManager.h"
-#include "nsIIOService.h"
-#include "nsIDirectoryService.h"
-#ifdef ACCESSIBILITY
-#include "nsIAccessibilityService.h"
-#endif
-#include "nsIChromeRegistry.h"
 #include "nsIObserverService.h"
 #include "nsNetCID.h"
 #include "nsObserverService.h"
 #include "nsXPCOMPrivate.h"
+#include "nsIIOService.h"
+#include "nsIDirectoryService.h"
+#include "nsIChromeRegistry.h"
 #include "nsIStringBundle.h"
 #include "nsIToolkitChromeRegistry.h"
 #include "nsIXULOverlayProvider.h"
 #include "IHistory.h"
 #include "nsIXPConnect.h"
+#include "inIDOMUtils.h"
+#include "nsIPermissionManager.h"
+#include "nsIServiceWorkerManager.h"
+#include "nsIAsyncShutdown.h"
+#include "nsIUUIDGenerator.h"
+#include "nsIGfxInfo.h"
 
 using namespace mozilla;
 using namespace mozilla::services;
@@ -29,16 +34,19 @@ using namespace mozilla::services;
  * eg. gIOService and GetIOService()
  */
 #define MOZ_SERVICE(NAME, TYPE, CONTRACT_ID)                            \
-  static TYPE* g##NAME = nullptr;                                        \
+  static TYPE* g##NAME = nullptr;                                       \
                                                                         \
   already_AddRefed<TYPE>                                                \
   mozilla::services::Get##NAME()                                        \
   {                                                                     \
+    if (MOZ_UNLIKELY(gXPCOMShuttingDown)) {                             \
+      return nullptr;                                                   \
+    }                                                                   \
     if (!g##NAME) {                                                     \
       nsCOMPtr<TYPE> os = do_GetService(CONTRACT_ID);                   \
-      g##NAME = os.forget().get();                                      \
+      os.swap(g##NAME);                                                 \
     }                                                                   \
-    nsRefPtr<TYPE> ret = g##NAME;                                       \
+    nsCOMPtr<TYPE> ret = g##NAME;                                       \
     return ret.forget();                                                \
   }                                                                     \
   NS_EXPORT_(already_AddRefed<TYPE>)                                    \
@@ -53,7 +61,7 @@ using namespace mozilla::services;
 /**
  * Clears service cache, sets gXPCOMShuttingDown
  */
-void 
+void
 mozilla::services::Shutdown()
 {
   gXPCOMShuttingDown = true;

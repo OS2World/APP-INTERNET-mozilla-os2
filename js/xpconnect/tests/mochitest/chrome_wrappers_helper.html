@@ -2,14 +2,9 @@
     <head>
         <script>
             function check_wrapper(ok, wrapper, expected, note) {
-                netscape.security.PrivilegeManager.enablePrivilege("UniversalXPConnect");
 
                 var utils = SpecialPowers.DOMWindowUtils;
                 ok(utils.getClassName(wrapper) === expected, note);
-            }
-            function check_parent(ok, obj, expected, note) {
-                var utils = SpecialPowers.DOMWindowUtils;
-                ok(utils.getParent(obj) === expected, note);
             }
             function run_test(ok, xpcnw, sjow) {
                 // both wrappers should point to our window: XOW

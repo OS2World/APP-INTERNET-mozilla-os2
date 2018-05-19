@@ -1,14 +1,5 @@
-﻿// ***************************************************************************
-// *
-// * Copyright (C) 2012 International Business Machines
-// * Corporation and others.  All Rights Reserved.
-// * Tool: org.unicode.cldr.icu.NewLdml2IcuConverter
-// * Source File: <path>/common/main/bez.xml
-// *
-// ***************************************************************************
-/**
- *  ICU <specials> source: <path>/xml/main/bez.xml
- */
+﻿// © 2016 and later: Unicode, Inc. and others.
+// License & terms of use: http://www.unicode.org/copyright.html#License
 bez{
     Currencies{
         AED{
@@ -221,6 +212,10 @@ bez{
         }
         ZMK{
             "ZMK",
+            "Lupila lwa Huzambia (1968–2012)",
+        }
+        ZMW{
+            "ZMW",
             "Lupila lwa Huzambia",
         }
         ZWD{
@@ -228,5 +223,5 @@ bez{
             "Lupila lwa Huzimbabwe",
         }
     }
-    Version{"2.0.77.46"}
+    Version{"2.1.27.40"}
 }

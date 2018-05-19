@@ -6,12 +6,14 @@
 
 this.EXPORTED_SYMBOLS = ["IdentityManager"];
 
-const {classes: Cc, interfaces: Ci, utils: Cu, results: Cr} = Components;
+var {classes: Cc, interfaces: Ci, utils: Cu, results: Cr} = Components;
 
 Cu.import("resource://gre/modules/XPCOMUtils.jsm");
+Cu.import("resource://gre/modules/Promise.jsm");
 Cu.import("resource://services-sync/constants.js");
-Cu.import("resource://services-common/log4moz.js");
+Cu.import("resource://gre/modules/Log.jsm");
 Cu.import("resource://services-sync/util.js");
+Cu.import("resource://services-common/async.js");
 
 // Lazy import to prevent unnecessary load on startup.
 for (let symbol of ["BulkKeyBundle", "SyncKeyBundle"]) {
@@ -21,7 +23,8 @@ for (let symbol of ["BulkKeyBundle", "SyncKeyBundle"]) {
 }
 
 /**
- * Manages identity and authentication for Sync.
+ * Manages "legacy" identity and authentication for Sync.
+ * See browserid_identity for the Firefox Accounts based identity manager.
  *
  * The following entities are managed:
  *
@@ -57,8 +60,8 @@ for (let symbol of ["BulkKeyBundle", "SyncKeyBundle"]) {
  * and any other function that involves the built-in functionality.
  */
 this.IdentityManager = function IdentityManager() {
-  this._log = Log4Moz.repository.getLogger("Sync.Identity");
-  this._log.Level = Log4Moz.Level[Svc.Prefs.get("log.logger.identity")];
+  this._log = Log.repository.getLogger("Sync.Identity");
+  this._log.Level = Log.Level[Svc.Prefs.get("log.logger.identity")];
 
   this._basicPassword = null;
   this._basicPasswordAllowLookup = true;
@@ -80,6 +83,33 @@ IdentityManager.prototype = {
   _syncKeySet: false,
 
   _syncKeyBundle: null,
+
+  /**
+   * Initialize the identity provider.
+   */
+  initialize: function() {
+    // Nothing to do for this identity provider.
+  },
+
+  finalize: function() {
+    // Nothing to do for this identity provider.
+  },
+
+  /**
+   * Called whenever Service.logout() is called.
+   */
+  logout: function() {
+    // nothing to do for this identity provider.
+  },
+
+  /**
+   * Ensure the user is logged in.  Returns a promise that resolves when
+   * the user is logged in, or is rejected if the login attempt has failed.
+   */
+  ensureLoggedIn: function() {
+    // nothing to do for this identity provider
+    return Promise.resolve();
+  },
 
   get account() {
     return Svc.Prefs.get("account", this.username);
@@ -133,7 +163,21 @@ IdentityManager.prototype = {
     // If we change the username, we interpret this as a major change event
     // and wipe out the credentials.
     this._log.info("Username changed. Removing stored credentials.");
+    this.resetCredentials();
+  },
+
+  /**
+   * Resets/Drops all credentials we hold for the current user.
+   */
+  resetCredentials: function() {
     this.basicPassword = null;
+    this.resetSyncKey();
+  },
+
+  /**
+   * Resets/Drops the sync key we hold for the current user.
+   */
+  resetSyncKey: function() {
     this.syncKey = null;
     // syncKeyBundle cleared as a result of setting syncKey.
   },
@@ -151,7 +195,7 @@ IdentityManager.prototype = {
         return null;
       }
 
-      for each (let login in this._getLogins(PWDMGR_PASSWORD_REALM)) {
+      for (let login of this._getLogins(PWDMGR_PASSWORD_REALM)) {
         if (login.username.toLowerCase() == username) {
           // It should already be UTF-8 encoded, but we don't take any chances.
           this._basicPassword = Utils.encodeUTF8(login.password);
@@ -205,7 +249,7 @@ IdentityManager.prototype = {
         return null;
       }
 
-      for each (let login in this._getLogins(PWDMGR_PASSPHRASE_REALM)) {
+      for (let login of this._getLogins(PWDMGR_PASSPHRASE_REALM)) {
         if (login.username.toLowerCase() == username) {
           this._syncKey = login.password;
         }
@@ -282,7 +326,7 @@ IdentityManager.prototype = {
       try {
         this._syncKeyBundle = new SyncKeyBundle(this.username, this.syncKey);
       } catch (ex) {
-        this._log.warn(Utils.exceptionStr(ex));
+        this._log.warn("Failed to create sync bundle", ex);
         return null;
       }
     }
@@ -323,6 +367,25 @@ IdentityManager.prototype = {
   },
 
   /**
+   * Verify the current auth state, unlocking the master-password if necessary.
+   *
+   * Returns a promise that resolves with the current auth state after
+   * attempting to unlock.
+   */
+  unlockAndVerifyAuthState: function() {
+    // Try to fetch the passphrase - this will prompt for MP unlock as a
+    // side-effect...
+    try {
+      this.syncKey;
+    } catch (ex) {
+      this._log.debug("Fetching passphrase threw " + ex +
+                      "; assuming master password locked.");
+      return Promise.resolve(MASTER_PASSWORD_LOCKED);
+    }
+    return Promise.resolve(STATUS_OK);
+  },
+
+  /**
    * Persist credentials to password store.
    *
    * When credentials are updated, they are changed in memory only. This will
@@ -337,7 +400,7 @@ IdentityManager.prototype = {
         this._setLogin(PWDMGR_PASSWORD_REALM, this.username,
                        this._basicPassword);
       } else {
-        for each (let login in this._getLogins(PWDMGR_PASSWORD_REALM)) {
+        for (let login of this._getLogins(PWDMGR_PASSWORD_REALM)) {
           Services.logins.removeLogin(login);
         }
       }
@@ -349,7 +412,7 @@ IdentityManager.prototype = {
       if (this._syncKey) {
         this._setLogin(PWDMGR_PASSPHRASE_REALM, this.username, this._syncKey);
       } else {
-        for each (let login in this._getLogins(PWDMGR_PASSPHRASE_REALM)) {
+        for (let login of this._getLogins(PWDMGR_PASSPHRASE_REALM)) {
           Services.logins.removeLogin(login);
         }
       }
@@ -373,6 +436,25 @@ IdentityManager.prototype = {
   },
 
   /**
+   * Pre-fetches any information that might help with migration away from this
+   * identity.  Called after every sync and is really just an optimization that
+   * allows us to avoid a network request for when we actually need the
+   * migration info.
+   */
+  prefetchMigrationSentinel: function(service) {
+    // Try and fetch the migration sentinel - it will end up in the recordManager
+    // cache.
+    try {
+      service.recordManager.get(service.storageURL + "meta/fxa_credentials");
+    } catch (ex) {
+      if (Async.isShutdownException(ex)) {
+        throw ex;
+      }
+      this._log.warn("Failed to pre-fetch the migration sentinel", ex);
+    }
+  },
+
+  /**
    * Obtains the array of basic logins from nsiPasswordManager.
    */
   _getLogins: function _getLogins(realm) {
@@ -387,7 +469,7 @@ IdentityManager.prototype = {
    */
   _setLogin: function _setLogin(realm, username, password) {
     let exists = false;
-    for each (let login in this._getLogins(realm)) {
+    for (let login of this._getLogins(realm)) {
       if (login.username == username && login.password == password) {
         exists = true;
       } else {
@@ -411,12 +493,21 @@ IdentityManager.prototype = {
   },
 
   /**
+    * Return credentials hosts for this identity only.
+    */
+  _getSyncCredentialsHosts: function() {
+    return Utils.getSyncCredentialsHostsLegacy();
+  },
+
+  /**
    * Deletes Sync credentials from the password manager.
    */
   deleteSyncCredentials: function deleteSyncCredentials() {
-    let logins = Services.logins.findLogins({}, PWDMGR_HOST, "", "");
-    for each (let login in logins) {
-      Services.logins.removeLogin(login);
+    for (let host of this._getSyncCredentialsHosts()) {
+      let logins = Services.logins.findLogins({}, host, "", "");
+      for (let login of logins) {
+        Services.logins.removeLogin(login);
+      }
     }
 
     // Wait until after store is updated in case it fails.
@@ -491,5 +582,24 @@ IdentityManager.prototype = {
   onRESTRequestBasic: function onRESTRequestBasic(request) {
     let up = this.username + ":" + this.basicPassword;
     request.setHeader("authorization", "Basic " + btoa(up));
+  },
+
+  createClusterManager: function(service) {
+    Cu.import("resource://services-sync/stages/cluster.js");
+    return new ClusterManager(service);
+  },
+
+  offerSyncOptions: function () {
+    // Do nothing for Sync 1.1.
+    return {accepted: true};
+  },
+
+  // Tell Sync what the login status should be if it saw a 401 fetching
+  // info/collections as part of login verification (typically immediately
+  // after login.)
+  // In our case it means an authoritative "password is incorrect".
+  loginStatusFromVerification404() {
+    return LOGIN_FAILED_LOGIN_REJECTED;
   }
+
 };

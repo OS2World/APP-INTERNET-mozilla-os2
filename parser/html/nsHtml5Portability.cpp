@@ -2,14 +2,14 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#include "prtypes.h"
 #include "nsIAtom.h"
 #include "nsString.h"
 #include "jArray.h"
 #include "nsHtml5Portability.h"
+#include "nsHtml5TreeBuilder.h"
 
 nsIAtom*
-nsHtml5Portability::newLocalNameFromBuffer(PRUnichar* buf, int32_t offset, int32_t length, nsHtml5AtomTable* interner)
+nsHtml5Portability::newLocalNameFromBuffer(char16_t* buf, int32_t offset, int32_t length, nsHtml5AtomTable* interner)
 {
   NS_ASSERTION(!offset, "The offset should always be zero here.");
   NS_ASSERTION(interner, "Didn't get an atom service.");
@@ -17,9 +17,15 @@ nsHtml5Portability::newLocalNameFromBuffer(PRUnichar* buf, int32_t offset, int32
 }
 
 nsString*
-nsHtml5Portability::newStringFromBuffer(PRUnichar* buf, int32_t offset, int32_t length)
+nsHtml5Portability::newStringFromBuffer(char16_t* buf, int32_t offset, int32_t length, nsHtml5TreeBuilder* treeBuilder)
 {
-  return new nsString(buf + offset, length);
+  nsString* str = new nsString();
+  bool succeeded = str->Append(buf + offset, length, mozilla::fallible);
+  if (!succeeded) {
+    str->Assign(char16_t(0xFFFD));
+    treeBuilder->MarkAsBroken(NS_ERROR_OUT_OF_MEMORY);
+  }
+  return str;
 }
 
 nsString*
@@ -43,23 +49,23 @@ nsHtml5Portability::newStringFromString(nsString* string) {
   return newStr;
 }
 
-jArray<PRUnichar,int32_t>
+jArray<char16_t,int32_t>
 nsHtml5Portability::newCharArrayFromLocal(nsIAtom* local)
 {
   nsAutoString temp;
   local->ToString(temp);
   int32_t len = temp.Length();
-  jArray<PRUnichar,int32_t> arr = jArray<PRUnichar,int32_t>::newJArray(len);
-  memcpy(arr, temp.BeginReading(), len * sizeof(PRUnichar));
+  jArray<char16_t,int32_t> arr = jArray<char16_t,int32_t>::newJArray(len);
+  memcpy(arr, temp.BeginReading(), len * sizeof(char16_t));
   return arr;
 }
 
-jArray<PRUnichar,int32_t>
+jArray<char16_t,int32_t>
 nsHtml5Portability::newCharArrayFromString(nsString* string)
 {
   int32_t len = string->Length();
-  jArray<PRUnichar,int32_t> arr = jArray<PRUnichar,int32_t>::newJArray(len);
-  memcpy(arr, string->BeginReading(), len * sizeof(PRUnichar));
+  jArray<char16_t,int32_t> arr = jArray<char16_t,int32_t>::newJArray(len);
+  memcpy(arr, string->BeginReading(), len * sizeof(char16_t));
   return arr;
 }
 
@@ -83,7 +89,7 @@ nsHtml5Portability::releaseString(nsString* str)
 }
 
 bool
-nsHtml5Portability::localEqualsBuffer(nsIAtom* local, PRUnichar* buf, int32_t offset, int32_t length)
+nsHtml5Portability::localEqualsBuffer(nsIAtom* local, char16_t* buf, int32_t offset, int32_t length)
 {
   return local->Equals(nsDependentSubstring(buf + offset, buf + offset + length));
 }
@@ -95,15 +101,15 @@ nsHtml5Portability::lowerCaseLiteralIsPrefixOfIgnoreAsciiCaseString(const char* 
     return false;
   }
   const char* litPtr = lowerCaseLiteral;
-  const PRUnichar* strPtr = string->BeginReading();
-  const PRUnichar* end = string->EndReading();
-  PRUnichar litChar;
+  const char16_t* strPtr = string->BeginReading();
+  const char16_t* end = string->EndReading();
+  char16_t litChar;
   while ((litChar = *litPtr)) {
     NS_ASSERTION(!(litChar >= 'A' && litChar <= 'Z'), "Literal isn't in lower case.");
     if (strPtr == end) {
       return false;
     }
-    PRUnichar strChar = *strPtr;
+    char16_t strChar = *strPtr;
     if (strChar >= 'A' && strChar <= 'Z') {
       strChar += 0x20;
     }

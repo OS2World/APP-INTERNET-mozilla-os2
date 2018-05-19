@@ -2,12 +2,10 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
+from __future__ import absolute_import
+
 import os
 import struct
-from buildconfig import (
-    substs,
-    topobjdir,
-)
 import subprocess
 from mozpack.errors import errors
 
@@ -71,6 +69,7 @@ def is_executable(path):
     on OS/2, OS/X, ELF and WINNT (in GCC build) systems, we don't bother
     detecting other kind of executables.
     '''
+    from buildconfig import substs
     if not os.path.exists(path):
         return False
 
@@ -85,6 +84,7 @@ def may_strip(path):
     '''
     Return whether strip() should be called
     '''
+    from buildconfig import substs
     return not substs['PKG_SKIP_STRIP']
 
 
@@ -92,6 +92,7 @@ def strip(path):
     '''
     Execute the STRIP command with STRIP_FLAGS on the given path.
     '''
+    from buildconfig import substs
     strip = substs['STRIP']
     flags = substs['STRIP_FLAGS'].split() if 'STRIP_FLAGS' in substs else []
     cmd = [strip] + flags + [path]
@@ -105,14 +106,17 @@ def may_elfhack(path):
     '''
     # elfhack only supports libraries. We should check the ELF header for
     # the right flag, but checking the file extension works too.
-    return 'USE_ELF_HACK' in substs and substs['USE_ELF_HACK'] and \
-           path.endswith(substs['DLL_SUFFIX'])
+    from buildconfig import substs
+    return ('USE_ELF_HACK' in substs and substs['USE_ELF_HACK'] and
+        path.endswith(substs['DLL_SUFFIX']) and
+        'COMPILE_ENVIRONMENT' in substs and substs['COMPILE_ENVIRONMENT'])
 
 
 def elfhack(path):
     '''
     Execute the elfhack command on the given path.
     '''
+    from buildconfig import topobjdir
     cmd = [os.path.join(topobjdir, 'build/unix/elfhack/elfhack'), path]
     if 'ELF_HACK_FLAGS' in os.environ:
         cmd[1:0] = os.environ['ELF_HACK_FLAGS'].split()

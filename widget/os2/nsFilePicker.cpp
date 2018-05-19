@@ -15,8 +15,12 @@
 #include "nsEnumeratorUtils.h"
 #include "nsCRT.h"
 #include "nsIWidget.h"
-#include "nsOS2Uni.h"
+#include "nsNativeCharsetUtils.h"
 #include "nsFilePicker.h"
+#include "mozilla/dom/EncodingUtils.h"
+#include "prio.h"
+
+using mozilla::dom::EncodingUtils;
 
 #ifndef MAX_PATH
 #define MAX_PATH CCHMAXPATH
@@ -30,7 +34,7 @@ typedef struct _MyData
    ULONG    ulNumFilters;
 }MYDATA, *PMYDATA;
 
-NS_IMPL_ISUPPORTS1(nsFilePicker, nsIFilePicker)
+NS_IMPL_ISUPPORTS(nsFilePicker, nsIFilePicker)
 
 char nsFilePicker::mLastUsedDirectory[MAX_PATH+1] = { 0 };
 
@@ -49,9 +53,7 @@ MRESULT EXPENTRY FileDialogProc( HWND hwndDlg, ULONG msg, MPARAM mp1, MPARAM mp2
 //-------------------------------------------------------------------------
 nsFilePicker::nsFilePicker()
 {
-  mWnd = NULL;
-  mUnicodeEncoder = nullptr;
-  mUnicodeDecoder = nullptr;
+  mWnd = NULLHANDLE;
   mSelectedType   = 0;
 }
 
@@ -64,9 +66,6 @@ nsFilePicker::~nsFilePicker()
 {
   mFilters.Clear();
   mTitles.Clear();
-
-  NS_IF_RELEASE(mUnicodeEncoder);
-  NS_IF_RELEASE(mUnicodeDecoder);
 }
 
 /* static */ void
@@ -96,7 +95,7 @@ NS_IMETHODIMP nsFilePicker::Show(int16_t *retval)
   }
   else {
     fileBuffer.Assign(converted);
-    nsMemory::Free( converted );
+    free( converted );
   }
 
   char *title = ConvertToFileSystemCharset(mTitle);
@@ -165,11 +164,9 @@ NS_IMETHODIMP nsFilePicker::Show(int16_t *retval)
     for (i = 0; i < mTitles.Length(); i++)
     {
       const nsString& typeWide = mTitles[i];
-      nsAutoCharBuffer buffer;
-      int32_t bufLength;
-      WideCharToMultiByte(0, typeWide.get(), typeWide.Length(),
-                          buffer, bufLength);
-      apszTypeList[i] = ToNewCString(nsDependentCString(buffer.Elements()));
+      nsAutoCString buffer;
+      NS_CopyUnicodeToNative(typeWide, buffer);
+      apszTypeList[i] = ToNewCString(buffer);
     }
     apszTypeList[i] = 0;
     filedlg.papszITypeList = (PAPSZ)apszTypeList;
@@ -290,20 +287,20 @@ NS_IMETHODIMP nsFilePicker::Show(int16_t *retval)
 
     for (i = 0; i < mTitles.Length(); i++)
     {
-      nsMemory::Free(*(filedlg.papszITypeList[i]));
+      free(*(filedlg.papszITypeList[i]));
     }
     free(filedlg.papszITypeList);
 
     for (i = 0; i < mFilters.Length(); i++)
     {
-      nsMemory::Free(*(pmydata->papszIFilterList[i]));
+      free(*(pmydata->papszIFilterList[i]));
     }
     free(pmydata->papszIFilterList);
     free(pmydata);
   }
 
   if (title)
-    nsMemory::Free( title );
+    free(title);
 
   if (result) {
     int16_t returnOKorReplace = returnOK;
@@ -468,12 +465,10 @@ NS_IMETHODIMP nsFilePicker::SetFilterIndex(int32_t aFilterIndex)
 
 //-------------------------------------------------------------------------
 void nsFilePicker::InitNative(nsIWidget *aParent,
-                              const nsAString& aTitle,
-                              int16_t aMode)
+                              const nsAString& aTitle)
 {
   mWnd = (HWND) ((aParent) ? aParent->GetNativeData(NS_NATIVE_WINDOW) : 0); 
   mTitle.Assign(aTitle);
-  mMode = aMode;
 }
 
 
@@ -485,12 +480,12 @@ void nsFilePicker::GetFileSystemCharset(nsCString & fileSystemCharset)
 
   if (aCharset.Length() < 1) {
     nsCOMPtr <nsIPlatformCharset> platformCharset = do_GetService(NS_PLATFORMCHARSET_CONTRACTID, &rv);
-	  if (NS_SUCCEEDED(rv)) 
-		  rv = platformCharset->GetCharset(kPlatformCharsetSel_FileName, aCharset);
+    if (NS_SUCCEEDED(rv))
+     rv = platformCharset->GetCharset(kPlatformCharsetSel_FileName, aCharset);
 
     NS_ASSERTION(NS_SUCCEEDED(rv), "error getting platform charset");
-	  if (NS_FAILED(rv)) 
-		  aCharset.AssignLiteral("IBM850");
+    if (NS_FAILED(rv))
+      aCharset.AssignLiteral("IBM850");
   }
   fileSystemCharset = aCharset;
 }
@@ -505,12 +500,7 @@ char * nsFilePicker::ConvertToFileSystemCharset(const nsAString& inString)
   if (nullptr == mUnicodeEncoder) {
     nsAutoCString fileSystemCharset;
     GetFileSystemCharset(fileSystemCharset);
-
-    nsCOMPtr<nsICharsetConverterManager> ccm = 
-             do_GetService(NS_CHARSETCONVERTERMANAGER_CONTRACTID, &rv); 
-    if (NS_SUCCEEDED(rv)) {
-      rv = ccm->GetUnicodeEncoderRaw(fileSystemCharset.get(), &mUnicodeEncoder);
-    }
+    mUnicodeEncoder = EncodingUtils::EncoderForEncoding(fileSystemCharset);
   }
 
   // converts from unicode to the file system charset
@@ -523,7 +513,7 @@ char * nsFilePicker::ConvertToFileSystemCharset(const nsAString& inString)
     rv = mUnicodeEncoder->GetMaxLength(flatInString.get(), inLength,
                                        &outLength);
     if (NS_SUCCEEDED(rv)) {
-      outString = static_cast<char*>(nsMemory::Alloc( outLength+1 ));
+      outString = static_cast<char*>(moz_xmalloc( outLength+1 ));
       if (nullptr == outString) {
         return nullptr;
       }
@@ -539,21 +529,16 @@ char * nsFilePicker::ConvertToFileSystemCharset(const nsAString& inString)
 }
 
 //-------------------------------------------------------------------------
-PRUnichar * nsFilePicker::ConvertFromFileSystemCharset(const char *inString)
+char16_t * nsFilePicker::ConvertFromFileSystemCharset(const char *inString)
 {
-  PRUnichar *outString = nullptr;
+  char16_t *outString = nullptr;
   nsresult rv = NS_OK;
 
   // get file system charset and create a unicode encoder
   if (nullptr == mUnicodeDecoder) {
     nsAutoCString fileSystemCharset;
     GetFileSystemCharset(fileSystemCharset);
-
-    nsCOMPtr<nsICharsetConverterManager> ccm = 
-             do_GetService(NS_CHARSETCONVERTERMANAGER_CONTRACTID, &rv); 
-    if (NS_SUCCEEDED(rv)) {
-      rv = ccm->GetUnicodeDecoderRaw(fileSystemCharset.get(), &mUnicodeDecoder);
-    }
+    mUnicodeDecoder = EncodingUtils::DecoderForEncoding(fileSystemCharset);
   }
 
   // converts from the file system charset to unicode
@@ -562,7 +547,7 @@ PRUnichar * nsFilePicker::ConvertFromFileSystemCharset(const char *inString)
     int32_t outLength;
     rv = mUnicodeDecoder->GetMaxLength(inString, inLength, &outLength);
     if (NS_SUCCEEDED(rv)) {
-      outString = static_cast<PRUnichar*>(nsMemory::Alloc( (outLength+1) * sizeof( PRUnichar ) ));
+      outString = static_cast<char16_t*>(moz_xmalloc( (outLength+1) * sizeof( char16_t ) ));
       if (nullptr == outString) {
         return nullptr;
       }
@@ -696,7 +681,7 @@ MRESULT EXPENTRY DirDialogProc( HWND hwndDlg, ULONG msg, MPARAM mp1, MPARAM mp2)
          SWP           swp;
          HWND          hwndST;
          RECTL         rectlString = {0,0,1000,1000};
-         char          *ptr = NULL;
+         char          *ptr = nullptr;
          int           iHalfLen;
          int           iLength;
          CHAR          szString[CCHMAXPATH];
@@ -766,12 +751,12 @@ MRESULT EXPENTRY FileDialogProc( HWND hwndDlg, ULONG msg, MPARAM mp1, MPARAM mp2
                                         WS_VISIBLE | WS_PARENTCLIP | WS_SYNCPAINT | WS_TABSTOP | CBS_DROPDOWNLIST,
                                         swp.x, swp.y,
                                         swp.cx, swp.cy, hwndDlg, swp.hwndInsertBehind, 290,
-                                        NULL, NULL );
+                                        nullptr, nullptr );
        WinSendMsg( hwndTypeCombo, LM_DELETEALL, (MPARAM)0, (MPARAM)0 );
        pfiledlg = (PFILEDLG)WinQueryWindowULong( hwndDlg, QWL_USER );
        pmydata = (PMYDATA)pfiledlg->ulUser;
        i = 0;
-       while (*(pfiledlg->papszITypeList[i]) != NULL) {
+       while (*(pfiledlg->papszITypeList[i]) != nullptr) {
            WinSendMsg( hwndTypeCombo, LM_INSERTITEM, (MPARAM)LIT_END, (MPARAM)*(pfiledlg->papszITypeList[i]) );
            i++;
        }

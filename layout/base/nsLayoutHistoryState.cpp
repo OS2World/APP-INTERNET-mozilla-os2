@@ -14,21 +14,30 @@
 #include "nsPresState.h"
 #include "mozilla/Attributes.h"
 
-class nsLayoutHistoryState MOZ_FINAL : public nsILayoutHistoryState,
-                                       public nsSupportsWeakReference
+class nsLayoutHistoryState final : public nsILayoutHistoryState,
+                                   public nsSupportsWeakReference
 {
 public:
-  NS_HIDDEN_(nsresult) Init();
+  nsLayoutHistoryState()
+    : mScrollPositionOnly(false)
+  {
+  }
 
   NS_DECL_ISUPPORTS
 
   // nsILayoutHistoryState
-  NS_IMETHOD AddState(const nsCString& aKey, nsPresState* aState);
-  NS_IMETHOD GetState(const nsCString& aKey, nsPresState** aState);
-  NS_IMETHOD RemoveState(const nsCString& aKey);
-  NS_IMETHOD_(bool) HasStates() const;
-  NS_IMETHOD SetScrollPositionOnly(const bool aFlag);
-
+  virtual void
+  AddState(const nsCString& aKey, nsPresState* aState) override;
+  virtual nsPresState*
+  GetState(const nsCString& aKey) override;
+  virtual void
+  RemoveState(const nsCString& aKey) override;
+  virtual bool
+  HasStates() const override;
+  virtual void
+  SetScrollPositionOnly(const bool aFlag) override;
+  virtual void
+  ResetScrollState() override;
 
 private:
   ~nsLayoutHistoryState() {}
@@ -38,72 +47,62 @@ private:
 };
 
 
-nsresult
-NS_NewLayoutHistoryState(nsILayoutHistoryState** aState)
+already_AddRefed<nsILayoutHistoryState>
+NS_NewLayoutHistoryState()
 {
-  nsLayoutHistoryState *state;
-
-  *aState = nullptr;
-  state = new nsLayoutHistoryState();
-
-  NS_ADDREF(state);
-  nsresult rv = state->Init();
-  if (NS_SUCCEEDED(rv))
-    *aState = state;
-  else
-    NS_RELEASE(state);
-
-  return rv;
+  RefPtr<nsLayoutHistoryState> state = new nsLayoutHistoryState();
+  return state.forget();
 }
 
-NS_IMPL_ISUPPORTS2(nsLayoutHistoryState,
-                   nsILayoutHistoryState,
-                   nsISupportsWeakReference)
+NS_IMPL_ISUPPORTS(nsLayoutHistoryState,
+                  nsILayoutHistoryState,
+                  nsISupportsWeakReference)
 
-nsresult
-nsLayoutHistoryState::Init()
-{
-  mScrollPositionOnly = false;
-  mStates.Init();
-  return NS_OK;
-}
-
-NS_IMETHODIMP
+void
 nsLayoutHistoryState::AddState(const nsCString& aStateKey, nsPresState* aState)
 {
   mStates.Put(aStateKey, aState);
-  return NS_OK;
 }
 
-NS_IMETHODIMP
-nsLayoutHistoryState::GetState(const nsCString& aKey, nsPresState** aState)
+nsPresState*
+nsLayoutHistoryState::GetState(const nsCString& aKey)
 {
-  bool entryExists = mStates.Get(aKey, aState);
+  nsPresState* state = nullptr;
+  bool entryExists = mStates.Get(aKey, &state);
 
   if (entryExists && mScrollPositionOnly) {
     // Ensure any state that shouldn't be restored is removed
-    (*aState)->ClearNonScrollState();
+    state->ClearNonScrollState();
   }
 
-  return NS_OK;
+  return state;
 }
 
-NS_IMETHODIMP
+void
 nsLayoutHistoryState::RemoveState(const nsCString& aKey)
 {
   mStates.Remove(aKey);
-  return NS_OK;
 }
 
-NS_IMETHODIMP_(bool)
+bool
 nsLayoutHistoryState::HasStates() const
 {
   return mStates.Count() != 0;
 }
 
-NS_IMETHODIMP
+void
 nsLayoutHistoryState::SetScrollPositionOnly(const bool aFlag)
 {
   mScrollPositionOnly = aFlag;
-  return NS_OK;
+}
+
+void
+nsLayoutHistoryState::ResetScrollState()
+{
+  for (auto iter = mStates.Iter(); !iter.Done(); iter.Next()) {
+    nsPresState* state = iter.UserData();
+    if (state) {
+      state->SetScrollState(nsPoint(0, 0));
+    }
+  }
 }

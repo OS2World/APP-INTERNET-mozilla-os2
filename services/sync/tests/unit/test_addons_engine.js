@@ -13,19 +13,20 @@ Cu.import("resource://services-sync/service.js");
 Cu.import("resource://services-sync/util.js");
 Cu.import("resource://testing-common/services/sync/utils.js");
 
-let prefs = new Preferences();
+var prefs = new Preferences();
 prefs.set("extensions.getAddons.get.url",
           "http://localhost:8888/search/guid:%IDS%");
+prefs.set("extensions.install.requireSecureOrigin", false);
 
 loadAddonTestFunctions();
 startupManager();
 
-let engineManager = Service.engineManager;
+var engineManager = Service.engineManager;
 
 engineManager.register(AddonsEngine);
-let engine = engineManager.get("addons");
-let reconciler = engine._reconciler;
-let tracker = engine._tracker;
+var engine = engineManager.get("addons");
+var reconciler = engine._reconciler;
+var tracker = engine._tracker;
 
 function advance_test() {
   reconciler._addons = {};
@@ -34,8 +35,6 @@ function advance_test() {
   let cb = Async.makeSpinningCallback();
   reconciler.saveState(null, cb);
   cb.wait();
-
-  Svc.Prefs.reset("addons.ignoreRepositoryChecking");
 
   run_next_test();
 }
@@ -104,14 +103,14 @@ add_test(function test_get_changed_ids() {
   tracker.clearChangedIDs();
 
   _("Ensure reconciler changes are populated.");
-  Svc.Prefs.set("addons.ignoreRepositoryChecking", true);
   let addon = installAddon("test_bootstrap1_1");
   tracker.clearChangedIDs(); // Just in case.
   changes = engine.getChangedIDs();
   do_check_eq("object", typeof(changes));
   do_check_eq(1, Object.keys(changes).length);
   do_check_true(addon.syncGUID in changes);
-  do_check_true(changes[addon.syncGUID] > changeTime);
+  _("Change time: " + changeTime + ", addon change: " + changes[addon.syncGUID]);
+  do_check_true(changes[addon.syncGUID] >= changeTime);
 
   let oldTime = changes[addon.syncGUID];
   let guid2 = addon.syncGUID;
@@ -150,15 +149,14 @@ add_test(function test_disabled_install_semantics() {
   // This is essentially a test for bug 712542, which snuck into the original
   // add-on sync drop. It ensures that when an add-on is installed that the
   // disabled state and incoming syncGUID is preserved, even on the next sync.
-
-  Svc.Prefs.set("addons.ignoreRepositoryChecking", true);
-
   const USER       = "foo";
   const PASSWORD   = "password";
   const PASSPHRASE = "abcdeabcdeabcdeabcdeabcdea";
   const ADDON_ID   = "addon1@tests.mozilla.org";
 
-  new SyncTestingInfrastructure(USER, PASSWORD, PASSPHRASE);
+  let server = new SyncServer();
+  server.start();
+  new SyncTestingInfrastructure(server.server, USER, PASSWORD, PASSPHRASE);
 
   generateNewKeys(Service.collectionKeys);
 
@@ -169,10 +167,8 @@ add_test(function test_disabled_install_semantics() {
     addons: {}
   };
 
-  let server = new SyncServer();
   server.registerUser(USER, "password");
   server.createContents(USER, contents);
-  server.start();
 
   let amoServer = new HttpServer();
   amoServer.registerFile("/search/guid:addon1%40tests.mozilla.org",
@@ -239,15 +235,13 @@ add_test(function cleanup() {
 
 function run_test() {
   initTestLogging("Trace");
-  Log4Moz.repository.getLogger("Sync.Engine.Addons").level =
-    Log4Moz.Level.Trace;
-  Log4Moz.repository.getLogger("Sync.Store.Addons").level = Log4Moz.Level.Trace;
-  Log4Moz.repository.getLogger("Sync.Tracker.Addons").level =
-    Log4Moz.Level.Trace;
-  Log4Moz.repository.getLogger("Sync.AddonsRepository").level =
-    Log4Moz.Level.Trace;
-
-  new SyncTestingInfrastructure();
+  Log.repository.getLogger("Sync.Engine.Addons").level =
+    Log.Level.Trace;
+  Log.repository.getLogger("Sync.Store.Addons").level = Log.Level.Trace;
+  Log.repository.getLogger("Sync.Tracker.Addons").level =
+    Log.Level.Trace;
+  Log.repository.getLogger("Sync.AddonsRepository").level =
+    Log.Level.Trace;
 
   reconciler.startListening();
 

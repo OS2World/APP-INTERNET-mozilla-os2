@@ -6,16 +6,51 @@
 
 /*
  * Helper classes encapsulating access to the callee, |this| value, arguments,
- * and argument count for a function call.
+ * and argument count for a call/construct operation.
  *
- * The intent of JS::CallArgs and JS::CallReceiver is that they be used to
- * encapsulate access to the un-abstracted |unsigned argc, Value *vp| arguments
- * to a function.  It's possible (albeit deprecated) to manually index into
- * |vp| to access the callee, |this|, and arguments of a function, and to set
- * its return value.  It's also possible to use the supported API of JS_CALLEE,
- * JS_THIS, JS_ARGV, JS_RVAL and JS_SET_RVAL to the same ends.  But neither API
- * has the error-handling or moving-GC correctness of CallArgs or CallReceiver.
- * New code should use CallArgs and CallReceiver instead whenever possible.
+ * JS::CallArgs encapsulates access to a JSNative's un-abstracted
+ * |unsigned argc, Value* vp| arguments.  The principal way to create a
+ * JS::CallArgs is using JS::CallArgsFromVp:
+ *
+ *   // If provided no arguments or a non-numeric first argument, return zero.
+ *   // Otherwise return |this| exactly as given, without boxing.
+ *   static bool
+ *   Func(JSContext* cx, unsigned argc, JS::Value* vp)
+ *   {
+ *       JS::CallArgs args = JS::CallArgsFromVp(argc, vp);
+ *
+ *       // Guard against no arguments or a non-numeric arg0.
+ *       if (args.length() == 0 || !args[0].isNumber()) {
+ *           args.rval().setInt32(0);
+ *           return true;
+ *       }
+ *
+ *       // Access to the callee must occur before accessing/setting
+ *       // the return value.
+ *       JSObject& callee = args.callee();
+ *       args.rval().setObject(callee);
+ *
+ *       // callee() and calleev() will now assert.
+ *
+ *       // It's always fine to access thisv().
+ *       HandleValue thisv = args.thisv();
+ *       args.rval().set(thisv);
+ *
+ *       // As the return value was last set to |this|, returns |this|.
+ *       return true;
+ *   }
+ *
+ * CallArgs is exposed publicly and used internally.  Not all parts of its
+ * public interface are meant to be used by embedders!  See inline comments to
+ * for details.
+ *
+ * It's possible (albeit deprecated) to manually index into |vp| to access the
+ * callee, |this|, and arguments of a function, and to set its return value.
+ * It's also possible to use the supported API of JS_CALLEE, JS_THIS, JS_ARGV,
+ * JS_RVAL, and JS_SET_RVAL to the same ends.
+ *
+ * But neither API has the error-handling or moving-GC correctness of CallArgs.
+ * New code should use CallArgs instead whenever possible.
  *
  * The eventual plan is to change JSNative to take |const CallArgs&| directly,
  * for automatic assertion of correct use and to make calling functions more
@@ -38,117 +73,100 @@
 #include "js/RootingAPI.h"
 #include "js/Value.h"
 
-struct JSContext;
-class JSObject;
-
 /* Typedef for native functions called by the JS VM. */
-typedef JSBool
-(* JSNative)(JSContext *cx, unsigned argc, JS::Value *vp);
-
-/*
- * Compute |this| for the |vp| inside a JSNative, either boxing primitives or
- * replacing with the global object as necessary.
- *
- * This method will go away at some point: instead use |args.thisv()|.  If the
- * value is an object, no further work is required.  If that value is |null| or
- * |undefined|, use |JS_GetGlobalForObject| to compute the global object.  If
- * the value is some other primitive, use |JS_ValueToObject| to box it.
- */
-extern JS_PUBLIC_API(JS::Value)
-JS_ComputeThis(JSContext *cx, JS::Value *vp);
+typedef bool
+(* JSNative)(JSContext* cx, unsigned argc, JS::Value* vp);
 
 namespace JS {
 
 extern JS_PUBLIC_DATA(const HandleValue) UndefinedHandleValue;
 
-/*
- * JS::CallReceiver encapsulates access to the callee, |this|, and eventual
- * return value for a function call.  The principal way to create a
- * CallReceiver is using JS::CallReceiverFromVp:
- *
- *   static JSBool
- *   FunctionReturningThis(JSContext *cx, unsigned argc, JS::Value *vp)
- *   {
- *       JS::CallReceiver rec = JS::CallReceiverFromVp(vp);
- *
- *       // Access to the callee must occur before accessing/setting
- *       // the return value.
- *       JSObject &callee = rec.callee();
- *       rec.rval().set(JS::ObjectValue(callee));
- *
- *       // callee() and calleev() will now assert.
- *
- *       // It's always fine to access thisv().
- *       HandleValue thisv = rec.thisv();
- *       rec.rval().set(thisv);
- *
- *       // As the return value was last set to |this|, returns |this|.
- *       return true;
- *   }
- *
- * A note on JS_ComputeThis and JS_THIS_OBJECT: these methods currently aren't
- * part of the CallReceiver interface.  We will likely add them at some point.
- * Until then, you should probably continue using |vp| directly for these two
- * cases.
- *
- * CallReceiver is exposed publicly and used internally.  Not all parts of its
- * public interface are meant to be used by embedders!  See inline comments to
- * for details.
- */
-
 namespace detail {
 
-enum UsedRval { IncludeUsedRval, NoUsedRval };
+/*
+ * Compute |this| for the |vp| inside a JSNative, either boxing primitives or
+ * replacing with the global object as necessary.
+ */
+extern JS_PUBLIC_API(Value)
+ComputeThis(JSContext* cx, JS::Value* vp);
 
-template<UsedRval WantUsedRval>
-class MOZ_STACK_CLASS UsedRvalBase;
+#ifdef JS_DEBUG
+extern JS_PUBLIC_API(void)
+CheckIsValidConstructible(const Value& v);
+#endif
 
-template<>
-class MOZ_STACK_CLASS UsedRvalBase<IncludeUsedRval>
+class MOZ_STACK_CLASS IncludeUsedRval
 {
   protected:
+#ifdef JS_DEBUG
     mutable bool usedRval_;
     void setUsedRval() const { usedRval_ = true; }
     void clearUsedRval() const { usedRval_ = false; }
+    void assertUnusedRval() const { MOZ_ASSERT(!usedRval_); }
+#else
+    void setUsedRval() const {}
+    void clearUsedRval() const {}
+    void assertUnusedRval() const {}
+#endif
 };
 
-template<>
-class MOZ_STACK_CLASS UsedRvalBase<NoUsedRval>
+class MOZ_STACK_CLASS NoUsedRval
 {
   protected:
     void setUsedRval() const {}
     void clearUsedRval() const {}
+    void assertUnusedRval() const {}
 };
 
-template<UsedRval WantUsedRval>
-class MOZ_STACK_CLASS CallReceiverBase : public UsedRvalBase<
-#ifdef DEBUG
-        WantUsedRval
-#else
-        NoUsedRval
-#endif
-    >
+template<class WantUsedRval>
+class MOZ_STACK_CLASS CallArgsBase : public WantUsedRval
 {
+    static_assert(mozilla::IsSame<WantUsedRval, IncludeUsedRval>::value ||
+                  mozilla::IsSame<WantUsedRval, NoUsedRval>::value,
+                  "WantUsedRval can only be IncludeUsedRval or NoUsedRval");
+
   protected:
-    Value *argv_;
+    Value* argv_;
+    unsigned argc_;
+    bool constructing_;
 
   public:
-    /*
-     * Returns the function being called, as an object.  Must not be called
-     * after rval() has been used!
-     */
-    JSObject &callee() const {
-        MOZ_ASSERT(!this->usedRval_);
-        return argv_[-2].toObject();
-    }
+    // CALLEE ACCESS
 
     /*
      * Returns the function being called, as a value.  Must not be called after
      * rval() has been used!
      */
     HandleValue calleev() const {
-        MOZ_ASSERT(!this->usedRval_);
+        this->assertUnusedRval();
         return HandleValue::fromMarkedLocation(&argv_[-2]);
+    }
+
+    /*
+     * Returns the function being called, as an object.  Must not be called
+     * after rval() has been used!
+     */
+    JSObject& callee() const {
+        return calleev().toObject();
+    }
+
+    // CALLING/CONSTRUCTING-DIFFERENTIATIONS
+
+    bool isConstructing() const {
+        if (!argv_[-1].isMagic())
+            return false;
+
+#ifdef JS_DEBUG
+        if (!this->usedRval_)
+            CheckIsValidConstructible(calleev());
+#endif
+
+        return true;
+    }
+
+    MutableHandleValue newTarget() const {
+        MOZ_ASSERT(constructing_);
+        return MutableHandleValue::fromMarkedLocation(&this->argv_[argc_]);
     }
 
     /*
@@ -164,12 +182,43 @@ class MOZ_STACK_CLASS CallReceiverBase : public UsedRvalBase<
         return HandleValue::fromMarkedLocation(&argv_[-1]);
     }
 
-    Value computeThis(JSContext *cx) const {
+    Value computeThis(JSContext* cx) const {
         if (thisv().isObject())
             return thisv();
 
-        return JS_ComputeThis(cx, base());
+        return ComputeThis(cx, base());
     }
+
+    // ARGUMENTS
+
+        /* Returns the number of arguments. */
+    unsigned length() const { return argc_; }
+
+    /* Returns the i-th zero-indexed argument. */
+    MutableHandleValue operator[](unsigned i) const {
+        MOZ_ASSERT(i < argc_);
+        return MutableHandleValue::fromMarkedLocation(&this->argv_[i]);
+    }
+
+    /*
+     * Returns the i-th zero-indexed argument, or |undefined| if there's no
+     * such argument.
+     */
+    HandleValue get(unsigned i) const {
+        return i < length()
+               ? HandleValue::fromMarkedLocation(&this->argv_[i])
+               : UndefinedHandleValue;
+    }
+
+    /*
+     * Returns true if the i-th zero-indexed argument is present and is not
+     * |undefined|.
+     */
+    bool hasDefined(unsigned i) const {
+        return i < argc_ && !this->argv_[i].isUndefined();
+    }
+
+    // RETURN VALUE
 
     /*
      * Returns the currently-set return value.  The initial contents of this
@@ -188,143 +237,41 @@ class MOZ_STACK_CLASS CallReceiverBase : public UsedRvalBase<
     }
 
   public:
-    // These methods are only intended for internal use.  Embedders shouldn't
-    // use them!
-
-    Value *base() const { return argv_ - 2; }
-
-    Value *spAfterCall() const {
-        this->setUsedRval();
-        return argv_ - 1;
-    }
-
-  public:
     // These methods are publicly exposed, but they are *not* to be used when
     // implementing a JSNative method and encapsulating access to |vp| within
     // it.  You probably don't want to use these!
 
-    void setCallee(Value aCalleev) const {
+    void setCallee(const Value& aCalleev) const {
         this->clearUsedRval();
         argv_[-2] = aCalleev;
     }
 
-    void setThis(Value aThisv) const {
+    void setThis(const Value& aThisv) const {
         argv_[-1] = aThisv;
     }
 
     MutableHandleValue mutableThisv() const {
         return MutableHandleValue::fromMarkedLocation(&argv_[-1]);
     }
-};
-
-} // namespace detail
-
-class MOZ_STACK_CLASS CallReceiver : public detail::CallReceiverBase<detail::IncludeUsedRval>
-{
-  private:
-    friend CallReceiver CallReceiverFromVp(Value *vp);
-    friend CallReceiver CallReceiverFromArgv(Value *argv);
-};
-
-MOZ_ALWAYS_INLINE CallReceiver
-CallReceiverFromArgv(Value *argv)
-{
-    CallReceiver receiver;
-    receiver.clearUsedRval();
-    receiver.argv_ = argv;
-    return receiver;
-}
-
-MOZ_ALWAYS_INLINE CallReceiver
-CallReceiverFromVp(Value *vp)
-{
-    return CallReceiverFromArgv(vp + 2);
-}
-
-/*
- * JS::CallArgs encapsulates everything JS::CallReceiver does, plus access to
- * the function call's arguments.  The principal way to create a CallArgs is
- * like so, using JS::CallArgsFromVp:
- *
- *   static JSBool
- *   FunctionReturningArgcTimesArg0(JSContext *cx, unsigned argc, JS::Value *vp)
- *   {
- *       JS::CallArgs args = JS::CallArgsFromVp(argc, vp);
- *
- *       // Guard against no arguments or a non-numeric arg0.
- *       if (args.length() == 0 || !args[0].isNumber()) {
- *           args.rval().setInt32(0);
- *           return true;
- *       }
- *
- *       args.rval().set(JS::NumberValue(args.length() * args[0].toNumber()));
- *       return true;
- *   }
- *
- * CallArgs is exposed publicly and used internally.  Not all parts of its
- * public interface are meant to be used by embedders!  See inline comments to
- * for details.
- */
-namespace detail {
-
-template<UsedRval WantUsedRval>
-class MOZ_STACK_CLASS CallArgsBase :
-        public mozilla::Conditional<WantUsedRval == detail::IncludeUsedRval,
-                                    CallReceiver,
-                                    CallReceiverBase<NoUsedRval> >::Type
-{
-  protected:
-    unsigned argc_;
 
   public:
-    /* Returns the number of arguments. */
-    unsigned length() const { return argc_; }
+    // These methods are publicly exposed, but we're unsure of the interfaces
+    // (because they're hackish and drop assertions).  Avoid using these if you
+    // can.
 
-    /* Returns the i-th zero-indexed argument. */
-    Value &operator[](unsigned i) const {
-        MOZ_ASSERT(i < argc_);
-        return this->argv_[i];
-    }
-
-    /* Returns a mutable handle for the i-th zero-indexed argument. */
-    MutableHandleValue handleAt(unsigned i) const {
-        MOZ_ASSERT(i < argc_);
-        return MutableHandleValue::fromMarkedLocation(&this->argv_[i]);
-    }
-
-    /*
-     * Returns the i-th zero-indexed argument, or |undefined| if there's no
-     * such argument.
-     */
-    Value get(unsigned i) const {
-        return i < length() ? this->argv_[i] : UndefinedValue();
-    }
-
-    /*
-     * Returns the i-th zero-indexed argument as a handle, or |undefined| if
-     * there's no such argument.
-     */
-    HandleValue handleOrUndefinedAt(unsigned i) const {
-        return i < length()
-               ? HandleValue::fromMarkedLocation(&this->argv_[i])
-               : UndefinedHandleValue;
-    }
-
-    /*
-     * Returns true if the i-th zero-indexed argument is present and is not
-     * |undefined|.
-     */
-    bool hasDefined(unsigned i) const {
-        return i < argc_ && !this->argv_[i].isUndefined();
-    }
+    Value* array() const { return argv_; }
+    Value* end() const { return argv_ + argc_ + constructing_; }
 
   public:
-    // These methods are publicly exposed, but we're less sure of the interface
-    // here than we'd like (because they're hackish and drop assertions).  Try
-    // to avoid using these if you can.
+    // These methods are only intended for internal use.  Embedders shouldn't
+    // use them!
 
-    Value *array() const { return this->argv_; }
-    Value *end() const { return this->argv_ + argc_; }
+    Value* base() const { return argv_ - 2; }
+
+    Value* spAfterCall() const {
+        this->setUsedRval();
+        return argv_ - 1;
+    }
 };
 
 } // namespace detail
@@ -332,58 +279,77 @@ class MOZ_STACK_CLASS CallArgsBase :
 class MOZ_STACK_CLASS CallArgs : public detail::CallArgsBase<detail::IncludeUsedRval>
 {
   private:
-    friend CallArgs CallArgsFromVp(unsigned argc, Value *vp);
-    friend CallArgs CallArgsFromSp(unsigned argc, Value *sp);
+    friend CallArgs CallArgsFromVp(unsigned argc, Value* vp);
+    friend CallArgs CallArgsFromSp(unsigned stackSlots, Value* sp, bool constructing);
 
-    static CallArgs create(unsigned argc, Value *argv) {
+    static CallArgs create(unsigned argc, Value* argv, bool constructing) {
         CallArgs args;
         args.clearUsedRval();
         args.argv_ = argv;
         args.argc_ = argc;
+        args.constructing_ = constructing;
+#ifdef DEBUG
+        for (unsigned i = 0; i < argc; ++i)
+            MOZ_ASSERT_IF(argv[i].isMarkable(), !GCThingIsMarkedGray(GCCellPtr(argv[i])));
+#endif
         return args;
     }
+
+  public:
+    /*
+     * Returns true if there are at least |required| arguments passed in. If
+     * false, it reports an error message on the context.
+     */
+    JS_PUBLIC_API(bool) requireAtLeast(JSContext* cx, const char* fnname, unsigned required) const;
 
 };
 
 MOZ_ALWAYS_INLINE CallArgs
-CallArgsFromVp(unsigned argc, Value *vp)
+CallArgsFromVp(unsigned argc, Value* vp)
 {
-    return CallArgs::create(argc, vp + 2);
+    return CallArgs::create(argc, vp + 2, vp[1].isMagic(JS_IS_CONSTRUCTING));
 }
 
 // This method is only intended for internal use in SpiderMonkey.  We may
 // eventually move it to an internal header.  Embedders should use
 // JS::CallArgsFromVp!
 MOZ_ALWAYS_INLINE CallArgs
-CallArgsFromSp(unsigned argc, Value *sp)
+CallArgsFromSp(unsigned stackSlots, Value* sp, bool constructing = false)
 {
-    return CallArgs::create(argc, sp - argc);
+    return CallArgs::create(stackSlots - constructing, sp - stackSlots, constructing);
 }
 
 } // namespace JS
 
 /*
  * Macros to hide interpreter stack layout details from a JSNative using its
- * JS::Value *vp parameter.  DO NOT USE THESE!  Instead use JS::CallArgs and
+ * JS::Value* vp parameter.  DO NOT USE THESE!  Instead use JS::CallArgs and
  * friends, above.  These macros will be removed when we change JSNative to
  * take a const JS::CallArgs&.
  */
 
-#define JS_CALLEE(cx,vp)        ((vp)[0])
-#define JS_THIS_OBJECT(cx,vp)   (JSVAL_TO_OBJECT(JS_THIS(cx,vp)))
-#define JS_ARGV(cx,vp)          ((vp) + 2)
-#define JS_RVAL(cx,vp)          (*(vp))
-#define JS_SET_RVAL(cx,vp,v)    (*(vp) = (v))
-
 /*
+ * Return |this| if |this| is an object.  Otherwise, return the global object
+ * if |this| is null or undefined, and finally return a boxed version of any
+ * other primitive.
+ *
  * Note: if this method returns null, an error has occurred and must be
  * propagated or caught.
  */
 MOZ_ALWAYS_INLINE JS::Value
-JS_THIS(JSContext *cx, JS::Value *vp)
+JS_THIS(JSContext* cx, JS::Value* vp)
 {
-    return JSVAL_IS_PRIMITIVE(vp[1]) ? JS_ComputeThis(cx, vp) : vp[1];
+    return vp[1].isPrimitive() ? JS::detail::ComputeThis(cx, vp) : vp[1];
 }
+
+/*
+ * A note on JS_THIS_OBJECT: no equivalent method is part of the CallArgs
+ * interface, and we're unlikely to add one (functions shouldn't be implicitly
+ * exposing the global object to arbitrary callers).  Continue using |vp|
+ * directly for this case, but be aware this API will eventually be replaced
+ * with a function that operates directly upon |args.thisv()|.
+ */
+#define JS_THIS_OBJECT(cx,vp)   (JS_THIS(cx,vp).toObjectOrNull())
 
 /*
  * |this| is passed to functions in ES5 without change.  Functions themselves

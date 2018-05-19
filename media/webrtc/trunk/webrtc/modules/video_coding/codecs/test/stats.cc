@@ -8,14 +8,31 @@
  *  be found in the AUTHORS file in the root of the source tree.
  */
 
-#include "modules/video_coding/codecs/test/stats.h"
+#include "webrtc/modules/video_coding/codecs/test/stats.h"
+
+#include <assert.h>
+#include <stdio.h>
 
 #include <algorithm>  // min_element, max_element
-#include <cassert>
-#include <cstdio>
+
+#include "webrtc/base/format_macros.h"
 
 namespace webrtc {
 namespace test {
+
+FrameStatistic::FrameStatistic()
+    : encoding_successful(false),
+      decoding_successful(false),
+      encode_return_code(0),
+      decode_return_code(0),
+      encode_time_in_us(0),
+      decode_time_in_us(0),
+      frame_number(0),
+      packets_dropped(0),
+      total_packets(0),
+      bit_rate_in_kbps(0),
+      encoded_frame_length_in_bytes(0),
+      frame_type(kDeltaFrame) {}
 
 Stats::Stats() {}
 
@@ -55,11 +72,11 @@ void Stats::PrintSummary() {
   // Calculate min, max, average and total encoding time
   int total_encoding_time_in_us = 0;
   int total_decoding_time_in_us = 0;
-  int total_encoded_frames_lengths = 0;
-  int total_encoded_key_frames_lengths = 0;
-  int total_encoded_nonkey_frames_lengths = 0;
-  int nbr_keyframes = 0;
-  int nbr_nonkeyframes = 0;
+  size_t total_encoded_frames_lengths = 0;
+  size_t total_encoded_key_frames_lengths = 0;
+  size_t total_encoded_nonkey_frames_lengths = 0;
+  size_t nbr_keyframes = 0;
+  size_t nbr_nonkeyframes = 0;
 
   for (FrameStatisticsIterator it = stats_.begin();
       it != stats_.end(); ++it) {
@@ -126,23 +143,24 @@ void Stats::PrintSummary() {
   printf("Frame sizes:\n");
   frame = std::min_element(stats_.begin(),
                       stats_.end(), LessForEncodedSize);
-  printf("  Min     : %7d bytes (frame %d)\n",
+  printf("  Min     : %7" PRIuS " bytes (frame %d)\n",
          frame->encoded_frame_length_in_bytes, frame->frame_number);
 
   frame = std::max_element(stats_.begin(),
                       stats_.end(), LessForEncodedSize);
-  printf("  Max     : %7d bytes (frame %d)\n",
+  printf("  Max     : %7" PRIuS " bytes (frame %d)\n",
          frame->encoded_frame_length_in_bytes, frame->frame_number);
 
-  printf("  Average : %7d bytes\n",
-         static_cast<int>(total_encoded_frames_lengths / stats_.size()));
+  printf("  Average : %7" PRIuS " bytes\n",
+         total_encoded_frames_lengths / stats_.size());
   if (nbr_keyframes > 0) {
-    printf("  Average key frame size    : %7d bytes (%d keyframes)\n",
-           total_encoded_key_frames_lengths / nbr_keyframes,
-           nbr_keyframes);
+    printf("  Average key frame size    : %7" PRIuS " bytes (%" PRIuS
+           " keyframes)\n",
+           total_encoded_key_frames_lengths / nbr_keyframes, nbr_keyframes);
   }
   if (nbr_nonkeyframes > 0) {
-    printf("  Average non-key frame size: %7d bytes (%d frames)\n",
+    printf("  Average non-key frame size: %7" PRIuS " bytes (%" PRIuS
+           " frames)\n",
            total_encoded_nonkey_frames_lengths / nbr_nonkeyframes,
            nbr_nonkeyframes);
   }

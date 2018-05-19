@@ -1,3 +1,5 @@
+/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
+/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -6,10 +8,12 @@
 #define mozilla_dom_gamepad_Gamepad_h
 
 #include "mozilla/ErrorResult.h"
-#include "mozilla/StandardInteger.h"
+#include "mozilla/dom/GamepadBinding.h"
+#include "mozilla/dom/GamepadButton.h"
+#include "mozilla/dom/GamepadPose.h"
+#include "mozilla/dom/Performance.h"
+#include <stdint.h>
 #include "nsCOMPtr.h"
-#include "nsIDOMGamepad.h"
-#include "nsIVariant.h"
 #include "nsString.h"
 #include "nsTArray.h"
 #include "nsWrapperCache.h"
@@ -17,24 +21,22 @@
 namespace mozilla {
 namespace dom {
 
-enum GamepadMappingType
-{
-  NoMapping = 0,
-  StandardMapping = 1
-};
+// Per spec:
+// https://dvcs.w3.org/hg/gamepad/raw-file/default/gamepad.html#remapping
+const int kStandardGamepadButtons = 17;
+const int kStandardGamepadAxes = 4;
 
-// TODO: fix the spec to expose both pressed and value:
-// https://www.w3.org/Bugs/Public/show_bug.cgi?id=21388
-struct GamepadButton
-{
-  bool pressed;
-  double value;
+const int kButtonLeftTrigger = 6;
+const int kButtonRightTrigger = 7;
 
-  GamepadButton(): pressed(false), value(0.0) {}
-};
+const int kLeftStickXAxis = 0;
+const int kLeftStickYAxis = 1;
+const int kRightStickXAxis = 2;
+const int kRightStickYAxis = 3;
 
-class Gamepad : public nsIDOMGamepad
-              , public nsWrapperCache
+
+class Gamepad final : public nsISupports,
+                      public nsWrapperCache
 {
 public:
   Gamepad(nsISupports* aParent,
@@ -48,6 +50,7 @@ public:
   void SetButton(uint32_t aButton, bool aPressed, double aValue);
   void SetAxis(uint32_t aAxis, double aValue);
   void SetIndex(uint32_t aIndex);
+  void SetPose(const GamepadPoseState& aPose);
 
   // Make the state of this gamepad equivalent to other.
   void SyncState(Gamepad* aOther);
@@ -61,21 +64,21 @@ public:
     return mParent;
   }
 
-  virtual JSObject* WrapObject(JSContext* aCx,
-			       JS::Handle<JSObject*> aScope) MOZ_OVERRIDE;
+  virtual JSObject* WrapObject(JSContext* aCx, JS::Handle<JSObject*> aGivenProto) override;
 
   void GetId(nsAString& aID) const
   {
     aID = mID;
   }
 
-  void GetMapping(nsAString& aMapping) const
+  DOMHighResTimeStamp Timestamp() const
   {
-    if (mMapping == StandardMapping) {
-      aMapping = NS_LITERAL_STRING("standard");
-    } else {
-      aMapping = NS_LITERAL_STRING("");
-    }
+     return mTimestamp;
+  }
+
+  GamepadMappingType Mapping()
+  {
+    return mMapping;
   }
 
   bool Connected() const
@@ -88,25 +91,24 @@ public:
     return mIndex;
   }
 
-  already_AddRefed<nsIVariant> GetButtons(mozilla::ErrorResult& aRv)
+  void GetButtons(nsTArray<RefPtr<GamepadButton>>& aButtons) const
   {
-    nsCOMPtr<nsIVariant> buttons;
-    aRv = GetButtons(getter_AddRefs(buttons));
-    return buttons.forget();
+    aButtons = mButtons;
   }
 
-  already_AddRefed<nsIVariant> GetAxes(mozilla::ErrorResult& aRv)
+  void GetAxes(nsTArray<double>& aAxes) const
   {
-    nsCOMPtr<nsIVariant> axes;
-    aRv = GetAxes(getter_AddRefs(axes));
-    return axes.forget();
+    aAxes = mAxes;
+  }
+
+  GamepadPose* GetPose() const
+  {
+    return mPose;
   }
 
 private:
   virtual ~Gamepad() {}
-
-  nsresult GetButtons(nsIVariant** aButtons);
-  nsresult GetAxes(nsIVariant** aAxes);
+  void UpdateTimestamp();
 
 protected:
   nsCOMPtr<nsISupports> mParent;
@@ -120,8 +122,10 @@ protected:
   bool mConnected;
 
   // Current state of buttons, axes.
-  nsTArray<GamepadButton> mButtons;
+  nsTArray<RefPtr<GamepadButton>> mButtons;
   nsTArray<double> mAxes;
+  DOMHighResTimeStamp mTimestamp;
+  RefPtr<GamepadPose> mPose;
 };
 
 } // namespace dom

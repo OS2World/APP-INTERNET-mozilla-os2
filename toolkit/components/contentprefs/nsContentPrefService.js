@@ -9,112 +9,14 @@ const Cu = Components.utils;
 
 const CACHE_MAX_GROUP_ENTRIES = 100;
 
-
-// We have a whitelist for getting/setting. This is because
-// there are potential privacy issues with a compromised
-// content process checking the user's content preferences
-// and using that to discover all the websites visited, etc.
-// Also there are both potential race conditions (if two processes
-// set more than one value in succession, and the values
-// only make sense together), as well as security issues, if
-// a compromised content process can send arbitrary setPref
-// messages. The whitelist contains only those settings that
-// are not at risk for either.
-// We currently whitelist saving/reading the last directory of file
-// uploads, and the last current spellchecker dictionary which are so far
-// the only need we have identified.
-const REMOTE_WHITELIST = [
-  "browser.upload.lastDir",
-  "spellcheck.lang",
-];
-
 Cu.import("resource://gre/modules/XPCOMUtils.jsm");
-
-/**
- * Remotes the service. All the remoting/electrolysis code is in here,
- * so the regular service code below remains uncluttered and maintainable.
- */
-function electrolify(service) {
-  // FIXME: For now, use the wrappedJSObject hack, until bug
-  //        593407 which will clean that up.
-  //        Note that we also use this in the xpcshell tests, separately.
-  service.wrappedJSObject = service;
-
-  var appInfo = Cc["@mozilla.org/xre/app-info;1"];
-  if (!appInfo || appInfo.getService(Ci.nsIXULRuntime).processType ==
-      Ci.nsIXULRuntime.PROCESS_TYPE_DEFAULT) {
-    // Parent process
-
-    service.messageManager = Cc["@mozilla.org/parentprocessmessagemanager;1"].
-                             getService(Ci.nsIMessageBroadcaster);
-
-    // Setup listener for child messages. We don't need to call
-    // addMessageListener as the wakeup service will do that for us.
-    service.receiveMessage = function(aMessage) {
-      var json = aMessage.json;
-
-      if (REMOTE_WHITELIST.indexOf(json.name) == -1)
-        return { succeeded: false };
-
-      switch (aMessage.name) {
-        case "ContentPref:getPref":
-          return { succeeded: true,
-                   value: service.getPref(json.group, json.name, json.value) };
-
-        case "ContentPref:setPref":
-          service.setPref(json.group, json.name, json.value);
-          return { succeeded: true };
-      }
-    };
-  } else {
-    // Child process
-
-    service._dbInit = function(){}; // No local DB
-
-    service.messageManager = Cc["@mozilla.org/childprocessmessagemanager;1"].
-                             getService(Ci.nsISyncMessageSender);
-
-    // Child method remoting
-    [
-      ['getPref', ['group', 'name'], ['_parseGroupParam']],
-      ['setPref', ['group', 'name', 'value'], ['_parseGroupParam']],
-    ].forEach(function(data) {
-      var method = data[0];
-      var params = data[1];
-      var parsers = data[2];
-      service[method] = function __remoted__() {
-        var json = {};
-        for (var i = 0; i < params.length; i++) {
-          if (params[i]) {
-            json[params[i]] = arguments[i];
-            if (parsers[i])
-              json[params[i]] = this[parsers[i]](json[params[i]]);
-          }
-        }
-        var ret = service.messageManager.sendSyncMessage('ContentPref:' + method, json)[0];
-        if (!ret.succeeded)
-          throw "ContentPrefs remoting failed to pass whitelist";
-        return ret.value;
-      };
-    });
-
-    // Listen to preference change notifications from the parent and notify
-    // observers in the child process according to the change
-    service.messageManager.addMessageListener("ContentPref:notifyPrefSet",
-      function(aMessage) {
-        var json = aMessage.json;
-        service._notifyPrefSet(json.group, json.name, json.value);
-      });
-    service.messageManager.addMessageListener("ContentPref:notifyPrefRemoved",
-      function(aMessage) {
-        var json = aMessage.json;
-        service._notifyPrefRemoved(json.group, json.name);
-      });
-  }
-}
+Cu.import("resource://gre/modules/Services.jsm");
 
 function ContentPrefService() {
-  electrolify(this);
+  if (Services.appinfo.processType === Services.appinfo.PROCESS_TYPE_CONTENT) {
+    return Cu.import("resource://gre/modules/ContentPrefServiceChild.jsm")
+             .ContentPrefServiceChild;
+  }
 
   // If this throws an exception, it causes the getService call to fail,
   // but the next time a consumer tries to retrieve the service, we'll try
@@ -132,10 +34,10 @@ Cu.import("resource://gre/modules/ContentPrefStore.jsm");
 const cache = new ContentPrefStore();
 cache.set = function CPS_cache_set(group, name, val) {
   Object.getPrototypeOf(this).set.apply(this, arguments);
-  let groupCount = Object.keys(this._groups).length;
+  let groupCount = this._groups.size;
   if (groupCount >= CACHE_MAX_GROUP_ENTRIES) {
     // Clean half of the entries
-    for (let [group, name, ] in this) {
+    for (let [group, name, ] of this) {
       this.remove(group, name);
       groupCount--;
       if (groupCount < CACHE_MAX_GROUP_ENTRIES / 2)
@@ -147,7 +49,6 @@ cache.set = function CPS_cache_set(group, name, val) {
 const privModeStorage = new ContentPrefStore();
 
 ContentPrefService.prototype = {
-  //**************************************************************************//
   // XPCOM Plumbing
 
   classID: Components.ID("{e3f772f3-023f-4b32-b074-36cf0fd5d414}"),
@@ -155,10 +56,9 @@ ContentPrefService.prototype = {
   QueryInterface: function CPS_QueryInterface(iid) {
     let supportedIIDs = [
       Ci.nsIContentPrefService,
-      Ci.nsIFrameMessageListener,
       Ci.nsISupports,
     ];
-    if (supportedIIDs.some(function (i) iid.equals(i)))
+    if (supportedIIDs.some(i => iid.equals(i)))
       return this;
     if (iid.equals(Ci.nsIContentPrefService2)) {
       if (!this._contentPrefService2) {
@@ -171,7 +71,6 @@ ContentPrefService.prototype = {
     throw Cr.NS_ERROR_NO_INTERFACE;
   },
 
-  //**************************************************************************//
   // Convenience Getters
 
   // Observer Service
@@ -202,7 +101,6 @@ ContentPrefService.prototype = {
   },
 
 
-  //**************************************************************************//
   // Destruction
 
   _destroy: function ContentPrefService__destroy() {
@@ -255,11 +153,11 @@ ContentPrefService.prototype = {
       this.__stmtDeleteSettingIfUnused.finalize();
       this.__stmtDeleteSettingIfUnused = null;
     }
-    if(this.__stmtSelectPrefs) {
+    if (this.__stmtSelectPrefs) {
       this.__stmtSelectPrefs.finalize();
       this.__stmtSelectPrefs = null;
     }
-    if(this.__stmtDeleteGroupIfUnused) {
+    if (this.__stmtDeleteGroupIfUnused) {
       this.__stmtDeleteGroupIfUnused.finalize();
       this.__stmtDeleteGroupIfUnused = null;
     }
@@ -281,15 +179,15 @@ ContentPrefService.prototype = {
     // (although we haven't observed leakage in tests).  Also delete references
     // in _observers and _genericObservers to avoid cycles with those that
     // refer to us and don't remove themselves from those observer pools.
-    for (var i in this) {
-      try { this[i] = null }
-      // Ignore "setting a property that has only a getter" exceptions.
-      catch(ex) {}
-    }
+    delete this._observers;
+    delete this._genericObservers;
+    delete this.__consoleSvc;
+    delete this.__grouper;
+    delete this.__observerSvc;
+    delete this.__prefSvc;
   },
 
 
-  //**************************************************************************//
   // nsIObserver
 
   observe: function ContentPrefService_observe(subject, topic, data) {
@@ -304,16 +202,16 @@ ContentPrefService.prototype = {
   },
 
 
-  //**************************************************************************//
   // in-memory cache and private-browsing stores
 
   _cache: cache,
   _privModeStorage: privModeStorage,
 
-  //**************************************************************************//
   // nsIContentPrefService
 
   getPref: function ContentPrefService_getPref(aGroup, aName, aContext, aCallback) {
+    warnDeprecated();
+
     if (!aName)
       throw Components.Exception("aName cannot be null or an empty string",
                                  Cr.NS_ERROR_ILLEGAL_VALUE);
@@ -324,8 +222,8 @@ ContentPrefService.prototype = {
       if (this._privModeStorage.has(group, aName)) {
         let value = this._privModeStorage.get(group, aName);
         if (aCallback) {
-          this._scheduleCallback(function(){aCallback.onResult(value);});
-          return;
+          this._scheduleCallback(function() { aCallback.onResult(value); });
+          return undefined;
         }
         return value;
       }
@@ -339,6 +237,8 @@ ContentPrefService.prototype = {
   },
 
   setPref: function ContentPrefService_setPref(aGroup, aName, aValue, aContext) {
+    warnDeprecated();
+
     // If the pref is already set to the value, there's nothing more to do.
     var currentValue = this.getPref(aGroup, aName, aContext);
     if (typeof currentValue != "undefined") {
@@ -350,7 +250,7 @@ ContentPrefService.prototype = {
 
     if (aContext && aContext.usePrivateBrowsing) {
       this._privModeStorage.setWithCast(group, aName, aValue);
-      this._broadcastPrefSet(group, aName, aValue);
+      this._notifyPrefSet(group, aName, aValue, aContext.usePrivateBrowsing);
       return;
     }
 
@@ -372,16 +272,22 @@ ContentPrefService.prototype = {
       this._insertPref(groupID, settingID, aValue);
 
     this._cache.setWithCast(group, aName, aValue);
-    this._broadcastPrefSet(group, aName, aValue);
+
+    this._notifyPrefSet(group, aName, aValue,
+                        aContext ? aContext.usePrivateBrowsing : false);
   },
 
   hasPref: function ContentPrefService_hasPref(aGroup, aName, aContext) {
+    warnDeprecated();
+
     // XXX If consumers end up calling this method regularly, then we should
     // optimize this to query the database directly.
     return (typeof this.getPref(aGroup, aName, aContext) != "undefined");
   },
 
   hasCachedPref: function ContentPrefService_hasCachedPref(aGroup, aName, aContext) {
+    warnDeprecated();
+
     if (!aName)
       throw Components.Exception("aName cannot be null or an empty string",
                                  Cr.NS_ERROR_ILLEGAL_VALUE);
@@ -392,6 +298,8 @@ ContentPrefService.prototype = {
   },
 
   removePref: function ContentPrefService_removePref(aGroup, aName, aContext) {
+    warnDeprecated();
+
     // If there's no old value, then there's nothing to remove.
     if (!this.hasPref(aGroup, aName, aContext))
       return;
@@ -400,7 +308,7 @@ ContentPrefService.prototype = {
 
     if (aContext && aContext.usePrivateBrowsing) {
       this._privModeStorage.remove(group, aName);
-      this._broadcastPrefRemoved(group, aName);
+      this._notifyPrefRemoved(group, aName, true);
       return;
     }
 
@@ -423,10 +331,12 @@ ContentPrefService.prototype = {
       this._deleteGroupIfUnused(groupID);
 
     this._cache.remove(group, aName);
-    this._broadcastPrefRemoved(group, aName);
+    this._notifyPrefRemoved(group, aName, false);
   },
 
   removeGroupedPrefs: function ContentPrefService_removeGroupedPrefs(aContext) {
+    warnDeprecated();
+
     // will not delete global preferences
     if (aContext && aContext.usePrivateBrowsing) {
         // keep only global prefs
@@ -437,28 +347,30 @@ ContentPrefService.prototype = {
     try {
       this._dbConnection.executeSimpleSQL("DELETE FROM prefs WHERE groupID IS NOT NULL");
       this._dbConnection.executeSimpleSQL("DELETE FROM groups");
-      this._dbConnection.executeSimpleSQL(
-        "DELETE FROM settings " +
-        "WHERE id NOT IN (SELECT DISTINCT settingID FROM prefs)"
-      );
+      this._dbConnection.executeSimpleSQL(`
+        DELETE FROM settings
+        WHERE id NOT IN (SELECT DISTINCT settingID FROM prefs)
+      `);
       this._dbConnection.commitTransaction();
     }
-    catch(ex) {
+    catch (ex) {
       this._dbConnection.rollbackTransaction();
       throw ex;
     }
   },
 
   removePrefsByName: function ContentPrefService_removePrefsByName(aName, aContext) {
+    warnDeprecated();
+
     if (!aName)
       throw Components.Exception("aName cannot be null or an empty string",
                                  Cr.NS_ERROR_ILLEGAL_VALUE);
 
     if (aContext && aContext.usePrivateBrowsing) {
-      for (let [group, name, ] in this._privModeStorage) {
+      for (let [group, name, ] of this._privModeStorage) {
         if (name === aName) {
           this._privModeStorage.remove(group, aName);
-          this._broadcastPrefRemoved(group, aName);
+          this._notifyPrefRemoved(group, aName, true);
         }
       }
     }
@@ -466,19 +378,19 @@ ContentPrefService.prototype = {
     var settingID = this._selectSettingID(aName);
     if (!settingID)
       return;
-    
-    var selectGroupsStmt = this._dbCreateStatement(
-      "SELECT groups.id AS groupID, groups.name AS groupName " +
-      "FROM prefs " +
-      "JOIN groups ON prefs.groupID = groups.id " +
-      "WHERE prefs.settingID = :setting "
-    );
-    
+
+    var selectGroupsStmt = this._dbCreateStatement(`
+      SELECT groups.id AS groupID, groups.name AS groupName
+      FROM prefs
+      JOIN groups ON prefs.groupID = groups.id
+      WHERE prefs.settingID = :setting
+    `);
+
     var groupNames = [];
     var groupIDs = [];
     try {
       selectGroupsStmt.params.setting = settingID;
-    
+
       while (selectGroupsStmt.executeStep()) {
         groupIDs.push(selectGroupsStmt.row["groupID"]);
         groupNames.push(selectGroupsStmt.row["groupName"]);
@@ -487,7 +399,7 @@ ContentPrefService.prototype = {
     finally {
       selectGroupsStmt.reset();
     }
-    
+
     if (this.hasPref(null, aName)) {
       groupNames.push(null);
     }
@@ -500,17 +412,19 @@ ContentPrefService.prototype = {
       if (groupNames[i]) // ie. not null, which will be last (and i == groupIDs.length)
         this._deleteGroupIfUnused(groupIDs[i]);
       if (!aContext || !aContext.usePrivateBrowsing) {
-        this._broadcastPrefRemoved(groupNames[i], aName);
+        this._notifyPrefRemoved(groupNames[i], aName, false);
       }
     }
   },
 
   getPrefs: function ContentPrefService_getPrefs(aGroup, aContext) {
+    warnDeprecated();
+
     var group = this._parseGroupParam(aGroup);
     if (aContext && aContext.usePrivateBrowsing) {
         let prefs = Cc["@mozilla.org/hash-property-bag;1"].
                     createInstance(Ci.nsIWritablePropertyBag);
-        for (let [sgroup, sname, sval] in this._privModeStorage) {
+        for (let [sgroup, sname, sval] of this._privModeStorage) {
           if (sgroup === group)
             prefs.setProperty(sname, sval);
         }
@@ -523,6 +437,8 @@ ContentPrefService.prototype = {
   },
 
   getPrefsByName: function ContentPrefService_getPrefsByName(aName, aContext) {
+    warnDeprecated();
+
     if (!aName)
       throw Components.Exception("aName cannot be null or an empty string",
                                  Cr.NS_ERROR_ILLEGAL_VALUE);
@@ -530,7 +446,7 @@ ContentPrefService.prototype = {
     if (aContext && aContext.usePrivateBrowsing) {
       let prefs = Cc["@mozilla.org/hash-property-bag;1"].
                   createInstance(Ci.nsIWritablePropertyBag);
-      for (let [sgroup, sname, sval] in this._privModeStorage) {
+      for (let [sgroup, sname, sval] of this._privModeStorage) {
         if (sname === aName)
           prefs.setProperty(sgroup, sval);
       }
@@ -547,6 +463,11 @@ ContentPrefService.prototype = {
   _genericObservers: [],
 
   addObserver: function ContentPrefService_addObserver(aName, aObserver) {
+    warnDeprecated();
+    this._addObserver.apply(this, arguments);
+  },
+
+  _addObserver: function ContentPrefService__addObserver(aName, aObserver) {
     var observers;
     if (aName) {
       if (!this._observers[aName])
@@ -561,6 +482,11 @@ ContentPrefService.prototype = {
   },
 
   removeObserver: function ContentPrefService_removeObserver(aName, aObserver) {
+    warnDeprecated();
+    this._removeObserver.apply(this, arguments);
+  },
+
+  _removeObserver: function ContentPrefService__removeObserver(aName, aObserver) {
     var observers;
     if (aName) {
       if (!this._observers[aName])
@@ -594,12 +520,12 @@ ContentPrefService.prototype = {
   /**
    * Notify all observers about the removal of a preference.
    */
-  _notifyPrefRemoved: function ContentPrefService__notifyPrefRemoved(aGroup, aName) {
-    for each (var observer in this._getObservers(aName)) {
+  _notifyPrefRemoved: function ContentPrefService__notifyPrefRemoved(aGroup, aName, aIsPrivate) {
+    for (var observer of this._getObservers(aName)) {
       try {
-        observer.onContentPrefRemoved(aGroup, aName);
+        observer.onContentPrefRemoved(aGroup, aName, aIsPrivate);
       }
-      catch(ex) {
+      catch (ex) {
         Cu.reportError(ex);
       }
     }
@@ -608,76 +534,48 @@ ContentPrefService.prototype = {
   /**
    * Notify all observers about a preference change.
    */
-  _notifyPrefSet: function ContentPrefService__notifyPrefSet(aGroup, aName, aValue) {
-    for each (var observer in this._getObservers(aName)) {
+  _notifyPrefSet: function ContentPrefService__notifyPrefSet(aGroup, aName, aValue, aIsPrivate) {
+    for (var observer of this._getObservers(aName)) {
       try {
-        observer.onContentPrefSet(aGroup, aName, aValue);
+        observer.onContentPrefSet(aGroup, aName, aValue, aIsPrivate);
       }
-      catch(ex) {
+      catch (ex) {
         Cu.reportError(ex);
       }
     }
   },
 
-  /**
-   * Notify all observers in the current process about the removal of a
-   * preference and send a message to all other processes so that they can in
-   * turn notify their observers about the change. This is meant to be called
-   * only in the parent process. Only whitelisted preferences are broadcast to
-   * the child processes.
-   */
-  _broadcastPrefRemoved: function ContentPrefService__broadcastPrefRemoved(aGroup, aName) {
-    this._notifyPrefRemoved(aGroup, aName);
-
-    if (REMOTE_WHITELIST.indexOf(aName) != -1) {
-      this.messageManager.broadcastAsyncMessage('ContentPref:notifyPrefRemoved',
-        { "group": aGroup, "name": aName } );
-    }
-  },
-
-  /**
-   * Notify all observers in the current process about a preference change and
-   * send a message to all other processes so that they can in turn notify
-   * their observers about the change. This is meant to be called only in the
-   * parent process. Only whitelisted preferences are broadcast to the child
-   * processes.
-   */
-  _broadcastPrefSet: function ContentPrefService__broadcastPrefSet(aGroup, aName, aValue) {
-    this._notifyPrefSet(aGroup, aName, aValue);
-
-    if (REMOTE_WHITELIST.indexOf(aName) != -1) {
-      this.messageManager.broadcastAsyncMessage('ContentPref:notifyPrefSet',
-        { "group": aGroup, "name": aName, "value": aValue } );
-    }
-  },
-
-  _grouper: null,
   get grouper() {
-    if (!this._grouper)
-      this._grouper = Cc["@mozilla.org/content-pref/hostname-grouper;1"].
-                      getService(Ci.nsIContentURIGrouper);
+    warnDeprecated();
     return this._grouper;
+  },
+  __grouper: null,
+  get _grouper() {
+    if (!this.__grouper)
+      this.__grouper = Cc["@mozilla.org/content-pref/hostname-grouper;1"].
+                       getService(Ci.nsIContentURIGrouper);
+    return this.__grouper;
   },
 
   get DBConnection() {
+    warnDeprecated();
     return this._dbConnection;
   },
 
 
-  //**************************************************************************//
   // Data Retrieval & Modification
 
   __stmtSelectPref: null,
   get _stmtSelectPref() {
     if (!this.__stmtSelectPref)
-      this.__stmtSelectPref = this._dbCreateStatement(
-        "SELECT prefs.value AS value " +
-        "FROM prefs " +
-        "JOIN groups ON prefs.groupID = groups.id " +
-        "JOIN settings ON prefs.settingID = settings.id " +
-        "WHERE groups.name = :group " +
-        "AND settings.name = :setting"
-      );
+      this.__stmtSelectPref = this._dbCreateStatement(`
+        SELECT prefs.value AS value
+        FROM prefs
+        JOIN groups ON prefs.groupID = groups.id
+        JOIN settings ON prefs.settingID = settings.id
+        WHERE groups.name = :group
+        AND settings.name = :setting
+      `);
 
     return this.__stmtSelectPref;
   },
@@ -692,8 +590,8 @@ ContentPrefService.prototype = {
     if (this._cache.has(aGroup, aSetting)) {
       value = this._cache.get(aGroup, aSetting);
       if (aCallback) {
-        this._scheduleCallback(function(){aCallback.onResult(value);});
-        return;
+        this._scheduleCallback(function() { aCallback.onResult(value); });
+        return undefined;
       }
       return value;
     }
@@ -726,13 +624,13 @@ ContentPrefService.prototype = {
   __stmtSelectGlobalPref: null,
   get _stmtSelectGlobalPref() {
     if (!this.__stmtSelectGlobalPref)
-      this.__stmtSelectGlobalPref = this._dbCreateStatement(
-        "SELECT prefs.value AS value " +
-        "FROM prefs " +
-        "JOIN settings ON prefs.settingID = settings.id " +
-        "WHERE prefs.groupID IS NULL " +
-        "AND settings.name = :name"
-      );
+      this.__stmtSelectGlobalPref = this._dbCreateStatement(`
+        SELECT prefs.value AS value
+        FROM prefs
+        JOIN settings ON prefs.settingID = settings.id
+        WHERE prefs.groupID IS NULL
+        AND settings.name = :name
+      `);
 
     return this.__stmtSelectGlobalPref;
   },
@@ -742,8 +640,8 @@ ContentPrefService.prototype = {
     if (this._cache.has(null, aName)) {
       value = this._cache.get(null, aName);
       if (aCallback) {
-        this._scheduleCallback(function(){aCallback.onResult(value);});
-        return;
+        this._scheduleCallback(function() { aCallback.onResult(value); });
+        return undefined;
       }
       return value;
     }
@@ -775,11 +673,11 @@ ContentPrefService.prototype = {
   __stmtSelectGroupID: null,
   get _stmtSelectGroupID() {
     if (!this.__stmtSelectGroupID)
-      this.__stmtSelectGroupID = this._dbCreateStatement(
-        "SELECT groups.id AS id " +
-        "FROM groups " +
-        "WHERE groups.name = :name "
-      );
+      this.__stmtSelectGroupID = this._dbCreateStatement(`
+        SELECT groups.id AS id
+        FROM groups
+        WHERE groups.name = :name
+      `);
 
     return this.__stmtSelectGroupID;
   },
@@ -914,10 +812,10 @@ ContentPrefService.prototype = {
   __stmtInsertPref: null,
   get _stmtInsertPref() {
     if (!this.__stmtInsertPref)
-      this.__stmtInsertPref = this._dbCreateStatement(
-        "INSERT INTO prefs (groupID, settingID, value) " +
-        "VALUES (:groupID, :settingID, :value)"
-      );
+      this.__stmtInsertPref = this._dbCreateStatement(`
+        INSERT INTO prefs (groupID, settingID, value)
+        VALUES (:groupID, :settingID, :value)
+      `);
 
     return this.__stmtInsertPref;
   },
@@ -964,10 +862,10 @@ ContentPrefService.prototype = {
   __stmtDeleteSettingIfUnused: null,
   get _stmtDeleteSettingIfUnused() {
     if (!this.__stmtDeleteSettingIfUnused)
-      this.__stmtDeleteSettingIfUnused = this._dbCreateStatement(
-        "DELETE FROM settings WHERE id = :id " +
-        "AND id NOT IN (SELECT DISTINCT settingID FROM prefs)"
-      );
+      this.__stmtDeleteSettingIfUnused = this._dbCreateStatement(`
+        DELETE FROM settings WHERE id = :id
+        AND id NOT IN (SELECT DISTINCT settingID FROM prefs)
+      `);
 
     return this.__stmtDeleteSettingIfUnused;
   },
@@ -980,10 +878,10 @@ ContentPrefService.prototype = {
   __stmtDeleteGroupIfUnused: null,
   get _stmtDeleteGroupIfUnused() {
     if (!this.__stmtDeleteGroupIfUnused)
-      this.__stmtDeleteGroupIfUnused = this._dbCreateStatement(
-        "DELETE FROM groups WHERE id = :id " +
-        "AND id NOT IN (SELECT DISTINCT groupID FROM prefs)"
-      );
+      this.__stmtDeleteGroupIfUnused = this._dbCreateStatement(`
+        DELETE FROM groups WHERE id = :id
+        AND id NOT IN (SELECT DISTINCT groupID FROM prefs)
+      `);
 
     return this.__stmtDeleteGroupIfUnused;
   },
@@ -996,13 +894,13 @@ ContentPrefService.prototype = {
   __stmtSelectPrefs: null,
   get _stmtSelectPrefs() {
     if (!this.__stmtSelectPrefs)
-      this.__stmtSelectPrefs = this._dbCreateStatement(
-        "SELECT settings.name AS name, prefs.value AS value " +
-        "FROM prefs " +
-        "JOIN groups ON prefs.groupID = groups.id " +
-        "JOIN settings ON prefs.settingID = settings.id " +
-        "WHERE groups.name = :group "
-      );
+      this.__stmtSelectPrefs = this._dbCreateStatement(`
+        SELECT settings.name AS name, prefs.value AS value
+        FROM prefs
+        JOIN groups ON prefs.groupID = groups.id
+        JOIN settings ON prefs.settingID = settings.id
+        WHERE groups.name = :group
+      `);
 
     return this.__stmtSelectPrefs;
   },
@@ -1028,12 +926,12 @@ ContentPrefService.prototype = {
   __stmtSelectGlobalPrefs: null,
   get _stmtSelectGlobalPrefs() {
     if (!this.__stmtSelectGlobalPrefs)
-      this.__stmtSelectGlobalPrefs = this._dbCreateStatement(
-        "SELECT settings.name AS name, prefs.value AS value " +
-        "FROM prefs " +
-        "JOIN settings ON prefs.settingID = settings.id " +
-        "WHERE prefs.groupID IS NULL"
-      );
+      this.__stmtSelectGlobalPrefs = this._dbCreateStatement(`
+        SELECT settings.name AS name, prefs.value AS value
+        FROM prefs
+        JOIN settings ON prefs.settingID = settings.id
+        WHERE prefs.groupID IS NULL
+      `);
 
     return this.__stmtSelectGlobalPrefs;
   },
@@ -1057,13 +955,13 @@ ContentPrefService.prototype = {
   __stmtSelectPrefsByName: null,
   get _stmtSelectPrefsByName() {
     if (!this.__stmtSelectPrefsByName)
-      this.__stmtSelectPrefsByName = this._dbCreateStatement(
-        "SELECT groups.name AS groupName, prefs.value AS value " +
-        "FROM prefs " +
-        "JOIN groups ON prefs.groupID = groups.id " +
-        "JOIN settings ON prefs.settingID = settings.id " +
-        "WHERE settings.name = :setting "
-      );
+      this.__stmtSelectPrefsByName = this._dbCreateStatement(`
+        SELECT groups.name AS groupName, prefs.value AS value
+        FROM prefs
+        JOIN groups ON prefs.groupID = groups.id
+        JOIN settings ON prefs.settingID = settings.id
+        WHERE settings.name = :setting
+      `);
 
     return this.__stmtSelectPrefsByName;
   },
@@ -1082,7 +980,7 @@ ContentPrefService.prototype = {
     finally {
       this._stmtSelectPrefsByName.reset();
     }
-    
+
     var global = this._selectGlobalPref(aName);
     if (typeof global != "undefined") {
       prefs.setProperty(null, global);
@@ -1092,23 +990,23 @@ ContentPrefService.prototype = {
   },
 
 
-  //**************************************************************************//
   // Database Creation & Access
 
-  _dbVersion: 3,
+  _dbVersion: 4,
 
   _dbSchema: {
     tables: {
       groups:     "id           INTEGER PRIMARY KEY, \
                    name         TEXT NOT NULL",
-  
+
       settings:   "id           INTEGER PRIMARY KEY, \
                    name         TEXT NOT NULL",
-  
+
       prefs:      "id           INTEGER PRIMARY KEY, \
                    groupID      INTEGER REFERENCES groups(id), \
                    settingID    INTEGER NOT NULL REFERENCES settings(id), \
-                   value        BLOB"
+                   value        BLOB, \
+                   timestamp    INTEGER NOT NULL DEFAULT 0" // Storage in seconds, API in ms. 0 for migrated values.
     },
     indices: {
       groups_idx: {
@@ -1121,7 +1019,7 @@ ContentPrefService.prototype = {
       },
       prefs_idx: {
         table: "prefs",
-        columns: ["groupID", "settingID"]
+        columns: ["timestamp", "groupID", "settingID"]
       }
     }
   },
@@ -1132,7 +1030,7 @@ ContentPrefService.prototype = {
     try {
       var statement = this._dbConnection.createStatement(aSQLString);
     }
-    catch(ex) {
+    catch (ex) {
       Cu.reportError("error creating statement " + aSQLString + ": " +
                      this._dbConnection.lastError + " - " +
                      this._dbConnection.lastErrorString);
@@ -1166,7 +1064,9 @@ ContentPrefService.prototype = {
       }
       // If the connection isn't ready after we open the database, that means
       // the database has been corrupted, so we back it up and then recreate it.
-      catch (e if e.result == Cr.NS_ERROR_FILE_CORRUPTED) {
+      catch (e) {
+        if (e.result != Cr.NS_ERROR_FILE_CORRUPTED)
+          throw e;
         dbConnection = this._dbBackUpAndRecreate(dbService, dbFile,
                                                  dbConnection);
       }
@@ -1180,7 +1080,7 @@ ContentPrefService.prototype = {
         try {
           this._dbMigrate(dbConnection, version, this._dbVersion);
         }
-        catch(ex) {
+        catch (ex) {
           Cu.reportError("error migrating DB: " + ex + "; backing up and recreating");
           dbConnection = this._dbBackUpAndRecreate(dbService, dbFile, dbConnection);
         }
@@ -1212,7 +1112,7 @@ ContentPrefService.prototype = {
       this._dbCreateSchema(dbConnection);
       dbConnection.schemaVersion = this._dbVersion;
     }
-    catch(ex) {
+    catch (ex) {
       // If we failed to create the database (perhaps because the disk ran out
       // of space), then remove the database file so we don't leave it in some
       // half-created state from which we won't know how to recover.
@@ -1237,8 +1137,10 @@ ContentPrefService.prototype = {
   _dbCreateIndices: function ContentPrefService__dbCreateIndices(aDBConnection) {
     for (let name in this._dbSchema.indices) {
       let index = this._dbSchema.indices[name];
-      let statement = "CREATE INDEX IF NOT EXISTS " + name + " ON " + index.table +
-                      "(" + index.columns.join(", ") + ")";
+      let statement = `
+        CREATE INDEX IF NOT EXISTS ${name} ON ${index.table}
+        (${index.columns.join(", ")})
+      `;
       aDBConnection.executeSimpleSQL(statement);
     }
   },
@@ -1251,7 +1153,7 @@ ContentPrefService.prototype = {
     // Close the database, ignoring the "already closed" exception, if any.
     // It'll be open if we're here because of a migration failure but closed
     // if we're here because of database corruption.
-    try { aDBConnection.close() } catch(ex) {}
+    try { aDBConnection.close() } catch (ex) {}
 
     aDBFile.remove(false);
 
@@ -1261,49 +1163,69 @@ ContentPrefService.prototype = {
   },
 
   _dbMigrate: function ContentPrefService__dbMigrate(aDBConnection, aOldVersion, aNewVersion) {
-    if (this["_dbMigrate" + aOldVersion + "To" + aNewVersion]) {
-      aDBConnection.beginTransaction();
-      try {
-        this["_dbMigrate" + aOldVersion + "To" + aNewVersion](aDBConnection);
-        aDBConnection.schemaVersion = aNewVersion;
-        aDBConnection.commitTransaction();
+    /**
+     * Migrations should follow the template rules in bug 1074817 comment 3 which are:
+     * 1. Migration should be incremental and non-breaking.
+     * 2. It should be idempotent because one can downgrade an upgrade again.
+     * On downgrade:
+     * 1. Decrement schema version so that upgrade runs the migrations again.
+     */
+    aDBConnection.beginTransaction();
+
+    try {
+       /**
+       * If the schema version is 0, that means it was never set, which means
+       * the database was somehow created without the schema being applied, perhaps
+       * because the system ran out of disk space (although we check for this
+       * in _createDB) or because some other code created the database file without
+       * applying the schema.  In any case, recover by simply reapplying the schema.
+       */
+      if (aOldVersion == 0) {
+        this._dbCreateSchema(aDBConnection);
+      } else {
+        for (let i = aOldVersion; i < aNewVersion; i++) {
+          let migrationName = "_dbMigrate" + i + "To" + (i + 1);
+          if (typeof this[migrationName] != 'function') {
+            throw ("no migrator function from version " + aOldVersion + " to version " + aNewVersion);
+          }
+          this[migrationName](aDBConnection);
+        }
       }
-      catch(ex) {
-        aDBConnection.rollbackTransaction();
-        throw ex;
-      }
+      aDBConnection.schemaVersion = aNewVersion;
+      aDBConnection.commitTransaction();
+    } catch (ex) {
+      aDBConnection.rollbackTransaction();
+      throw ex;
     }
-    else
-      throw("no migrator function from version " + aOldVersion +
-            " to version " + aNewVersion);
   },
 
-  /**
-   * If the schema version is 0, that means it was never set, which means
-   * the database was somehow created without the schema being applied, perhaps
-   * because the system ran out of disk space (although we check for this
-   * in _createDB) or because some other code created the database file without
-   * applying the schema.  In any case, recover by simply reapplying the schema.
-   */
-  _dbMigrate0To3: function ContentPrefService___dbMigrate0To3(aDBConnection) {
-    this._dbCreateSchema(aDBConnection);
-  },
-
-  _dbMigrate1To3: function ContentPrefService___dbMigrate1To3(aDBConnection) {
+  _dbMigrate1To2: function ContentPrefService___dbMigrate1To2(aDBConnection) {
     aDBConnection.executeSimpleSQL("ALTER TABLE groups RENAME TO groupsOld");
     aDBConnection.createTable("groups", this._dbSchema.tables.groups);
-    aDBConnection.executeSimpleSQL(
-      "INSERT INTO groups (id, name) " +
-      "SELECT id, name FROM groupsOld"
-    );
+    aDBConnection.executeSimpleSQL(`
+      INSERT INTO groups (id, name)
+      SELECT id, name FROM groupsOld
+    `);
 
     aDBConnection.executeSimpleSQL("DROP TABLE groupers");
     aDBConnection.executeSimpleSQL("DROP TABLE groupsOld");
-
-    this._dbCreateIndices(aDBConnection);
   },
 
   _dbMigrate2To3: function ContentPrefService__dbMigrate2To3(aDBConnection) {
+    this._dbCreateIndices(aDBConnection);
+  },
+
+  _dbMigrate3To4: function ContentPrefService__dbMigrate3To4(aDBConnection) {
+    // Add timestamp column if it does not exist yet. This operation is idempotent.
+    try {
+      let stmt = aDBConnection.createStatement("SELECT timestamp FROM prefs");
+      stmt.finalize();
+    } catch (e) {
+      aDBConnection.executeSimpleSQL("ALTER TABLE prefs ADD COLUMN timestamp INTEGER NOT NULL DEFAULT 0");
+    }
+
+    // To modify prefs_idx drop it and create again.
+    aDBConnection.executeSimpleSQL("DROP INDEX IF EXISTS prefs_idx");
     this._dbCreateIndices(aDBConnection);
   },
 
@@ -1320,17 +1242,22 @@ ContentPrefService.prototype = {
   },
 };
 
+function warnDeprecated() {
+  let Deprecated = Cu.import("resource://gre/modules/Deprecated.jsm", {}).Deprecated;
+  Deprecated.warning("nsIContentPrefService is deprecated. Please use nsIContentPrefService2 instead.",
+                     "https://developer.mozilla.org/en-US/docs/XPCOM_Interface_Reference/nsIContentPrefService2",
+                     Components.stack.caller);
+}
+
 
 function HostnameGrouper() {}
 
 HostnameGrouper.prototype = {
-  //**************************************************************************//
   // XPCOM Plumbing
-  
+
   classID:          Components.ID("{8df290ae-dcaa-4c11-98a5-2429a4dc97bb}"),
   QueryInterface:   XPCOMUtils.generateQI([Ci.nsIContentURIGrouper]),
 
-  //**************************************************************************//
   // nsIContentURIGrouper
 
   group: function HostnameGrouper_group(aURI) {
@@ -1344,14 +1271,14 @@ HostnameGrouper.prototype = {
 
       group = aURI.host;
       if (!group)
-        throw("can't derive group from host; no host in URI");
+        throw ("can't derive group from host; no host in URI");
     }
-    catch(ex) {
+    catch (ex) {
       // If we don't have a host, then use the entire URI (minus the query,
       // reference, and hash, if possible) as the group.  This means that URIs
       // like about:mozilla and about:blank will be considered separate groups,
       // but at least they'll be grouped somehow.
-      
+
       // This also means that each individual file: URL will be considered
       // its own group.  This seems suboptimal, but so does treating the entire
       // file: URL space as a single group (especially if folks start setting
@@ -1363,7 +1290,7 @@ HostnameGrouper.prototype = {
         var url = aURI.QueryInterface(Ci.nsIURL);
         group = aURI.prePath + url.filePath;
       }
-      catch(ex) {
+      catch (ex) {
         group = aURI.spec;
       }
     }
@@ -1399,7 +1326,6 @@ AsyncStatement.prototype = {
   }
 };
 
-//****************************************************************************//
 // XPCOM Plumbing
 
 var components = [ContentPrefService, HostnameGrouper];

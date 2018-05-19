@@ -38,7 +38,7 @@ interface Range {
   void setEndBefore(Node refNode);
   [Throws]
   void setEndAfter(Node refNode);
-  void collapse(boolean toStart);
+  void collapse(optional boolean toStart = false);
   [Throws]
   void selectNode(Node refNode);
   [Throws]
@@ -83,6 +83,16 @@ partial interface Range {
 
 // http://dvcs.w3.org/hg/csswg/raw-file/tip/cssom-view/Overview.html#extensions-to-the-range-interface
 partial interface Range {
-  ClientRectList? getClientRects();
-  ClientRect getBoundingClientRect();
+  DOMRectList? getClientRects();
+  DOMRect getBoundingClientRect();
+};
+
+dictionary ClientRectsAndTexts {
+  required DOMRectList rectList;
+  required DOMStringList textList;
+};
+
+partial interface Range {
+  [ChromeOnly, Throws]
+  ClientRectsAndTexts getClientRectsAndTexts();
 };

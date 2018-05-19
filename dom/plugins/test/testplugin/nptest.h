@@ -39,7 +39,7 @@
 #include "npapi.h"
 #include "npfunctions.h"
 #include "npruntime.h"
-#include "mozilla/StandardInteger.h"
+#include <stdint.h>
 #include <string>
 #include <sstream>
 
@@ -106,11 +106,14 @@ typedef struct InstanceData {
   bool npnNewStream;
   bool throwOnNextInvoke;
   bool runScriptOnPaint;
+  bool dontTouchElement;
   uint32_t timerID[2];
   bool timerTestResult;
   bool asyncCallbackResult;
   bool invalidateDuringPaint;
   bool slowPaint;
+  bool playingAudio;
+  bool audioMuted;
   int32_t winX;
   int32_t winY;
   int32_t lastMouseX;
@@ -147,13 +150,22 @@ typedef struct InstanceData {
   bool closeStream;
   std::string lastKeyText;
   bool wantsAllStreams;
+  int32_t mouseUpEventCount;
+  int32_t bugMode;
+  std::string javaCodebase;
   AsyncDrawing asyncDrawing;
   NPAsyncSurface *frontBuffer;
   NPAsyncSurface *backBuffer;
-  int32_t mouseUpEventCount;
-  int32_t bugMode;
+  std::string lastComposition;
+  void* placeholderWnd;
+  double cssZoomFactor;
 } InstanceData;
 
 void notifyDidPaint(InstanceData* instanceData);
+
+#if defined(XP_WIN)
+bool setupDxgiSurfaces(NPP npp, InstanceData* instanceData);
+void drawDxgiBitmapColor(InstanceData* instanceData);
+#endif
 
 #endif // nptest_h_

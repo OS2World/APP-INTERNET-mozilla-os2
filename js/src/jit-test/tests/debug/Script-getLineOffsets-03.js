@@ -1,7 +1,7 @@
 // getLineOffsets treats one-line compound statements as having only one entry-point.
 // (A breakpoint on a line that only executes once will only hit once.)
 
-var g = newGlobal('new-compartment');
+var g = newGlobal();
 g.line0 = null;
 var dbg = Debugger(g);
 var log;
@@ -10,7 +10,7 @@ dbg.onDebuggerStatement = function (frame) {
     var lineno = g.line0 + 2;
     var offs = s.getLineOffsets(lineno);
     for (var i = 0; i < offs.length; i++) {
-        assertEq(s.getOffsetLine(offs[i]), lineno);
+        assertEq(s.getOffsetLocation(offs[i]).lineNumber, lineno);
         s.setBreakpoint(offs[i], {hit: function () { log += 'B'; }});
     }
     log += 'A';

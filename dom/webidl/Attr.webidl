@@ -15,17 +15,19 @@ interface Attr : Node {
            [SetterThrows]
            attribute DOMString value;
 
+  [Constant]
   readonly attribute DOMString name;
+  [Constant]
   readonly attribute DOMString? namespaceURI;
+  [Constant]
   readonly attribute DOMString? prefix;
+
+  readonly attribute boolean specified;
 };
 
 // Mozilla extensions
 
 partial interface Attr {
-  readonly attribute boolean specified;
-
-
            [GetterThrows]
   readonly attribute Element? ownerElement;
 };

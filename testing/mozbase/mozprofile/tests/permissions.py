@@ -7,13 +7,11 @@
 import mozfile
 import os
 import shutil
+import sqlite3
 import tempfile
 import unittest
 from mozprofile.permissions import Permissions
-try:
-    import sqlite3
-except ImportError:
-    from pysqlite2 import dbapi2 as sqlite3
+
 
 class PermissionsTest(unittest.TestCase):
 
@@ -43,7 +41,27 @@ http://127.0.0.1:8888           privileged
 
         cursor.execute("PRAGMA user_version=%d;" % version)
 
-        if version == 3:
+        if version == 5:
+            cursor.execute("""CREATE TABLE IF NOT EXISTS moz_hosts (
+              id INTEGER PRIMARY KEY,
+              origin TEXT,
+              type TEXT,
+              permission INTEGER,
+              expireType INTEGER,
+              expireTime INTEGER,
+              modificationTime INTEGER)""")
+        elif version == 4:
+            cursor.execute("""CREATE TABLE IF NOT EXISTS moz_hosts (
+               id INTEGER PRIMARY KEY,
+               host TEXT,
+               type TEXT,
+               permission INTEGER,
+               expireType INTEGER,
+               expireTime INTEGER,
+               modificationTime INTEGER,
+               appId INTEGER,
+               isInBrowserElement INTEGER)""")
+        elif version == 3:
             cursor.execute("""CREATE TABLE IF NOT EXISTS moz_hosts (
                id INTEGER PRIMARY KEY,
                host TEXT,
@@ -62,7 +80,7 @@ http://127.0.0.1:8888           privileged
                expireType INTEGER,
                expireTime INTEGER)""")
         else:
-            raise Exception("version must be 2 or 3")
+            raise Exception("version must be 2, 3, 4 or 5")
 
         permDB.commit()
         cursor.close()
@@ -71,7 +89,7 @@ http://127.0.0.1:8888           privileged
         perms = Permissions(self.profile_dir, self.locations_file.name)
         perms_db_filename = os.path.join(self.profile_dir, 'permissions.sqlite')
 
-        select_stmt = 'select host, type, permission from moz_hosts'
+        select_stmt = 'select origin, type, permission from moz_hosts'
 
         con = sqlite3.connect(perms_db_filename)
         cur = con.cursor()
@@ -80,32 +98,32 @@ http://127.0.0.1:8888           privileged
 
         self.assertEqual(len(entries), 3)
 
-        self.assertEqual(entries[0][0], 'mochi.test')
+        self.assertEqual(entries[0][0], 'http://mochi.test:8888')
         self.assertEqual(entries[0][1], 'allowXULXBL')
         self.assertEqual(entries[0][2], 1)
 
-        self.assertEqual(entries[1][0], '127.0.0.1')
+        self.assertEqual(entries[1][0], 'http://127.0.0.1')
         self.assertEqual(entries[1][1], 'allowXULXBL')
         self.assertEqual(entries[1][2], 2)
 
-        self.assertEqual(entries[2][0], '127.0.0.1')
+        self.assertEqual(entries[2][0], 'http://127.0.0.1:8888')
         self.assertEqual(entries[2][1], 'allowXULXBL')
         self.assertEqual(entries[2][2], 1)
 
-        perms._locations.add_host('a.b.c', options='noxul')
+        perms._locations.add_host('a.b.c', port='8081', scheme='https', options='noxul')
 
         cur.execute(select_stmt)
         entries = cur.fetchall()
 
         self.assertEqual(len(entries), 4)
-        self.assertEqual(entries[3][0], 'a.b.c')
+        self.assertEqual(entries[3][0], 'https://a.b.c:8081')
         self.assertEqual(entries[3][1], 'allowXULXBL')
         self.assertEqual(entries[3][2], 2)
 
-        # when creating a DB we should default to user_version==2
+        # when creating a DB we should default to user_version==5
         cur.execute('PRAGMA user_version')
         entries = cur.fetchall()
-        self.assertEqual(entries[0][0], 2)
+        self.assertEqual(entries[0][0], 5)
 
         perms.clean_db()
         # table should be removed
@@ -119,32 +137,21 @@ http://127.0.0.1:8888           privileged
         prefs, user_prefs = perms.network_prefs(False)
 
         self.assertEqual(len(user_prefs), 0)
-        self.assertEqual(len(prefs), 6)
-
-        self.assertEqual(prefs[0], ('capability.principal.codebase.p1.granted',
-                                    'UniversalXPConnect'))
-        self.assertEqual(prefs[1], ('capability.principal.codebase.p1.id',
-                                    'http://mochi.test:8888'))
-        self.assertEqual(prefs[2], ('capability.principal.codebase.p1.subjectName', ''))
-
-        self.assertEqual(prefs[3], ('capability.principal.codebase.p2.granted',
-                                    'UniversalXPConnect'))
-        self.assertEqual(prefs[4], ('capability.principal.codebase.p2.id',
-                                    'http://127.0.0.1:8888'))
-        self.assertEqual(prefs[5], ('capability.principal.codebase.p2.subjectName', ''))
+        self.assertEqual(len(prefs), 0)
 
         prefs, user_prefs = perms.network_prefs(True)
         self.assertEqual(len(user_prefs), 2)
         self.assertEqual(user_prefs[0], ('network.proxy.type', 2))
         self.assertEqual(user_prefs[1][0], 'network.proxy.autoconfig_url')
 
-        origins_decl = "var origins = ['http://mochi.test:8888', 'http://127.0.0.1:80', 'http://127.0.0.1:8888'];"
+        origins_decl = "var knownOrigins = (function () {  return ['http://mochi.test:8888', " \
+                       "'http://127.0.0.1:80', 'http://127.0.0.1:8888'].reduce"
         self.assertTrue(origins_decl in user_prefs[1][1])
 
-        proxy_check = ("if (isHttp) return 'PROXY mochi.test:8888';",
-                       "if (isHttps) return 'PROXY mochi.test:4443';",
-                       "if (isWebSocket) return 'PROXY mochi.test:4443';",
-                       "if (isWebSocketSSL) return 'PROXY mochi.test:4443';")
+        proxy_check = ("'http': 'PROXY mochi.test:8888'",
+                       "'https': 'PROXY mochi.test:4443'",
+                       "'ws': 'PROXY mochi.test:4443'",
+                       "'wss': 'PROXY mochi.test:4443'")
         self.assertTrue(all(c in user_prefs[1][1] for c in proxy_check))
 
     def verify_user_version(self, version):
@@ -164,7 +171,14 @@ http://127.0.0.1:8888           privileged
 
         self.assertEqual(len(entries), 3)
 
-        columns = 8 if version == 3 else 6
+        columns = {
+            1: 6,
+            2: 6,
+            3: 8,
+            4: 9,
+            5: 7,
+        }[version]
+
         self.assertEqual(len(entries[0]), columns)
         for x in range(4, columns):
             self.assertEqual(entries[0][x], 0)
@@ -175,6 +189,11 @@ http://127.0.0.1:8888           privileged
     def test_existing_permissions_db_v3(self):
         self.verify_user_version(3)
 
+    def test_existing_permissions_db_v4(self):
+        self.verify_user_version(4)
+
+    def test_existing_permissions_db_v5(self):
+        self.verify_user_version(5)
 
 if __name__ == '__main__':
     unittest.main()

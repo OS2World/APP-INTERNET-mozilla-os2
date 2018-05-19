@@ -1,7 +1,7 @@
 ////////////////////////////////////////////////////////////////////////////////
 // Interfaces
 
-const nsIAccessibleRetrieval = Components.interfaces.nsIAccessibleRetrieval;
+const nsIAccessibilityService = Components.interfaces.nsIAccessibilityService;
 
 const nsIAccessibleEvent = Components.interfaces.nsIAccessibleEvent;
 const nsIAccessibleStateChangeEvent =
@@ -12,6 +12,8 @@ const nsIAccessibleTextChangeEvent =
   Components.interfaces.nsIAccessibleTextChangeEvent;
 const nsIAccessibleVirtualCursorChangeEvent =
   Components.interfaces.nsIAccessibleVirtualCursorChangeEvent;
+const nsIAccessibleObjectAttributeChangedEvent =
+  Components.interfaces.nsIAccessibleObjectAttributeChangedEvent;
 
 const nsIAccessibleStates = Components.interfaces.nsIAccessibleStates;
 const nsIAccessibleRole = Components.interfaces.nsIAccessibleRole;
@@ -19,6 +21,7 @@ const nsIAccessibleScrollType = Components.interfaces.nsIAccessibleScrollType;
 const nsIAccessibleCoordinateType = Components.interfaces.nsIAccessibleCoordinateType;
 
 const nsIAccessibleRelation = Components.interfaces.nsIAccessibleRelation;
+const nsIAccessibleTextRange = Components.interfaces.nsIAccessibleTextRange;
 
 const nsIAccessible = Components.interfaces.nsIAccessible;
 
@@ -31,7 +34,6 @@ const nsIAccessibleEditableText = Components.interfaces.nsIAccessibleEditableTex
 const nsIAccessibleHyperLink = Components.interfaces.nsIAccessibleHyperLink;
 const nsIAccessibleHyperText = Components.interfaces.nsIAccessibleHyperText;
 
-const nsIAccessibleCursorable = Components.interfaces.nsIAccessibleCursorable;
 const nsIAccessibleImage = Components.interfaces.nsIAccessibleImage;
 const nsIAccessiblePivot = Components.interfaces.nsIAccessiblePivot;
 const nsIAccessibleSelectable = Components.interfaces.nsIAccessibleSelectable;
@@ -79,32 +81,73 @@ const COORDTYPE_PARENT_RELATIVE = nsIAccessibleCoordinateType.COORDTYPE_PARENT_R
 
 const kEmbedChar = String.fromCharCode(0xfffc);
 
-const kDiscBulletText = String.fromCharCode(0x2022) + " ";
+const kDiscBulletChar = String.fromCharCode(0x2022);
+const kDiscBulletText = kDiscBulletChar + " ";
 const kCircleBulletText = String.fromCharCode(0x25e6) + " ";
-const kSquareBulletText = String.fromCharCode(0x25aa) + " ";
+const kSquareBulletText = String.fromCharCode(0x25fe) + " ";
 
 const MAX_TRIM_LENGTH = 100;
 
 /**
- * nsIAccessibleRetrieval service.
+ * Services to determine if e10s is enabled.
  */
-var gAccRetrieval = Components.classes["@mozilla.org/accessibleRetrieval;1"].
-  getService(nsIAccessibleRetrieval);
+Components.utils.import('resource://gre/modules/Services.jsm');
+
+/**
+ * nsIAccessibilityService service.
+ */
+var gAccService = Components.classes["@mozilla.org/accessibilityService;1"].
+  getService(nsIAccessibilityService);
 
 /**
  * Enable/disable logging.
  */
 function enableLogging(aModules)
 {
-  gAccRetrieval.setLogging(aModules);
+  gAccService.setLogging(aModules);
 }
 function disableLogging()
 {
-  gAccRetrieval.setLogging("");
+  gAccService.setLogging("");
 }
 function isLogged(aModule)
 {
-  return gAccRetrieval.isLogged(aModule);
+  return gAccService.isLogged(aModule);
+}
+
+/**
+ * Dumps the accessible tree into console.
+ */
+function dumpTree(aId, aMsg)
+{
+  function dumpTreeIntl(acc, indent)
+  {
+    dump(indent + prettyName(acc) + "\n");
+
+    var children = acc.children;
+    for (var i = 0; i < children.length; i++) {
+      var child = children.queryElementAt(i, nsIAccessible);
+      dumpTreeIntl(child, indent + "  ");
+    }
+  }
+
+  function dumpDOMTreeIntl(node, indent)
+  {
+    dump(indent + prettyName(node) + "\n");
+
+    var children = node.childNodes;
+    for (var i = 0; i < children.length; i++) {
+      var child = children.item(i);
+      dumpDOMTreeIntl(child, indent + "  ");
+    }
+  }
+
+  dump(aMsg + "\n");
+  var root = getAccessible(aId);
+  dumpTreeIntl(root, "  ");
+
+  dump("DOM tree:\n");
+  dumpDOMTreeIntl(getNode(aId), "  ");
 }
 
 /**
@@ -158,7 +201,7 @@ function isObject(aObj, aExpectedObj, aMsg)
 /**
  * Return the DOM node by identifier (may be accessible, DOM node or ID).
  */
-function getNode(aAccOrNodeOrID)
+function getNode(aAccOrNodeOrID, aDocument)
 {
   if (!aAccOrNodeOrID)
     return null;
@@ -169,7 +212,7 @@ function getNode(aAccOrNodeOrID)
   if (aAccOrNodeOrID instanceof nsIAccessible)
     return aAccOrNodeOrID.DOMNode;
 
-  node = document.getElementById(aAccOrNodeOrID);
+  var node = (aDocument || document).getElementById(aAccOrNodeOrID);
   if (!node) {
     ok(false, "Can't get DOM element for " + aAccOrNodeOrID);
     return null;
@@ -210,7 +253,7 @@ function getAccessible(aAccOrElmOrID, aInterfaces, aElmObj, aDoNotFailIf)
   var elm = null;
 
   if (aAccOrElmOrID instanceof nsIAccessible) {
-    elm = aAccOrElmOrID.DOMNode;
+    try { elm = aAccOrElmOrID.DOMNode; } catch(e) { }
 
   } else if (aAccOrElmOrID instanceof nsIDOMNode) {
     elm = aAccOrElmOrID;
@@ -229,13 +272,13 @@ function getAccessible(aAccOrElmOrID, aInterfaces, aElmObj, aDoNotFailIf)
   var acc = (aAccOrElmOrID instanceof nsIAccessible) ? aAccOrElmOrID : null;
   if (!acc) {
     try {
-      acc = gAccRetrieval.getAccessibleFor(elm);
+      acc = gAccService.getAccessibleFor(elm);
     } catch (e) {
     }
 
     if (!acc) {
       if (!(aDoNotFailIf & DONOTFAIL_IF_NO_ACC))
-        ok(false, "Can't get accessible for " + aAccOrElmOrID);
+        ok(false, "Can't get accessible for " + prettyName(aAccOrElmOrID));
 
       return null;
     }
@@ -244,27 +287,23 @@ function getAccessible(aAccOrElmOrID, aInterfaces, aElmObj, aDoNotFailIf)
   if (!aInterfaces)
     return acc;
 
-  if (aInterfaces instanceof Array) {
-    for (var index = 0; index < aInterfaces.length; index++) {
-      try {
-        acc.QueryInterface(aInterfaces[index]);
-      } catch (e) {
-        if (!(aDoNotFailIf & DONOTFAIL_IF_NO_INTERFACE))
-          ok(false, "Can't query " + aInterfaces[index] + " for " + aAccOrElmOrID);
+  if (!(aInterfaces instanceof Array))
+    aInterfaces = [ aInterfaces ];
 
-        return null;
-      }
+  for (var index = 0; index < aInterfaces.length; index++) {
+    if (acc instanceof aInterfaces[index]) {
+      continue;
     }
-    return acc;
+    try {
+      acc.QueryInterface(aInterfaces[index]);
+    } catch (e) {
+      if (!(aDoNotFailIf & DONOTFAIL_IF_NO_INTERFACE))
+        ok(false, "Can't query " + aInterfaces[index] + " for " + aAccOrElmOrID);
+
+      return null;
+    }
   }
-  
-  try {
-    acc.QueryInterface(aInterfaces);
-  } catch (e) {
-    ok(false, "Can't query " + aInterfaces + " for " + aAccOrElmOrID);
-    return null;
-  }
-  
+
   return acc;
 }
 
@@ -324,9 +363,22 @@ function getTabDocAccessible(aAccOrElmOrID)
  */
 function getApplicationAccessible()
 {
-  return gAccRetrieval.getApplicationAccessible().
+  return gAccService.getApplicationAccessible().
     QueryInterface(nsIAccessibleApplication);
 }
+
+/**
+ * A version of accessible tree testing, doesn't fail if tree is not complete.
+ */
+function testElm(aID, aTreeObj)
+{
+  testAccessibleTree(aID, aTreeObj, kSkipTreeFullCheck);
+}
+
+/**
+ * Flags used for testAccessibleTree
+ */
+const kSkipTreeFullCheck = 1;
 
 /**
  * Compare expected and actual accessibles trees.
@@ -339,8 +391,9 @@ function getApplicationAccessible()
  *                                      children of accessible
  *                          states   - an object having states and extraStates
  *                                      fields
+ * @param aFlags          [in, optional] flags, see constants above
  */
-function testAccessibleTree(aAccOrElmOrID, aAccTree)
+function testAccessibleTree(aAccOrElmOrID, aAccTree, aFlags)
 {
   var acc = getAccessible(aAccOrElmOrID);
   if (!acc)
@@ -349,42 +402,128 @@ function testAccessibleTree(aAccOrElmOrID, aAccTree)
   var accTree = aAccTree;
 
   // Support of simplified accessible tree object.
-  var key = Object.keys(accTree)[0];
-  var roleName = "ROLE_" + key;
-  if (roleName in nsIAccessibleRole) {
-    accTree = {
-      role: nsIAccessibleRole[roleName],
-      children: accTree[key]
-    };
-  }
+  accTree = normalizeAccTreeObj(accTree);
 
   // Test accessible properties.
   for (var prop in accTree) {
-    var msg = "Wrong value of property '" + prop + "' for " + prettyName(acc) + ".";
-    if (prop == "role") {
-      is(roleToString(acc[prop]), roleToString(accTree[prop]), msg);
+    var msg = "Wrong value of property '" + prop + "' for " +
+               prettyName(acc) + ".";
 
-    } else if (prop == "states") {
-      var statesObj = accTree[prop];
-      testStates(acc, statesObj.states, statesObj.extraStates,
-                 statesObj.absentStates, statesObj.absentExtraStates);
+    switch (prop) {
+    case "actions": {
+      testActionNames(acc, accTree.actions);
+      break;
+    }
 
-    } else if (prop == "tagName") {
+    case "attributes":
+      testAttrs(acc, accTree[prop], true);
+      break;
+
+    case "absentAttributes":
+      testAbsentAttrs(acc, accTree[prop]);
+      break;
+
+    case "interfaces": {
+      var ifaces = (accTree[prop] instanceof Array) ?
+        accTree[prop] : [ accTree[prop] ];
+      for (var i = 0; i < ifaces.length; i++) {
+        ok((acc instanceof ifaces[i]),
+           "No " + ifaces[i] + " interface on " + prettyName(acc));
+      }
+      break;
+    }
+
+    case "relations": {
+      for (var rel in accTree[prop])
+        testRelation(acc, window[rel], accTree[prop][rel]);
+      break;
+    }
+
+    case "role":
+      isRole(acc, accTree[prop], msg);
+      break;
+
+    case "states":
+    case "extraStates":
+    case "absentStates":
+    case "absentExtraStates": {
+      testStates(acc, accTree["states"], accTree["extraStates"],
+                 accTree["absentStates"], accTree["absentExtraStates"]);
+      break;
+    }
+
+    case "tagName":
       is(accTree[prop], acc.DOMNode.tagName, msg);
+      break;
 
-    } else if (prop != "children") {
-      is(acc[prop], accTree[prop], msg);
+    case "textAttrs": {
+      var prevOffset = -1;
+      for (var offset in accTree[prop]) {
+        if (prevOffset !=- 1) {
+          var attrs = accTree[prop][prevOffset];
+          testTextAttrs(acc, prevOffset, attrs, { }, prevOffset, +offset, true);
+        }
+        prevOffset = +offset;
+      }
+
+      if (prevOffset != -1) {
+        var charCount = getAccessible(acc, [nsIAccessibleText]).characterCount;
+        var attrs = accTree[prop][prevOffset];
+        testTextAttrs(acc, prevOffset, attrs, { }, prevOffset, charCount, true);
+      }
+
+      break;
+    }
+
+    default:
+      if (prop.indexOf("todo_") == 0)
+        todo(false, msg);
+      else if (prop != "children")
+        is(acc[prop], accTree[prop], msg);
     }
   }
 
   // Test children.
   if ("children" in accTree && accTree["children"] instanceof Array) {
     var children = acc.children;
-    is(children.length, accTree.children.length,
-       "Different amount of expected children of " + prettyName(acc) + ".");
+    var childCount = children.length;
 
-    if (accTree.children.length == children.length) {
-      var childCount = children.length;
+    if (accTree.children.length != childCount) {
+      for (var i = 0; i < Math.max(accTree.children.length, childCount); i++) {
+        var accChild = null, testChild = null;
+        try {
+          testChild = accTree.children[i];
+          accChild = children.queryElementAt(i, nsIAccessible);
+
+          if (!testChild) {
+            ok(false, prettyName(acc) + " has an extra child at index " + i +
+              " : " + prettyName(accChild));
+            continue;
+          }
+
+          testChild = normalizeAccTreeObj(testChild);
+          if (accChild.role !== testChild.role) {
+            ok(false, prettyName(accTree) + " and " + prettyName(acc) +
+              " have different children at index " + i + " : " +
+              prettyName(testChild) + ", " + prettyName(accChild));
+          }
+          info("Matching " + prettyName(accTree) + " and " + prettyName(acc) +
+               " child at index " + i + " : " + prettyName(accChild));
+
+        } catch (e) {
+          ok(false, prettyName(accTree) + " is expected to have a child at index " + i +
+             " : " + prettyName(testChild) + ", original tested: " +
+             prettyName(aAccOrElmOrID) + ", " + e);
+        }
+      }
+    } else {
+      if (aFlags & kSkipTreeFullCheck) {
+        for (var i = 0; i < childCount; i++) {
+          var child = children.queryElementAt(i, nsIAccessible);
+          testAccessibleTree(child, accTree.children[i], aFlags);
+        }
+        return;
+      }
 
       // nsIAccessible::firstChild
       var expectedFirstChild = childCount > 0 ?
@@ -402,7 +541,7 @@ function testAccessibleTree(aAccOrElmOrID, aAccTree)
       is(lastChild, expectedLastChild,
          "Wrong last child of " + prettyName(acc));
 
-      for (var i = 0; i < children.length; i++) {
+      for (var i = 0; i < childCount; i++) {
         var child = children.queryElementAt(i, nsIAccessible);
 
         // nsIAccessible::parent
@@ -433,7 +572,7 @@ function testAccessibleTree(aAccOrElmOrID, aAccTree)
            "Wrong previous sibling of " + prettyName(child));
 
         // Go down through subtree
-        testAccessibleTree(child, accTree.children[i]);
+        testAccessibleTree(child, accTree.children[i], aFlags);
       }
     }
   }
@@ -445,7 +584,7 @@ function testAccessibleTree(aAccOrElmOrID, aAccTree)
 function isAccessibleInCache(aNodeOrId)
 {
   var node = getNode(aNodeOrId);
-  return gAccRetrieval.getAccessibleFromCache(node) ? true : false;
+  return gAccService.getAccessibleFromCache(node) ? true : false;
 }
 
 /**
@@ -460,7 +599,8 @@ function testDefunctAccessible(aAcc, aNodeOrId)
     ok(!isAccessible(aNodeOrId),
        "Accessible for " + aNodeOrId + " wasn't properly shut down!");
 
-  var msg = " doesn't fail for shut down accessible " + prettyName(aNodeOrId) + "!";
+  var msg = " doesn't fail for shut down accessible " +
+             prettyName(aNodeOrId) + "!";
 
   // firstChild
   var success = false;
@@ -531,7 +671,7 @@ function testDefunctAccessible(aAcc, aNodeOrId)
  */
 function roleToString(aRole)
 {
-  return gAccRetrieval.getStringRole(aRole);
+  return gAccService.getStringRole(aRole);
 }
 
 /**
@@ -539,7 +679,7 @@ function roleToString(aRole)
  */
 function statesToString(aStates, aExtraStates)
 {
-  var list = gAccRetrieval.getStringStates(aStates, aExtraStates);
+  var list = gAccService.getStringStates(aStates, aExtraStates);
 
   var str = "";
   for (var index = 0; index < list.length - 1; index++)
@@ -556,7 +696,7 @@ function statesToString(aStates, aExtraStates)
  */
 function eventTypeToString(aEventType)
 {
-  return gAccRetrieval.getStringEventType(aEventType);
+  return gAccService.getStringEventType(aEventType);
 }
 
 /**
@@ -564,7 +704,7 @@ function eventTypeToString(aEventType)
  */
 function relationTypeToString(aRelationType)
 {
-  return gAccRetrieval.getStringRelationType(aRelationType);
+  return gAccService.getStringRelationType(aRelationType);
 }
 
 function getLoadContext() {
@@ -606,6 +746,31 @@ function getTextFromClipboard()
 }
 
 /**
+ * Extract DOMNode id from an accessible. If e10s is enabled, DOMNode is not
+ * present in parent process but, if available, DOMNode id is attached to an
+ * accessible object.
+ * @param  {nsIAccessible} accessible  accessible
+ * @return {String?}                   DOMNode id if available
+ */
+function getAccessibleDOMNodeID(accessible) {
+  if (accessible instanceof nsIAccessibleDocument) {
+    // If accessible is a document, trying to find its document body id.
+    try {
+      return accessible.DOMNode.body.id;
+    } catch (e) { /* This only works if accessible is not a proxy. */ }
+  }
+  try {
+    return accessible.DOMNode.id;
+  } catch (e) { /* This will fail if DOMNode is in different process. */ }
+  try {
+    // When e10s is enabled, accessible will have an "id" property if its
+    // corresponding DOMNode has an id. If accessible is a document, its "id"
+    // property corresponds to the "id" of its body element.
+    return accessible.id;
+  } catch (e) { /* This will fail if accessible is not a proxy. */ }
+}
+
+/**
  * Return pretty name for identifier, it may be ID, DOM node or accessible.
  */
 function prettyName(aIdentifier)
@@ -623,9 +788,17 @@ function prettyName(aIdentifier)
 
   if (aIdentifier instanceof nsIAccessible) {
     var acc = getAccessible(aIdentifier);
-    var msg = "[" + getNodePrettyName(acc.DOMNode);
+    var domID = getAccessibleDOMNodeID(acc);
+    var msg = "[";
     try {
-      msg += ", role: " + roleToString(acc.role);
+      if (Services.appinfo.browserTabsRemoteAutostart) {
+        if (domID) {
+          msg += `DOM node id: ${domID}, `;
+        }
+      } else {
+        msg += `${getNodePrettyName(acc.DOMNode)}, `;
+      }
+      msg += "role: " + roleToString(acc.role);
       if (acc.name)
         msg += ", name: '" + shortenString(acc.name) + "'";
     } catch (e) {
@@ -641,6 +814,27 @@ function prettyName(aIdentifier)
 
   if (aIdentifier instanceof nsIDOMNode)
     return "[ " + getNodePrettyName(aIdentifier) + " ]";
+
+  if (aIdentifier && typeof aIdentifier === "object" ) {
+    var treeObj = normalizeAccTreeObj(aIdentifier);
+    if ("role" in treeObj) {
+      function stringifyTree(aObj) {
+        var text = roleToString(aObj.role) + ": [ ";
+        if ("children" in aObj) {
+          for (var i = 0; i < aObj.children.length; i++) {
+            var c = normalizeAccTreeObj(aObj.children[i]);
+            text += stringifyTree(c);
+            if (i < aObj.children.length - 1) {
+              text += ", ";
+            }
+          }
+        }
+        return text + "] ";
+      }
+      return `{ ${stringifyTree(treeObj)} }`;
+    }
+    return JSON.stringify(aIdentifier);
+  }
 
   return " '" + aIdentifier + "' ";
 }
@@ -677,6 +871,21 @@ function getMainChromeWindow(aWindow)
                 .getInterface(Components.interfaces.nsIDOMWindow);
 }
 
+/** Sets the test plugin(s) initially expected enabled state.
+ * It will automatically be reset to it's previous value after the test
+ * ends.
+ * @param aNewEnabledState [in] the enabled state, e.g. SpecialPowers.Ci.nsIPluginTag.STATE_ENABLED
+ * @param aPluginName [in, optional] The name of the plugin, defaults to "Test Plug-in"
+ */
+function setTestPluginEnabledState(aNewEnabledState, aPluginName)
+{
+  var plugin = getTestPluginTag(aPluginName);
+  var oldEnabledState = plugin.enabledState;
+  plugin.enabledState = aNewEnabledState;
+  SimpleTest.registerCleanupFunction(function() {
+    getTestPluginTag(aPluginName).enabledState = oldEnabledState;
+  });
+}
 
 ////////////////////////////////////////////////////////////////////////////////
 // Private
@@ -711,4 +920,33 @@ function getObjAddress(aObj)
     return match[1];
 
   return aObj.toString();
+}
+
+function getTestPluginTag(aPluginName)
+{
+  var ph = SpecialPowers.Cc["@mozilla.org/plugin/host;1"]
+                        .getService(SpecialPowers.Ci.nsIPluginHost);
+  var tags = ph.getPluginTags();
+  var name = aPluginName || "Test Plug-in";
+  for (var tag of tags) {
+    if (tag.name == name) {
+      return tag;
+    }
+  }
+
+  ok(false, "Could not find plugin tag with plugin name '" + name + "'");
+  return null;
+}
+
+function normalizeAccTreeObj(aObj)
+{
+  var key = Object.keys(aObj)[0];
+  var roleName = "ROLE_" + key;
+  if (roleName in nsIAccessibleRole) {
+    return {
+      role: nsIAccessibleRole[roleName],
+      children: aObj[key]
+    };
+  }
+  return aObj;
 }

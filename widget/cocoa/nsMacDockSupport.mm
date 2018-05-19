@@ -9,7 +9,7 @@
 #include "nsMacDockSupport.h"
 #include "nsObjCExceptions.h"
 
-NS_IMPL_ISUPPORTS2(nsMacDockSupport, nsIMacDockSupport, nsITaskbarProgress)
+NS_IMPL_ISUPPORTS(nsMacDockSupport, nsIMacDockSupport, nsITaskbarProgress)
 
 nsMacDockSupport::nsMacDockSupport()
 : mAppIcon(nil)
@@ -39,20 +39,16 @@ nsMacDockSupport::~nsMacDockSupport()
 NS_IMETHODIMP
 nsMacDockSupport::GetDockMenu(nsIStandaloneNativeMenu ** aDockMenu)
 {
-  *aDockMenu = nullptr;
-
-  if (mDockMenu)
-    return mDockMenu->QueryInterface(NS_GET_IID(nsIStandaloneNativeMenu),
-                                     reinterpret_cast<void **>(aDockMenu));
+  nsCOMPtr<nsIStandaloneNativeMenu> dockMenu(mDockMenu);
+  dockMenu.forget(aDockMenu);
   return NS_OK;
 }
 
 NS_IMETHODIMP
 nsMacDockSupport::SetDockMenu(nsIStandaloneNativeMenu * aDockMenu)
 {
-  nsresult rv;
-  mDockMenu = do_QueryInterface(aDockMenu, &rv);
-  return rv;
+  mDockMenu = aDockMenu;
+  return NS_OK;
 }
 
 NS_IMETHODIMP
@@ -76,7 +72,8 @@ nsMacDockSupport::SetBadgeText(const nsAString& aBadgeText)
   if (aBadgeText.IsEmpty())
     [tile setBadgeLabel: nil];
   else
-    [tile setBadgeLabel:[NSString stringWithCharacters:mBadgeText.get() length:mBadgeText.Length()]];
+    [tile setBadgeLabel:[NSString stringWithCharacters:reinterpret_cast<const unichar*>(mBadgeText.get())
+                                                length:mBadgeText.Length()]];
   return NS_OK;
 
   NS_OBJC_END_TRY_ABORT_BLOCK_NSRESULT;

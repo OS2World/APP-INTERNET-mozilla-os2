@@ -1,4 +1,3 @@
-/* vim:set ts=2 sw=2 sts=2 et: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -17,8 +16,9 @@ const { URL: parseURL } = require("../url");
 const LoginInfo = CC("@mozilla.org/login-manager/loginInfo;1",
                      "nsILoginInfo", "init");
 
-function filterMatchingLogins(loginInfo)
-  Object.keys(this).every(function(key) loginInfo[key] === this[key], this);
+function filterMatchingLogins(loginInfo) {
+  return Object.keys(this).every(key => loginInfo[key] === this[key], this);
+}
 
 /**
  * Removes `user`, `password` and `path` fields from the given `url` if it's
@@ -71,7 +71,9 @@ Login.prototype.toLoginInfo = function toLoginInfo() {
                        usernameField, passwordField);
 };
 
-function loginToJSON(value) Login(value).toJSON()
+function loginToJSON(value) {
+  return Login(value).toJSON();
+}
 
 /**
  * Returns array of `nsILoginInfo` objects that are stored in the login manager

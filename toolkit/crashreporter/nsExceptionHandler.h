@@ -6,12 +6,12 @@
 #ifndef nsExceptionHandler_h__
 #define nsExceptionHandler_h__
 
-#include "nscore.h"
-#include "nsDataHashtable.h"
-#include "nsXPCOM.h"
-#include "nsStringGlue.h"
+#include "mozilla/Assertions.h"
 
-#include "nsIFile.h"
+#include <stddef.h>
+#include <stdint.h>
+#include "nsError.h"
+#include "nsStringGlue.h"
 
 #if defined(XP_WIN32)
 #ifdef WIN32_LEAN_AND_MEAN
@@ -24,9 +24,43 @@
 #include <mach/mach.h>
 #endif
 
+#if defined(XP_LINUX)
+#include <signal.h>
+#endif
+
+class nsIFile;
+template<class KeyClass, class DataType> class nsDataHashtable;
+class nsCStringHashKey;
+
 namespace CrashReporter {
 nsresult SetExceptionHandler(nsIFile* aXREDirectory, bool force=false);
 nsresult UnsetExceptionHandler();
+
+/**
+ * Tell the crash reporter to recalculate where crash events files should go.
+ * SetCrashEventsDir is used before XPCOM is initialized from the startup
+ * code.
+ *
+ * UpdateCrashEventsDir uses the directory service to re-set the
+ * crash event directory based on the current profile.
+ *
+ * 1. If environment variable is present, use it. We don't expect
+ *    the environment variable except for tests and other atypical setups.
+ * 2. <profile>/crashes/events
+ * 3. <UAppData>/Crash Reports/events
+ */
+void SetUserAppDataDirectory(nsIFile* aDir);
+void SetProfileDirectory(nsIFile* aDir);
+void UpdateCrashEventsDir();
+void SetMemoryReportFile(nsIFile* aFile);
+nsresult GetDefaultMemoryReportFile(nsIFile** aFile);
+void SetTelemetrySessionId(const nsACString& id);
+
+/**
+ * Get the path where crash event files should be written.
+ */
+bool     GetCrashEventsDir(nsAString& aPath);
+
 bool     GetEnabled();
 bool     GetServerURL(nsACString& aServerURL);
 nsresult SetServerURL(const nsACString& aServerURL);
@@ -34,13 +68,21 @@ bool     GetMinidumpPath(nsAString& aPath);
 nsresult SetMinidumpPath(const nsAString& aPath);
 
 
-// AnnotateCrashReport and AppendAppNotesToCrashReport may be called from any
-// thread in a chrome process, but may only be called from the main thread in
-// a content process.
+// AnnotateCrashReport, RemoveCrashReportAnnotation and
+// AppendAppNotesToCrashReport may be called from any thread in a chrome
+// process, but may only be called from the main thread in a content process.
 nsresult AnnotateCrashReport(const nsACString& key, const nsACString& data);
+nsresult RemoveCrashReportAnnotation(const nsACString& key);
 nsresult AppendAppNotesToCrashReport(const nsACString& data);
 
+void AnnotateOOMAllocationSize(size_t size);
+void AnnotateTexturesSize(size_t size);
+void AnnotatePendingIPC(size_t aNumOfPendingIPC,
+                        uint32_t aTopPendingIPCCount,
+                        const char* aTopPendingIPCName,
+                        uint32_t aTopPendingIPCType);
 nsresult SetGarbageCollecting(bool collecting);
+void SetEventloopNestingLevel(uint32_t level);
 
 nsresult SetRestartArgs(int argc, char** argv);
 nsresult SetupExtraData(nsIFile* aAppDataDirectory,
@@ -54,17 +96,32 @@ nsresult UnregisterAppMemory(void* ptr);
 // Functions for working with minidumps and .extras
 typedef nsDataHashtable<nsCStringHashKey, nsCString> AnnotationTable;
 
+void DeleteMinidumpFilesForID(const nsAString& id);
 bool GetMinidumpForID(const nsAString& id, nsIFile** minidump);
 bool GetIDFromMinidump(nsIFile* minidump, nsAString& id);
 bool GetExtraFileForID(const nsAString& id, nsIFile** extraFile);
 bool GetExtraFileForMinidump(nsIFile* minidump, nsIFile** extraFile);
 bool AppendExtraData(const nsAString& id, const AnnotationTable& data);
 bool AppendExtraData(nsIFile* extraFile, const AnnotationTable& data);
-void RenameAdditionalHangMinidump(nsIFile* minidump, nsIFile* childMinidump,
-                                  const nsACString& name);
+
+/*
+ * Renames the stand alone dump file aDumpFile to:
+ *  |aOwnerDumpFile-aDumpFileProcessType.dmp|
+ * and moves it into the same directory as aOwnerDumpFile. Does not
+ * modify aOwnerDumpFile in any way.
+ *
+ * @param aDumpFile - the dump file to associate with aOwnerDumpFile.
+ * @param aOwnerDumpFile - the new owner of aDumpFile.
+ * @param aDumpFileProcessType - process name associated with aDumpFile.
+ */
+void RenameAdditionalHangMinidump(nsIFile* aDumpFile, const nsIFile* aOwnerDumpFile,
+                                  const nsACString& aDumpFileProcessType);
 
 #ifdef XP_WIN32
   nsresult WriteMinidumpForException(EXCEPTION_POINTERS* aExceptionInfo);
+#endif
+#ifdef XP_LINUX
+  bool WriteMinidumpForSigInfo(int signo, siginfo_t* info, void* uc);
 #endif
 #ifdef XP_MACOSX
   nsresult AppendObjCExceptionInfoToAppNotes(void *inException);
@@ -75,16 +132,29 @@ nsresult SetSubmitReports(bool aSubmitReport);
 // Out-of-process crash reporter API.
 
 // Initializes out-of-process crash reporting. This method must be called
-// before the platform-specifi notificationpipe APIs are called.
+// before the platform-specific notification pipe APIs are called. If called
+// from off the main thread, this method will synchronously proxy to the main
+// thread.
 void OOPInit();
+
+/*
+ * Takes a minidump for the current process and returns the dump file.
+ * Callers are responsible for managing the resulting file.
+ *
+ * @param aResult - file pointer that holds the resulting minidump.
+ * @param aMoveToPending - if true move the report to the report
+ *   pending directory.
+ * @returns boolean indicating success or failure.
+ */
+bool TakeMinidump(nsIFile** aResult, bool aMoveToPending = false);
 
 // Return true if a dump was found for |childPid|, and return the
 // path in |dump|.  The caller owns the last reference to |dump| if it
-// is non-NULL. The sequence parameter will be filled with an ordinal
+// is non-nullptr. The sequence parameter will be filled with an ordinal
 // indicating which remote process crashed first.
 bool TakeMinidumpForChild(uint32_t childPid,
                           nsIFile** dump,
-                          uint32_t* aSequence = NULL);
+                          uint32_t* aSequence = nullptr);
 
 #if defined(XP_WIN)
 typedef HANDLE ProcessHandle;
@@ -105,19 +175,31 @@ typedef int ThreadId;
 // hoops for us.
 ThreadId CurrentThreadId();
 
-// Create a hang report with two minidumps that are snapshots of the state
-// of this parent process and |childPid|. The "main" minidump will be the
-// child process, and this parent process will have the -browser extension.
-//
-// Returns true on success. If this function fails, it will attempt to delete
-// any files that were created.
-//
-// The .extra information created will not include an additional_minidumps
-// annotation: the caller should annotate additional_minidumps with
-// at least "browser" and perhaps other minidumps attached to this report.
-bool CreatePairedMinidumps(ProcessHandle childPid,
-                           ThreadId childBlamedThread,
-                           nsIFile** childDump);
+/*
+ * Take a minidump of the target process and pair it with an incoming minidump
+ * provided by the caller or a new minidump of the calling process and thread.
+ * The caller will own both dumps after this call. If this function fails
+ * it will attempt to delete any files that were created.
+ *
+ * The .extra information created will not include an 'additional_minidumps'
+ * annotation.
+ *
+ * @param aTargetPid The target process for the minidump.
+ * @param aTargetBlamedThread The target thread for the minidump.
+ * @param aIncomingPairName The name to apply to the paired dump the caller
+ *   passes in.
+ * @param aIncomingDumpToPair Existing dump to pair with the new dump. if this
+ *   is null, TakeMinidumpAndPair will take a new minidump of the calling
+ *   process and thread and use it in aIncomingDumpToPairs place.
+ * @param aTargetDumpOut The target minidump file paired up with
+ *   aIncomingDumpToPair.
+ * @return bool indicating success or failure
+ */
+bool CreateMinidumpsAndPair(ProcessHandle aTargetPid,
+                            ThreadId aTargetBlamedThread,
+                            const nsACString& aIncomingPairName,
+                            nsIFile* aIncomingDumpToPair,
+                            nsIFile** aTargetDumpOut);
 
 // Create an additional minidump for a child of a process which already has
 // a minidump (|parentMinidump|).
@@ -158,6 +240,7 @@ void UnregisterInjectorCallback(DWORD processID);
 
 // Child-side API
 bool SetRemoteExceptionHandler(const nsACString& crashPipe);
+void InitChildProcessTmpDir();
 
 #  elif defined(XP_LINUX)
 // Parent-side API for children
@@ -191,6 +274,6 @@ void AddLibraryMapping(const char* library_name,
                        size_t      file_offset);
 
 #endif
-}
+} // namespace CrashReporter
 
 #endif /* nsExceptionHandler_h__ */

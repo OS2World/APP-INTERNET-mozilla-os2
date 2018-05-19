@@ -17,6 +17,7 @@
 
 #include <stdio.h>
 #include <stdarg.h>
+#include <string.h>
 
 #include "nsCOMPtr.h"
 #include "nsIFile.h"
@@ -25,12 +26,11 @@
 #ifdef XP_WIN
 // we want a wmain entry point
 #include "nsWindowsWMain.cpp"
-#define snprintf _snprintf
 #define strcasecmp _stricmp
 #endif
 
 #ifdef MOZ_WIDGET_GONK
-#include "GonkDisplay.h"
+#include "BootAnimation.h"
 #endif
 
 #include "BinaryPath.h"
@@ -41,7 +41,9 @@
 # include <binder/ProcessState.h>
 #endif
 
+#include "mozilla/Sprintf.h"
 #include "mozilla/Telemetry.h"
+#include "mozilla/WindowsDllBlocklist.h"
 
 static void Output(const char *fmt, ... )
 {
@@ -49,7 +51,7 @@ static void Output(const char *fmt, ... )
   va_start(ap, fmt);
 
 #if defined(XP_WIN) && !MOZ_WINCONSOLE
-  PRUnichar msg[2048];
+  wchar_t msg[2048];
   _vsnwprintf(msg, sizeof(msg)/sizeof(msg[0]), NS_ConvertUTF8toUTF16(fmt).get(), ap);
   MessageBoxW(nullptr, msg, L"XULRunner", MB_OK | MB_ICONERROR);
 #else
@@ -79,22 +81,9 @@ static bool IsArg(const char* arg, const char* s)
   return false;
 }
 
-/**
- * A helper class which calls NS_LogInit/NS_LogTerm in its scope.
- */
-class ScopedLogging
-{
-public:
-  ScopedLogging() { NS_LogInit(); }
-  ~ScopedLogging() { NS_LogTerm(); }
-};
-
 XRE_GetFileFromPathType XRE_GetFileFromPath;
 XRE_CreateAppDataType XRE_CreateAppData;
 XRE_FreeAppDataType XRE_FreeAppData;
-#ifdef XRE_HAS_DLL_BLOCKLIST
-XRE_SetupDllBlocklistType XRE_SetupDllBlocklist;
-#endif
 XRE_TelemetryAccumulateType XRE_TelemetryAccumulate;
 XRE_mainType XRE_main;
 
@@ -102,9 +91,6 @@ static const nsDynamicFunctionLoad kXULFuncs[] = {
     { "XRE_GetFileFromPath", (NSFuncPtr*) &XRE_GetFileFromPath },
     { "XRE_CreateAppData", (NSFuncPtr*) &XRE_CreateAppData },
     { "XRE_FreeAppData", (NSFuncPtr*) &XRE_FreeAppData },
-#ifdef XRE_HAS_DLL_BLOCKLIST
-    { "XRE_SetupDllBlocklist", (NSFuncPtr*) &XRE_SetupDllBlocklist },
-#endif
     { "XRE_TelemetryAccumulate", (NSFuncPtr*) &XRE_TelemetryAccumulate },
     { "XRE_main", (NSFuncPtr*) &XRE_main },
     { nullptr, nullptr }
@@ -138,8 +124,8 @@ static int do_main(int argc, char* argv[])
     }
 
     char appEnv[MAXPATHLEN];
-    snprintf(appEnv, MAXPATHLEN, "XUL_APP_FILE=%s", argv[2]);
-    if (putenv(appEnv)) {
+    SprintfLiteral(appEnv, "XUL_APP_FILE=%s", argv[2]);
+    if (putenv(strdup(appEnv))) {
       Output("Couldn't set %s.\n", appEnv);
       return 255;
     }
@@ -149,8 +135,8 @@ static int do_main(int argc, char* argv[])
   }
 
 #ifdef MOZ_WIDGET_GONK
-  /* Called to start the boot animation */
-  (void) mozilla::GetGonkDisplay();
+  /* Start boot animation */
+  mozilla::StartBootAnimation();
 #endif
 
   if (appini) {
@@ -180,7 +166,8 @@ int main(int argc, char* argv[])
   android::ProcessState::self()->startThreadPool();
 #endif
 
-  nsresult rv = mozilla::BinaryPath::Get(argv[0], exePath);
+  nsresult rv;
+  rv = mozilla::BinaryPath::Get(argv[0], exePath);
   if (NS_FAILED(rv)) {
     Output("Couldn't calculate the application directory.\n");
     return 255;
@@ -201,13 +188,8 @@ int main(int argc, char* argv[])
   (void)setsid();
 #endif
 
-  int gotCounters;
-#if defined(XP_UNIX)
-  struct rusage initialRUsage;
-  gotCounters = !getrusage(RUSAGE_SELF, &initialRUsage);
-#elif defined(XP_WIN)
-  IO_COUNTERS ioCounters;
-  gotCounters = GetProcessIoCounters(GetCurrentProcess(), &ioCounters);
+#ifdef HAS_DLL_BLOCKLIST
+  DllBlocklist_Initialize();
 #endif
 
   // We do this because of data in bug 771745
@@ -227,38 +209,30 @@ int main(int argc, char* argv[])
     return 255;
   }
 
-#ifdef XRE_HAS_DLL_BLOCKLIST
-  XRE_SetupDllBlocklist();
-#endif
-
-  if (gotCounters) {
-#if defined(XP_WIN)
-    XRE_TelemetryAccumulate(mozilla::Telemetry::EARLY_GLUESTARTUP_READ_OPS,
-                            int(ioCounters.ReadOperationCount));
-    XRE_TelemetryAccumulate(mozilla::Telemetry::EARLY_GLUESTARTUP_READ_TRANSFER,
-                            int(ioCounters.ReadTransferCount / 1024));
-    IO_COUNTERS newIoCounters;
-    if (GetProcessIoCounters(GetCurrentProcess(), &newIoCounters)) {
-      XRE_TelemetryAccumulate(mozilla::Telemetry::GLUESTARTUP_READ_OPS,
-                              int(newIoCounters.ReadOperationCount - ioCounters.ReadOperationCount));
-      XRE_TelemetryAccumulate(mozilla::Telemetry::GLUESTARTUP_READ_TRANSFER,
-                              int((newIoCounters.ReadTransferCount - ioCounters.ReadTransferCount) / 1024));
-    }
-#elif defined(XP_UNIX)
-    XRE_TelemetryAccumulate(mozilla::Telemetry::EARLY_GLUESTARTUP_HARD_FAULTS,
-                            int(initialRUsage.ru_majflt));
-    struct rusage newRUsage;
-    if (!getrusage(RUSAGE_SELF, &newRUsage)) {
-      XRE_TelemetryAccumulate(mozilla::Telemetry::GLUESTARTUP_HARD_FAULTS,
-                              int(newRUsage.ru_majflt - initialRUsage.ru_majflt));
-    }
-#endif
-  }
-
   int result;
   {
     ScopedLogging log;
-    result = do_main(argc, argv);
+    char **_argv;
+
+    /*
+     * Duplicate argument vector to conform non-const argv of
+     * do_main() since XRE_main() is very stupid with non-const argv.
+     */
+    _argv = new char *[argc + 1];
+    for (int i = 0; i < argc; i++) {
+      size_t len = strlen(argv[i]) + 1;
+      _argv[i] = new char[len];
+      MOZ_ASSERT(_argv[i] != nullptr);
+      memcpy(_argv[i], argv[i], len);
+    }
+    _argv[argc] = nullptr;
+
+    result = do_main(argc, _argv);
+
+    for (int i = 0; i < argc; i++) {
+      delete[] _argv[i];
+    }
+    delete[] _argv;
   }
 
   return result;

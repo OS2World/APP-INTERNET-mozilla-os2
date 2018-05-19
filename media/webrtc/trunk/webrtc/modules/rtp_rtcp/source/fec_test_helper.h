@@ -11,15 +11,14 @@
 #ifndef WEBRTC_MODULES_RTP_RTCP_SOURCE_FEC_TEST_HELPER_H_
 #define WEBRTC_MODULES_RTP_RTCP_SOURCE_FEC_TEST_HELPER_H_
 
-#include "modules/interface/module_common_types.h"
-#include "modules/rtp_rtcp/source/forward_error_correction.h"
+#include "webrtc/modules/interface/module_common_types.h"
+#include "webrtc/modules/rtp_rtcp/source/forward_error_correction.h"
 
 namespace webrtc {
 
-enum { kRtpHeaderSize = 12 };
-enum { kFecPayloadType = 96 };
-enum { kRedPayloadType = 97 };
-enum { kVp8PayloadType = 120 };
+const uint8_t kFecPayloadType = 96;
+const uint8_t kRedPayloadType = 97;
+const uint8_t kVp8PayloadType = 120;
 
 typedef ForwardErrorCorrection::Packet Packet;
 
@@ -46,7 +45,7 @@ class FrameGenerator {
   RtpPacket* BuildFecRedPacket(const Packet* packet);
 
   void SetRedHeader(Packet* red_packet, uint8_t payload_type,
-                    int header_length) const;
+                    size_t header_length) const;
 
  private:
   static void BuildRtpHeader(uint8_t* data, const RTPHeader* header);

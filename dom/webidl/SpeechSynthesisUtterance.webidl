@@ -10,7 +10,7 @@
  * liability, trademark and document use rules apply.
  */
 
-[PrefControlled,
+[Pref="media.webspeech.synth.enabled",
  Constructor,
  Constructor(DOMString text)]
 interface SpeechSynthesisUtterance : EventTarget {
@@ -21,18 +21,14 @@ interface SpeechSynthesisUtterance : EventTarget {
   attribute float rate;
   attribute float pitch;
 
-  [SetterThrows]
   attribute EventHandler onstart;
-  [SetterThrows]
   attribute EventHandler onend;
-  [SetterThrows]
   attribute EventHandler onerror;
-  [SetterThrows]
   attribute EventHandler onpause;
-  [SetterThrows]
   attribute EventHandler onresume;
-  [SetterThrows]
   attribute EventHandler onmark;
-  [SetterThrows]
   attribute EventHandler onboundary;
+
+  [ChromeOnly]
+  readonly attribute DOMString chosenVoiceURI;
 };

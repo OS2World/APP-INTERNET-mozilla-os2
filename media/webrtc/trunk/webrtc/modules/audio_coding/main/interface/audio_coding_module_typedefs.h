@@ -11,6 +11,9 @@
 #ifndef WEBRTC_MODULES_AUDIO_CODING_MAIN_INTERFACE_AUDIO_CODING_MODULE_TYPEDEFS_H_
 #define WEBRTC_MODULES_AUDIO_CODING_MAIN_INTERFACE_AUDIO_CODING_MODULE_TYPEDEFS_H_
 
+#include <map>
+
+#include "webrtc/modules/interface/module_common_types.h"
 #include "webrtc/typedefs.h"
 
 namespace webrtc {
@@ -141,48 +144,6 @@ enum ACMAMRPackingFormat {
   AMRFileStorage = 2
 };
 
-
-///////////////////////////////////////////////////////////////////////////
-//
-//   Struct containing network statistics
-//
-// -currentBufferSize      : current jitter buffer size in ms
-// -preferredBufferSize    : preferred (optimal) buffer size in ms
-// -jitterPeaksFound       : indicate if peaky-jitter mode is engaged, that is,
-//                           if severe but sparse network delays have occurred.
-// -currentPacketLossRate  : loss rate (network + late) (in Q14)
-// -currentDiscardRate     : late loss rate (in Q14)
-// -currentExpandRate      : fraction (of original stream) of synthesized
-//                           speech inserted through expansion (in Q14)
-// -currentPreemptiveRate  : fraction of synthesized speech inserted through
-//                           pre-emptive expansion (in Q14)
-// -currentAccelerateRate  : fraction of data removed through acceleration
-//                           (in Q14)
-// -clockDriftPPM          : clock-drift between sender and receiver in parts-
-//                           per-million. Positive means that receiver sample
-//                           rate is higher than sender sample rate.
-// -meanWaitingTimeMs      : average packet waiting time in the buffer
-// -medianWaitingTimeMs    : median packet waiting time in the buffer
-// -minWaitingTimeMs       : min packet waiting time in the buffer
-// -maxWaitingTimeMs       : max packet waiting time in the buffer
-// -addedSamples           : samples inserted because of packet loss in off mode
-typedef struct {
-  WebRtc_UWord16 currentBufferSize;
-  WebRtc_UWord16 preferredBufferSize;
-  bool jitterPeaksFound;
-  WebRtc_UWord16 currentPacketLossRate;
-  WebRtc_UWord16 currentDiscardRate;
-  WebRtc_UWord16 currentExpandRate;
-  WebRtc_UWord16 currentPreemptiveRate;
-  WebRtc_UWord16 currentAccelerateRate;
-  int32_t clockDriftPPM;
-  int meanWaitingTimeMs;
-  int medianWaitingTimeMs;
-  int minWaitingTimeMs;
-  int maxWaitingTimeMs;
-  int addedSamples;
-} ACMNetworkStatistics;
-
 ///////////////////////////////////////////////////////////////////////////
 //
 // Enumeration of background noise mode a mapping from NetEQ interface.
@@ -195,6 +156,18 @@ enum ACMBackgroundNoiseMode {
   On,
   Fade,
   Off
+};
+
+///////////////////////////////////////////////////////////////////////////
+//
+// Enumeration of Opus mode for intended application.
+//
+// kVoip              : optimized for voice signals.
+// kAudio             : optimized for non-voice signals like music.
+//
+enum OpusApplicationMode {
+ kVoip = 0,
+ kAudio = 1,
 };
 
 }  // namespace webrtc

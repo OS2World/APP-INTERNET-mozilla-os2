@@ -7,84 +7,83 @@
 #ifndef nsWyciwygChannel_h___
 #define nsWyciwygChannel_h___
 
-#include "nsWyciwygProtocolHandler.h"
-#include "nsXPIDLString.h"
 #include "nsString.h"
 #include "nsCOMPtr.h"
 
+#include "nsILoadInfo.h"
 #include "nsIWyciwygChannel.h"
-#include "nsILoadGroup.h"
-#include "nsIOutputStream.h"
-#include "nsIInputStream.h"
-#include "nsIInputStreamPump.h"
-#include "nsIInterfaceRequestor.h"
-#include "nsIProgressEventSink.h"
 #include "nsIStreamListener.h"
-#include "nsICacheListener.h"
-#include "nsICacheEntryDescriptor.h"
-#include "nsIURI.h"
-#include "nsIEventTarget.h"
-#include "nsILoadContext.h"
-#include "nsNetUtil.h"
+#include "nsICacheEntryOpenCallback.h"
 #include "PrivateBrowsingChannel.h"
+#include "mozilla/BasePrincipal.h"
 
-extern PRLogModuleInfo * gWyciwygLog;
+class nsICacheEntry;
+class nsICacheStorage;
+class nsIInputStream;
+class nsIInputStreamPump;
+class nsILoadGroup;
+class nsIOutputStream;
+class nsIProgressEventSink;
+class nsIURI;
+
+extern mozilla::LazyLogModule gWyciwygLog;
 
 //-----------------------------------------------------------------------------
 
-class nsWyciwygChannel: public nsIWyciwygChannel,
-                        public nsIStreamListener,
-                        public nsICacheListener,
-                        public mozilla::net::PrivateBrowsingChannel<nsWyciwygChannel>
+class nsWyciwygChannel final: public nsIWyciwygChannel,
+                              public nsIStreamListener,
+                              public nsICacheEntryOpenCallback,
+                              public mozilla::net::PrivateBrowsingChannel<nsWyciwygChannel>
 {
 public:
-    NS_DECL_ISUPPORTS
+    NS_DECL_THREADSAFE_ISUPPORTS
     NS_DECL_NSIREQUEST
     NS_DECL_NSICHANNEL
     NS_DECL_NSIWYCIWYGCHANNEL
     NS_DECL_NSIREQUESTOBSERVER
     NS_DECL_NSISTREAMLISTENER
-    NS_DECL_NSICACHELISTENER
-
-    friend class nsWyciwygSetCharsetandSourceEvent;
-    friend class nsWyciwygWriteEvent;
-    friend class nsWyciwygCloseEvent;
+    NS_DECL_NSICACHEENTRYOPENCALLBACK
 
     // nsWyciwygChannel methods:
     nsWyciwygChannel();
-    virtual ~nsWyciwygChannel();
 
     nsresult Init(nsIURI *uri);
 
 protected:
-    nsresult WriteToCacheEntryInternal(const nsAString& aData, const nsACString& spec);
-    void SetCharsetAndSourceInternal();
-    nsresult CloseCacheEntryInternal(nsresult reason);
+    virtual ~nsWyciwygChannel();
 
     nsresult ReadFromCache();
-    nsresult OpenCacheEntry(const nsACString & aCacheKey, nsCacheAccessMode aWriteAccess);
+    nsresult EnsureWriteCacheEntry();
+    nsresult GetCacheStorage(nsICacheStorage **_retval);
+    nsresult OpenCacheEntryForReading(nsIURI *aURI);
+    nsresult OpenCacheEntryForWriting(nsIURI *aURI);
 
     void WriteCharsetAndSourceToCache(int32_t aSource,
                                       const nsCString& aCharset);
 
     void NotifyListener();
-    bool IsOnCacheIOThread();
 
     friend class mozilla::net::PrivateBrowsingChannel<nsWyciwygChannel>;
 
+    enum EMode {
+      NONE,
+      WRITING,
+      READING
+    };
+
+    EMode                               mMode;
     nsresult                            mStatus;
     bool                                mIsPending;
-    bool                                mCharsetAndSourceSet;
     bool                                mNeedToWriteCharset;
     int32_t                             mCharsetSource;
     nsCString                           mCharset;
     int64_t                             mContentLength;
     uint32_t                            mLoadFlags;
-    uint32_t                            mAppId;
-    bool                                mInBrowser;
+    mozilla::NeckoOriginAttributes      mOriginAttributes;
     nsCOMPtr<nsIURI>                    mURI;
     nsCOMPtr<nsIURI>                    mOriginalURI;
     nsCOMPtr<nsISupports>               mOwner;
+    nsCOMPtr<nsILoadInfo>               mLoadInfo;
     nsCOMPtr<nsIInterfaceRequestor>     mCallbacks;
     nsCOMPtr<nsIProgressEventSink>      mProgressSink;
     nsCOMPtr<nsILoadGroup>              mLoadGroup;
@@ -95,12 +94,22 @@ protected:
     nsCOMPtr<nsIInputStreamPump>        mPump;
     
     // Cache related stuff    
-    nsCOMPtr<nsICacheEntryDescriptor>   mCacheEntry;
+    nsCOMPtr<nsICacheEntry>             mCacheEntry;
     nsCOMPtr<nsIOutputStream>           mCacheOutputStream;
     nsCOMPtr<nsIInputStream>            mCacheInputStream;
-    nsCOMPtr<nsIEventTarget>            mCacheIOTarget;
 
+    bool                                mNeedToSetSecurityInfo;
     nsCOMPtr<nsISupports>               mSecurityInfo;
 };
+
+/**
+ * Casting nsWyciwygChannel to nsISupports is ambiguous.
+ * This method handles that.
+ */
+inline nsISupports*
+ToSupports(nsWyciwygChannel* p)
+{
+  return NS_ISUPPORTS_CAST(nsIStreamListener*, p);
+}
 
 #endif /* nsWyciwygChannel_h___ */

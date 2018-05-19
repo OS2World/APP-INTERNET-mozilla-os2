@@ -8,15 +8,14 @@
 
 #import <Cocoa/Cocoa.h>
 
+#include "mozilla/UniquePtr.h"
 #include "nsMenuBaseX.h"
 #include "nsMenuGroupOwnerX.h"
 #include "nsChangeObserver.h"
 #include "nsINativeMenuService.h"
-#include "nsAutoPtr.h"
 #include "nsString.h"
 
 class nsMenuX;
-class nsMenuItemX;
 class nsIWidget;
 class nsIContent;
 
@@ -27,9 +26,11 @@ public:
   NS_DECL_ISUPPORTS
 
   nsNativeMenuServiceX() {}
-  virtual ~nsNativeMenuServiceX() {}
 
-  NS_IMETHOD CreateNativeMenuBar(nsIWidget* aParent, nsIContent* aMenuBarNode);
+  NS_IMETHOD CreateNativeMenuBar(nsIWidget* aParent, nsIContent* aMenuBarNode) override;
+
+protected:
+  virtual ~nsNativeMenuServiceX() {}
 };
 
 // Objective-C class used to allow us to intervene with keyboard event handling.
@@ -84,7 +85,6 @@ public:
   // The following content nodes have been removed from the menu system.
   // We save them here for use in command handling.
   nsCOMPtr<nsIContent> mAboutItemContent;
-  nsCOMPtr<nsIContent> mUpdateItemContent;
   nsCOMPtr<nsIContent> mPrefItemContent;
   nsCOMPtr<nsIContent> mQuitItemContent;
 
@@ -92,8 +92,8 @@ public:
   NS_DECL_CHANGEOBSERVER
 
   // nsMenuObjectX
-  void*             NativeData()     {return (void*)mNativeMenu;}
-  nsMenuObjectTypeX MenuObjectType() {return eMenuBarObjectType;}
+  void*             NativeData() override {return (void*)mNativeMenu;}
+  nsMenuObjectTypeX MenuObjectType() override {return eMenuBarObjectType;}
 
   // nsMenuBarX
   nsresult          Create(nsIWidget* aParent, nsIContent* aContent);
@@ -107,9 +107,11 @@ public:
   void              ForceUpdateNativeMenuAt(const nsAString& indexString);
   void              ForceNativeMenuReload(); // used for testing
   static char       GetLocalizedAccelKey(const char *shortcutID);
+  static void       ResetNativeApplicationMenu();
 
 protected:
   void              ConstructNativeMenus();
+  void              ConstructFallbackNativeMenus();
   nsresult          InsertMenuAtIndex(nsMenuX* aMenu, uint32_t aIndex);
   void              RemoveMenuAtIndex(uint32_t aIndex);
   void              HideItem(nsIDOMDocument* inDoc, const nsAString & inID, nsIContent** outHiddenNode);
@@ -118,7 +120,7 @@ protected:
                                             int tag, NativeMenuItemTarget* target);
   nsresult          CreateApplicationMenu(nsMenuX* inMenu);
 
-  nsTArray< nsAutoPtr<nsMenuX> > mMenuArray;
+  nsTArray<mozilla::UniquePtr<nsMenuX>> mMenuArray;
   nsIWidget*         mParentWindow;        // [weak]
   GeckoNSMenu*       mNativeMenu;            // root menu, representing entire menu bar
 };

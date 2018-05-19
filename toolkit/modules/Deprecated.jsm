@@ -13,7 +13,7 @@ const PREF_DEPRECATION_WARNINGS = "devtools.errorconsole.deprecation_warnings";
 Cu.import("resource://gre/modules/Services.jsm");
 
 // A flag that indicates whether deprecation warnings should be logged.
-let logWarnings = Services.prefs.getBoolPref(PREF_DEPRECATION_WARNINGS);
+var logWarnings = Services.prefs.getBoolPref(PREF_DEPRECATION_WARNINGS);
 
 Services.prefs.addObserver(PREF_DEPRECATION_WARNINGS,
   function (aSubject, aTopic, aData) {
@@ -43,7 +43,7 @@ function stringifyCallstack (aStack) {
   return msg;
 }
 
-const Deprecated = {
+this.Deprecated = {
   /**
    * Log a deprecation warning.
    *

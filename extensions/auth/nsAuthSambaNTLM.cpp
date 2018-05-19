@@ -44,7 +44,7 @@ nsAuthSambaNTLM::Shutdown()
     }
 }
 
-NS_IMPL_ISUPPORTS1(nsAuthSambaNTLM, nsIAuthModule)
+NS_IMPL_ISUPPORTS(nsAuthSambaNTLM, nsIAuthModule)
 
 static bool
 SpawnIOChild(char* const* aArgs, PRProcess** aPID,
@@ -206,17 +206,17 @@ nsAuthSambaNTLM::SpawnNTLMAuthHelper()
 NS_IMETHODIMP
 nsAuthSambaNTLM::Init(const char *serviceName,
                       uint32_t    serviceFlags,
-                      const PRUnichar *domain,
-                      const PRUnichar *username,
-                      const PRUnichar *password)
+                      const char16_t *domain,
+                      const char16_t *username,
+                      const char16_t *password)
 {
     NS_ASSERTION(!username && !domain && !password, "unexpected credentials");
 
     static bool sTelemetrySent = false;
     if (!sTelemetrySent) {
         mozilla::Telemetry::Accumulate(
-            mozilla::Telemetry::NTLM_MODULE_USED,
-            serviceFlags | nsIAuthModule::REQ_PROXY_AUTH
+            mozilla::Telemetry::NTLM_MODULE_USED_2,
+            serviceFlags & nsIAuthModule::REQ_PROXY_AUTH
                 ? NTLM_MODULE_SAMBA_AUTH_PROXY
                 : NTLM_MODULE_SAMBA_AUTH_DIRECT);
         sTelemetrySent = true;
@@ -256,17 +256,17 @@ nsAuthSambaNTLM::GetNextToken(const void *inToken,
     nsCString line;
     if (!ReadLine(mFromChildFD, line))
         return NS_ERROR_FAILURE;
-    if (!StringBeginsWith(line, NS_LITERAL_CSTRING("KK "))) {
+    if (!StringBeginsWith(line, NS_LITERAL_CSTRING("KK ")) &&
+        !StringBeginsWith(line, NS_LITERAL_CSTRING("AF "))) {
         // Something went wrong. Perhaps no credentials are accessible.
         return NS_ERROR_FAILURE;
     }
     uint8_t* buf = ExtractMessage(line, outTokenLen);
     if (!buf)
         return NS_ERROR_FAILURE;
-    // *outToken has to be freed by nsMemory::Free, which may not be free() 
     *outToken = nsMemory::Clone(buf, *outTokenLen);
+    free(buf);
     if (!*outToken) {
-        free(buf);
         return NS_ERROR_OUT_OF_MEMORY;
     }
     

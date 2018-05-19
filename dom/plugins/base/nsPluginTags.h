@@ -8,23 +8,93 @@
 
 #include "mozilla/Attributes.h"
 #include "nscore.h"
-#include "nsAutoPtr.h"
 #include "nsCOMPtr.h"
 #include "nsCOMArray.h"
 #include "nsIPluginTag.h"
-#include "nsNPAPIPluginInstance.h"
 #include "nsITimer.h"
-#include "nsIDOMMimeType.h"
+#include "nsString.h"
 
-class nsPluginHost;
+class nsIURI;
 struct PRLibrary;
 struct nsPluginInfo;
+class nsNPAPIPlugin;
+
+namespace mozilla {
+namespace dom {
+struct FakePluginTagInit;
+} // namespace dom
+} // namespace mozilla
+
+// An interface representing plugin tags internally.
+#define NS_IINTERNALPLUGINTAG_IID \
+{ 0xe8fdd227, 0x27da, 0x46ee,     \
+  { 0xbe, 0xf3, 0x1a, 0xef, 0x5a, 0x8f, 0xc5, 0xb4 } }
+
+#define NS_PLUGINTAG_IID \
+  { 0xcce2e8b9, 0x9702, 0x4d4b, \
+   { 0xbe, 0xa4, 0x7c, 0x1e, 0x13, 0x1f, 0xaf, 0x78 } }
+class nsIInternalPluginTag : public nsIPluginTag
+{
+public:
+  NS_DECLARE_STATIC_IID_ACCESSOR(NS_IINTERNALPLUGINTAG_IID)
+
+  nsIInternalPluginTag();
+  nsIInternalPluginTag(const char* aName, const char* aDescription,
+                       const char* aFileName, const char* aVersion);
+  nsIInternalPluginTag(const char* aName, const char* aDescription,
+                       const char* aFileName, const char* aVersion,
+                       const nsTArray<nsCString>& aMimeTypes,
+                       const nsTArray<nsCString>& aMimeDescriptions,
+                       const nsTArray<nsCString>& aExtensions);
+
+  virtual bool IsEnabled() = 0;
+  virtual const nsCString& GetNiceFileName() = 0;
+
+  const nsCString& Name() const { return mName; }
+  const nsCString& Description() const { return mDescription; }
+
+  const nsTArray<nsCString>& MimeTypes() const { return mMimeTypes; }
+
+  const nsTArray<nsCString>& MimeDescriptions() const {
+    return mMimeDescriptions;
+  }
+
+  const nsTArray<nsCString>& Extensions() const { return mExtensions; }
+
+  const nsCString& FileName() const { return mFileName; }
+
+  const nsCString& Version() const { return mVersion; }
+
+  // Returns true if this plugin claims it supports this MIME type.  The
+  // comparison is done ASCII-case-insensitively.
+  bool HasMimeType(const nsACString & aMimeType) const;
+
+  // Returns true if this plugin claims it supports the given extension.  In
+  // that case, aMatchingType is set to the MIME type the plugin claims
+  // corresponds to this extension.  The match on aExtension is done
+  // ASCII-case-insensitively.
+  bool HasExtension(const nsACString & aExtension,
+                    /* out */ nsACString & aMatchingType) const;
+protected:
+  ~nsIInternalPluginTag();
+
+  nsCString     mName; // UTF-8
+  nsCString     mDescription; // UTF-8
+  nsCString     mFileName; // UTF-8
+  nsCString     mVersion;  // UTF-8
+  nsTArray<nsCString> mMimeTypes; // UTF-8
+  nsTArray<nsCString> mMimeDescriptions; // UTF-8
+  nsTArray<nsCString> mExtensions; // UTF-8
+};
+NS_DEFINE_STATIC_IID_ACCESSOR(nsIInternalPluginTag, NS_IINTERNALPLUGINTAG_IID)
 
 // A linked-list of plugin information that is used for instantiating plugins
 // and reflecting plugin information into JavaScript.
-class nsPluginTag : public nsIPluginTag
+class nsPluginTag final : public nsIInternalPluginTag
 {
 public:
+  NS_DECLARE_STATIC_IID_ACCESSOR(NS_PLUGINTAG_IID)
+
   NS_DECL_ISUPPORTS
   NS_DECL_NSIPLUGINTAG
 
@@ -36,8 +106,9 @@ public:
     ePluginState_MaxValue = 3,
   };
 
-  nsPluginTag(nsPluginTag* aPluginTag);
-  nsPluginTag(nsPluginInfo* aPluginInfo);
+  nsPluginTag(nsPluginInfo* aPluginInfo,
+              int64_t aLastModifiedTime,
+              bool fromExtension);
   nsPluginTag(const char* aName,
               const char* aDescription,
               const char* aFileName,
@@ -47,16 +118,32 @@ public:
               const char* const* aMimeDescriptions,
               const char* const* aExtensions,
               int32_t aVariants,
-              int64_t aLastModifiedTime = 0,
+              int64_t aLastModifiedTime,
+              bool fromExtension,
               bool aArgsAreUTF8 = false);
-  virtual ~nsPluginTag();
+  nsPluginTag(uint32_t aId,
+              const char* aName,
+              const char* aDescription,
+              const char* aFileName,
+              const char* aFullPath,
+              const char* aVersion,
+              nsTArray<nsCString> aMimeTypes,
+              nsTArray<nsCString> aMimeDescriptions,
+              nsTArray<nsCString> aExtensions,
+              bool aIsJavaPlugin,
+              bool aIsFlashPlugin,
+              bool aSupportsAsyncInit,
+              bool aSupportsAsyncRender,
+              int64_t aLastModifiedTime,
+              bool aFromExtension,
+              int32_t aSandboxLevel);
 
   void TryUnloadPlugin(bool inShutdown);
 
   // plugin is enabled and not blocklisted
   bool IsActive();
 
-  bool IsEnabled();
+  bool IsEnabled() override;
   void SetEnabled(bool enabled);
   bool IsClicktoplay();
   bool IsBlocklisted();
@@ -64,87 +151,86 @@ public:
   PluginState GetPluginState();
   void SetPluginState(PluginState state);
 
-  // import legacy flags from plugin registry into the preferences
-  void ImportFlagsToPrefs(uint32_t flag);
-
   bool HasSameNameAndMimes(const nsPluginTag *aPluginTag) const;
-  nsCString GetNiceFileName();
+  const nsCString& GetNiceFileName() override;
 
-  nsRefPtr<nsPluginTag> mNext;
-  nsCString     mName; // UTF-8
-  nsCString     mDescription; // UTF-8
-  nsTArray<nsCString> mMimeTypes; // UTF-8
-  nsTArray<nsCString> mMimeDescriptions; // UTF-8
-  nsTArray<nsCString> mExtensions; // UTF-8
+  bool IsFromExtension() const;
+
+  RefPtr<nsPluginTag> mNext;
+  uint32_t      mId;
+
+  // Number of PluginModuleParents living in all content processes.
+  size_t        mContentProcessRunningCount;
+
+  // True if we've ever created an instance of this plugin in the current process.
+  bool          mHadLocalInstance;
+
   PRLibrary     *mLibrary;
-  nsRefPtr<nsNPAPIPlugin> mPlugin;
+  RefPtr<nsNPAPIPlugin> mPlugin;
   bool          mIsJavaPlugin;
   bool          mIsFlashPlugin;
-  nsCString     mFileName; // UTF-8
+  bool          mSupportsAsyncInit;
+  bool          mSupportsAsyncRender;
   nsCString     mFullPath; // UTF-8
-  nsCString     mVersion;  // UTF-8
   int64_t       mLastModifiedTime;
   nsCOMPtr<nsITimer> mUnloadTimer;
+  int32_t       mSandboxLevel;
 
-  uint32_t      GetBlocklistState();
   void          InvalidateBlocklistState();
 
 private:
+  virtual ~nsPluginTag();
+
   nsCString     mNiceFileName; // UTF-8
   uint16_t      mCachedBlocklistState;
   bool          mCachedBlocklistStateValid;
+  bool          mIsFromExtension;
 
   void InitMime(const char* const* aMimeTypes,
                 const char* const* aMimeDescriptions,
                 const char* const* aExtensions,
                 uint32_t aVariantCount);
+  void InitSandboxLevel();
   nsresult EnsureMembersAreUTF8();
-};
+  void FixupVersion();
 
-class DOMMimeTypeImpl : public nsIDOMMimeType {
+  static uint32_t sNextId;
+};
+NS_DEFINE_STATIC_IID_ACCESSOR(nsPluginTag, NS_PLUGINTAG_IID)
+
+// A class representing "fake" plugin tags; that is plugin tags not
+// corresponding to actual NPAPI plugins.  In practice these are all
+// JS-implemented plugins; maybe we want a better name for this class?
+class nsFakePluginTag : public nsIInternalPluginTag,
+                        public nsIFakePluginTag
+{
 public:
   NS_DECL_ISUPPORTS
+  NS_DECL_NSIPLUGINTAG
+  NS_DECL_NSIFAKEPLUGINTAG
 
-  DOMMimeTypeImpl(nsPluginTag* aTag, uint32_t aMimeTypeIndex)
-  {
-    if (!aTag)
-      return;
-    CopyUTF8toUTF16(aTag->mMimeDescriptions[aMimeTypeIndex], mDescription);
-    CopyUTF8toUTF16(aTag->mExtensions[aMimeTypeIndex], mSuffixes);
-    CopyUTF8toUTF16(aTag->mMimeTypes[aMimeTypeIndex], mType);
-  }
+  static nsresult Create(const mozilla::dom::FakePluginTagInit& aInitDictionary,
+                         nsFakePluginTag** aPluginTag);
 
-  virtual ~DOMMimeTypeImpl() {
-  }
+  bool IsEnabled() override;
+  const nsCString& GetNiceFileName() override;
 
-  NS_METHOD GetDescription(nsAString& aDescription) MOZ_OVERRIDE
-  {
-    aDescription.Assign(mDescription);
-    return NS_OK;
-  }
+  bool HandlerURIMatches(nsIURI* aURI);
 
-  NS_METHOD GetEnabledPlugin(nsIDOMPlugin** aEnabledPlugin) MOZ_OVERRIDE
-  {
-    // this has to be implemented by the DOM version.
-    *aEnabledPlugin = nullptr;
-    return NS_OK;
-  }
+  nsIURI* HandlerURI() const { return mHandlerURI; }
 
-  NS_METHOD GetSuffixes(nsAString& aSuffixes) MOZ_OVERRIDE
-  {
-    aSuffixes.Assign(mSuffixes);
-    return NS_OK;
-  }
-
-  NS_METHOD GetType(nsAString& aType) MOZ_OVERRIDE
-  {
-    aType.Assign(mType);
-    return NS_OK;
-  }
 private:
-  nsString mDescription;
-  nsString mSuffixes;
-  nsString mType;
+  nsFakePluginTag();
+  virtual ~nsFakePluginTag();
+
+  // The URI of the handler for our fake plugin.
+  // FIXME-jsplugins do we need to sanity check these?
+  nsCOMPtr<nsIURI>    mHandlerURI;
+
+  nsCString     mFullPath;
+  nsCString     mNiceName;
+
+  nsPluginTag::PluginState mState;
 };
 
 #endif // nsPluginTags_h_

@@ -3,10 +3,42 @@
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
 "use strict";
 
+this.EXPORTED_SYMBOLS = ["WebrtcUI"];
+
+XPCOMUtils.defineLazyModuleGetter(this, "Notifications", "resource://gre/modules/Notifications.jsm");
+XPCOMUtils.defineLazyServiceGetter(this, "ParentalControls", "@mozilla.org/parental-controls-service;1", "nsIParentalControlsService");
+XPCOMUtils.defineLazyModuleGetter(this, "RuntimePermissions", "resource://gre/modules/RuntimePermissions.jsm");
+
 var WebrtcUI = {
+  _notificationId: null,
+
+  // Add-ons can override stock permission behavior by doing:
+  //
+  //   var stockObserve = WebrtcUI.observe;
+  //
+  //   webrtcUI.observe = function(aSubject, aTopic, aData) {
+  //     switch (aTopic) {
+  //      case "PeerConnection:request": {
+  //        // new code.
+  //        break;
+  //      ...
+  //      default:
+  //        return stockObserve.call(this, aSubject, aTopic, aData);
+  //
+  // See browser/modules/webrtcUI.jsm for details.
+
   observe: function(aSubject, aTopic, aData) {
     if (aTopic === "getUserMedia:request") {
-      this.handleRequest(aSubject, aTopic, aData);
+      RuntimePermissions
+        .waitForPermissions(this._determineNeededRuntimePermissions(aSubject))
+        .then((permissionGranted) => {
+          if (permissionGranted) {
+            WebrtcUI.handleGumRequest(aSubject, aTopic, aData);
+          } else {
+            Services.obs.notifyObservers(null, "getUserMedia:response:deny", aSubject.callID);
+          }});
+    } else if (aTopic === "PeerConnection:request") {
+      this.handlePCRequest(aSubject, aTopic, aData);
     } else if (aTopic === "recording-device-events") {
       switch (aData) {
         case "shutdown":
@@ -14,27 +46,27 @@ var WebrtcUI = {
           this.notify();
           break;
       }
+    } else if (aTopic === "VideoCapture:Paused") {
+      if (this._notificationId) {
+        Notifications.cancel(this._notificationId);
+        this._notificationId = null;
+      }
+    } else if (aTopic === "VideoCapture:Resumed") {
+      this.notify();
     }
-  },
-
-  get notificationId() {
-    delete this.notificationId;
-    return this.notificationId = uuidgen.generateUUID().toString();
   },
 
   notify: function() {
     let windows = MediaManagerService.activeMediaCaptureWindows;
-    let count = windows.Count();
+    let count = windows.length;
     let msg = {};
     if (count == 0) {
-      msg = {
-        type: "Notification:Hide",
-        id: this.notificationId
+      if (this._notificationId) {
+        Notifications.cancel(this._notificationId);
+        this._notificationId = null;
       }
     } else {
-      msg = {
-        type: "Notification:Show",
-        id: this.notificationId,
+      let notificationOptions = {
         title: Strings.brand.GetStringFromName("brandShortName"),
         when: null, // hide the date row
         light: [0xFF9500FF, 1000, 1000],
@@ -44,7 +76,7 @@ var WebrtcUI = {
       let cameraActive = false;
       let audioActive = false;
       for (let i = 0; i < count; i++) {
-        let win = windows.GetElementAt(i);
+        let win = windows.queryElementAt(i, Ci.nsIDOMWindow);
         let hasAudio = {};
         let hasVideo = {};
         MediaManagerService.mediaCaptureWindowState(win, hasVideo, hasAudio);
@@ -53,43 +85,62 @@ var WebrtcUI = {
       }
 
       if (cameraActive && audioActive) {
-        msg.text = Strings.browser.GetStringFromName("getUserMedia.sharingCameraAndMicrophone.message2");
-        msg.smallicon = "drawable:alert_mic_camera";
+        notificationOptions.message = Strings.browser.GetStringFromName("getUserMedia.sharingCameraAndMicrophone.message2");
+        notificationOptions.icon = "drawable:alert_mic_camera";
       } else if (cameraActive) {
-        msg.text = Strings.browser.GetStringFromName("getUserMedia.sharingCamera.message2");
-        msg.smallicon = "drawable:alert_camera";
+        notificationOptions.message = Strings.browser.GetStringFromName("getUserMedia.sharingCamera.message2");
+        notificationOptions.icon = "drawable:alert_camera";
       } else if (audioActive) {
-        msg.text = Strings.browser.GetStringFromName("getUserMedia.sharingMicrophone.message2");
-        msg.smallicon = "drawable:alert_mic";
+        notificationOptions.message = Strings.browser.GetStringFromName("getUserMedia.sharingMicrophone.message2");
+        notificationOptions.icon = "drawable:alert_mic";
       } else {
         // somethings wrong. lets throw
         throw "Couldn't find any cameras or microphones being used"
       }
 
+      if (this._notificationId)
+          Notifications.update(this._notificationId, notificationOptions);
+      else
+        this._notificationId = Notifications.create(notificationOptions);
       if (count > 1)
         msg.count = count;
     }
-
-    sendMessageToJava(msg);
   },
 
-  handleRequest: function handleRequest(aSubject, aTopic, aData) {
-    let { windowID: windowID, callID: callID } = JSON.parse(aData);
+  handlePCRequest: function handlePCRequest(aSubject, aTopic, aData) {
+    aSubject = aSubject.wrappedJSObject;
+    let { callID } = aSubject;
+    // Also available: windowID, isSecure, innerWindowID. For contentWindow do:
+    //
+    //   let contentWindow = Services.wm.getOuterWindowWithId(windowID);
 
-    let contentWindow = Services.wm.getOuterWindowWithId(windowID);
-    let params = aSubject.QueryInterface(Ci.nsIMediaStreamOptions);
+    Services.obs.notifyObservers(null, "PeerConnection:response:allow", callID);
+  },
 
-    Services.wm.getMostRecentWindow(null).navigator.mozGetUserMediaDevices(
+  handleGumRequest: function handleGumRequest(aSubject, aTopic, aData) {
+    let constraints = aSubject.getConstraints();
+    let contentWindow = Services.wm.getOuterWindowWithId(aSubject.windowID);
+
+    contentWindow.navigator.mozGetUserMediaDevices(
+      constraints,
       function (devices) {
-        WebrtcUI.prompt(windowID, callID, params.audio, params.video, devices);
+        if (!ParentalControls.isAllowed(ParentalControls.CAMERA_MICROPHONE)) {
+          Services.obs.notifyObservers(null, "getUserMedia:response:deny", aSubject.callID);
+          WebrtcUI.showBlockMessage(devices);
+          return;
+        }
+
+        WebrtcUI.prompt(contentWindow, aSubject.callID, constraints.audio,
+                        constraints.video, devices);
       },
       function (error) {
         Cu.reportError(error);
-      }
-    );
+      },
+      aSubject.innerWindowID,
+      aSubject.callID);
   },
 
-  getDeviceButtons: function(audioDevices, videoDevices, aCallID) {
+  getDeviceButtons: function(audioDevices, videoDevices, aCallID, aUri) {
     return [{
       label: Strings.browser.GetStringFromName("getUserMedia.denyRequest.label"),
       callback: function() {
@@ -99,23 +150,43 @@ var WebrtcUI = {
     {
       label: Strings.browser.GetStringFromName("getUserMedia.shareRequest.label"),
       callback: function(checked /* ignored */, inputs) {
-        let allowedDevices = Cc["@mozilla.org/supports-array;1"].createInstance(Ci.nsISupportsArray);
+        let allowedDevices = Cc["@mozilla.org/array;1"].createInstance(Ci.nsIMutableArray);
 
         let audioId = 0;
         if (inputs && inputs.audioDevice != undefined)
           audioId = inputs.audioDevice;
         if (audioDevices[audioId])
-          allowedDevices.AppendElement(audioDevices[audioId]);
+          allowedDevices.appendElement(audioDevices[audioId], /*weak =*/ false);
 
         let videoId = 0;
-        if (inputs && inputs.videoDevice != undefined)
-          videoId = inputs.videoDevice;
-        if (videoDevices[videoId])
-          allowedDevices.AppendElement(videoDevices[videoId]);
+        if (inputs && inputs.videoSource != undefined)
+          videoId = inputs.videoSource;
+        if (videoDevices[videoId]) {
+          allowedDevices.appendElement(videoDevices[videoId], /*weak =*/ false);
+          let perms = Services.perms;
+          // Although the lifetime is "session" it will be removed upon
+          // use so it's more of a one-shot.
+          perms.add(aUri, "MediaManagerVideo", perms.ALLOW_ACTION, perms.EXPIRE_SESSION);
+        }
 
         Services.obs.notifyObservers(allowedDevices, "getUserMedia:response:allow", aCallID);
-      }
+      },
+      positive: true
     }];
+  },
+
+  _determineNeededRuntimePermissions: function(aSubject) {
+    let permissions = [];
+
+    let constraints = aSubject.getConstraints();
+    if (constraints.video) {
+      permissions.push(RuntimePermissions.CAMERA);
+    }
+    if (constraints.audio) {
+      permissions.push(RuntimePermissions.RECORD_AUDIO);
+    }
+
+    return permissions;
   },
 
   // Get a list of string names for devices. Ensures that none of the strings are blank
@@ -125,7 +196,10 @@ var WebrtcUI = {
         // if this is a Camera input, convert the name to something readable
         let res = /Camera\ \d+,\ Facing (front|back)/.exec(device.name);
         if (res)
-          return Strings.browser.GetStringFromName("getUserMedia." + aType + "." + res[1]);
+          return Strings.browser.GetStringFromName("getUserMedia." + aType + "." + res[1] + "Camera");
+
+        if (device.name.startsWith("&") && device.name.endsWith(";"))
+          return Strings.browser.GetStringFromName(device.name.substring(1, device.name.length -1));
 
         if (device.name.trim() == "") {
           defaultCount++;
@@ -135,13 +209,11 @@ var WebrtcUI = {
       }, this);
   },
 
-  _addDevicesToOptions: function(aDevices, aType, aOptions, extraOptions) {
+  _addDevicesToOptions: function(aDevices, aType, aOptions) {
     if (aDevices.length) {
 
       // Filter out empty items from the list
       let list = this._getList(aDevices, aType);
-      if (extraOptions)
-        list = list.concat(extraOptions);
 
       if (list.length > 0) {
         aOptions.inputs.push({
@@ -155,7 +227,33 @@ var WebrtcUI = {
     }
   },
 
-  prompt: function prompt(aWindowID, aCallID, aAudioRequested, aVideoRequested, aDevices) {
+  showBlockMessage: function(aDevices) {
+    let microphone = false;
+    let camera = false;
+
+    for (let device of aDevices) {
+      device = device.QueryInterface(Ci.nsIMediaDevice);
+      if (device.type == "audio") {
+        microphone = true;
+      } else if (device.type == "video") {
+        camera = true;
+      }
+    }
+
+    let message;
+    if (microphone && !camera) {
+      message = Strings.browser.GetStringFromName("getUserMedia.blockedMicrophoneAccess");
+    } else if (camera && !microphone) {
+      message = Strings.browser.GetStringFromName("getUserMedia.blockedCameraAccess");
+    } else {
+      message = Strings.browser.GetStringFromName("getUserMedia.blockedCameraAndMicrophoneAccess");
+    }
+
+    NativeWindow.doorhanger.show(message, "webrtc-blocked", [], BrowserApp.selectedTab.id, {});
+  },
+
+  prompt: function prompt(aContentWindow, aCallID, aAudioRequested,
+                          aVideoRequested, aDevices) {
     let audioDevices = [];
     let videoDevices = [];
     for (let device of aDevices) {
@@ -182,32 +280,23 @@ var WebrtcUI = {
     else
       return;
 
-    let contentWindow = Services.wm.getOuterWindowWithId(aWindowID);
-    let host = contentWindow.document.documentURIObject.host;
+    let uri = aContentWindow.document.documentURIObject;
+    let host = uri.host;
     let requestor = BrowserApp.manifest ? "'" + BrowserApp.manifest.name  + "'" : host;
     let message = Strings.browser.formatStringFromName("getUserMedia.share" + requestType + ".message", [ requestor ], 1);
 
     let options = { inputs: [] };
-    // if the users only option would be to select "No Audio" or "No Video"
-    // i.e. we're only showing audio or only video and there is only one device for that type
-    // don't bother showing a menulist to select from
-    var extraItems = null;
     if (videoDevices.length > 1 || audioDevices.length > 0) {
-      // Only show the No Video option if there are also Audio devices to choose from
-      if (audioDevices.length > 0)
-        extraItems = [ Strings.browser.GetStringFromName("getUserMedia.videoDevice.none") ];
-      this._addDevicesToOptions(videoDevices, "videoDevice", options, extraItems);
+      // videoSource is both the string used for l10n lookup and the object that will be returned
+      this._addDevicesToOptions(videoDevices, "videoSource", options);
     }
 
     if (audioDevices.length > 1 || videoDevices.length > 0) {
-      // Only show the No Audio option if there are also Video devices to choose from
-      if (videoDevices.length > 0)
-        extraItems = [ Strings.browser.GetStringFromName("getUserMedia.audioDevice.none") ];
-      this._addDevicesToOptions(audioDevices, "audioDevice", options, extraItems);
+      this._addDevicesToOptions(audioDevices, "audioDevice", options);
     }
 
-    let buttons = this.getDeviceButtons(audioDevices, videoDevices, aCallID);
+    let buttons = this.getDeviceButtons(audioDevices, videoDevices, aCallID, uri);
 
-    NativeWindow.doorhanger.show(message, "webrtc-request", buttons, BrowserApp.selectedTab.id, options);
+    NativeWindow.doorhanger.show(message, "webrtc-request", buttons, BrowserApp.selectedTab.id, options, "WEBRTC");
   }
 }

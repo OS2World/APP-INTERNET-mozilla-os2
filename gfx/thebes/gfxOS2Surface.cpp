@@ -3,6 +3,8 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+#define INCL_BASE
+#define INCL_PM
 #include <os2.h>
 #include "gfxOS2Surface.h"
 #include "gfxContext.h"
@@ -18,8 +20,8 @@
  * class gfxOS2Surface
  **********************************************************************/
 
-gfxOS2Surface::gfxOS2Surface(const gfxIntSize& aSize,
-                             gfxASurface::gfxImageFormat aFormat)
+gfxOS2Surface::gfxOS2Surface(const mozilla::gfx::IntSize& aSize,
+                             gfxImageFormat aFormat)
     : mWnd(0),  mDC(0), mPS(0), mSize(aSize), mSurfType(os2Image)
 {
     if (!CheckSurfaceSize(aSize))
@@ -55,7 +57,8 @@ gfxOS2Surface::gfxOS2Surface(HWND aWnd)
     RecordMemoryUsed(mSize.width * mSize.height * 4 + OS2_OVERHEAD);
 }
 
-gfxOS2Surface::gfxOS2Surface(HDC aDC, const gfxIntSize& aSize, int aPreview)
+#if 0 // This is temporariy disabled, see #171.
+gfxOS2Surface::gfxOS2Surface(HDC aDC, const mozilla::gfx::IntSize& aSize, int aPreview)
     : mWnd(0), mDC(aDC), mPS(0), mSize(aSize), mSurfType(os2Print)
 {
     // Create a PS using the same page size as the device.
@@ -84,6 +87,7 @@ gfxOS2Surface::gfxOS2Surface(HDC aDC, const gfxIntSize& aSize, int aPreview)
     // BGR4 to BGR3 but there's no way to determine their size.
     RecordMemoryUsed(OS2_OVERHEAD);
 }
+#endif
 
 gfxOS2Surface::gfxOS2Surface(cairo_surface_t *csurf)
     : mWnd(0), mDC(0), mPS(0), mSize(0,0), mSurfType(os2Image)
@@ -122,16 +126,16 @@ gfxOS2Surface::~gfxOS2Surface()
 void gfxOS2Surface::Refresh(RECTL *aRect, int aCount, HPS aPS)
 {
     if (mSurfType == os2Window)
-       cairo_os2_surface_paint_window((cairo_os2_surface_t*)CairoSurface(),
-                                       (aPS ? aPS : mPS), aRect, aCount);
+       cairo_os2_surface_paint_window(CairoSurface(),
+                                      (aPS ? aPS : mPS), aRect, aCount);
 }
 
-int gfxOS2Surface::Resize(const gfxIntSize& aSize)
+int gfxOS2Surface::Resize(const mozilla::gfx::IntSize& aSize)
 {
     if (mSurfType != os2Window)
         return 0;
 
-    int status = cairo_os2_surface_set_size((cairo_os2_surface_t*)CairoSurface(),
+    int status = cairo_os2_surface_set_size(CairoSurface(),
                                             aSize.width, aSize.height, FALSE);
     if (status == CAIRO_STATUS_SUCCESS) {
         RecordMemoryUsed((aSize.width * aSize.height * 4) -
@@ -153,10 +157,10 @@ HPS gfxOS2Surface::GetPS()
     // didn't, but we'll check anyway to avoid leakage.  As a last resort,
     // if this is a window surface we'll create one & hang on to it.
     if (!mPS) {
-        cairo_os2_surface_get_hps((cairo_os2_surface_t*)CairoSurface(), &mPS);
+        cairo_os2_surface_get_hps(CairoSurface(), &mPS);
         if (!mPS && mSurfType == os2Window && mWnd) {
             mPS = WinGetPS(mWnd);
-            cairo_os2_surface_set_hps((cairo_os2_surface_t*)CairoSurface(), mPS);
+            cairo_os2_surface_set_hps(CairoSurface(), mPS);
         }
     }
 
@@ -181,14 +185,4 @@ bool gfxOS2Surface::EnableDIVE(bool aEnable, bool aHidePointer)
 {
     // enable/disable DIVE (direct access to the video framebuffer)
     return cairo_os2_surface_enable_dive(aEnable, aHidePointer);
-}
-
-int32_t gfxOS2Surface::GetDefaultContextFlags() const
-{
-    if (mSurfType == os2Print)
-        return gfxContext::FLAG_SIMPLIFY_OPERATORS |
-               gfxContext::FLAG_DISABLE_SNAPPING |
-               gfxContext::FLAG_DISABLE_COPY_BACKGROUND;
-
-    return 0;
 }

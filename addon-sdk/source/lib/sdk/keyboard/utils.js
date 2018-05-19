@@ -1,4 +1,3 @@
-/* vim:set ts=2 sw=2 sts=2 et: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -34,7 +33,7 @@ const MODIFIERS = exports.MODIFIERS = {
 
 // Hash of key:code pairs for all the chars supported by `nsIDOMKeyEvent`.
 // This is just a copy of the `nsIDOMKeyEvent` hash with normalized names.
-// @See: http://mxr.mozilla.org/mozilla-central/source/dom/interfaces/events/nsIDOMKeyEvent.idl
+// @See: http://dxr.mozilla.org/mozilla-central/source/dom/interfaces/events/nsIDOMKeyEvent.idl
 const CODES = exports.CODES = new function Codes() {
   let nsIDOMKeyEvent = Ci.nsIDOMKeyEvent;
   // Names that will be substituted with a shorter analogs.

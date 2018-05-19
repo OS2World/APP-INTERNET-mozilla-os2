@@ -11,81 +11,64 @@
 #ifndef WEBRTC_MODULE_VIDEO_PROCESSING_IMPL_H
 #define WEBRTC_MODULE_VIDEO_PROCESSING_IMPL_H
 
-#include "video_processing.h"
-#include "brighten.h"
-#include "brightness_detection.h"
-#include "color_enhancement.h"
-#include "deflickering.h"
-#include "denoising.h"
-#include "frame_preprocessor.h"
+#include "webrtc/modules/video_processing/main/interface/video_processing.h"
+#include "webrtc/modules/video_processing/main/source/brighten.h"
+#include "webrtc/modules/video_processing/main/source/brightness_detection.h"
+#include "webrtc/modules/video_processing/main/source/color_enhancement.h"
+#include "webrtc/modules/video_processing/main/source/deflickering.h"
+#include "webrtc/modules/video_processing/main/source/frame_preprocessor.h"
 
 namespace webrtc {
 class CriticalSectionWrapper;
 
-class VideoProcessingModuleImpl : public VideoProcessingModule
-{
-public:
+class VideoProcessingModuleImpl : public VideoProcessingModule {
+ public:
+  VideoProcessingModuleImpl(int32_t id);
 
-    VideoProcessingModuleImpl(WebRtc_Word32 id);
+  virtual ~VideoProcessingModuleImpl();
 
-    virtual ~VideoProcessingModuleImpl();
+  void Reset() override;
 
-    WebRtc_Word32 Id() const;
+  int32_t Deflickering(I420VideoFrame* frame, FrameStats* stats) override;
 
-    virtual WebRtc_Word32 ChangeUniqueId(const WebRtc_Word32 id);
+  int32_t BrightnessDetection(const I420VideoFrame& frame,
+                              const FrameStats& stats) override;
 
-    virtual void Reset();
+  // Frame pre-processor functions
 
-    virtual WebRtc_Word32 Deflickering(I420VideoFrame* frame,
-                                       FrameStats* stats);
+  // Enable temporal decimation
+  void EnableTemporalDecimation(bool enable) override;
 
-    virtual WebRtc_Word32 Denoising(I420VideoFrame* frame);
+  void SetInputFrameResampleMode(VideoFrameResampling resampling_mode) override;
 
-    virtual WebRtc_Word32 BrightnessDetection(const I420VideoFrame& frame,
-                                              const FrameStats& stats);
+  // Enable content analysis
+  void EnableContentAnalysis(bool enable) override;
 
-    //Frame pre-processor functions
+  // Set Target Resolution: frame rate and dimension
+  int32_t SetTargetResolution(uint32_t width,
+                              uint32_t height,
+                              uint32_t frame_rate) override;
 
-    //Enable temporal decimation
-    virtual void EnableTemporalDecimation(bool enable);
+  // Get decimated values: frame rate/dimension
+  uint32_t Decimatedframe_rate() override;
+  uint32_t DecimatedWidth() const override;
+  uint32_t DecimatedHeight() const override;
 
-    virtual void SetInputFrameResampleMode(VideoFrameResampling resamplingMode);
+  // Preprocess:
+  // Pre-process incoming frame: Sample when needed and compute content
+  // metrics when enabled.
+  // If no resampling takes place - processed_frame is set to NULL.
+  int32_t PreprocessFrame(const I420VideoFrame& frame,
+                          I420VideoFrame** processed_frame) override;
+  VideoContentMetrics* ContentMetrics() const override;
 
-    //Enable content analysis
-    virtual void EnableContentAnalysis(bool enable);
-
-    //Set max frame rate
-    virtual WebRtc_Word32 SetMaxFrameRate(WebRtc_UWord32 maxFrameRate);
-
-    // Set Target Resolution: frame rate and dimension
-    virtual WebRtc_Word32 SetTargetResolution(WebRtc_UWord32 width,
-                                              WebRtc_UWord32 height,
-                                              WebRtc_UWord32 frameRate);
-
-
-    // Get decimated values: frame rate/dimension
-    virtual WebRtc_UWord32 DecimatedFrameRate();
-    virtual WebRtc_UWord32 DecimatedWidth() const;
-    virtual WebRtc_UWord32 DecimatedHeight() const;
-
-    // Preprocess:
-    // Pre-process incoming frame: Sample when needed and compute content
-    // metrics when enabled.
-    // If no resampling takes place - processedFrame is set to NULL.
-    virtual WebRtc_Word32 PreprocessFrame(const I420VideoFrame& frame,
-                                          I420VideoFrame** processedFrame);
-    virtual VideoContentMetrics* ContentMetrics() const;
-
-private:
-    WebRtc_Word32              _id;
-    CriticalSectionWrapper&    _mutex;
-
-    VPMDeflickering            _deflickering;
-    VPMDenoising               _denoising;
-    VPMBrightnessDetection     _brightnessDetection;
-    VPMFramePreprocessor       _framePreProcessor;
+ private:
+  CriticalSectionWrapper& mutex_;
+  VPMDeflickering deflickering_;
+  VPMBrightnessDetection brightness_detection_;
+  VPMFramePreprocessor frame_pre_processor_;
 };
 
-} // namespace
+}  // namespace
 
 #endif

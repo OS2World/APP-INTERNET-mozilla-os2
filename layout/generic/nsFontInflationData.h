@@ -8,14 +8,12 @@
 #ifndef nsFontInflationData_h_
 #define nsFontInflationData_h_
 
-#include "nsIFrame.h"
-#include "nsLayoutUtils.h"
-#include "nsBlockFrame.h"
-
-struct nsHTMLReflowState;
+#include "nsContainerFrame.h"
 
 class nsFontInflationData
 {
+  using ReflowInput = mozilla::ReflowInput;
+
 public:
 
   static nsFontInflationData* FindFontInflationDataFor(const nsIFrame *aFrame);
@@ -23,7 +21,7 @@ public:
   // Returns whether the effective width changed (which requires the
   // caller to mark its descendants dirty
   static bool
-    UpdateFontInflationDataWidthFor(const nsHTMLReflowState& aReflowState);
+    UpdateFontInflationDataISizeFor(const ReflowInput& aReflowInput);
 
   static void MarkFontInflationDataTextDirty(nsIFrame *aFrame);
 
@@ -34,18 +32,18 @@ public:
     return mInflationEnabled;
   }
 
-  nscoord EffectiveWidth() const {
-    return mNCAWidth;
+  nscoord EffectiveISize() const {
+    return mNCAISize;
   }
 
 private:
 
-  nsFontInflationData(nsIFrame* aBFCFrame);
+  explicit nsFontInflationData(nsIFrame* aBFCFrame);
 
-  nsFontInflationData(const nsFontInflationData&) MOZ_DELETE;
-  void operator=(const nsFontInflationData&) MOZ_DELETE;
+  nsFontInflationData(const nsFontInflationData&) = delete;
+  void operator=(const nsFontInflationData&) = delete;
 
-  void UpdateWidth(const nsHTMLReflowState &aReflowState);
+  void UpdateISize(const ReflowInput &aReflowInput);
   enum SearchDirection { eFromStart, eFromEnd };
   static nsIFrame* FindEdgeInflatableFrameIn(nsIFrame *aFrame,
                                              SearchDirection aDirection);
@@ -54,7 +52,7 @@ private:
   void ScanText();
   // Scan text in the subtree rooted at aFrame.  Increment mTextAmount
   // by multiplying the number of characters found by the font size
-  // (yielding the width that would be occupied by the characters if
+  // (yielding the inline-size that would be occupied by the characters if
   // they were all em squares).  But stop scanning if mTextAmount
   // crosses mTextThreshold.
   void ScanTextIn(nsIFrame *aFrame);
@@ -68,7 +66,7 @@ private:
   }
 
   nsIFrame *mBFCFrame;
-  nscoord mNCAWidth;
+  nscoord mNCAISize;
   nscoord mTextAmount, mTextThreshold;
   bool mInflationEnabled; // for this BFC
   bool mTextDirty;

@@ -7,31 +7,74 @@
 #ifndef frontend_BytecodeCompiler_h
 #define frontend_BytecodeCompiler_h
 
-#include "jsapi.h"
+#include "NamespaceImports.h"
+
+#include "vm/Scope.h"
+#include "vm/String.h"
 
 class JSLinearString;
 
 namespace js {
 
-class AutoNameVector;
 class LazyScript;
-struct SourceCompressionToken;
+class LifoAlloc;
+class ModuleObject;
+class ScriptSourceObject;
+struct SourceCompressionTask;
 
 namespace frontend {
 
-JSScript *
-CompileScript(JSContext *cx, HandleObject scopeChain, HandleScript evalCaller,
-              const CompileOptions &options, const jschar *chars, size_t length,
-              JSString *source_ = NULL, unsigned staticLevel = 0,
-              SourceCompressionToken *extraSct = NULL);
+JSScript*
+CompileGlobalScript(ExclusiveContext* cx, LifoAlloc& alloc, ScopeKind scopeKind,
+                    const ReadOnlyCompileOptions& options,
+                    SourceBufferHolder& srcBuf,
+                    SourceCompressionTask* extraSct = nullptr,
+                    ScriptSourceObject** sourceObjectOut = nullptr);
 
-bool
-CompileLazyFunction(JSContext *cx, LazyScript *lazy, const jschar *chars, size_t length);
+JSScript*
+CompileEvalScript(ExclusiveContext* cx, LifoAlloc& alloc,
+                  HandleObject scopeChain, HandleScope enclosingScope,
+                  const ReadOnlyCompileOptions& options,
+                  SourceBufferHolder& srcBuf,
+                  SourceCompressionTask* extraSct = nullptr,
+                  ScriptSourceObject** sourceObjectOut = nullptr);
 
-bool
-CompileFunctionBody(JSContext *cx, MutableHandleFunction fun, CompileOptions options,
-                    const AutoNameVector &formals, const jschar *chars, size_t length,
-                    bool isAsmJSRecompile = false);
+ModuleObject*
+CompileModule(JSContext* cx, const ReadOnlyCompileOptions& options,
+              SourceBufferHolder& srcBuf);
+
+ModuleObject*
+CompileModule(ExclusiveContext* cx, const ReadOnlyCompileOptions& options,
+              SourceBufferHolder& srcBuf, LifoAlloc& alloc,
+              ScriptSourceObject** sourceObjectOut = nullptr);
+
+MOZ_MUST_USE bool
+CompileLazyFunction(JSContext* cx, Handle<LazyScript*> lazy, const char16_t* chars, size_t length);
+
+MOZ_MUST_USE bool
+CompileFunctionBody(JSContext* cx, MutableHandleFunction fun,
+                    const ReadOnlyCompileOptions& options,
+                    Handle<PropertyNameVector> formals, JS::SourceBufferHolder& srcBuf,
+                    HandleScope enclosingScope);
+
+// As above, but defaults to the global lexical scope as the enclosing scope.
+MOZ_MUST_USE bool
+CompileFunctionBody(JSContext* cx, MutableHandleFunction fun,
+                    const ReadOnlyCompileOptions& options,
+                    Handle<PropertyNameVector> formals, JS::SourceBufferHolder& srcBuf);
+
+MOZ_MUST_USE bool
+CompileStarGeneratorBody(JSContext* cx, MutableHandleFunction fun,
+                         const ReadOnlyCompileOptions& options,
+                         Handle<PropertyNameVector> formals, JS::SourceBufferHolder& srcBuf);
+
+MOZ_MUST_USE bool
+CompileAsyncFunctionBody(JSContext* cx, MutableHandleFunction fun,
+                         const ReadOnlyCompileOptions& options,
+                         Handle<PropertyNameVector> formals, JS::SourceBufferHolder& srcBuf);
+
+ScriptSourceObject*
+CreateScriptSourceObject(ExclusiveContext* cx, const ReadOnlyCompileOptions& options);
 
 /*
  * True if str consists of an IdentifierStart character, followed by one or
@@ -43,15 +86,21 @@ CompileFunctionBody(JSContext *cx, MutableHandleFunction fun, CompileOptions opt
  * Defined in TokenStream.cpp.
  */
 bool
-IsIdentifier(JSLinearString *str);
+IsIdentifier(JSLinearString* str);
+
+/*
+ * As above, but taking chars + length.
+ */
+bool
+IsIdentifier(const char16_t* chars, size_t length);
 
 /* True if str is a keyword. Defined in TokenStream.cpp. */
 bool
-IsKeyword(JSLinearString *str);
+IsKeyword(JSLinearString* str);
 
 /* GC marking. Defined in Parser.cpp. */
 void
-MarkParser(JSTracer *trc, AutoGCRooter *parser);
+MarkParser(JSTracer* trc, JS::AutoGCRooter* parser);
 
 } /* namespace frontend */
 } /* namespace js */

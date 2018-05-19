@@ -2,44 +2,30 @@
  * vim: set ts=8 sts=4 et sw=4 tw=99:
  */
 
-#include "tests.h"
+#include "jsapi-tests/tests.h"
+
+using mozilla::ArrayLength;
 
 BEGIN_TEST(testJSEvaluateScript)
 {
-    JS::RootedObject obj(cx, JS_NewObject(cx, NULL, NULL, global));
+    JS::RootedObject obj(cx, JS_NewPlainObject(cx));
     CHECK(obj);
 
-    uint32_t options = JS_GetOptions(cx);
-    CHECK(options & JSOPTION_VAROBJFIX);
-
-    static const char src[] = "var x = 5;";
+    static const char16_t src[] = u"var x = 5;";
 
     JS::RootedValue retval(cx);
-    CHECK(JS_EvaluateScript(cx, obj, src, sizeof(src) - 1, __FILE__, __LINE__,
-                            retval.address()));
+    JS::CompileOptions opts(cx);
+    JS::AutoObjectVector scopeChain(cx);
+    CHECK(scopeChain.append(obj));
+    CHECK(JS::Evaluate(cx, scopeChain, opts.setFileAndLine(__FILE__, __LINE__),
+                       src, ArrayLength(src) - 1, &retval));
 
-    JSBool hasProp = JS_TRUE;
+    bool hasProp = true;
     CHECK(JS_AlreadyHasOwnProperty(cx, obj, "x", &hasProp));
-    CHECK(!hasProp);
+    CHECK(hasProp);
 
-    hasProp = JS_FALSE;
+    hasProp = false;
     CHECK(JS_HasProperty(cx, global, "x", &hasProp));
-    CHECK(hasProp);
-
-    // Now do the same thing, but without JSOPTION_VAROBJFIX
-    JS_SetOptions(cx, options & ~JSOPTION_VAROBJFIX);
-
-    static const char src2[] = "var y = 5;";
-
-    CHECK(JS_EvaluateScript(cx, obj, src2, sizeof(src2) - 1, __FILE__, __LINE__,
-                            retval.address()));
-
-    hasProp = JS_FALSE;
-    CHECK(JS_AlreadyHasOwnProperty(cx, obj, "y", &hasProp));
-    CHECK(hasProp);
-
-    hasProp = JS_TRUE;
-    CHECK(JS_AlreadyHasOwnProperty(cx, global, "y", &hasProp));
     CHECK(!hasProp);
 
     return true;

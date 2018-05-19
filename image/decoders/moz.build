@@ -1,4 +1,4 @@
-# -*- Mode: python; c-basic-offset: 4; indent-tabs-mode: nil; tab-width: 40 -*-
+# -*- Mode: python; indent-tabs-mode: nil; tab-width: 40 -*-
 # vim: set filetype=python:
 # This Source Code Form is subject to the terms of the Mozilla Public
 # License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -8,10 +8,8 @@ toolkit = CONFIG['MOZ_WIDGET_TOOLKIT']
 
 # The Icon Channel stuff really shouldn't live in decoders/icon, but we'll
 # fix that another time.
-if CONFIG['MOZ_WIDGET_GTK']:
+if 'gtk' in toolkit:
     DIRS += ['icon/gtk', 'icon']
-elif toolkit == 'qt':
-    DIRS += ['icon/qt', 'icon']
 
 if CONFIG['OS_ARCH'] == 'WINNT':
     DIRS += ['icon/win', 'icon']
@@ -23,9 +21,9 @@ if toolkit == 'cocoa':
 elif toolkit == 'android':
     DIRS += ['icon/android', 'icon']
 
-MODULE = 'imgdecoders'
-
-CPP_SOURCES += [
+UNIFIED_SOURCES += [
+    'EXIF.cpp',
+    'iccjpeg.c',
     'nsBMPDecoder.cpp',
     'nsGIFDecoder2.cpp',
     'nsICODecoder.cpp',
@@ -34,10 +32,18 @@ CPP_SOURCES += [
     'nsPNGDecoder.cpp',
 ]
 
-if CONFIG['MOZ_WBMP']:
-    CPP_SOURCES += [
-        'nsWBMPDecoder.cpp',
-    ]
+include('/ipc/chromium/chromium-config.mozbuild')
 
-LIBRARY_NAME = 'imgdecoders_s'
+LOCAL_INCLUDES += [
+    # Access to Skia headers for Downscaler.
+    '/gfx/2d',
+    # Decoders need ImageLib headers.
+    '/image',
+]
 
+LOCAL_INCLUDES += CONFIG['SKIA_INCLUDES']
+
+FINAL_LIBRARY = 'xul'
+
+if CONFIG['GNU_CXX']:
+    CXXFLAGS += ['-Wno-error=shadow']

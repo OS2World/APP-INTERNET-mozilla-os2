@@ -1,5 +1,5 @@
-/* -*- Mode: c++; c-basic-offset: 2; indent-tabs-mode: nil; tab-width: 40 -*- */
-/* vim: set ts=2 et sw=2 tw=80: */
+/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
+/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -7,1100 +7,972 @@
 #include "WorkerScope.h"
 
 #include "jsapi.h"
-#include "jsdbgapi.h"
-#include "mozilla/Util.h"
-#include "mozilla/dom/DOMJSClass.h"
-#include "mozilla/dom/EventTargetBinding.h"
-#include "mozilla/dom/BindingUtils.h"
-#include "mozilla/dom/FileReaderSyncBinding.h"
-#include "mozilla/dom/TextDecoderBinding.h"
-#include "mozilla/dom/TextEncoderBinding.h"
-#include "mozilla/dom/XMLHttpRequestBinding.h"
-#include "mozilla/dom/XMLHttpRequestUploadBinding.h"
-#include "mozilla/dom/URLBinding.h"
-#include "mozilla/OSFileConstants.h"
-#include "nsTraceRefcnt.h"
-#include "xpcpublic.h"
+#include "mozilla/EventListenerManager.h"
+#include "mozilla/dom/BindingDeclarations.h"
+#include "mozilla/dom/Console.h"
+#include "mozilla/dom/DedicatedWorkerGlobalScopeBinding.h"
+#include "mozilla/dom/Fetch.h"
+#include "mozilla/dom/FunctionBinding.h"
+#include "mozilla/dom/IDBFactory.h"
+#include "mozilla/dom/ImageBitmap.h"
+#include "mozilla/dom/ImageBitmapBinding.h"
+#include "mozilla/dom/Performance.h"
+#include "mozilla/dom/Promise.h"
+#include "mozilla/dom/PromiseWorkerProxy.h"
+#include "mozilla/dom/ServiceWorkerGlobalScopeBinding.h"
+#include "mozilla/dom/SharedWorkerGlobalScopeBinding.h"
+#include "mozilla/dom/SimpleGlobalObject.h"
+#include "mozilla/dom/WorkerDebuggerGlobalScopeBinding.h"
+#include "mozilla/dom/WorkerGlobalScopeBinding.h"
+#include "mozilla/dom/WorkerLocation.h"
+#include "mozilla/dom/WorkerNavigator.h"
+#include "mozilla/dom/cache/CacheStorage.h"
+#include "mozilla/Services.h"
+#include "nsServiceManagerUtils.h"
+
+#include "nsIDocument.h"
+#include "nsIServiceWorkerManager.h"
+#include "nsIScriptTimeoutHandler.h"
 
 #ifdef ANDROID
 #include <android/log.h>
 #endif
 
-#include "ChromeWorkerScope.h"
-#include "Events.h"
-#include "EventListenerManager.h"
-#include "EventTarget.h"
-#include "Exceptions.h"
-#include "File.h"
-#include "FileReaderSync.h"
-#include "Location.h"
-#include "ImageData.h"
-#include "Navigator.h"
+#include "Crypto.h"
 #include "Principal.h"
+#include "RuntimeService.h"
 #include "ScriptLoader.h"
-#include "Worker.h"
 #include "WorkerPrivate.h"
-#include "XMLHttpRequest.h"
+#include "WorkerRunnable.h"
+#include "ServiceWorkerClients.h"
+#include "ServiceWorkerManager.h"
+#include "ServiceWorkerRegistration.h"
 
-#include "WorkerInlines.h"
+#ifdef XP_WIN
+#undef PostMessage
+#endif
 
-#define FUNCTION_FLAGS \
-  JSPROP_ENUMERATE
+extern already_AddRefed<nsIScriptTimeoutHandler>
+NS_CreateJSTimeoutHandler(JSContext* aCx,
+                          mozilla::dom::workers::WorkerPrivate* aWorkerPrivate,
+                          mozilla::dom::Function& aFunction,
+                          const mozilla::dom::Sequence<JS::Value>& aArguments,
+                          mozilla::ErrorResult& aError);
+
+extern already_AddRefed<nsIScriptTimeoutHandler>
+NS_CreateJSTimeoutHandler(JSContext* aCx,
+                          mozilla::dom::workers::WorkerPrivate* aWorkerPrivate,
+                          const nsAString& aExpression);
 
 using namespace mozilla;
 using namespace mozilla::dom;
 USING_WORKERS_NAMESPACE
 
-namespace {
+using mozilla::dom::cache::CacheStorage;
+using mozilla::ipc::PrincipalInfo;
 
-class WorkerGlobalScope : public workers::EventTarget
+WorkerGlobalScope::WorkerGlobalScope(WorkerPrivate* aWorkerPrivate)
+: mWindowInteractionsAllowed(0)
+, mWorkerPrivate(aWorkerPrivate)
 {
-  static JSClass sClass;
-  static const JSPropertySpec sProperties[];
-  static const JSFunctionSpec sFunctions[];
+  mWorkerPrivate->AssertIsOnWorkerThread();
+}
 
-  enum
-  {
-    SLOT_wrappedScope = 0,
-    SLOT_wrappedFunction
-  };
-
-  enum
-  {
-    SLOT_location = 0,
-    SLOT_navigator,
-
-    SLOT_COUNT
-  };
-
-  // Must be traced!
-  jsval mSlots[SLOT_COUNT];
-
-  enum
-  {
-    STRING_onerror = 0,
-    STRING_onclose,
-
-    STRING_COUNT
-  };
-
-  static const char* const sEventStrings[STRING_COUNT];
-
-protected:
-  WorkerPrivate* mWorker;
-
-public:
-  static JSClass*
-  Class()
-  {
-    return &sClass;
-  }
-
-  static JSObject*
-  InitClass(JSContext* aCx, JSObject* aObj, JSObject* aParentProto)
-  {
-    return JS_InitClass(aCx, aObj, aParentProto, Class(), Construct, 0,
-                        sProperties, sFunctions, NULL, NULL);
-  }
-
-  using EventTarget::GetEventListener;
-  using EventTarget::SetEventListener;
-
-protected:
-  WorkerGlobalScope(JSContext* aCx, WorkerPrivate* aWorker)
-  : EventTarget(aCx), mWorker(aWorker)
-  {
-    MOZ_COUNT_CTOR(mozilla::dom::workers::WorkerGlobalScope);
-    for (int32_t i = 0; i < SLOT_COUNT; i++) {
-      mSlots[i] = JSVAL_VOID;
-    }
-  }
-
-  ~WorkerGlobalScope()
-  {
-    MOZ_COUNT_DTOR(mozilla::dom::workers::WorkerGlobalScope);
-  }
-
-  virtual void
-  _trace(JSTracer* aTrc) MOZ_OVERRIDE
-  {
-    for (int32_t i = 0; i < SLOT_COUNT; i++) {
-      JS_CallValueTracer(aTrc, &mSlots[i], "WorkerGlobalScope instance slot");
-    }
-    mWorker->TraceInternal(aTrc);
-    EventTarget::_trace(aTrc);
-  }
-
-  virtual void
-  _finalize(JSFreeOp* aFop) MOZ_OVERRIDE
-  {
-    EventTarget::_finalize(aFop);
-  }
-
-private:
-  static bool IsWorkerGlobalScope(const JS::Value& v);
-
-  static bool
-  GetOnCloseImpl(JSContext* aCx, JS::CallArgs aArgs)
-  {
-    const char* name = sEventStrings[STRING_onclose];
-    WorkerGlobalScope* scope = GetInstancePrivate(aCx, &aArgs.thisv().toObject(), name);
-    MOZ_ASSERT(scope);
-
-    ErrorResult rv;
-
-    JSObject* listener =
-      scope->GetEventListener(NS_ConvertASCIItoUTF16(name + 2), rv);
-
-    if (rv.Failed()) {
-      JS_ReportError(aCx, "Failed to get event listener!");
-      return false;
-    }
-
-    aArgs.rval().setObjectOrNull(listener);
-    return true;
-  }
-
-  static JSBool
-  GetOnClose(JSContext* aCx, unsigned aArgc, JS::Value* aVp)
-  {
-    JS::CallArgs args = JS::CallArgsFromVp(aArgc, aVp);
-    return JS::CallNonGenericMethod<IsWorkerGlobalScope, GetOnCloseImpl>(aCx, args);
-  }
-
-  static bool
-  SetOnCloseImpl(JSContext* aCx, JS::CallArgs aArgs)
-  {
-    const char* name = sEventStrings[STRING_onclose];
-    WorkerGlobalScope* scope =
-      GetInstancePrivate(aCx, &aArgs.thisv().toObject(), name);
-    MOZ_ASSERT(scope);
-
-    if (aArgs.length() == 0 || !aArgs[0].isObject()) {
-      JS_ReportError(aCx, "Not an event listener!");
-      return false;
-    }
-
-    ErrorResult rv;
-    JS::Rooted<JSObject*> listenerObj(aCx, &aArgs[0].toObject());
-    scope->SetEventListener(NS_ConvertASCIItoUTF16(name + 2),
-                            listenerObj, rv);
-    if (rv.Failed()) {
-      JS_ReportError(aCx, "Failed to set event listener!");
-      return false;
-    }
-
-    aArgs.rval().setUndefined();
-    return true;
-  }
-
-  static JSBool
-  SetOnClose(JSContext* aCx, unsigned aArgc, JS::Value* aVp)
-  {
-    JS::CallArgs args = JS::CallArgsFromVp(aArgc, aVp);
-    return JS::CallNonGenericMethod<IsWorkerGlobalScope, SetOnCloseImpl>(aCx, args);
-  }
-
-  static WorkerGlobalScope*
-  GetInstancePrivate(JSContext* aCx, JSObject* aObj, const char* aFunctionName);
-
-  static JSBool
-  Construct(JSContext* aCx, unsigned aArgc, jsval* aVp)
-  {
-    JS_ReportErrorNumber(aCx, js_GetErrorMessage, NULL, JSMSG_WRONG_CONSTRUCTOR,
-                         sClass.name);
-    return false;
-  }
-
-  static bool
-  GetSelfImpl(JSContext* aCx, JS::CallArgs aArgs)
-  {
-    aArgs.rval().setObject(aArgs.thisv().toObject());
-    return true;
-  }
-
-  static JSBool
-  GetSelf(JSContext* aCx, unsigned aArgc, JS::Value* aVp)
-  {
-    JS::CallArgs args = JS::CallArgsFromVp(aArgc, aVp);
-    return JS::CallNonGenericMethod<IsWorkerGlobalScope, GetSelfImpl>(aCx, args);
-  }
-
-  static bool
-  GetLocationImpl(JSContext* aCx, JS::CallArgs aArgs)
-  {
-    JS::Rooted<JSObject*> obj(aCx, &aArgs.thisv().toObject());
-    WorkerGlobalScope* scope =
-      GetInstancePrivate(aCx, obj, sProperties[SLOT_location].name);
-    MOZ_ASSERT(scope);
-
-    if (scope->mSlots[SLOT_location].isUndefined()) {
-      JS::Rooted<JSString*> href(aCx), protocol(aCx), host(aCx), hostname(aCx);
-      JS::Rooted<JSString*> port(aCx), pathname(aCx), search(aCx), hash(aCx);
-
-      WorkerPrivate::LocationInfo& info = scope->mWorker->GetLocationInfo();
-
-#define COPY_STRING(_jsstr, _cstr)                                             \
-  if (info. _cstr .IsEmpty()) {                                                \
-    _jsstr = NULL;                                                             \
-  }                                                                            \
-  else {                                                                       \
-    if (!(_jsstr = JS_NewStringCopyN(aCx, info. _cstr .get(),                  \
-                                     info. _cstr .Length()))) {                \
-      return false;                                                            \
-    }                                                                          \
-    info. _cstr .Truncate();                                                   \
-  }
-
-      COPY_STRING(href, mHref);
-      COPY_STRING(protocol, mProtocol);
-      COPY_STRING(host, mHost);
-      COPY_STRING(hostname, mHostname);
-      COPY_STRING(port, mPort);
-      COPY_STRING(pathname, mPathname);
-      COPY_STRING(search, mSearch);
-      COPY_STRING(hash, mHash);
-
-#undef COPY_STRING
-
-      JSObject* location = location::Create(aCx, href, protocol, host, hostname,
-                                            port, pathname, search, hash);
-      if (!location) {
-        return false;
-      }
-
-      scope->mSlots[SLOT_location].setObject(*location);
-    }
-
-    aArgs.rval().set(scope->mSlots[SLOT_location]);
-    return true;
-  }
-
-  static JSBool
-  GetLocation(JSContext* aCx, unsigned aArgc, JS::Value* aVp)
-  {
-    JS::CallArgs args = JS::CallArgsFromVp(aArgc, aVp);
-    return JS::CallNonGenericMethod<IsWorkerGlobalScope, GetLocationImpl>(aCx, args);
-  }
-
-  static JSBool
-  UnwrapErrorEvent(JSContext* aCx, unsigned aArgc, jsval* aVp)
-  {
-    JS_ASSERT(aArgc == 1);
-    JS_ASSERT((JS_ARGV(aCx, aVp)[0]).isObject());
-
-    JSObject* wrapper = &JS_CALLEE(aCx, aVp).toObject();
-    JS_ASSERT(JS_ObjectIsFunction(aCx, wrapper));
-
-    JS::Rooted<JS::Value> scope(aCx, js::GetFunctionNativeReserved(wrapper, SLOT_wrappedScope));
-    JS::Rooted<JS::Value> listener(aCx, js::GetFunctionNativeReserved(wrapper, SLOT_wrappedFunction));
-
-    JS_ASSERT(scope.isObject());
-
-    JS::Rooted<JSObject*> event(aCx, &JS_ARGV(aCx, aVp)[0].toObject());
-
-    jsval argv[3] = { JSVAL_VOID, JSVAL_VOID, JSVAL_VOID };
-    if (!JS_GetProperty(aCx, event, "message", &argv[0]) ||
-        !JS_GetProperty(aCx, event, "filename", &argv[1]) ||
-        !JS_GetProperty(aCx, event, "lineno", &argv[2])) {
-      return false;
-    }
-
-    JS::Rooted<JS::Value> rval(aCx, JS::UndefinedValue());
-    if (!JS_CallFunctionValue(aCx, JSVAL_TO_OBJECT(scope), listener,
-                              ArrayLength(argv), argv, rval.address())) {
-      JS_ReportPendingException(aCx);
-      return false;
-    }
-
-    if (JSVAL_IS_BOOLEAN(rval) && JSVAL_TO_BOOLEAN(rval) &&
-        !JS_CallFunctionName(aCx, event, "preventDefault", 0, NULL, rval.address())) {
-      return false;
-    }
-
-    return true;
-  }
-
-  static bool
-  GetOnErrorListenerImpl(JSContext* aCx, JS::CallArgs aArgs)
-  {
-    const char* name = sEventStrings[STRING_onerror];
-    WorkerGlobalScope* scope = GetInstancePrivate(aCx, &aArgs.thisv().toObject(), name);
-    MOZ_ASSERT(scope);
-
-    ErrorResult rv;
-
-    JSObject* adaptor =
-      scope->GetEventListener(NS_ConvertASCIItoUTF16(name + 2), rv);
-
-    if (rv.Failed()) {
-      JS_ReportError(aCx, "Failed to get event listener!");
-      return false;
-    }
-
-    if (!adaptor) {
-      aArgs.rval().setNull();
-      return true;
-    }
-
-    aArgs.rval().set(js::GetFunctionNativeReserved(adaptor, SLOT_wrappedFunction));
-    MOZ_ASSERT(aArgs.rval().isObject());
-    return true;
-  }
-
-  static JSBool
-  GetOnErrorListener(JSContext* aCx, unsigned aArgc, JS::Value* aVp)
-  {
-    JS::CallArgs args = JS::CallArgsFromVp(aArgc, aVp);
-    return JS::CallNonGenericMethod<IsWorkerGlobalScope, GetOnErrorListenerImpl>(aCx, args);
-  }
-
-  static bool
-  SetOnErrorListenerImpl(JSContext* aCx, JS::CallArgs aArgs)
-  {
-    JS::Rooted<JSObject*> obj(aCx, &aArgs.thisv().toObject());
-    const char* name = sEventStrings[STRING_onerror];
-    WorkerGlobalScope* scope = GetInstancePrivate(aCx, obj, name);
-    MOZ_ASSERT(scope);
-
-    if (aArgs.length() == 0 || !aArgs[0].isObject()) {
-      JS_ReportError(aCx, "Not an event listener!");
-      return false;
-    }
-
-    JSFunction* adaptor =
-      js::NewFunctionWithReserved(aCx, UnwrapErrorEvent, 1, 0,
-                                  JS_GetGlobalForScopeChain(aCx), "unwrap");
-    if (!adaptor) {
-      return false;
-    }
-
-    JS::Rooted<JSObject*> listener(aCx, JS_GetFunctionObject(adaptor));
-    if (!listener) {
-      return false;
-    }
-
-    js::SetFunctionNativeReserved(listener, SLOT_wrappedScope,
-                                  JS::ObjectValue(*obj));
-    js::SetFunctionNativeReserved(listener, SLOT_wrappedFunction, aArgs[0]);
-
-    ErrorResult rv;
-
-    scope->SetEventListener(NS_ConvertASCIItoUTF16(name + 2), listener, rv);
-
-    if (rv.Failed()) {
-      JS_ReportError(aCx, "Failed to set event listener!");
-      return false;
-    }
-
-    return true;
-  }
-
-  static JSBool
-  SetOnErrorListener(JSContext* aCx, unsigned aArgc, JS::Value* aVp)
-  {
-    JS::CallArgs args = JS::CallArgsFromVp(aArgc, aVp);
-    return JS::CallNonGenericMethod<IsWorkerGlobalScope, SetOnErrorListenerImpl>(aCx, args);
-  }
-
-  static bool
-  GetNavigatorImpl(JSContext* aCx, JS::CallArgs aArgs)
-  {
-    JS::Rooted<JSObject*> obj(aCx, &aArgs.thisv().toObject());
-    WorkerGlobalScope* scope =
-      GetInstancePrivate(aCx, obj, sProperties[SLOT_navigator].name);
-    MOZ_ASSERT(scope);
-
-    if (scope->mSlots[SLOT_navigator].isUndefined()) {
-      JSObject* navigator = navigator::Create(aCx);
-      if (!navigator) {
-        return false;
-      }
-
-      scope->mSlots[SLOT_navigator] = OBJECT_TO_JSVAL(navigator);
-    }
-
-    aArgs.rval().set(scope->mSlots[SLOT_navigator]);
-    return true;
-  }
-
-  static JSBool
-  GetNavigator(JSContext* aCx, unsigned aArgc, JS::Value* aVp)
-  {
-    JS::CallArgs args = JS::CallArgsFromVp(aArgc, aVp);
-    return JS::CallNonGenericMethod<IsWorkerGlobalScope, GetNavigatorImpl>(aCx, args);
-  }
-
-  static JSBool
-  Close(JSContext* aCx, unsigned aArgc, jsval* aVp)
-  {
-    JSObject* obj = JS_THIS_OBJECT(aCx, aVp);
-    if (!obj) {
-      return false;
-    }
-
-    WorkerGlobalScope* scope = GetInstancePrivate(aCx, obj, sFunctions[0].name);
-    if (!scope) {
-      return false;
-    }
-
-    return scope->mWorker->CloseInternal(aCx);
-  }
-
-  static JSBool
-  ImportScripts(JSContext* aCx, unsigned aArgc, jsval* aVp)
-  {
-    JSObject* obj = JS_THIS_OBJECT(aCx, aVp);
-    if (!obj) {
-      return false;
-    }
-
-    WorkerGlobalScope* scope = GetInstancePrivate(aCx, obj, sFunctions[1].name);
-    if (!scope) {
-      return false;
-    }
-
-    if (aArgc && !scriptloader::Load(aCx, aArgc, JS_ARGV(aCx, aVp))) {
-      return false;
-    }
-
-    return true;
-  }
-
-  static JSBool
-  SetTimeout(JSContext* aCx, unsigned aArgc, jsval* aVp)
-  {
-    JSObject* obj = JS_THIS_OBJECT(aCx, aVp);
-    if (!obj) {
-      return false;
-    }
-
-    WorkerGlobalScope* scope = GetInstancePrivate(aCx, obj, sFunctions[2].name);
-    if (!scope) {
-      return false;
-    }
-
-    JS::Rooted<JS::Value> dummy(aCx);
-    if (!JS_ConvertArguments(aCx, aArgc, JS_ARGV(aCx, aVp), "v", dummy.address())) {
-      return false;
-    }
-
-    return scope->mWorker->SetTimeout(aCx, aArgc, aVp, false);
-  }
-
-  static JSBool
-  ClearTimeout(JSContext* aCx, unsigned aArgc, jsval* aVp)
-  {
-    JSObject* obj = JS_THIS_OBJECT(aCx, aVp);
-    if (!obj) {
-      return false;
-    }
-
-    WorkerGlobalScope* scope = GetInstancePrivate(aCx, obj, sFunctions[3].name);
-    if (!scope) {
-      return false;
-    }
-
-    uint32_t id;
-    if (!JS_ConvertArguments(aCx, aArgc, JS_ARGV(aCx, aVp), "u", &id)) {
-      return false;
-    }
-
-    return scope->mWorker->ClearTimeout(aCx, id);
-  }
-
-  static JSBool
-  SetInterval(JSContext* aCx, unsigned aArgc, jsval* aVp)
-  {
-    JSObject* obj = JS_THIS_OBJECT(aCx, aVp);
-    if (!obj) {
-      return false;
-    }
-
-    WorkerGlobalScope* scope = GetInstancePrivate(aCx, obj, sFunctions[4].name);
-    if (!scope) {
-      return false;
-    }
-
-    JS::Rooted<JS::Value> dummy(aCx);
-    if (!JS_ConvertArguments(aCx, aArgc, JS_ARGV(aCx, aVp), "v", dummy.address())) {
-      return false;
-    }
-
-    return scope->mWorker->SetTimeout(aCx, aArgc, aVp, true);
-  }
-
-  static JSBool
-  ClearInterval(JSContext* aCx, unsigned aArgc, jsval* aVp)
-  {
-    JSObject* obj = JS_THIS_OBJECT(aCx, aVp);
-    if (!obj) {
-      return false;
-    }
-
-    WorkerGlobalScope* scope = GetInstancePrivate(aCx, obj, sFunctions[5].name);
-    if (!scope) {
-      return false;
-    }
-
-    uint32_t id;
-    if (!JS_ConvertArguments(aCx, aArgc, JS_ARGV(aCx, aVp), "u", &id)) {
-      return false;
-    }
-
-    return scope->mWorker->ClearTimeout(aCx, id);
-  }
-
-  static JSBool
-  Dump(JSContext* aCx, unsigned aArgc, jsval* aVp)
-  {
-    JSObject* obj = JS_THIS_OBJECT(aCx, aVp);
-    if (!obj) {
-      return false;
-    }
-
-    if (!GetInstancePrivate(aCx, obj, sFunctions[6].name)) {
-      return false;
-    }
-
-    if (aArgc) {
-      JSString* str = JS_ValueToString(aCx, JS_ARGV(aCx, aVp)[0]);
-      if (!str) {
-        return false;
-      }
-
-      JSAutoByteString buffer(aCx, str);
-      if (!buffer) {
-        return false;
-      }
-
-#ifdef ANDROID
-      __android_log_print(ANDROID_LOG_INFO, "Gecko", "%s", buffer.ptr());
-#endif
-      fputs(buffer.ptr(), stdout);
-      fflush(stdout);
-    }
-
-    return true;
-  }
-
-  static JSBool
-  AtoB(JSContext* aCx, unsigned aArgc, jsval* aVp)
-  {
-    JSObject* obj = JS_THIS_OBJECT(aCx, aVp);
-    if (!obj) {
-      return false;
-    }
-
-    if (!GetInstancePrivate(aCx, obj, sFunctions[7].name)) {
-      return false;
-    }
-
-    JS::Rooted<JS::Value> string(aCx);
-    if (!JS_ConvertArguments(aCx, aArgc, JS_ARGV(aCx, aVp), "v", string.address())) {
-      return false;
-    }
-
-    JS::Rooted<JS::Value> result(aCx);
-    if (!xpc::Base64Decode(aCx, string, result.address())) {
-      return false;
-    }
-
-    JS_SET_RVAL(aCx, aVp, result);
-    return true;
-  }
-
-  static JSBool
-  BtoA(JSContext* aCx, unsigned aArgc, jsval* aVp)
-  {
-    JSObject* obj = JS_THIS_OBJECT(aCx, aVp);
-    if (!obj) {
-      return false;
-    }
-
-    if (!GetInstancePrivate(aCx, obj, sFunctions[8].name)) {
-      return false;
-    }
-
-    JS::Rooted<JS::Value> binary(aCx);
-    if (!JS_ConvertArguments(aCx, aArgc, JS_ARGV(aCx, aVp), "v", binary.address())) {
-      return false;
-    }
-
-    JS::Rooted<JS::Value> result(aCx);
-    if (!xpc::Base64Encode(aCx, binary, result.address())) {
-      return false;
-    }
-
-    JS_SET_RVAL(aCx, aVp, result);
-    return true;
-  }
-};
-
-JSClass WorkerGlobalScope::sClass = {
-  "WorkerGlobalScope",
-  0,
-  JS_PropertyStub, JS_DeletePropertyStub, JS_PropertyStub, JS_StrictPropertyStub,
-  JS_EnumerateStub, JS_ResolveStub, JS_ConvertStub
-};
-
-const JSPropertySpec WorkerGlobalScope::sProperties[] = {
-  JS_PSGS("location", GetLocation, GetterOnlyJSNative, JSPROP_ENUMERATE),
-  JS_PSGS(sEventStrings[STRING_onerror], GetOnErrorListener, SetOnErrorListener,
-          JSPROP_ENUMERATE),
-  JS_PSGS(sEventStrings[STRING_onclose], GetOnClose, SetOnClose,
-          JSPROP_ENUMERATE),
-  JS_PSGS("navigator", GetNavigator, GetterOnlyJSNative, JSPROP_ENUMERATE),
-  JS_PSGS("self", GetSelf, GetterOnlyJSNative, JSPROP_ENUMERATE),
-  JS_PS_END
-};
-
-const JSFunctionSpec WorkerGlobalScope::sFunctions[] = {
-  JS_FN("close", Close, 0, FUNCTION_FLAGS),
-  JS_FN("importScripts", ImportScripts, 1, FUNCTION_FLAGS),
-  JS_FN("setTimeout", SetTimeout, 1, FUNCTION_FLAGS),
-  JS_FN("clearTimeout", ClearTimeout, 1, FUNCTION_FLAGS),
-  JS_FN("setInterval", SetInterval, 1, FUNCTION_FLAGS),
-  JS_FN("clearInterval", ClearTimeout, 1, FUNCTION_FLAGS),
-  JS_FN("dump", Dump, 1, FUNCTION_FLAGS),
-  JS_FN("atob", AtoB, 1, FUNCTION_FLAGS),
-  JS_FN("btoa", BtoA, 1, FUNCTION_FLAGS),
-  JS_FS_END
-};
-
-const char* const WorkerGlobalScope::sEventStrings[STRING_COUNT] = {
-  "onerror",
-  "onclose"
-};
-
-class DedicatedWorkerGlobalScope : public WorkerGlobalScope
+WorkerGlobalScope::~WorkerGlobalScope()
 {
-  static DOMJSClass sClass;
-  static DOMIfaceAndProtoJSClass sProtoClass;
-  static const JSPropertySpec sProperties[];
-  static const JSFunctionSpec sFunctions[];
+  mWorkerPrivate->AssertIsOnWorkerThread();
+}
 
-  enum
-  {
-    STRING_onmessage = 0,
+NS_IMPL_CYCLE_COLLECTION_CLASS(WorkerGlobalScope)
 
-    STRING_COUNT
-  };
+NS_IMPL_CYCLE_COLLECTION_TRAVERSE_BEGIN_INHERITED(WorkerGlobalScope,
+                                                  DOMEventTargetHelper)
+  tmp->mWorkerPrivate->AssertIsOnWorkerThread();
+  NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mConsole)
+  NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mCrypto)
+  NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mPerformance)
+  NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mLocation)
+  NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mNavigator)
+  NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mIndexedDB)
+  NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mCacheStorage)
+  tmp->TraverseHostObjectURIs(cb);
+  tmp->mWorkerPrivate->TraverseTimeouts(cb);
+NS_IMPL_CYCLE_COLLECTION_TRAVERSE_END
 
-  static const char* const sEventStrings[STRING_COUNT];
+NS_IMPL_CYCLE_COLLECTION_UNLINK_BEGIN_INHERITED(WorkerGlobalScope,
+                                                DOMEventTargetHelper)
+  tmp->mWorkerPrivate->AssertIsOnWorkerThread();
+  NS_IMPL_CYCLE_COLLECTION_UNLINK(mConsole)
+  NS_IMPL_CYCLE_COLLECTION_UNLINK(mCrypto)
+  NS_IMPL_CYCLE_COLLECTION_UNLINK(mPerformance)
+  NS_IMPL_CYCLE_COLLECTION_UNLINK(mLocation)
+  NS_IMPL_CYCLE_COLLECTION_UNLINK(mNavigator)
+  NS_IMPL_CYCLE_COLLECTION_UNLINK(mIndexedDB)
+  NS_IMPL_CYCLE_COLLECTION_UNLINK(mCacheStorage)
+  tmp->UnlinkHostObjectURIs();
+  tmp->mWorkerPrivate->UnlinkTimeouts();
+NS_IMPL_CYCLE_COLLECTION_UNLINK_END
 
-public:
-  static JSClass*
-  Class()
-  {
-    return sClass.ToJSClass();
-  }
+NS_IMPL_CYCLE_COLLECTION_TRACE_BEGIN_INHERITED(WorkerGlobalScope,
+                                               DOMEventTargetHelper)
+  tmp->mWorkerPrivate->AssertIsOnWorkerThread();
+NS_IMPL_CYCLE_COLLECTION_TRACE_END
 
-  static JSClass*
-  ProtoClass()
-  {
-    return sProtoClass.ToJSClass();
-  }
+NS_IMPL_ADDREF_INHERITED(WorkerGlobalScope, DOMEventTargetHelper)
+NS_IMPL_RELEASE_INHERITED(WorkerGlobalScope, DOMEventTargetHelper)
 
-  static DOMClass*
-  DOMClassStruct()
-  {
-    return &sClass.mClass;
-  }
+NS_INTERFACE_MAP_BEGIN_CYCLE_COLLECTION(WorkerGlobalScope)
+  NS_INTERFACE_MAP_ENTRY(nsIGlobalObject)
+  NS_INTERFACE_MAP_ENTRY(nsISupportsWeakReference)
+NS_INTERFACE_MAP_END_INHERITING(DOMEventTargetHelper)
 
-  static JSObject*
-  InitClass(JSContext* aCx, JSObject* aObj, JSObject* aParentProto)
-  {
-    JSObject* proto =
-      JS_InitClass(aCx, aObj, aParentProto, ProtoClass(), Construct, 0,
-                   sProperties, sFunctions, NULL, NULL);
-    if (proto) {
-      js::SetReservedSlot(proto, DOM_PROTO_INSTANCE_CLASS_SLOT,
-                          JS::PrivateValue(DOMClassStruct()));
-    }
-    return proto;
-  }
-
-  static JSBool
-  InitPrivate(JSContext* aCx, JSObject* aObj, WorkerPrivate* aWorkerPrivate)
-  {
-    JS_ASSERT(JS_GetClass(aObj) == Class());
-
-    dom::AllocateProtoAndIfaceCache(aObj);
-
-    nsRefPtr<DedicatedWorkerGlobalScope> scope =
-      new DedicatedWorkerGlobalScope(aCx, aWorkerPrivate);
-
-    js::SetReservedSlot(aObj, DOM_OBJECT_SLOT, PRIVATE_TO_JSVAL(scope));
-
-    scope->SetIsDOMBinding();
-    scope->SetWrapper(aObj);
-
-    scope.forget();
-    return true;
-  }
-
-protected:
-  DedicatedWorkerGlobalScope(JSContext* aCx, WorkerPrivate* aWorker)
-  : WorkerGlobalScope(aCx, aWorker)
-  {
-    MOZ_COUNT_CTOR(mozilla::dom::workers::DedicatedWorkerGlobalScope);
-  }
-
-  ~DedicatedWorkerGlobalScope()
-  {
-    MOZ_COUNT_DTOR(mozilla::dom::workers::DedicatedWorkerGlobalScope);
-  }
-
-private:
-  using EventTarget::GetEventListener;
-  using EventTarget::SetEventListener;
-
-  static bool
-  IsDedicatedWorkerGlobalScope(const JS::Value& v)
-  {
-    return v.isObject() && JS_GetClass(&v.toObject()) == Class();
-  }
-
-  static bool
-  GetOnMessageImpl(JSContext* aCx, JS::CallArgs aArgs)
-  {
-    const char* name = sEventStrings[STRING_onmessage];
-    DedicatedWorkerGlobalScope* scope =
-      GetInstancePrivate(aCx, &aArgs.thisv().toObject(), name);
-    MOZ_ASSERT(scope);
-
-    ErrorResult rv;
-
-    JSObject* listener =
-      scope->GetEventListener(NS_ConvertASCIItoUTF16(name + 2), rv);
-
-    if (rv.Failed()) {
-      JS_ReportError(aCx, "Failed to get event listener!");
-      return false;
-    }
-
-    aArgs.rval().setObjectOrNull(listener);
-    return true;
-  }
-
-  static JSBool
-  GetOnMessage(JSContext* aCx, unsigned aArgc, JS::Value* aVp)
-  {
-    JS::CallArgs args = JS::CallArgsFromVp(aArgc, aVp);
-    return JS::CallNonGenericMethod<IsDedicatedWorkerGlobalScope, GetOnMessageImpl>(aCx, args);
-  }
-
-  static bool
-  SetOnMessageImpl(JSContext* aCx, JS::CallArgs aArgs)
-  {
-    const char* name = sEventStrings[STRING_onmessage];
-    DedicatedWorkerGlobalScope* scope =
-      GetInstancePrivate(aCx, &aArgs.thisv().toObject(), name);
-    MOZ_ASSERT(scope);
-
-    if (aArgs.length() == 0 || !aArgs[0].isObject()) {
-      JS_ReportError(aCx, "Not an event listener!");
-      return false;
-    }
-
-    ErrorResult rv;
-
-    JS::Rooted<JSObject*> listenerObj(aCx, &aArgs[0].toObject());
-    scope->SetEventListener(NS_ConvertASCIItoUTF16(name + 2),
-                            listenerObj, rv);
-
-    if (rv.Failed()) {
-      JS_ReportError(aCx, "Failed to set event listener!");
-      return false;
-    }
-
-    aArgs.rval().setUndefined();
-    return true;
-  }
-
-  static JSBool
-  SetOnMessage(JSContext* aCx, unsigned aArgc, JS::Value* aVp)
-  {
-    JS::CallArgs args = JS::CallArgsFromVp(aArgc, aVp);
-    return JS::CallNonGenericMethod<IsDedicatedWorkerGlobalScope, SetOnMessageImpl>(aCx, args);
-  }
-
-  static DedicatedWorkerGlobalScope*
-  GetInstancePrivate(JSContext* aCx, JSObject* aObj, const char* aFunctionName)
-  {
-    JSClass* classPtr = JS_GetClass(aObj);
-    if (classPtr == Class()) {
-      return UnwrapDOMObject<DedicatedWorkerGlobalScope>(aObj);
-    }
-
-    JS_ReportErrorNumber(aCx, js_GetErrorMessage, NULL,
-                         JSMSG_INCOMPATIBLE_PROTO, Class()->name, aFunctionName,
-                         classPtr->name);
-    return NULL;
-  }
-
-  static JSBool
-  Construct(JSContext* aCx, unsigned aArgc, jsval* aVp)
-  {
-    JS_ReportErrorNumber(aCx, js_GetErrorMessage, NULL, JSMSG_WRONG_CONSTRUCTOR,
-                         Class()->name);
-    return false;
-  }
-
-  static JSBool
-  Resolve(JSContext* aCx, JS::Handle<JSObject*> aObj, JS::Handle<jsid> aId, unsigned aFlags,
-          JS::MutableHandle<JSObject*> aObjp)
-  {
-    JSBool resolved;
-    if (!JS_ResolveStandardClass(aCx, aObj, aId, &resolved)) {
-      return false;
-    }
-
-    aObjp.set(resolved ? aObj.get() : NULL);
-    return true;
-  }
-
-  static void
-  Finalize(JSFreeOp* aFop, JSObject* aObj)
-  {
-    JS_ASSERT(JS_GetClass(aObj) == Class());
-    DedicatedWorkerGlobalScope* scope =
-      UnwrapDOMObject<DedicatedWorkerGlobalScope>(aObj);
-    if (scope) {
-      DestroyProtoAndIfaceCache(aObj);
-      scope->_finalize(aFop);
-    }
-  }
-
-  static void
-  Trace(JSTracer* aTrc, JSObject* aObj)
-  {
-    JS_ASSERT(JS_GetClass(aObj) == Class());
-    DedicatedWorkerGlobalScope* scope =
-      UnwrapDOMObject<DedicatedWorkerGlobalScope>(aObj);
-    if (scope) {
-      TraceProtoAndIfaceCache(aTrc, aObj);
-      scope->_trace(aTrc);
-    }
-  }
-
-  static JSBool
-  PostMessage(JSContext* aCx, unsigned aArgc, jsval* aVp)
-  {
-    JSObject* obj = JS_THIS_OBJECT(aCx, aVp);
-    if (!obj) {
-      return false;
-    }
-
-    const char* name = sFunctions[0].name;
-    DedicatedWorkerGlobalScope* scope = GetInstancePrivate(aCx, obj, name);
-    if (!scope) {
-      return false;
-    }
-
-    JS::Rooted<JS::Value> message(aCx);
-    JS::Rooted<JS::Value> transferable(aCx, JSVAL_VOID);
-    if (!JS_ConvertArguments(aCx, aArgc, JS_ARGV(aCx, aVp), "v/v",
-                             message.address(), transferable.address())) {
-      return false;
-    }
-
-    return scope->mWorker->PostMessageToParent(aCx, message, transferable);
-  }
-};
-
-DOMJSClass DedicatedWorkerGlobalScope::sClass = {
-  {
-    // We don't have to worry about Xray expando slots here because we'll never
-    // have an Xray wrapper to a worker global scope.
-    "DedicatedWorkerGlobalScope",
-    JSCLASS_DOM_GLOBAL | JSCLASS_IS_DOMJSCLASS | JSCLASS_IMPLEMENTS_BARRIERS |
-    JSCLASS_GLOBAL_FLAGS_WITH_SLOTS(3) | JSCLASS_NEW_RESOLVE,
-    JS_PropertyStub, JS_DeletePropertyStub, JS_PropertyStub, JS_StrictPropertyStub,
-    JS_EnumerateStub, reinterpret_cast<JSResolveOp>(Resolve), JS_ConvertStub,
-    Finalize, NULL, NULL, NULL, NULL, Trace
-  },
-  {
-    INTERFACE_CHAIN_1(prototypes::id::EventTarget_workers),
-    false,
-    &sWorkerNativePropertyHooks
-  }
-};
-
-DOMIfaceAndProtoJSClass DedicatedWorkerGlobalScope::sProtoClass = {
-  {
-    // XXXbz we use "DedicatedWorkerGlobalScope" here to match sClass
-    // so that we can JS_InitClass this JSClass and then
-    // call JS_NewObject with our sClass and have it find the right
-    // prototype.
-    "DedicatedWorkerGlobalScope",
-    JSCLASS_IS_DOMIFACEANDPROTOJSCLASS | JSCLASS_HAS_RESERVED_SLOTS(2),
-    JS_PropertyStub,       /* addProperty */
-    JS_DeletePropertyStub, /* delProperty */
-    JS_PropertyStub,       /* getProperty */
-    JS_StrictPropertyStub, /* setProperty */
-    JS_EnumerateStub,
-    JS_ResolveStub,
-    JS_ConvertStub,
-    nullptr,               /* finalize */
-    nullptr,               /* checkAccess */
-    nullptr,               /* call */
-    nullptr,               /* hasInstance */
-    nullptr,               /* construct */
-    nullptr,               /* trace */
-    JSCLASS_NO_INTERNAL_MEMBERS
-  },
-  eInterfacePrototype,
-  &sWorkerNativePropertyHooks,
-  "[object DedicatedWorkerGlobalScope]",
-  prototypes::id::_ID_Count,
-  0
-};
-
-const JSPropertySpec DedicatedWorkerGlobalScope::sProperties[] = {
-  JS_PSGS(sEventStrings[STRING_onmessage], GetOnMessage, SetOnMessage,
-          JSPROP_ENUMERATE),
-  JS_PS_END
-};
-
-const JSFunctionSpec DedicatedWorkerGlobalScope::sFunctions[] = {
-  JS_FN("postMessage", PostMessage, 1, FUNCTION_FLAGS),
-  JS_FS_END
-};
-
-const char* const DedicatedWorkerGlobalScope::sEventStrings[STRING_COUNT] = {
-  "onmessage",
-};
-
-WorkerGlobalScope*
-WorkerGlobalScope::GetInstancePrivate(JSContext* aCx, JSObject* aObj,
-                                      const char* aFunctionName)
+JSObject*
+WorkerGlobalScope::WrapObject(JSContext* aCx, JS::Handle<JSObject*> aGivenProto)
 {
-  JSClass* classPtr = JS_GetClass(aObj);
+  MOZ_CRASH("We should never get here!");
+}
 
-  // We can only make DedicatedWorkerGlobalScope, not WorkerGlobalScope, so this
-  // should never happen.
-  JS_ASSERT(classPtr != Class());
+Console*
+WorkerGlobalScope::GetConsole(ErrorResult& aRv)
+{
+  mWorkerPrivate->AssertIsOnWorkerThread();
 
-  if (classPtr == DedicatedWorkerGlobalScope::Class()) {
-    return UnwrapDOMObject<DedicatedWorkerGlobalScope>(aObj);
+  if (!mConsole) {
+    mConsole = Console::Create(nullptr, aRv);
+    if (NS_WARN_IF(aRv.Failed())) {
+      return nullptr;
+    }
   }
 
-  JS_ReportErrorNumber(aCx, js_GetErrorMessage, NULL, JSMSG_INCOMPATIBLE_PROTO,
-                       sClass.name, aFunctionName, classPtr->name);
-  return NULL;
+  return mConsole;
+}
+
+Crypto*
+WorkerGlobalScope::GetCrypto(ErrorResult& aError)
+{
+  mWorkerPrivate->AssertIsOnWorkerThread();
+
+  if (!mCrypto) {
+    mCrypto = new Crypto();
+    mCrypto->Init(this);
+  }
+
+  return mCrypto;
+}
+
+already_AddRefed<CacheStorage>
+WorkerGlobalScope::GetCaches(ErrorResult& aRv)
+{
+  if (!mCacheStorage) {
+    MOZ_ASSERT(mWorkerPrivate);
+    mCacheStorage = CacheStorage::CreateOnWorker(cache::DEFAULT_NAMESPACE, this,
+                                                 mWorkerPrivate, aRv);
+  }
+
+  RefPtr<CacheStorage> ref = mCacheStorage;
+  return ref.forget();
 }
 
 bool
-WorkerGlobalScope::IsWorkerGlobalScope(const JS::Value& v)
+WorkerGlobalScope::IsSecureContext() const
 {
-  return v.isObject() && JS_GetClass(&v.toObject()) == DedicatedWorkerGlobalScope::Class();
+  bool globalSecure =
+    JS_GetIsSecureContext(js::GetObjectCompartment(GetWrapperPreserveColor()));
+  MOZ_ASSERT(globalSecure == mWorkerPrivate->IsSecureContext());
+  return globalSecure;
 }
 
-} /* anonymous namespace */
+already_AddRefed<WorkerLocation>
+WorkerGlobalScope::Location()
+{
+  mWorkerPrivate->AssertIsOnWorkerThread();
+
+  if (!mLocation) {
+    WorkerPrivate::LocationInfo& info = mWorkerPrivate->GetLocationInfo();
+
+    mLocation = WorkerLocation::Create(info);
+    MOZ_ASSERT(mLocation);
+  }
+
+  RefPtr<WorkerLocation> location = mLocation;
+  return location.forget();
+}
+
+already_AddRefed<WorkerNavigator>
+WorkerGlobalScope::Navigator()
+{
+  mWorkerPrivate->AssertIsOnWorkerThread();
+
+  if (!mNavigator) {
+    mNavigator = WorkerNavigator::Create(mWorkerPrivate->OnLine());
+    MOZ_ASSERT(mNavigator);
+  }
+
+  RefPtr<WorkerNavigator> navigator = mNavigator;
+  return navigator.forget();
+}
+
+already_AddRefed<WorkerNavigator>
+WorkerGlobalScope::GetExistingNavigator() const
+{
+  mWorkerPrivate->AssertIsOnWorkerThread();
+
+  RefPtr<WorkerNavigator> navigator = mNavigator;
+  return navigator.forget();
+}
+
+void
+WorkerGlobalScope::Close(JSContext* aCx, ErrorResult& aRv)
+{
+  mWorkerPrivate->AssertIsOnWorkerThread();
+
+  if (mWorkerPrivate->IsServiceWorker()) {
+    aRv.Throw(NS_ERROR_DOM_INVALID_ACCESS_ERR);
+  } else {
+    mWorkerPrivate->CloseInternal(aCx);
+  }
+}
+
+OnErrorEventHandlerNonNull*
+WorkerGlobalScope::GetOnerror()
+{
+  mWorkerPrivate->AssertIsOnWorkerThread();
+
+  EventListenerManager* elm = GetExistingListenerManager();
+  return elm ? elm->GetOnErrorEventHandler() : nullptr;
+}
+
+void
+WorkerGlobalScope::SetOnerror(OnErrorEventHandlerNonNull* aHandler)
+{
+  mWorkerPrivate->AssertIsOnWorkerThread();
+
+  EventListenerManager* elm = GetOrCreateListenerManager();
+  if (elm) {
+    elm->SetEventHandler(aHandler);
+  }
+}
+
+void
+WorkerGlobalScope::ImportScripts(const Sequence<nsString>& aScriptURLs,
+                                 ErrorResult& aRv)
+{
+  mWorkerPrivate->AssertIsOnWorkerThread();
+  scriptloader::Load(mWorkerPrivate, aScriptURLs, WorkerScript, aRv);
+}
+
+int32_t
+WorkerGlobalScope::SetTimeout(JSContext* aCx,
+                              Function& aHandler,
+                              const int32_t aTimeout,
+                              const Sequence<JS::Value>& aArguments,
+                              ErrorResult& aRv)
+{
+  mWorkerPrivate->AssertIsOnWorkerThread();
+
+  nsCOMPtr<nsIScriptTimeoutHandler> handler =
+    NS_CreateJSTimeoutHandler(aCx, mWorkerPrivate, aHandler, aArguments, aRv);
+  if (NS_WARN_IF(aRv.Failed())) {
+    return 0;
+  }
+
+  return mWorkerPrivate->SetTimeout(aCx, handler, aTimeout, false, aRv);
+}
+
+int32_t
+WorkerGlobalScope::SetTimeout(JSContext* aCx,
+                              const nsAString& aHandler,
+                              const int32_t aTimeout,
+                              const Sequence<JS::Value>& /* unused */,
+                              ErrorResult& aRv)
+{
+  mWorkerPrivate->AssertIsOnWorkerThread();
+
+  nsCOMPtr<nsIScriptTimeoutHandler> handler =
+    NS_CreateJSTimeoutHandler(aCx, mWorkerPrivate, aHandler);
+  return mWorkerPrivate->SetTimeout(aCx, handler, aTimeout, false, aRv);
+}
+
+void
+WorkerGlobalScope::ClearTimeout(int32_t aHandle)
+{
+  mWorkerPrivate->AssertIsOnWorkerThread();
+  mWorkerPrivate->ClearTimeout(aHandle);
+}
+
+int32_t
+WorkerGlobalScope::SetInterval(JSContext* aCx,
+                               Function& aHandler,
+                               const Optional<int32_t>& aTimeout,
+                               const Sequence<JS::Value>& aArguments,
+                               ErrorResult& aRv)
+{
+  mWorkerPrivate->AssertIsOnWorkerThread();
+
+  bool isInterval = aTimeout.WasPassed();
+  int32_t timeout = aTimeout.WasPassed() ? aTimeout.Value() : 0;
+
+  nsCOMPtr<nsIScriptTimeoutHandler> handler =
+    NS_CreateJSTimeoutHandler(aCx, mWorkerPrivate, aHandler, aArguments, aRv);
+  if (NS_WARN_IF(aRv.Failed())) {
+    return 0;
+  }
+
+  return mWorkerPrivate->SetTimeout(aCx, handler,  timeout, isInterval, aRv);
+}
+
+int32_t
+WorkerGlobalScope::SetInterval(JSContext* aCx,
+                               const nsAString& aHandler,
+                               const Optional<int32_t>& aTimeout,
+                               const Sequence<JS::Value>& /* unused */,
+                               ErrorResult& aRv)
+{
+  mWorkerPrivate->AssertIsOnWorkerThread();
+
+  Sequence<JS::Value> dummy;
+
+  bool isInterval = aTimeout.WasPassed();
+  int32_t timeout = aTimeout.WasPassed() ? aTimeout.Value() : 0;
+
+  nsCOMPtr<nsIScriptTimeoutHandler> handler =
+    NS_CreateJSTimeoutHandler(aCx, mWorkerPrivate, aHandler);
+  return mWorkerPrivate->SetTimeout(aCx, handler, timeout, isInterval, aRv);
+}
+
+void
+WorkerGlobalScope::ClearInterval(int32_t aHandle)
+{
+  mWorkerPrivate->AssertIsOnWorkerThread();
+  mWorkerPrivate->ClearTimeout(aHandle);
+}
+
+void
+WorkerGlobalScope::Atob(const nsAString& aAtob, nsAString& aOutput, ErrorResult& aRv) const
+{
+  mWorkerPrivate->AssertIsOnWorkerThread();
+  aRv = nsContentUtils::Atob(aAtob, aOutput);
+}
+
+void
+WorkerGlobalScope::Btoa(const nsAString& aBtoa, nsAString& aOutput, ErrorResult& aRv) const
+{
+  mWorkerPrivate->AssertIsOnWorkerThread();
+  aRv = nsContentUtils::Btoa(aBtoa, aOutput);
+}
+
+void
+WorkerGlobalScope::Dump(const Optional<nsAString>& aString) const
+{
+  mWorkerPrivate->AssertIsOnWorkerThread();
+
+  if (!aString.WasPassed()) {
+    return;
+  }
+
+#if !(defined(DEBUG) || defined(MOZ_ENABLE_JS_DUMP))
+  if (!mWorkerPrivate->DumpEnabled()) {
+    return;
+  }
+#endif
+
+  NS_ConvertUTF16toUTF8 str(aString.Value());
+
+  MOZ_LOG(nsContentUtils::DOMDumpLog(), LogLevel::Debug, ("[Worker.Dump] %s", str.get()));
+#ifdef ANDROID
+  __android_log_print(ANDROID_LOG_INFO, "Gecko", "%s", str.get());
+#endif
+  fputs(str.get(), stdout);
+  fflush(stdout);
+}
+
+Performance*
+WorkerGlobalScope::GetPerformance()
+{
+  mWorkerPrivate->AssertIsOnWorkerThread();
+
+  if (!mPerformance) {
+    mPerformance = Performance::CreateForWorker(mWorkerPrivate);
+  }
+
+  return mPerformance;
+}
+
+already_AddRefed<Promise>
+WorkerGlobalScope::Fetch(const RequestOrUSVString& aInput,
+                         const RequestInit& aInit, ErrorResult& aRv)
+{
+  return FetchRequest(this, aInput, aInit, aRv);
+}
+
+already_AddRefed<IDBFactory>
+WorkerGlobalScope::GetIndexedDB(ErrorResult& aErrorResult)
+{
+  mWorkerPrivate->AssertIsOnWorkerThread();
+
+  RefPtr<IDBFactory> indexedDB = mIndexedDB;
+
+  if (!indexedDB) {
+    if (!mWorkerPrivate->IsStorageAllowed()) {
+      NS_WARNING("IndexedDB is not allowed in this worker!");
+      aErrorResult = NS_ERROR_DOM_SECURITY_ERR;
+      return nullptr;
+    }
+
+    JSContext* cx = mWorkerPrivate->GetJSContext();
+    MOZ_ASSERT(cx);
+
+    JS::Rooted<JSObject*> owningObject(cx, GetGlobalJSObject());
+    MOZ_ASSERT(owningObject);
+
+    const PrincipalInfo& principalInfo = mWorkerPrivate->GetPrincipalInfo();
+
+    nsresult rv =
+      IDBFactory::CreateForWorker(cx,
+                                  owningObject,
+                                  principalInfo,
+                                  mWorkerPrivate->WindowID(),
+                                  getter_AddRefs(indexedDB));
+    if (NS_WARN_IF(NS_FAILED(rv))) {
+      aErrorResult = rv;
+      return nullptr;
+    }
+
+    mIndexedDB = indexedDB;
+  }
+
+  return indexedDB.forget();
+}
+
+already_AddRefed<Promise>
+WorkerGlobalScope::CreateImageBitmap(const ImageBitmapSource& aImage,
+                                     ErrorResult& aRv)
+{
+  if (aImage.IsArrayBuffer() || aImage.IsArrayBufferView()) {
+    aRv.Throw(NS_ERROR_NOT_IMPLEMENTED);
+    return nullptr;
+  }
+
+  return ImageBitmap::Create(this, aImage, Nothing(), aRv);
+}
+
+already_AddRefed<Promise>
+WorkerGlobalScope::CreateImageBitmap(const ImageBitmapSource& aImage,
+                                     int32_t aSx, int32_t aSy, int32_t aSw, int32_t aSh,
+                                     ErrorResult& aRv)
+{
+  if (aImage.IsArrayBuffer() || aImage.IsArrayBufferView()) {
+    aRv.Throw(NS_ERROR_NOT_IMPLEMENTED);
+    return nullptr;
+  }
+
+  return ImageBitmap::Create(this, aImage, Some(gfx::IntRect(aSx, aSy, aSw, aSh)), aRv);
+}
+
+already_AddRefed<mozilla::dom::Promise>
+WorkerGlobalScope::CreateImageBitmap(const ImageBitmapSource& aImage,
+                                     int32_t aOffset, int32_t aLength,
+                                     ImageBitmapFormat aFormat,
+                                     const Sequence<ChannelPixelLayout>& aLayout,
+                                     ErrorResult& aRv)
+{
+  JSContext* cx = GetCurrentThreadJSContext();
+  MOZ_ASSERT(cx);
+
+  if (!ImageBitmap::ExtensionsEnabled(cx, nullptr)) {
+    aRv.Throw(NS_ERROR_TYPE_ERR);
+    return nullptr;
+  }
+
+  if (aImage.IsArrayBuffer() || aImage.IsArrayBufferView()) {
+    return ImageBitmap::Create(this, aImage, aOffset, aLength, aFormat, aLayout,
+                               aRv);
+  } else {
+    aRv.Throw(NS_ERROR_TYPE_ERR);
+    return nullptr;
+  }
+}
+
+DedicatedWorkerGlobalScope::DedicatedWorkerGlobalScope(WorkerPrivate* aWorkerPrivate)
+: WorkerGlobalScope(aWorkerPrivate)
+{
+}
+
+bool
+DedicatedWorkerGlobalScope::WrapGlobalObject(JSContext* aCx,
+                                             JS::MutableHandle<JSObject*> aReflector)
+{
+  mWorkerPrivate->AssertIsOnWorkerThread();
+  MOZ_ASSERT(!mWorkerPrivate->IsSharedWorker());
+
+  JS::CompartmentOptions options;
+  mWorkerPrivate->CopyJSCompartmentOptions(options);
+
+  const bool usesSystemPrincipal = mWorkerPrivate->UsesSystemPrincipal();
+
+  // Note that xpc::ShouldDiscardSystemSource() and
+  // xpc::ExtraWarningsForSystemJS() read prefs that are cached on the main
+  // thread. This is benignly racey.
+  const bool discardSource = usesSystemPrincipal &&
+                             xpc::ShouldDiscardSystemSource();
+  const bool extraWarnings = usesSystemPrincipal &&
+                             xpc::ExtraWarningsForSystemJS();
+
+  JS::CompartmentBehaviors& behaviors = options.behaviors();
+  behaviors.setDiscardSource(discardSource)
+           .extraWarningsOverride().set(extraWarnings);
+
+  const bool sharedMemoryEnabled = xpc::SharedMemoryEnabled();
+
+  JS::CompartmentCreationOptions& creationOptions = options.creationOptions();
+  creationOptions.setSharedMemoryAndAtomicsEnabled(sharedMemoryEnabled);
+
+  return DedicatedWorkerGlobalScopeBinding::Wrap(aCx, this, this,
+                                                 options,
+                                                 GetWorkerPrincipal(),
+                                                 true, aReflector);
+}
+
+void
+DedicatedWorkerGlobalScope::PostMessage(JSContext* aCx,
+                                        JS::Handle<JS::Value> aMessage,
+                                        const Optional<Sequence<JS::Value>>& aTransferable,
+                                        ErrorResult& aRv)
+{
+  mWorkerPrivate->AssertIsOnWorkerThread();
+  mWorkerPrivate->PostMessageToParent(aCx, aMessage, aTransferable, aRv);
+}
+
+SharedWorkerGlobalScope::SharedWorkerGlobalScope(WorkerPrivate* aWorkerPrivate,
+                                                 const nsCString& aName)
+: WorkerGlobalScope(aWorkerPrivate), mName(aName)
+{
+}
+
+bool
+SharedWorkerGlobalScope::WrapGlobalObject(JSContext* aCx,
+                                          JS::MutableHandle<JSObject*> aReflector)
+{
+  mWorkerPrivate->AssertIsOnWorkerThread();
+  MOZ_ASSERT(mWorkerPrivate->IsSharedWorker());
+
+  JS::CompartmentOptions options;
+  mWorkerPrivate->CopyJSCompartmentOptions(options);
+
+  return SharedWorkerGlobalScopeBinding::Wrap(aCx, this, this, options,
+                                              GetWorkerPrincipal(),
+                                              true, aReflector);
+}
+
+NS_IMPL_CYCLE_COLLECTION_INHERITED(ServiceWorkerGlobalScope, WorkerGlobalScope,
+                                   mClients, mRegistration)
+NS_INTERFACE_MAP_BEGIN_CYCLE_COLLECTION_INHERITED(ServiceWorkerGlobalScope)
+NS_INTERFACE_MAP_END_INHERITING(WorkerGlobalScope)
+
+NS_IMPL_ADDREF_INHERITED(ServiceWorkerGlobalScope, WorkerGlobalScope)
+NS_IMPL_RELEASE_INHERITED(ServiceWorkerGlobalScope, WorkerGlobalScope)
+
+ServiceWorkerGlobalScope::ServiceWorkerGlobalScope(WorkerPrivate* aWorkerPrivate,
+                                                   const nsACString& aScope)
+  : WorkerGlobalScope(aWorkerPrivate),
+    mScope(NS_ConvertUTF8toUTF16(aScope))
+{
+}
+
+ServiceWorkerGlobalScope::~ServiceWorkerGlobalScope()
+{
+}
+
+bool
+ServiceWorkerGlobalScope::WrapGlobalObject(JSContext* aCx,
+                                           JS::MutableHandle<JSObject*> aReflector)
+{
+  mWorkerPrivate->AssertIsOnWorkerThread();
+  MOZ_ASSERT(mWorkerPrivate->IsServiceWorker());
+
+  JS::CompartmentOptions options;
+  mWorkerPrivate->CopyJSCompartmentOptions(options);
+
+  return ServiceWorkerGlobalScopeBinding::Wrap(aCx, this, this, options,
+                                               GetWorkerPrincipal(),
+                                               true, aReflector);
+}
+
+ServiceWorkerClients*
+ServiceWorkerGlobalScope::Clients()
+{
+  if (!mClients) {
+    mClients = new ServiceWorkerClients(this);
+  }
+
+  return mClients;
+}
+
+ServiceWorkerRegistration*
+ServiceWorkerGlobalScope::Registration()
+{
+  if (!mRegistration) {
+    mRegistration =
+      ServiceWorkerRegistration::CreateForWorker(mWorkerPrivate, mScope);
+  }
+
+  return mRegistration;
+}
+
+namespace {
+
+class SkipWaitingResultRunnable final : public WorkerRunnable
+{
+  RefPtr<PromiseWorkerProxy> mPromiseProxy;
+
+public:
+  SkipWaitingResultRunnable(WorkerPrivate* aWorkerPrivate,
+                            PromiseWorkerProxy* aPromiseProxy)
+    : WorkerRunnable(aWorkerPrivate)
+    , mPromiseProxy(aPromiseProxy)
+  {
+    AssertIsOnMainThread();
+  }
+
+  virtual bool
+  WorkerRun(JSContext* aCx, WorkerPrivate* aWorkerPrivate) override
+  {
+    MOZ_ASSERT(aWorkerPrivate);
+    aWorkerPrivate->AssertIsOnWorkerThread();
+
+    RefPtr<Promise> promise = mPromiseProxy->WorkerPromise();
+    promise->MaybeResolveWithUndefined();
+
+    // Release the reference on the worker thread.
+    mPromiseProxy->CleanUp();
+
+    return true;
+  }
+};
+
+class WorkerScopeSkipWaitingRunnable final : public Runnable
+{
+  RefPtr<PromiseWorkerProxy> mPromiseProxy;
+  nsCString mScope;
+
+public:
+  WorkerScopeSkipWaitingRunnable(PromiseWorkerProxy* aPromiseProxy,
+                                 const nsCString& aScope)
+    : mPromiseProxy(aPromiseProxy)
+    , mScope(aScope)
+  {
+    MOZ_ASSERT(aPromiseProxy);
+  }
+
+  NS_IMETHOD
+  Run() override
+  {
+    AssertIsOnMainThread();
+
+    MutexAutoLock lock(mPromiseProxy->Lock());
+    if (mPromiseProxy->CleanedUp()) {
+      return NS_OK;
+    }
+
+    WorkerPrivate* workerPrivate = mPromiseProxy->GetWorkerPrivate();
+    MOZ_DIAGNOSTIC_ASSERT(workerPrivate);
+
+    RefPtr<ServiceWorkerManager> swm = ServiceWorkerManager::GetInstance();
+    if (swm) {
+      swm->SetSkipWaitingFlag(workerPrivate->GetPrincipal(), mScope,
+                              workerPrivate->ServiceWorkerID());
+    }
+
+    RefPtr<SkipWaitingResultRunnable> runnable =
+      new SkipWaitingResultRunnable(workerPrivate, mPromiseProxy);
+
+    if (!runnable->Dispatch()) {
+      NS_WARNING("Failed to dispatch SkipWaitingResultRunnable to the worker.");
+    }
+    return NS_OK;
+  }
+};
+
+} // namespace
+
+already_AddRefed<Promise>
+ServiceWorkerGlobalScope::SkipWaiting(ErrorResult& aRv)
+{
+  mWorkerPrivate->AssertIsOnWorkerThread();
+  MOZ_ASSERT(mWorkerPrivate->IsServiceWorker());
+
+  RefPtr<Promise> promise = Promise::Create(this, aRv);
+  if (NS_WARN_IF(aRv.Failed())) {
+    return nullptr;
+  }
+
+  RefPtr<PromiseWorkerProxy> promiseProxy =
+    PromiseWorkerProxy::Create(mWorkerPrivate, promise);
+  if (!promiseProxy) {
+    promise->MaybeResolveWithUndefined();
+    return promise.forget();
+  }
+
+  RefPtr<WorkerScopeSkipWaitingRunnable> runnable =
+    new WorkerScopeSkipWaitingRunnable(promiseProxy,
+                                       NS_ConvertUTF16toUTF8(mScope));
+
+  MOZ_ALWAYS_SUCCEEDS(mWorkerPrivate->DispatchToMainThread(runnable.forget()));
+  return promise.forget();
+}
+
+bool
+ServiceWorkerGlobalScope::OpenWindowEnabled(JSContext* aCx, JSObject* aObj)
+{
+  WorkerPrivate* worker = GetCurrentThreadWorkerPrivate();
+  MOZ_ASSERT(worker);
+  worker->AssertIsOnWorkerThread();
+  return worker->OpenWindowEnabled();
+}
+
+WorkerDebuggerGlobalScope::WorkerDebuggerGlobalScope(
+                                                  WorkerPrivate* aWorkerPrivate)
+: mWorkerPrivate(aWorkerPrivate)
+{
+  mWorkerPrivate->AssertIsOnWorkerThread();
+}
+
+WorkerDebuggerGlobalScope::~WorkerDebuggerGlobalScope()
+{
+  mWorkerPrivate->AssertIsOnWorkerThread();
+}
+
+NS_IMPL_CYCLE_COLLECTION_CLASS(WorkerDebuggerGlobalScope)
+
+NS_IMPL_CYCLE_COLLECTION_TRAVERSE_BEGIN_INHERITED(WorkerDebuggerGlobalScope,
+                                                  DOMEventTargetHelper)
+  tmp->mWorkerPrivate->AssertIsOnWorkerThread();
+  NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mConsole)
+NS_IMPL_CYCLE_COLLECTION_TRAVERSE_END
+
+NS_IMPL_CYCLE_COLLECTION_UNLINK_BEGIN_INHERITED(WorkerDebuggerGlobalScope,
+                                                DOMEventTargetHelper)
+  tmp->mWorkerPrivate->AssertIsOnWorkerThread();
+  NS_IMPL_CYCLE_COLLECTION_UNLINK(mConsole)
+NS_IMPL_CYCLE_COLLECTION_UNLINK_END
+
+NS_IMPL_CYCLE_COLLECTION_TRACE_BEGIN_INHERITED(WorkerDebuggerGlobalScope,
+                                               DOMEventTargetHelper)
+  tmp->mWorkerPrivate->AssertIsOnWorkerThread();
+NS_IMPL_CYCLE_COLLECTION_TRACE_END
+
+NS_IMPL_ADDREF_INHERITED(WorkerDebuggerGlobalScope, DOMEventTargetHelper)
+NS_IMPL_RELEASE_INHERITED(WorkerDebuggerGlobalScope, DOMEventTargetHelper)
+
+NS_INTERFACE_MAP_BEGIN_CYCLE_COLLECTION(WorkerDebuggerGlobalScope)
+  NS_INTERFACE_MAP_ENTRY(nsIGlobalObject)
+NS_INTERFACE_MAP_END_INHERITING(DOMEventTargetHelper)
+
+bool
+WorkerDebuggerGlobalScope::WrapGlobalObject(JSContext* aCx,
+                                            JS::MutableHandle<JSObject*> aReflector)
+{
+  mWorkerPrivate->AssertIsOnWorkerThread();
+
+  JS::CompartmentOptions options;
+  mWorkerPrivate->CopyJSCompartmentOptions(options);
+
+  return WorkerDebuggerGlobalScopeBinding::Wrap(aCx, this, this, options,
+                                                GetWorkerPrincipal(), true,
+                                                aReflector);
+}
+
+void
+WorkerDebuggerGlobalScope::GetGlobal(JSContext* aCx,
+                                     JS::MutableHandle<JSObject*> aGlobal,
+                                     ErrorResult& aRv)
+{
+  WorkerGlobalScope* scope = mWorkerPrivate->GetOrCreateGlobalScope(aCx);
+  if (!scope) {
+    aRv.Throw(NS_ERROR_FAILURE);
+  }
+
+  aGlobal.set(scope->GetWrapper());
+}
+
+void
+WorkerDebuggerGlobalScope::CreateSandbox(JSContext* aCx, const nsAString& aName,
+                                         JS::Handle<JSObject*> aPrototype,
+                                         JS::MutableHandle<JSObject*> aResult,
+                                         ErrorResult& aRv)
+{
+  mWorkerPrivate->AssertIsOnWorkerThread();
+
+  aResult.set(nullptr);
+
+  JS::Rooted<JS::Value> protoVal(aCx);
+  protoVal.setObjectOrNull(aPrototype);
+  JS::Rooted<JSObject*> sandbox(aCx,
+    SimpleGlobalObject::Create(SimpleGlobalObject::GlobalType::WorkerDebuggerSandbox,
+                               protoVal));
+
+  if (!sandbox) {
+    aRv.Throw(NS_ERROR_OUT_OF_MEMORY);
+    return;
+  }
+
+  if (!JS_WrapObject(aCx, &sandbox)) {
+    aRv.NoteJSContextException(aCx);
+    return;
+  }
+
+  aResult.set(sandbox);
+}
+
+void
+WorkerDebuggerGlobalScope::LoadSubScript(JSContext* aCx,
+                                         const nsAString& aURL,
+                                         const Optional<JS::Handle<JSObject*>>& aSandbox,
+                                         ErrorResult& aRv)
+{
+  mWorkerPrivate->AssertIsOnWorkerThread();
+
+  Maybe<JSAutoCompartment> ac;
+  if (aSandbox.WasPassed()) {
+    JS::Rooted<JSObject*> sandbox(aCx, js::CheckedUnwrap(aSandbox.Value()));
+    if (!IsDebuggerSandbox(sandbox)) {
+      aRv.Throw(NS_ERROR_INVALID_ARG);
+      return;
+    }
+
+    ac.emplace(aCx, sandbox);
+  }
+
+  nsTArray<nsString> urls;
+  urls.AppendElement(aURL);
+  scriptloader::Load(mWorkerPrivate, urls, DebuggerScript, aRv);
+}
+
+void
+WorkerDebuggerGlobalScope::EnterEventLoop()
+{
+  mWorkerPrivate->EnterDebuggerEventLoop();
+}
+
+void
+WorkerDebuggerGlobalScope::LeaveEventLoop()
+{
+  mWorkerPrivate->LeaveDebuggerEventLoop();
+}
+
+void
+WorkerDebuggerGlobalScope::PostMessage(const nsAString& aMessage)
+{
+  mWorkerPrivate->PostMessageToDebugger(aMessage);
+}
+
+void
+WorkerDebuggerGlobalScope::SetImmediate(Function& aHandler, ErrorResult& aRv)
+{
+  mWorkerPrivate->SetDebuggerImmediate(aHandler, aRv);
+}
+
+void
+WorkerDebuggerGlobalScope::ReportError(JSContext* aCx,
+                                       const nsAString& aMessage)
+{
+  JS::AutoFilename chars;
+  uint32_t lineno = 0;
+  JS::DescribeScriptedCaller(aCx, &chars, &lineno);
+  nsString filename(NS_ConvertUTF8toUTF16(chars.get()));
+  mWorkerPrivate->ReportErrorToDebugger(filename, lineno, aMessage);
+}
+
+void
+WorkerDebuggerGlobalScope::RetrieveConsoleEvents(JSContext* aCx,
+                                                 nsTArray<JS::Value>& aEvents,
+                                                 ErrorResult& aRv)
+{
+  WorkerGlobalScope* scope = mWorkerPrivate->GetOrCreateGlobalScope(aCx);
+  if (!scope) {
+    aRv.Throw(NS_ERROR_FAILURE);
+    return;
+  }
+
+  RefPtr<Console> console = scope->GetConsole(aRv);
+  if (NS_WARN_IF(aRv.Failed())) {
+    return;
+  }
+
+  console->RetrieveConsoleEvents(aCx, aEvents, aRv);
+}
+
+void
+WorkerDebuggerGlobalScope::SetConsoleEventHandler(JSContext* aCx,
+                                                  AnyCallback* aHandler,
+                                                  ErrorResult& aRv)
+{
+  WorkerGlobalScope* scope = mWorkerPrivate->GetOrCreateGlobalScope(aCx);
+  if (!scope) {
+    aRv.Throw(NS_ERROR_FAILURE);
+    return;
+  }
+
+  RefPtr<Console> console = scope->GetConsole(aRv);
+  if (NS_WARN_IF(aRv.Failed())) {
+    return;
+  }
+
+  console->SetConsoleEventHandler(aHandler);
+}
+
+Console*
+WorkerDebuggerGlobalScope::GetConsole(ErrorResult& aRv)
+{
+  mWorkerPrivate->AssertIsOnWorkerThread();
+
+  // Debugger console has its own console object.
+  if (!mConsole) {
+    mConsole = Console::Create(nullptr, aRv);
+    if (NS_WARN_IF(aRv.Failed())) {
+      return nullptr;
+    }
+  }
+
+  return mConsole;
+}
+
+void
+WorkerDebuggerGlobalScope::Dump(JSContext* aCx,
+                                const Optional<nsAString>& aString) const
+{
+  WorkerGlobalScope* scope = mWorkerPrivate->GetOrCreateGlobalScope(aCx);
+  if (scope) {
+    scope->Dump(aString);
+  }
+}
 
 BEGIN_WORKERS_NAMESPACE
 
-JSObject*
-CreateDedicatedWorkerGlobalScope(JSContext* aCx)
+bool
+IsWorkerGlobal(JSObject* object)
 {
-  using namespace mozilla::dom;
-
-  WorkerPrivate* worker = GetWorkerPrivateFromContext(aCx);
-  JS_ASSERT(worker);
-
-  JS::CompartmentOptions options;
-  if (worker->IsChromeWorker())
-    options.setVersion(JSVERSION_LATEST);
-  JS::Rooted<JSObject*> global(aCx,
-    JS_NewGlobalObject(aCx, DedicatedWorkerGlobalScope::Class(),
-                       GetWorkerPrincipal(), options));
-  if (!global) {
-    return NULL;
-  }
-
-  JSAutoCompartment ac(aCx, global);
-
-  // Make the private slots now so that all our instance checks succeed.
-  if (!DedicatedWorkerGlobalScope::InitPrivate(aCx, global, worker)) {
-    return NULL;
-  }
-
-  // Proto chain should be:
-  //   global -> DedicatedWorkerGlobalScope
-  //          -> WorkerGlobalScope
-  //          -> EventTarget
-  //          -> Object
-
-  JS::Rooted<JSObject*> eventTargetProto(aCx,
-    EventTargetBinding_workers::GetProtoObject(aCx, global));
-  if (!eventTargetProto) {
-    return NULL;
-  }
-
-  JSObject* scopeProto =
-    WorkerGlobalScope::InitClass(aCx, global, eventTargetProto);
-  if (!scopeProto) {
-    return NULL;
-  }
-
-  JSObject* dedicatedScopeProto =
-    DedicatedWorkerGlobalScope::InitClass(aCx, global, scopeProto);
-  if (!dedicatedScopeProto) {
-    return NULL;
-  }
-
-  if (!JS_SetPrototype(aCx, global, dedicatedScopeProto)) {
-    return NULL;
-  }
-
-  JSObject* workerProto = worker::InitClass(aCx, global, eventTargetProto,
-                                            false);
-  if (!workerProto) {
-    return NULL;
-  }
-
-  if (worker->IsChromeWorker()) {
-    if (!chromeworker::InitClass(aCx, global, workerProto, false) ||
-        !DefineChromeWorkerFunctions(aCx, global) ||
-        !DefineOSFileConstants(aCx, global)) {
-      return NULL;
-    }
-  }
-
-  // Init other classes we care about.
-  if (!events::InitClasses(aCx, global, false) ||
-      !file::InitClasses(aCx, global) ||
-      !exceptions::InitClasses(aCx, global) ||
-      !location::InitClass(aCx, global) ||
-      !imagedata::InitClass(aCx, global) ||
-      !navigator::InitClass(aCx, global)) {
-    return NULL;
-  }
-
-  // Init other paris-bindings.
-  if (!FileReaderSyncBinding_workers::GetConstructorObject(aCx, global) ||
-      !TextDecoderBinding_workers::GetConstructorObject(aCx, global) ||
-      !TextEncoderBinding_workers::GetConstructorObject(aCx, global) ||
-      !XMLHttpRequestBinding_workers::GetConstructorObject(aCx, global) ||
-      !XMLHttpRequestUploadBinding_workers::GetConstructorObject(aCx, global) ||
-      !URLBinding_workers::GetConstructorObject(aCx, global)) {
-    return NULL;
-  }
-
-  if (!JS_DefineProfilingFunctions(aCx, global)) {
-    return NULL;
-  }
-
-  return global;
+  return IS_INSTANCE_OF(WorkerGlobalScope, object);
 }
 
 bool
-ClassIsWorkerGlobalScope(JSClass* aClass)
+IsDebuggerGlobal(JSObject* object)
 {
-  return WorkerGlobalScope::Class() == aClass ||
-         DedicatedWorkerGlobalScope::Class() == aClass;
+  return IS_INSTANCE_OF(WorkerDebuggerGlobalScope, object);
+}
+
+bool
+IsDebuggerSandbox(JSObject* object)
+{
+  return SimpleGlobalObject::SimpleGlobalType(object) ==
+    SimpleGlobalObject::GlobalType::WorkerDebuggerSandbox;
+}
+
+bool
+GetterOnlyJSNative(JSContext* aCx, unsigned aArgc, JS::Value* aVp)
+{
+  JS_ReportErrorNumberASCII(aCx, js::GetErrorMessage, nullptr, JSMSG_GETTER_ONLY);
+  return false;
 }
 
 END_WORKERS_NAMESPACE

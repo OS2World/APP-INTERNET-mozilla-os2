@@ -1,3 +1,5 @@
+/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
+/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 // Copyright (c) 2008 The Chromium Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
@@ -34,16 +36,6 @@ bool Process::SetProcessBackgrounded(bool value) {
   // cleaning this up w/in higher layers since windows is probably the only
   // one that can raise priorities w/o privileges.
   return true;
-}
-
-bool Process::ReduceWorkingSet() {
-  // http://code.google.com/p/chromium/issues/detail?id=8083
-  return false;
-}
-
-bool Process::UnReduceWorkingSet() {
-  // http://code.google.com/p/chromium/issues/detail?id=8083
-  return false;
 }
 
 bool Process::EmptyWorkingSet() {

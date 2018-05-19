@@ -12,7 +12,8 @@ cd src
 git checkout "$UPSTREAM_COMMIT"
 autoconf
 git describe --long --abbrev=40 > VERSION
-rm -rf .git .gitignore autom4te.cache
+rm -rf .git .gitignore .gitattributes autom4te.cache .autom4te.cfg
+
 cd ..
 hg addremove -q src
 

@@ -1,3 +1,5 @@
+/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
+/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -7,22 +9,20 @@
 #include "nsIIPCSerializableInputStream.h"
 
 #include "mozilla/Assertions.h"
-#include "mozilla/dom/ipc/Blob.h"
+#include "mozilla/dom/File.h"
+#include "mozilla/dom/ipc/BlobChild.h"
+#include "mozilla/dom/ipc/BlobParent.h"
 #include "nsComponentManagerUtils.h"
 #include "nsDebug.h"
 #include "nsID.h"
-#include "nsIDOMFile.h"
 #include "nsIXULRuntime.h"
 #include "nsMIMEInputStream.h"
 #include "nsMultiplexInputStream.h"
 #include "nsNetCID.h"
 #include "nsStringStream.h"
-#include "nsThreadUtils.h"
 #include "nsXULAppAPI.h"
 
-using namespace mozilla::ipc;
-using mozilla::dom::BlobChild;
-using mozilla::dom::BlobParent;
+using namespace mozilla::dom;
 
 namespace {
 
@@ -33,40 +33,39 @@ NS_DEFINE_CID(kBufferedInputStreamCID, NS_BUFFEREDINPUTSTREAM_CID);
 NS_DEFINE_CID(kMIMEInputStreamCID, NS_MIMEINPUTSTREAM_CID);
 NS_DEFINE_CID(kMultiplexInputStreamCID, NS_MULTIPLEXINPUTSTREAM_CID);
 
-} // anonymous namespace
+} // namespace
 
 namespace mozilla {
 namespace ipc {
 
 void
 SerializeInputStream(nsIInputStream* aInputStream,
-                     InputStreamParams& aParams)
+                     InputStreamParams& aParams,
+                     nsTArray<FileDescriptor>& aFileDescriptors)
 {
-  MOZ_ASSERT(NS_IsMainThread());
   MOZ_ASSERT(aInputStream);
 
   nsCOMPtr<nsIIPCSerializableInputStream> serializable =
     do_QueryInterface(aInputStream);
   if (!serializable) {
-    MOZ_NOT_REACHED("Input stream is not serializable!");
+    MOZ_CRASH("Input stream is not serializable!");
   }
 
-  serializable->Serialize(aParams);
+  serializable->Serialize(aParams, aFileDescriptors);
 
   if (aParams.type() == InputStreamParams::T__None) {
-    MOZ_NOT_REACHED("Serialize failed!");
+    MOZ_CRASH("Serialize failed!");
   }
 }
 
 void
 SerializeInputStream(nsIInputStream* aInputStream,
-                     OptionalInputStreamParams& aParams)
+                     OptionalInputStreamParams& aParams,
+                     nsTArray<FileDescriptor>& aFileDescriptors)
 {
-  MOZ_ASSERT(NS_IsMainThread());
-
   if (aInputStream) {
     InputStreamParams params;
-    SerializeInputStream(aInputStream, params);
+    SerializeInputStream(aInputStream, params, aFileDescriptors);
     aParams = params;
   }
   else {
@@ -75,10 +74,10 @@ SerializeInputStream(nsIInputStream* aInputStream,
 }
 
 already_AddRefed<nsIInputStream>
-DeserializeInputStream(const InputStreamParams& aParams)
+DeserializeInputStream(const InputStreamParams& aParams,
+                       const nsTArray<FileDescriptor>& aFileDescriptors)
 {
-  MOZ_ASSERT(NS_IsMainThread());
-
+  nsCOMPtr<nsIInputStream> stream;
   nsCOMPtr<nsIIPCSerializableInputStream> serializable;
 
   switch (aParams.type()) {
@@ -92,6 +91,10 @@ DeserializeInputStream(const InputStreamParams& aParams)
 
     case InputStreamParams::TPartialFileInputStreamParams:
       serializable = do_CreateInstance(kPartialFileInputStreamCID);
+      break;
+
+    case InputStreamParams::TTemporaryFileInputStreamParams:
+      serializable = new nsTemporaryFileInputStream();
       break;
 
     case InputStreamParams::TBufferedInputStreamParams:
@@ -109,23 +112,38 @@ DeserializeInputStream(const InputStreamParams& aParams)
     // When the input stream already exists in this process, all we need to do
     // is retrieve the original instead of sending any data over the wire.
     case InputStreamParams::TRemoteInputStreamParams: {
-      nsCOMPtr<nsIDOMBlob> domBlob;
-      const RemoteInputStreamParams& params =
-          aParams.get_RemoteInputStreamParams();
+      if (NS_WARN_IF(!XRE_IsParentProcess())) {
+        return nullptr;
+      }
 
-      domBlob = params.remoteBlobParent() ?
-          static_cast<BlobParent*>(params.remoteBlobParent())->GetBlob() :
-          static_cast<BlobChild*>(params.remoteBlobChild())->GetBlob();
+      const nsID& id = aParams.get_RemoteInputStreamParams().id();
 
-      MOZ_ASSERT(domBlob, "Invalid blob contents");
+      RefPtr<BlobImpl> blobImpl = BlobParent::GetBlobImplForID(id);
+
+      MOZ_ASSERT(blobImpl, "Invalid blob contents");
 
       // If fetching the internal stream fails, we ignore it and return a
       // null stream.
+      ErrorResult rv;
       nsCOMPtr<nsIInputStream> stream;
-      nsresult rv = domBlob->GetInternalStream(getter_AddRefs(stream));
-      if (NS_FAILED(rv) || !stream) {
+      blobImpl->GetInternalStream(getter_AddRefs(stream), rv);
+      if (NS_WARN_IF(rv.Failed()) || !stream) {
         NS_WARNING("Couldn't obtain a valid stream from the blob");
+        rv.SuppressException();
       }
+      return stream.forget();
+    }
+
+    case InputStreamParams::TSameProcessInputStreamParams: {
+      MOZ_ASSERT(aFileDescriptors.IsEmpty());
+
+      const SameProcessInputStreamParams& params =
+        aParams.get_SameProcessInputStreamParams();
+
+      stream = dont_AddRef(
+        reinterpret_cast<nsIInputStream*>(params.addRefedInputStream()));
+      MOZ_ASSERT(stream);
+
       return stream.forget();
     }
 
@@ -136,22 +154,21 @@ DeserializeInputStream(const InputStreamParams& aParams)
 
   MOZ_ASSERT(serializable);
 
-  if (!serializable->Deserialize(aParams)) {
+  if (!serializable->Deserialize(aParams, aFileDescriptors)) {
     MOZ_ASSERT(false, "Deserialize failed!");
     return nullptr;
   }
 
-  nsCOMPtr<nsIInputStream> stream = do_QueryInterface(serializable);
+  stream = do_QueryInterface(serializable);
   MOZ_ASSERT(stream);
 
   return stream.forget();
 }
 
 already_AddRefed<nsIInputStream>
-DeserializeInputStream(const OptionalInputStreamParams& aParams)
+DeserializeInputStream(const OptionalInputStreamParams& aParams,
+                       const nsTArray<FileDescriptor>& aFileDescriptors)
 {
-  MOZ_ASSERT(NS_IsMainThread());
-
   nsCOMPtr<nsIInputStream> stream;
 
   switch (aParams.type()) {
@@ -160,7 +177,8 @@ DeserializeInputStream(const OptionalInputStreamParams& aParams)
       break;
 
     case OptionalInputStreamParams::TInputStreamParams:
-      stream = DeserializeInputStream(aParams.get_InputStreamParams());
+      stream = DeserializeInputStream(aParams.get_InputStreamParams(),
+                                      aFileDescriptors);
       break;
 
     default:

@@ -1,17 +1,18 @@
-/* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 4 -*- */
+/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
+/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "nsIStringEnumerator.h"
-#include "nsString.h"
-#include "nsTArray.h"
+#include "nsStringFwd.h"
+#include "nsTArrayForwardDeclare.h"
 
 // nsIStringEnumerator/nsIUTF8StringEnumerator implementations
 //
 // Currently all implementations support both interfaces. The
 // constructors below provide the most common interface for the given
-// type (i.e. nsIStringEnumerator for PRUnichar* strings, and so
+// type (i.e. nsIStringEnumerator for char16_t* strings, and so
 // forth) but any resulting enumerators can be queried to the other
 // type. Internally, the enumerators will hold onto the type that was
 // passed in and do conversion if GetNext() for the other type of
@@ -42,15 +43,15 @@
 // InternalMethod(enumerator);
 // NS_RELEASE(enumerator);
 //
-nsresult
+MOZ_MUST_USE nsresult
 NS_NewStringEnumerator(nsIStringEnumerator** aResult,
                        const nsTArray<nsString>* aArray,
                        nsISupports* aOwner);
-nsresult
+MOZ_MUST_USE nsresult
 NS_NewUTF8StringEnumerator(nsIUTF8StringEnumerator** aResult,
                            const nsTArray<nsCString>* aArray);
 
-nsresult
+MOZ_MUST_USE nsresult
 NS_NewStringEnumerator(nsIStringEnumerator** aResult,
                        const nsTArray<nsString>* aArray);
 
@@ -63,11 +64,11 @@ NS_NewStringEnumerator(nsIStringEnumerator** aResult,
 // nsTArray<nsCString>* array = new nsTArray<nsCString>;
 // array->AppendString("abcd");
 // NS_NewAdoptingStringEnumerator(&result, array);
-nsresult
+MOZ_MUST_USE nsresult
 NS_NewAdoptingStringEnumerator(nsIStringEnumerator** aResult,
                                nsTArray<nsString>* aArray);
 
-nsresult
+MOZ_MUST_USE nsresult
 NS_NewAdoptingUTF8StringEnumerator(nsIUTF8StringEnumerator** aResult,
                                    nsTArray<nsCString>* aArray);
 
@@ -84,7 +85,7 @@ NS_NewAdoptingUTF8StringEnumerator(nsIUTF8StringEnumerator** aResult,
 //     return NS_NewStringEnumerator(aResult, mCategoryList, this);
 // }
 //
-nsresult
+MOZ_MUST_USE nsresult
 NS_NewUTF8StringEnumerator(nsIUTF8StringEnumerator** aResult,
                            const nsTArray<nsCString>* aArray,
                            nsISupports* aOwner);

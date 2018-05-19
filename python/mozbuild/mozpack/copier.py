@@ -2,30 +2,24 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
+from __future__ import absolute_import
+
 import os
+import stat
+import sys
+
 from mozpack.errors import errors
 from mozpack.files import (
     BaseFile,
     Dest,
 )
-import mozpack.path
+import mozpack.path as mozpath
 import errno
 from collections import (
-    namedtuple,
+    Counter,
     OrderedDict,
 )
-
-
-def ensure_parent_dir(file):
-    '''Ensures the directory parent to the given file exists'''
-    dir = os.path.dirname(file)
-    if not dir or os.path.exists(dir):
-        return
-    try:
-        os.makedirs(dir)
-    except OSError as error:
-        if error.errno != errno.EEXIST:
-            raise
+import concurrent.futures as futures
 
 
 class FileRegistry(object):
@@ -42,6 +36,25 @@ class FileRegistry(object):
 
     def __init__(self):
         self._files = OrderedDict()
+        self._required_directories = Counter()
+        self._partial_paths_cache = {}
+
+    def _partial_paths(self, path):
+        '''
+        Turn "foo/bar/baz/zot" into ["foo/bar/baz", "foo/bar", "foo"].
+        '''
+        dir_name = path.rpartition('/')[0]
+        if not dir_name:
+            return []
+
+        partial_paths = self._partial_paths_cache.get(dir_name)
+        if partial_paths:
+            return partial_paths
+
+        partial_paths = [dir_name] + self._partial_paths(dir_name)
+
+        self._partial_paths_cache[dir_name] = partial_paths
+        return partial_paths
 
     def add(self, path, content):
         '''
@@ -50,14 +63,17 @@ class FileRegistry(object):
         assert isinstance(content, BaseFile)
         if path in self._files:
             return errors.error("%s already added" % path)
+        if self._required_directories[path] > 0:
+            return errors.error("Can't add %s: it is a required directory" %
+                                path)
         # Check whether any parent of the given path is already stored
-        partial_path = path
-        while partial_path:
-            partial_path = mozpack.path.dirname(partial_path)
+        partial_paths = self._partial_paths(path)
+        for partial_path in partial_paths:
             if partial_path in self._files:
                 return errors.error("Can't add %s: %s is a file" %
                                     (path, partial_path))
         self._files[path] = content
+        self._required_directories.update(partial_paths)
 
     def match(self, pattern):
         '''
@@ -67,13 +83,13 @@ class FileRegistry(object):
         '''
         if '*' in pattern:
             return [p for p in self.paths()
-                    if mozpack.path.match(p, pattern)]
+                    if mozpath.match(p, pattern)]
         if pattern == '':
             return self.paths()
         if pattern in self._files:
             return [pattern]
         return [p for p in self.paths()
-                if mozpack.path.basedir(p, [pattern]) == pattern]
+                if mozpath.basedir(p, [pattern]) == pattern]
 
     def remove(self, pattern):
         '''
@@ -87,6 +103,7 @@ class FileRegistry(object):
                                 "not matching anything previously added"))
         for i in items:
             del self._files[i]
+            self._required_directories.subtract(self._partial_paths(i))
 
     def paths(self):
         '''
@@ -127,9 +144,86 @@ class FileRegistry(object):
         '''
         return self._files.iteritems()
 
+    def required_directories(self):
+        '''
+        Return the set of directories required by the paths in the container,
+        in no particular order.  The returned directories are relative to an
+        unspecified (virtual) root directory (and do not include said root
+        directory).
+        '''
+        return set(k for k, v in self._required_directories.items() if v > 0)
 
-FileCopyResult = namedtuple('FileCopyResult', ['removed_files_count',
-    'removed_directories_count'])
+
+class FileRegistrySubtree(object):
+    '''A proxy class to give access to a subtree of an existing FileRegistry.
+
+    Note this doesn't implement the whole FileRegistry interface.'''
+    def __new__(cls, base, registry):
+        if not base:
+            return registry
+        return object.__new__(cls)
+
+    def __init__(self, base, registry):
+        self._base = base
+        self._registry = registry
+
+    def _get_path(self, path):
+        # mozpath.join will return a trailing slash if path is empty, and we
+        # don't want that.
+        return mozpath.join(self._base, path) if path else self._base
+
+    def add(self, path, content):
+        return self._registry.add(self._get_path(path), content)
+
+    def match(self, pattern):
+        return [mozpath.relpath(p, self._base)
+                for p in self._registry.match(self._get_path(pattern))]
+
+    def remove(self, pattern):
+        return self._registry.remove(self._get_path(pattern))
+
+    def paths(self):
+        return [p for p, f in self]
+
+    def __len__(self):
+        return len(self.paths())
+
+    def contains(self, pattern):
+        return self._registry.contains(self._get_path(pattern))
+
+    def __getitem__(self, path):
+        return self._registry[self._get_path(path)]
+
+    def __iter__(self):
+        for p, f in self._registry:
+            if mozpath.basedir(p, [self._base]):
+                yield mozpath.relpath(p, self._base), f
+
+
+class FileCopyResult(object):
+    """Represents results of a FileCopier.copy operation."""
+
+    def __init__(self):
+        self.updated_files = set()
+        self.existing_files = set()
+        self.removed_files = set()
+        self.removed_directories = set()
+
+    @property
+    def updated_files_count(self):
+        return len(self.updated_files)
+
+    @property
+    def existing_files_count(self):
+        return len(self.existing_files)
+
+    @property
+    def removed_files_count(self):
+        return len(self.removed_files)
+
+    @property
+    def removed_directories_count(self):
+        return len(self.removed_directories)
 
 
 class FileCopier(FileRegistry):
@@ -137,76 +231,244 @@ class FileCopier(FileRegistry):
     FileRegistry with the ability to copy the registered files to a separate
     directory.
     '''
-    def copy(self, destination, skip_if_older=True):
+    def copy(self, destination, skip_if_older=True,
+             remove_unaccounted=True,
+             remove_all_directory_symlinks=True,
+             remove_empty_directories=True):
         '''
         Copy all registered files to the given destination path. The given
         destination can be an existing directory, or not exist at all. It
         can't be e.g. a file.
         The copy process acts a bit like rsync: files are not copied when they
-        don't need to (see mozpack.files for details on file.copy), and files
-        existing in the destination directory that aren't registered are
-        removed.
+        don't need to (see mozpack.files for details on file.copy).
+
+        By default, files in the destination directory that aren't
+        registered are removed and empty directories are deleted. In
+        addition, all directory symlinks in the destination directory
+        are deleted: this is a conservative approach to ensure that we
+        never accidently write files into a directory that is not the
+        destination directory. In the worst case, we might have a
+        directory symlink in the object directory to the source
+        directory.
+
+        To disable removing of unregistered files, pass
+        remove_unaccounted=False. To disable removing empty
+        directories, pass remove_empty_directories=False. In rare
+        cases, you might want to maintain directory symlinks in the
+        destination directory (at least those that are not required to
+        be regular directories): pass
+        remove_all_directory_symlinks=False. Exercise caution with
+        this flag: you almost certainly do not want to preserve
+        directory symlinks.
 
         Returns a FileCopyResult that details what changed.
         '''
         assert isinstance(destination, basestring)
         assert not os.path.exists(destination) or os.path.isdir(destination)
+
+        result = FileCopyResult()
+        have_symlinks = hasattr(os, 'symlink')
         destination = os.path.normpath(destination)
+
+        # We create the destination directory specially. We can't do this as
+        # part of the loop doing mkdir() below because that loop munges
+        # symlinks and permissions and parent directories of the destination
+        # directory may have their own weird schema. The contract is we only
+        # manage children of destination, not its parents.
+        try:
+            os.makedirs(destination)
+        except OSError as e:
+            if e.errno != errno.EEXIST:
+                raise
+
+        # Because we could be handling thousands of files, code in this
+        # function is optimized to minimize system calls. We prefer CPU time
+        # in Python over possibly I/O bound filesystem calls to stat() and
+        # friends.
+
+        required_dirs = set([destination])
+        required_dirs |= set(os.path.normpath(os.path.join(destination, d))
+            for d in self.required_directories())
+
+        # Ensure destination directories are in place and proper.
+        #
+        # The "proper" bit is important. We need to ensure that directories
+        # have appropriate permissions or we will be unable to discover
+        # and write files. Furthermore, we need to verify directories aren't
+        # symlinks.
+        #
+        # Symlinked directories (a symlink whose target is a directory) are
+        # incompatible with us because our manifest talks in terms of files,
+        # not directories. If we leave symlinked directories unchecked, we
+        # would blindly follow symlinks and this might confuse file
+        # installation. For example, if an existing directory is a symlink
+        # to directory X and we attempt to install a symlink in this directory
+        # to a file in directory X, we may create a recursive symlink!
+        for d in sorted(required_dirs, key=len):
+            try:
+                os.mkdir(d)
+            except OSError as error:
+                if error.errno != errno.EEXIST:
+                    raise
+
+            # We allow the destination to be a symlink because the caller
+            # is responsible for managing the destination and we assume
+            # they know what they are doing.
+            if have_symlinks and d != destination:
+                st = os.lstat(d)
+                if stat.S_ISLNK(st.st_mode):
+                    # While we have remove_unaccounted, it doesn't apply
+                    # to directory symlinks because if it did, our behavior
+                    # could be very wrong.
+                    os.remove(d)
+                    os.mkdir(d)
+
+            if not os.access(d, os.W_OK):
+                umask = os.umask(0o077)
+                os.umask(umask)
+                os.chmod(d, 0o777 & ~umask)
+
+        if isinstance(remove_unaccounted, FileRegistry):
+            existing_files = set(os.path.normpath(os.path.join(destination, p))
+                                 for p in remove_unaccounted.paths())
+            existing_dirs = set(os.path.normpath(os.path.join(destination, p))
+                                for p in remove_unaccounted
+                                         .required_directories())
+            existing_dirs |= {os.path.normpath(destination)}
+        else:
+            # While we have remove_unaccounted, it doesn't apply to empty
+            # directories because it wouldn't make sense: an empty directory
+            # is empty, so removing it should have no effect.
+            existing_dirs = set()
+            existing_files = set()
+            for root, dirs, files in os.walk(destination):
+                # We need to perform the same symlink detection as above.
+                # os.walk() doesn't follow symlinks into directories by
+                # default, so we need to check dirs (we can't wait for root).
+                if have_symlinks:
+                    filtered = []
+                    for d in dirs:
+                        full = os.path.join(root, d)
+                        st = os.lstat(full)
+                        if stat.S_ISLNK(st.st_mode):
+                            # This directory symlink is not a required
+                            # directory: any such symlink would have been
+                            # removed and a directory created above.
+                            if remove_all_directory_symlinks:
+                                os.remove(full)
+                                result.removed_files.add(
+                                    os.path.normpath(full))
+                            else:
+                                existing_files.add(os.path.normpath(full))
+                        else:
+                            filtered.append(d)
+
+                    dirs[:] = filtered
+
+                existing_dirs.add(os.path.normpath(root))
+
+                for d in dirs:
+                    existing_dirs.add(os.path.normpath(os.path.join(root, d)))
+
+                for f in files:
+                    existing_files.add(os.path.normpath(os.path.join(root, f)))
+
+        # Now we reconcile the state of the world against what we want.
         dest_files = set()
-        for path, file in self:
-            destfile = os.path.normpath(os.path.join(destination, path))
+
+        # Install files.
+        #
+        # Creating/appending new files on Windows/NTFS is slow. So we use a
+        # thread pool to speed it up significantly. The performance of this
+        # loop is so critical to common build operations on Linux that the
+        # overhead of the thread pool is worth avoiding, so we have 2 code
+        # paths. We also employ a low water mark to prevent thread pool
+        # creation if number of files is too small to benefit.
+        copy_results = []
+        if sys.platform == 'win32' and len(self) > 100:
+            with futures.ThreadPoolExecutor(4) as e:
+                fs = []
+                for p, f in self:
+                    destfile = os.path.normpath(os.path.join(destination, p))
+                    fs.append((destfile, e.submit(f.copy, destfile, skip_if_older)))
+
+            copy_results = [(destfile, f.result) for destfile, f in fs]
+        else:
+            for p, f in self:
+                destfile = os.path.normpath(os.path.join(destination, p))
+                copy_results.append((destfile, f.copy(destfile, skip_if_older)))
+
+        for destfile, copy_result in copy_results:
             dest_files.add(destfile)
-            ensure_parent_dir(destfile)
-            file.copy(destfile, skip_if_older)
+            if copy_result:
+                result.updated_files.add(destfile)
+            else:
+                result.existing_files.add(destfile)
 
-        actual_dest_files = set()
-        for root, dirs, files in os.walk(destination):
-            for f in files:
-                actual_dest_files.add(os.path.normpath(os.path.join(root, f)))
+        # Remove files no longer accounted for.
+        if remove_unaccounted:
+            for f in existing_files - dest_files:
+                # Windows requires write access to remove files.
+                if os.name == 'nt' and not os.access(f, os.W_OK):
+                    # It doesn't matter what we set permissions to since we
+                    # will remove this file shortly.
+                    os.chmod(f, 0o600)
 
-        file_remove_count = 0
-        directory_remove_count = 0
+                os.remove(f)
+                result.removed_files.add(f)
 
-        for f in actual_dest_files - dest_files:
-            os.remove(f)
-            file_remove_count += 1
-        for root, dirs, files in os.walk(destination):
-            if not files and not dirs:
-                os.removedirs(root)
-                directory_remove_count += 1
+        if not remove_empty_directories:
+            return result
 
-        return FileCopyResult(removed_files_count=file_remove_count,
-            removed_directories_count=directory_remove_count)
+        # Figure out which directories can be removed. This is complicated
+        # by the fact we optionally remove existing files. This would be easy
+        # if we walked the directory tree after installing files. But, we're
+        # trying to minimize system calls.
 
+        # Start with the ideal set.
+        remove_dirs = existing_dirs - required_dirs
 
-class FilePurger(FileCopier):
-    """A variation of FileCopier that is used to purge untracked files.
+        # Then don't remove directories if we didn't remove unaccounted files
+        # and one of those files exists.
+        if not remove_unaccounted:
+            parents = set()
+            pathsep = os.path.sep
+            for f in existing_files:
+                path = f
+                while True:
+                    # All the paths are normalized and relative by this point,
+                    # so os.path.dirname would only do extra work.
+                    dirname = path.rpartition(pathsep)[0]
+                    if dirname in parents:
+                        break
+                    parents.add(dirname)
+                    path = dirname
+            remove_dirs -= parents
 
-    Callers create an instance then call .add() to register files/paths that
-    should exist. Once the canonical set of files that may exist is defined,
-    .purge() is called against a target directory. All files and empty
-    directories in the target directory that aren't in the registry will be
-    deleted.
-    """
-    class FakeFile(BaseFile):
-        def copy(self, dest, skip_if_older=True):
-            return True
+        # Remove empty directories that aren't required.
+        for d in sorted(remove_dirs, key=len, reverse=True):
+            try:
+                try:
+                    os.rmdir(d)
+                except OSError as e:
+                    if e.errno in (errno.EPERM, errno.EACCES):
+                        # Permissions may not allow deletion. So ensure write
+                        # access is in place before attempting to rmdir again.
+                        os.chmod(d, 0o700)
+                        os.rmdir(d)
+                    else:
+                        raise
+            except OSError as e:
+                # If remove_unaccounted is a # FileRegistry, then we have a
+                # list of directories that may not be empty, so ignore rmdir
+                # ENOTEMPTY errors for them.
+                if (isinstance(remove_unaccounted, FileRegistry) and
+                        e.errno == errno.ENOTEMPTY):
+                    continue
+                raise
+            result.removed_directories.add(d)
 
-    def add(self, path):
-        """Record that a path should exist.
-
-        We currently do not track what kind of entity should be behind that
-        path. We presumably could add type tracking later and have purging
-        delete entities if there is a type mismatch.
-        """
-        return FileCopier.add(self, path, FilePurger.FakeFile())
-
-    def purge(self, dest):
-        """Deletes all files and empty directories not in the registry."""
-        return FileCopier.copy(self, dest)
-
-    def copy(self, *args, **kwargs):
-        raise Exception('copy() disabled on FilePurger. Use purge().')
+        return result
 
 
 class Jarrer(FileRegistry, BaseFile):
@@ -222,7 +484,13 @@ class Jarrer(FileRegistry, BaseFile):
         self.compress = compress
         self.optimize = optimize
         self._preload = []
+        self._compress_options = {}  # Map path to compress boolean option.
         FileRegistry.__init__(self)
+
+    def add(self, path, content, compress=None):
+        FileRegistry.add(self, path, content)
+        if compress is not None:
+            self._compress_options[path] = compress
 
     def copy(self, dest, skip_if_older=True):
         '''
@@ -278,12 +546,14 @@ class Jarrer(FileRegistry, BaseFile):
         with JarWriter(fileobj=dest, compress=self.compress,
                        optimize=self.optimize) as jar:
             for path, file in self:
+                compress = self._compress_options.get(path, self.compress)
+
                 if path in old_contents:
-                    deflater = DeflaterDest(old_contents[path], self.compress)
+                    deflater = DeflaterDest(old_contents[path], compress)
                 else:
-                    deflater = DeflaterDest(compress=self.compress)
+                    deflater = DeflaterDest(compress=compress)
                 file.copy(deflater, skip_if_older)
-                jar.add(path, deflater.deflater)
+                jar.add(path, deflater.deflater, mode=file.mode, compress=compress)
             if self._preload:
                 jar.preload(self._preload)
 

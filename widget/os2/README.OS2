@@ -41,6 +41,8 @@
 
 *  Video
 
+*  Audio
+
 *  Troubleshooting
 
 *  Known Problems
@@ -55,54 +57,80 @@
 -- Installation ---------------------------------------------------------------
 ===============================================================================
 
-1. UNZIP the archive into any directory you wish.  This will create a
-      subdirectory with the same name as the program.  For example:
-         unzip firefox-5.0.en-US.os2.zip -d x:\mozilla.org
-      will install Firefox in x:\mozilla.org\firefox.
+Mozilla is a complex product that uses a huge number of 3rd party libraries
+such as Cairo, FreeType, NSPR and many others. In order to provide better OS/2
+support for both Mozilla and these libraries we build them as dynamically
+loadable modules (DLLs), which are maintained and distributed separately and
+which Mozilla executables are simply linked with. This approach also allows
+other applications to use the same library modules which, among other benefits,
+reduces the overall memory footprint and saves other vital system resources.
 
-   !! If you already have a directory with the same name from an older
-      installation, rename it first (e.g. 'firefox-old').  Do not let
-      the new version install on top of the old one.
+As a side effect of this approach, Mozilla applications got so many external
+dependencies that it is nearly impossible for the end user to install all of
+them from the ZIP files manually - and even naming them all in this file
+would be a very hard task. For this reason, starting from the release of
+Firefox version 38.8.0 (Beta 7), manual installation of Mozilla requirements
+is no longer supported. The only supported way of installing all the
+requirements now is the YUM command line tool or the Arca Noae Package Manager
+application (ANPM), which is part of ArcaOS (an OS/2 and eComstation successor
+distribution by Arca Noae which you can obtain from http://arcanoae.com).
 
-2. CHOOSE a directory where the Mozilla applications can store their
-      profile data, then add a line like this to config.sys:
-         SET MOZILLA_HOME=x:\mozilla.org
-      The first time you run any Mozilla app, it will create a 'mozilla'
-      subdirectory where your customized settings are saved.
+Moreover, starting from the release of Firefox version 45.9.0 GA, a separate
+ZIP distribution of Firefox is no longer maintained. There are now two supported
+methods of installing Firefox:
 
-   !! Without "SET MOZILLA_HOME=", the 'mozilla' subdirectory will be
-      created in the same directory as the program itself.  This can
-      make it very hard to upgrade to new versions without deleting
-      your customized settings.
+- From an RPM repository using YUM or ANPM (this method requires a valid ArcaOS
+  Software Subscription, visit http://arcanoae.com for details). This is the
+  preferred and the easiest way to install Firefox including all its
+  dependencies and to keep everything updated with a single mouse click.
 
-3. INSTALL 'libc065.dll' into one of the directories on your "LIBPATH"
-      (e.g. 'x:\os2\dll').  You can download a zip from:
-         ftp://ftp.netlabs.org/pub/gcc/libc-0.6.5-csd5.zip
+- From a ZIP archive automatically generated from the RPM distribution. See
+  below for details.
 
-4. INSTALL 'freetyp2.dll' and 'fntcfg2.dll' into one of the directories
-      on your "LIBPATH" or in the program directory of the Mozilla app.
-      You can download a zip or wpi from Hobbes or netlabs:
-      http://hobbes.nmsu.edu/h-search.php?button=Search&key=mzfntcfgft_runtime&dir=%2F
-      ftp://ftp.netlabs.org/incoming/mozilla
+The following instruction describe the steps necessary for both methods.
 
-5. INSTALL 'pthr01.dll' and 'mmap.dll' from
-      http://rpm.netlabs.org/release/00/zip/pthread-20140425-15_oc00.zip and
-      http://rpm.netlabs.org/release/00/zip/mmap-20111102-8_oc00.zip,
-      respectively. If you use RPM/YUM, just run:
-      'yum install pthread mmap' from the command line.
+1. Install the RPM/YUM environment. The simplest way to do so is to download
+   and install ANPM as described here:
 
-6. INSTALL 'gcc473.dll' and 'stdcpp6.dll' from
-      http://rpm.netlabs.org/release/00/zip/gcc-4_7_3_1-1_oc00.zip.
-      If you use WarpIn, you may install a WPI from
-      ftp.netlabs.org/pub/gcc/gcc4core-1_2_2.wpi.
-      If you use RPM/YUM, just run:
-      'yum install libgcc473 libstdc++' from the command line.
+   https://www.arcanoae.com/wiki/anpm/.
 
-7. Optional: Use mozinst to create icons on desktop.
-      http://hobbes.nmsu.edu/h-search.php?key=mozinst
+   If you prefer command line, you may install only the RPM/YUM environment
+   and tools as described here:
 
-8. Optional: you may want to install some of the items listed in the
-      "OS/2 Add-ons" section below to improve the app's performance.
+   http://trac.netlabs.org/rpm/wiki/RpmInstall.
+
+   Note that you should skip this step if you already have ArcaOS installed,
+   because it already includes the RPM/YUM environment and the ANPM tool.
+
+2. If you have an ArcaOS subscription, then simply install a package named
+   `firefox` using the ANPM GUI or by executing `yum install firefox` from the
+   command line. All Firefox dependencies will be downloaded and installed
+   (or updated) automatically.
+
+   If you use a ZIP archive, you may unpack its contents to a directory of your
+   choice. Numerous Firefox dependencies are not installed in this case, so
+   you will have to install them manually using ANPM or `yum install PACKAGES`
+   followed by a `yum update`. The list of RPM packages required by Firefox is
+   contained in a file named RPM_REQUIREMENTS inside the ZIP archive.
+
+3. Optional. Choose a directory where the Mozilla applications will store their
+   profile data, then add a line like this to CONFIG.SYS:
+
+   SET MOZILLA_HOME=D:\Home
+
+   The first time you run any Mozilla application, it will create a `Mozilla`
+   subdirectory in `D:\Home` where your customized settings are saved.
+
+   By default, the `Mozilla` subdirectory is created in a directory specified
+   in the HOME environment variable.
+
+   WARNING!!! Without `MOZILLA_HOME` or `HOME` environment variables, the
+   `Mozilla` subdirectory will be created in the same directory as the program
+   itself. This can make it very hard to upgrade to new versions without
+   deleting your customized settings.
+
+4. Optional. You may want to install some of the items listed in the "OS/2
+   Add-ons" section below to improve the application's performance.
 
 
 ===============================================================================
@@ -122,10 +150,10 @@ A REXX script is available to restore compatibility.
   - unzip it into your profile directory
   - make backups of places.sqlite and cookies.sqlite
 
-* To restore compatibilty BEFORE running an earlier version:
+* To restore compatibility BEFORE running an earlier version:
   - run the script from your profile directory.
 
-* To restore compatibilty AFTER running an earlier version
+* To restore compatibility AFTER running an earlier version
   (i.e. you forgot to run the script before):
   - look for 'places.sqlite.corrupt' and 'cookies.sqlite.corrupt' in your
     profile directory,   If they appear to be the right size, remove the
@@ -151,7 +179,7 @@ The solution for dll conflicts is "SET LIBPATHSTRICT=T".  There are several
 ways to set this:
 
 * modify your program object:
-    Path and file name: *
+    Path and filename: *
     Parameters:         /c set LIBPATHSTRICT=T & seamonkey.exe "%*"
     Working directory:  x:\mozilla.org\seamonkey
 
@@ -167,14 +195,20 @@ ways to set this:
     Now, change your program object start it rather than the original exe.
     (Use 'LK' instead of 'L' if you want the icon to show it's "in-use".)
 
-Note:  For best performance of most browser plugins, you may want
-       to omit LIBPATHSTRICT for your primary browser and only set
-       it for your other Mozilla apps.
+Note:  Starting with Firefox 45.9.0 GA, it is not necessary to set LIBPATHSTRICT
+       manually or using the Run! utility for it as this is done automatically
+       by firefox.exe when loading XUL.DLL and other Mozilla DLLs.
 
 
 ===============================================================================
 -- OS/2 Add-ons ---------------------------------------------------------------
 ===============================================================================
+
+* MP4 Video
+    Starting from version 38.8.0, Firefox can play MP4 (H264/AAC) video files
+    in HTML5 content but this requires the recent FFmpeg runtime libraries to
+    be installed. To do so, run `yum install ffmpeg-libs` on the command line
+    or install the 'ffmpeg-libs' package using ANPM.
 
 * Workplace Sans - TrueType Font
     Mozilla no longer supports bitmap fonts like WarpSans, so its menus
@@ -183,7 +217,7 @@ Note:  For best performance of most browser plugins, you may want
     by WarpSans.  The app will use it by default if it's available.
     Many users prefer the bitmapped version as it looks cleaner at small
     point sizes.
-       http://users.socis.ca/~ataylo00/creative/fonts/workplace/#wpsu
+        http://www.altsan.org/creative/fonts/workplace/#wpsu
 
 * RWS - WPS Integration
     With RWS, you can open downloads using their default WPS association
@@ -196,8 +230,8 @@ Note:  For best performance of most browser plugins, you may want
 * Exceptq - Crash Reporting
     If the app crashes, Exceptq will beep and then create an exception
     report containing details of the crash.  You can send these reports
-    to the developers at <crash@e-vertise.com>.
-        http://hobbes.nmsu.edu/h-search.php?&key=exceptq
+    to the developers via Issue Tracker reports (see the Links section).
+        http://home.earthlink.net/~steve53/betas/
 
 * ConfigApps & Internet Application Integration - Set Default Browser
     These two utilities make it easier to set your default browser,
@@ -259,6 +293,12 @@ Very few users have any need for any of these:
     saving attachments or using a default WPS application as a helper
     application.
 
+* MOZ_DISABLE_PLUGIN_OOP=1
+    This disables OOP (out-of-process) mode for binary NP plugins. Note that this
+    is only intended to be used for testing purposes as having plugins run in the
+    browser process is insecure because a crash or a hang in a defective plugin
+    will crash and hang the whole browser session in such a case.
+
 The following enable additional logging:
 
 * MOZ_CONSOLE_LOG=1
@@ -276,84 +316,91 @@ The following enable additional logging:
   However, it only supports TrueType & Type1 fonts.  OS/2 bitmap fonts
   like WarpSans, System Proportional, etc, are NOT supported.  Users
   are encouraged to install Alex Taylor's "Workplace Sans" TrueType
-  font to restore an "OS/2 look-and-feel" to menus and dialogs.
-  Note: Currently OS/2 versions do not support @font-face
+  font to restore the native OS/2 look-and-feel for menus and dialogs.
 
-* The apps' built-in antialiasing can be controlled via two preference
-  settings.  Type "about:config" into the Address Bar, then press Enter
-  (for Thunderbird, use the 'Config Editor' on the 'Advanced' page of its
-  Options dialog).  If the following preferences aren't listed, you can
-  add them by right-clicking any item and selecting "New" from the menu.
+* Starting with Firefox 38, Mozilla apps use the complete version of the
+  fontconfig library recently ported to OS/2 to manage fonts. This library
+  requires UNIXROOT environment. If you have RPM/YUM installed, nothing
+  needs to be done except `yum install fontconfig`. If you prefer manual
+  installation then you have to unpack the entire contents of the fontconfig
+  package to your UNIXROOT tree (omitting `@unixroot` from the extracted path)
+  and make sure the UNIXROOT environment variable points to this tree.
 
-  - gfx.os2.font.antialiasing (Boolean)
-    This preference controls whether antialiasing is enabled; the default
-    value is "true".
+  All font settings (and many aspects of the FreeType font engine) are now
+  controlled through the '%UNIXROOT%\etc\fonts\fonts.conf' and
+  '%UNIXROOT%\etc\fonts\conf.d\*' files. Please refer to:
 
-  - gfx.os2.font.hinting (Integer)
-    This controls the hinting level.  It can range from 0 (no hinting)
-    to 3 (full hinting);  the default value is 2.  Font hinting improves
-    the contrast of displayed text, but may produce poor results for
-    certain characters of some fonts, most notably the OS/2 version of
-    "Times New Roman".
+    http://www.freedesktop.org/software/fontconfig/fontconfig-user.html
 
-  Note:  you may need to restart the application to see your changes.
+  for more information on how to configure fonts using fonts.conf.
 
-* Fonts that contain special characters in their names (like Asian
-  Unicode font names) may not display correctly in the list of fonts
-  in the Options panel.
+  Note: You may need to restart the application to see your changes.
 
 
 ===============================================================================
 -- Printing -------------------------------------------------------------------
 ===============================================================================
 
-This version offers printing support using both native drivers and the
-app's built-in PDF and Postscript generators.
-
-* Native Driver Support
-    All native printer drivers should work and all features offered by
-    the driver should be supported.
-
-* Built-in PDF Support
-    PDF files can be created by selecting any printer, then checking
-    'Print to file',  When the file dialog appears, give the file's
-    name a ".pdf" extension.
+This version offers printing support using the application's built-in PDF and
+Postscript generators. Native printing using the GPI subsystem is disabled in
+this version due to incompatible changes in the underlying graphical library.
+Taking into account generally poor quality of native printing compared to built-
+in generators and the fact that modern printers don't have (and will never have)
+native OS/2 drivers, there are no plans to add support for native printing back
+in the near future.
 
 * Built-in Postscript Support
-    Mozilla's built-in Postscript support provides an alternative to
-    using the native PSCRIPT drivers.  If you use CUPS or plan to
-    direct Postscript output to file for further processing, you may
-    want to use this feature.  There are two ways to enable it.
 
-    = Always =
-    This method may produce better quality output than the native PS
-    driver if you use CUPS.  After performing the one-time setup below,
-    select a printer associated with a native PS driver, then press 'OK'.
+There are two supported methods to print to a physical printer: use a native
+Postscript driver for this printer, if it's available, or set up the printer as
+a CUPS printer and create a native printer object for it. Both methods will
+involve the built-in Postscript generator to produce output that is then sent
+directly to the connected printer. No special setup is required in the
+application itself for either of these methods because the built-in Postscript
+generator is now always active when printing to a physical device and cannot be
+turned off.
 
-    Setup:
-    - enter "about:config" in the browser's address bar, press Enter
-      (for Thunderbird, use the 'Config Editor' in the Options dialog)
-    - look for the entry "print.os2.postscript.use_builtin"
-    - if it exists, doubleclick on it to change it to "true"
-    - if the entry doesn't exist, add it:
-      o  click MB2 on any item in the preferences listing
-      o  select 'New->Boolean' from the popup menu
-      o  enter "print.os2.postscript.use_builtin" (no quotes), press OK
-      o  select "true", press OK
+Note that all printers using non-Postscript drivers (e.g. LASERJET, OMNI,
+IBMPCL5, etc.) are hidden from the application's Print dialog to avoid the
+confusion of always getting "An error occurred while printing" message when
+attempting to print to such a device. If there are no Postscript printers on
+your system (or no configured printers at all), you will see "No printers
+available" in the printer selection drop-down box in the Print dialog.
 
-    = As Needed =
-    Use this method to create Postscript files for further processing
-    without having to add or change the "use_builtin" setting:
-    - select a non-Postscript printer (see below)
-    - check 'Print to file', then press 'OK'
-    - when the file dialog appears, give the filename a ".ps" extension
+It is recommended to set up your printer as a CUPS printer rather than use the
+native Postscript driver, even when it's available, because in most cases using
+CUPS will result in better print-out quality. Note that by default any printer-
+specific features specified in the native printer job properties dialog are
+stripped out because CUPS may not recognize them. If you use a printer with the
+native Postscript driver without CUPS, you may wish to disable such stripping.
+This can be done by setting the `print.os2.postscript.use_ibmnull` preference to
+`false` in the preference editor which can be opened by typing `about:config`
+in the browser's address bar (or with the 'Config Editor' in the Options dialog
+in Thunderbird).
 
-    !! With either method, the native driver isn't used to create the
-       print job, so most of its optional settings (e.g. duplexing)
-       are ignored.  Only its Orientation (portrait/landscape) and
-       Resolution (dpi) settings are used.  For print-to-file usage,
-       choose a non-Postscript printer that has suitable DPI settings.
-       (e.g. the HP Laserjet 2100 driver offers 300, 600, & 1200 dpi).
+Note that the `print.os2.postscript.use_builtin` preference used to enable
+built-in Postscript support in earlier versions does no longer have any effect
+as this support is always on now.
+
+* Built-in PDF Support
+
+PDF files can be created by selecting any printer, then checking "Print to
+file". When the file dialog appears, give the file's name a ".pdf" extension
+and the application will generate a PDF file with the printed contents. Note
+that providing any other extension (including ".ps") will cause raw Postscript
+data to be saved to the given file.
+
+Note that if you don't have any Postscript printer supported by OS/2 or simply
+don't have any printer at all but still want to print to PDF using the described
+method, you will need to install a generic PostScript printer (drivers for this
+printer are shipped with any OS/2 distribution including ArcaOS). Just go to the
+printer installation program and select "Generic PostScript Printer" from the
+list when installing a new printer driver (make sure that PSCRIPT is the driver
+used for this printer). Then select this newly installed driver and an output
+port for the new printer object and you are done. Note that you may select any
+output port for it (or simply check "Output to File") since you are not going
+to actually print to a physical device anyway. The only printer job properties
+that will be used by the PDF generator are paper size and margins.
 
 
 ===============================================================================
@@ -384,6 +431,19 @@ supported if its "shadow buffer" option is enabled.
 
 
 ===============================================================================
+-- Audio ----------------------------------------------------------------------
+===============================================================================
+
+Starting from version 31, Firefox uses the K Audio Interface library (libkai)
+to play sounds in HTML5/JS content and in Firefox widgets. Currently, this
+library supports the standard OS/2 MMPM/DART sound subsystem as well as the
+UNIAUD driver directly. By default, libkai prefers UNIAUD to DART but it may
+be forced to use either of them using the KAI_AUTOMODE environment variable:
+- "SET KAI_AUTOMODE=UNIAUD" will activate UNIAUD mode.
+- "SET KAI_AUTOMODE=DART" will activate MMPM/DART mode.
+
+
+===============================================================================
 -- Troubleshooting ------------------------------------------------------------
 ===============================================================================
 
@@ -408,7 +468,7 @@ posted to other forums may not be seen by the developers.
     Restart the app in "safe mode" (use "/safe-mode" on the command line).
     If it appears to be stable in safe-mode, a plugin may be the cause.
     Disable all plugins, then restart normally.  If it remains stable,
-    reenable one plugin at a time until the problem returns.
+    re-enable one plugin at a time until the problem returns.
 
 * Program beeps several times then crashes
     The beeps simply indicate that Exceptq is installed and is creating
@@ -446,33 +506,36 @@ posted to other forums may not be seen by the developers.
 -- Known Problems -------------------------------------------------------------
 ===============================================================================
 
-  Due to bugs in MMPM, the current version of Firefox runs the Flash plugin in
+* Printing of complex web pages using the native LASERJET and OMNI printer
+  drivers is known to crash the browser in PMMERGE.DLL in some cases.
+  As a workaround, please install and use the CUPS printer (based on the
+  POSTSCRIPT driver) that always works. CUPS is part of the modern
+  eComStation installations. In order to install it on older systems please
+  refer to:
+     http://trac.netlabs.org/ecups.
+
+* Due to bugs in MMPM, the current version of Firefox runs the Flash plugin in
   "in-process" (traditional) mode instead of the new OOP (out-of-process) mode
   used on other platforms. This will be fixed in future releases.
 
-  The OpenJDK (Java) plugin works but there are some problems with window
+* The OpenJDK (Java) plugin works but there are some problems with window
   updates. This is to be addressed in future releases.
 
-  The @font-face HTML attribute is not yet supported. As a result, tiny boxes
-  with hex numbers are displayed instead of characters on pages that use it.
-
-  Fonts with names containing special characters (like Asian Unicode names)
-  will not display correctly in the list of fonts in the Options panel.
-
-  Mozilla apps will beep when copying more than 64 kB of text to the clipboard.
+* Mozilla apps will beep when copying more than 64 kB of text to the clipboard.
   This is to alert users that many applications (most notably the system
   editor, EPM, and applications running in VIO windows) cannot paste more
   than this.
 
-  Cross-platform problems are usually listed in the release notes of each
+* Cross-platform problems are usually listed in the release notes of each
   milestone release.
 
-  Other known problems can be found by following this link:
-  <https://github.com/bitwiseworks/mozilla-os2/issues>.
+* Other known problems can be found by following this link:
+     https://github.com/bitwiseworks/mozilla-os2/issues
 
-  The old list of bugs (for historical purposes, as it is mostly outdated)
+* The old list of bugs (for historical purposes, as it is mostly outdated)
   can be found by following the link "Current Open Warpzilla Bugs" on the
-  OS/2 Mozilla page <http://www.mozilla.org/ports/os2/>.
+  OS/2 Mozilla page:
+     http://www.mozilla.org/ports/os2
 
 
 ===============================================================================
@@ -490,12 +553,21 @@ Main resources:
 * Mozilla for OS/2 Issue Tracker & Bug Reports
     https://github.com/bitwiseworks/mozilla-os2/issues
 
+Seamonkey and Thunderbird builds (not supported by bww bitwise works GmbH):
+
+* Comm-Central (SeaMonkey and Thunderbird) for OS/2
+    https://bitbucket.org/dryeo
+
 Additional information:
 
-* Official Releases (Firefox 10 and earlier versions)
+* Official Releases (Firefox 10.0.12 and earlier versions)
     http://www.mozilla.org/ports/os2/
 
-* Beta Versions (Firefox 10 and earlier versions)
+* Older Official and Experimental Releases (Upto Firefox 10.0.12ESR)
+    ftp://ftp.netlabs.org/pub/mozilla/
+    ftp://ftp.netlabs.org/incoming/mozilla/
+
+* Beta Versions (Firefox 10ESR and earlier versions)
     ftp://ftp.netlabs.org/incoming/mozilla/
 
 * General Information About the Mozilla Apps
@@ -573,16 +645,16 @@ Additional information:
 -- Acknowledgements -----------------------------------------------------------
 ===============================================================================
 
-The Mozilla for eCS (OS/2) project is currently supported and maintained by the
-staff of bww bitwiseworks GmbH:
+The Mozilla for OS/2 and OS/2 based systems project is currently supported and
+maintained by the staff of bww bitwise works GmbH:
 
 - Dmitriy Kuminov (developer)
 - Silvan Scherrer (project manager)
 
-bww bitwiseworks GmbH would like to thank the following people for their
-prior work on Mozilla for eCS (OS/2). We might not share all your opinions,
-however we still appreciate your work, contributions and input (and will do
-so in the future):
+bww bitwise works GmbH would like to thank the following people for their
+prior work on Mozilla for OS/2 and OS/2 based systems. We might not share all
+your opinions, however we still appreciate your work, contributions and input
+(and will do so in the future):
 
 - Mensys BV
 - Mike Kaply

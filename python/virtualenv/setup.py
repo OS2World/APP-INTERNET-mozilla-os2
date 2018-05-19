@@ -3,46 +3,80 @@ import re
 import shutil
 import sys
 
+if sys.version_info[:2] < (2, 6):
+    sys.exit('virtualenv requires Python 2.6 or higher.')
+
 try:
     from setuptools import setup
+    from setuptools.command.test import test as TestCommand
+
+    class PyTest(TestCommand):
+        user_options = [('pytest-args=', 'a', "Arguments to pass to py.test")]
+
+        def initialize_options(self):
+            TestCommand.initialize_options(self)
+            self.pytest_args = []
+
+        def finalize_options(self):
+            TestCommand.finalize_options(self)
+            #self.test_args = []
+            #self.test_suite = True
+
+        def run_tests(self):
+            # import here, because outside the eggs aren't loaded
+            import pytest
+            sys.exit(pytest.main(self.pytest_args))
+
     setup_params = {
         'entry_points': {
-            'console_scripts': [
-                'virtualenv=virtualenv:main',
-                'virtualenv-%s.%s=virtualenv:main' % sys.version_info[:2]
-            ],
+            'console_scripts': ['virtualenv=virtualenv:main'],
         },
         'zip_safe': False,
-        'test_suite': 'nose.collector',
-        'tests_require': ['nose', 'Mock'],
+        'cmdclass': {'test': PyTest},
+        'tests_require': ['pytest', 'mock'],
     }
 except ImportError:
     from distutils.core import setup
     if sys.platform == 'win32':
-        print('Note: without Setuptools installed you will have to use "python -m virtualenv ENV"')
+        print('Note: without Setuptools installed you will '
+              'have to use "python -m virtualenv ENV"')
         setup_params = {}
     else:
         script = 'scripts/virtualenv'
-        script_ver = script + '-%s.%s' % sys.version_info[:2]
-        shutil.copy(script, script_ver)
-        setup_params = {'scripts': [script, script_ver]}
+        setup_params = {'scripts': [script]}
 
-here = os.path.dirname(os.path.abspath(__file__))
 
-## Get long_description from index.txt:
-f = open(os.path.join(here, 'docs', 'index.txt'))
-long_description = f.read().strip()
-long_description = long_description.split('split here', 1)[1]
-f.close()
-f = open(os.path.join(here, 'docs', 'news.txt'))
-long_description += "\n\n" + f.read()
-f.close()
+def read_file(*paths):
+    here = os.path.dirname(os.path.abspath(__file__))
+    with open(os.path.join(here, *paths)) as f:
+        return f.read()
+
+# Get long_description from index.rst:
+long_description = read_file('docs', 'index.rst')
+long_description = long_description.strip().split('split here', 1)[0]
+# Add release history
+changes = read_file('docs', 'changes.rst')
+# Only report last two releases for brevity
+releases_found = 0
+change_lines = []
+for line in changes.splitlines():
+    change_lines.append(line)
+    if line.startswith('--------------'):
+        releases_found += 1
+    if releases_found > 2:
+        break
+
+changes = '\n'.join(change_lines[:-2]) + '\n'
+changes += '`Full Changelog <https://virtualenv.pypa.io/en/latest/changes.html>`_.'
+# Replace issue/pull directives
+changes = re.sub(r':pull:`(\d+)`', r'PR #\1', changes)
+changes = re.sub(r':issue:`(\d+)`', r'#\1', changes)
+
+long_description += '\n\n' + changes
 
 
 def get_version():
-    f = open(os.path.join(here, 'virtualenv.py'))
-    version_file = f.read()
-    f.close()
+    version_file = read_file('virtualenv.py')
     version_match = re.search(r"^__version__ = ['\"]([^'\"]*)['\"]",
                               version_file, re.M)
     if version_match:
@@ -55,37 +89,35 @@ def get_version():
 # running python setup.py test (see
 # http://www.eby-sarna.com/pipermail/peak/2010-May/003357.html)
 try:
-    import multiprocessing
+    import multiprocessing  # noqa
 except ImportError:
     pass
 
 setup(
     name='virtualenv',
-    # If you change the version here, change it in virtualenv.py and
-    # docs/conf.py as well
     version=get_version(),
     description="Virtual Python Environment builder",
     long_description=long_description,
     classifiers=[
-        'Development Status :: 4 - Beta',
+        'Development Status :: 5 - Production/Stable',
         'Intended Audience :: Developers',
         'License :: OSI Approved :: MIT License',
         'Programming Language :: Python :: 2',
-        'Programming Language :: Python :: 2.5',
         'Programming Language :: Python :: 2.6',
         'Programming Language :: Python :: 2.7',
         'Programming Language :: Python :: 3',
-        'Programming Language :: Python :: 3.1',
-        'Programming Language :: Python :: 3.2',
+        'Programming Language :: Python :: 3.3',
+        'Programming Language :: Python :: 3.4',
+        'Programming Language :: Python :: 3.5',
     ],
     keywords='setuptools deployment installation distutils',
     author='Ian Bicking',
     author_email='ianb@colorstudy.com',
     maintainer='Jannis Leidel, Carl Meyer and Brian Rosner',
     maintainer_email='python-virtualenv@groups.google.com',
-    url='http://www.virtualenv.org',
+    url='https://virtualenv.pypa.io/',
     license='MIT',
     py_modules=['virtualenv'],
     packages=['virtualenv_support'],
-    package_data={'virtualenv_support': ['*-py%s.egg' % sys.version[:3], '*.tar.gz']},
+    package_data={'virtualenv_support': ['*.whl']},
     **setup_params)

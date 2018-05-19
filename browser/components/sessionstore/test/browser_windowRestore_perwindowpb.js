@@ -8,23 +8,19 @@ function test() {
   waitForExplicitFinish();
 
   // Purging the list of closed windows
-  while(ss.getClosedWindowCount() > 0)
-    ss.forgetClosedWindow(0);
+  forgetClosedWindows();
 
   // Load a private window, then close it 
   // and verify it doesn't get remembered for restoring
-  var win = OpenBrowserWindow({private: true});
-
-  whenWindowLoaded(win, function onload() {
+  whenNewWindowLoaded({private: true}, function (win) {
     info("The private window got loaded");
     win.addEventListener("SSWindowClosing", function onclosing() {
       win.removeEventListener("SSWindowClosing", onclosing, false);
       executeSoon(function () {
-        is (ss.getClosedWindowCount(), 0,
+        is(ss.getClosedWindowCount(), 0,
             "The private window should not have been stored");
-        finish();
       });
     }, false);
-    win.close();
+    BrowserTestUtils.closeWindow(win).then(finish);
   });
 }

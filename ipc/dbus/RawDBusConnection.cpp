@@ -5,16 +5,25 @@
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "RawDBusConnection.h"
-#include <dbus/dbus.h>
+#include "base/message_loop.h"
+#include "mozilla/ipc/DBusHelpers.h"
+#include "mozilla/ipc/DBusWatcher.h"
 
-using namespace mozilla::ipc;
+namespace mozilla {
+namespace ipc {
+
+//
+// RawDBusConnection
+//
 
 bool RawDBusConnection::sDBusIsInit(false);
 
-RawDBusConnection::RawDBusConnection() {
+RawDBusConnection::RawDBusConnection()
+{
 }
 
-RawDBusConnection::~RawDBusConnection() {
+RawDBusConnection::~RawDBusConnection()
+{
 }
 
 nsresult RawDBusConnection::EstablishDBusConnection()
@@ -24,20 +33,82 @@ nsresult RawDBusConnection::EstablishDBusConnection()
     NS_ENSURE_TRUE(success == TRUE, NS_ERROR_FAILURE);
     sDBusIsInit = true;
   }
+
   DBusError err;
   dbus_error_init(&err);
-  mConnection = dbus_bus_get(DBUS_BUS_SYSTEM, &err);
+
+  mConnection = already_AddRefed<DBusConnection>(
+    dbus_bus_get_private(DBUS_BUS_SYSTEM, &err));
+
   if (dbus_error_is_set(&err)) {
     dbus_error_free(&err);
     return NS_ERROR_FAILURE;
   }
+
   dbus_connection_set_exit_on_disconnect(mConnection, FALSE);
+
   return NS_OK;
 }
 
-void RawDBusConnection::ScopedDBusConnectionPtrTraits::release(DBusConnection* ptr)
+bool RawDBusConnection::Watch()
 {
-  if (ptr) {
-    dbus_connection_unref(ptr);
+  MOZ_ASSERT(MessageLoop::current());
+
+  return NS_SUCCEEDED(DBusWatchConnection(mConnection));
+}
+
+bool RawDBusConnection::Send(DBusMessage* aMessage)
+{
+  MOZ_ASSERT(MessageLoop::current());
+
+  auto rv = DBusSendMessage(mConnection, aMessage);
+
+  if (NS_FAILED(rv)) {
+    dbus_message_unref(aMessage);
+    return false;
   }
+
+  return true;
+}
+
+bool RawDBusConnection::SendWithReply(DBusReplyCallback aCallback,
+                                      void* aData,
+                                      int aTimeout,
+                                      DBusMessage* aMessage)
+{
+  MOZ_ASSERT(MessageLoop::current());
+
+  auto rv = DBusSendMessageWithReply(mConnection, aCallback, aData, aTimeout,
+                                     aMessage);
+  if (NS_FAILED(rv)) {
+    return false;
+  }
+
+  dbus_message_unref(aMessage);
+
+  return true;
+}
+
+bool RawDBusConnection::SendWithReply(DBusReplyCallback aCallback,
+                                      void* aData,
+                                      int aTimeout,
+                                      const char* aDestination,
+                                      const char* aPath,
+                                      const char* aIntf,
+                                      const char* aFunc,
+                                      int aFirstArgType,
+                                      ...)
+{
+  va_list args;
+  va_start(args, aFirstArgType);
+
+  auto rv = DBusSendMessageWithReply(mConnection, aCallback, aData,
+                                     aTimeout, aDestination, aPath, aIntf,
+                                     aFunc, aFirstArgType, args);
+  va_end(args);
+
+  return NS_SUCCEEDED(rv);
+}
+
+}
 }

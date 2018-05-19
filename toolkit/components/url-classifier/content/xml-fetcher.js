@@ -8,9 +8,6 @@
 // point it might be nice to replace this with something better
 // (e.g., something that has explicit onerror handler, ability
 // to set headers, and so on).
-//
-// The only interesting thing here is its ability to strip cookies
-// from the request.
 
 /**
  * Because we might be in a component, we can't just assume that
@@ -19,7 +16,7 @@
  *
  * @return XMLHttpRequest object
  */
-function PROT_NewXMLHttpRequest() {
+this.PROT_NewXMLHttpRequest = function PROT_NewXMLHttpRequest() {
   var Cc = Components.classes;
   var Ci = Components.interfaces;
   var request = Cc["@mozilla.org/xmlextras/xmlhttprequest;1"]
@@ -34,15 +31,20 @@ function PROT_NewXMLHttpRequest() {
  * the content it receives. Asynchronous, so uses a closure for the
  * callback.
  *
- * @param opt_stripCookies Boolean indicating whether we should strip
- *                         cookies from this request
- * 
+ * Note, that XMLFetcher is only used for SafeBrowsing, therefore
+ * we inherit from nsILoadContext, so we can use the callbacks on the
+ * channel to separate the safebrowsing cookie based on a reserved
+ * appId.
  * @constructor
  */
-function PROT_XMLFetcher(opt_stripCookies) {
+this.PROT_XMLFetcher = function PROT_XMLFetcher() {
   this.debugZone = "xmlfetcher";
   this._request = PROT_NewXMLHttpRequest();
-  this._stripCookies = !!opt_stripCookies;
+  // implements nsILoadContext
+  this.appId = Ci.nsIScriptSecurityManager.SAFEBROWSING_APP_ID;
+  this.isInIsolatedMozBrowserElement = false;
+  this.usePrivateBrowsing = false;
+  this.isContent = false;
 }
 
 PROT_XMLFetcher.prototype = {
@@ -50,11 +52,11 @@ PROT_XMLFetcher.prototype = {
    * Function that will be called back upon fetch completion.
    */
   _callback: null,
-  
+
 
   /**
    * Fetches some content.
-   * 
+   *
    * @param page URL to fetch
    * @param callback Function to call back when complete.
    */
@@ -63,11 +65,12 @@ PROT_XMLFetcher.prototype = {
     this._request = PROT_NewXMLHttpRequest();
     this._callback = callback;
     var asynchronous = true;
+    this._request.loadInfo.originAttributes = {
+      appId: this.appId,
+      inIsolatedMozBrowser: this.isInIsolatedMozBrowserElement
+    };
     this._request.open("GET", page, asynchronous);
     this._request.channel.notificationCallbacks = this;
-
-    if (this._stripCookies)
-      new PROT_CookieStripper(this._request.channel);
 
     // Create a closure
     var self = this;
@@ -99,7 +102,7 @@ PROT_XMLFetcher.prototype = {
     var responseText = null;
     var status = Components.results.NS_ERROR_NOT_AVAILABLE;
     try {
-      G_Debug(this, "xml fetch status code: \"" + 
+      G_Debug(this, "xml fetch status code: \"" +
               fetcher._request.status + "\"");
       status = fetcher._request.status;
       responseText = fetcher._request.responseText;
@@ -117,73 +120,7 @@ PROT_XMLFetcher.prototype = {
     return this.QueryInterface(iid);
   },
 
-  QueryInterface: function(iid) {
-    if (!iid.equals(Components.interfaces.nsIInterfaceRequestor) &&
-        !iid.equals(Components.interfaces.nsISupports))
-      throw Components.results.NS_ERROR_NO_INTERFACE;
-    return this;
-  }
+  QueryInterface: XPCOMUtils.generateQI([Ci.nsIInterfaceRequestor,
+                                         Ci.nsISupports,
+                                         Ci.nsILoadContext])
 };
-
-
-/**
- * This class knows how to strip cookies from an HTTP request. It
- * listens for http-on-modify-request, and modifies the request
- * accordingly. We can't do this using xmlhttprequest.setHeader() or
- * nsIChannel.setRequestHeader() before send()ing because the cookie
- * service is called after send().
- * 
- * @param channel nsIChannel in which the request is happening
- * @constructor
- */
-function PROT_CookieStripper(channel) {
-  this.debugZone = "cookiestripper";
-  this.topic_ = "http-on-modify-request";
-  this.channel_ = channel;
-
-  var Cc = Components.classes;
-  var Ci = Components.interfaces;
-  this.observerService_ = Cc["@mozilla.org/observer-service;1"]
-                          .getService(Ci.nsIObserverService);
-  this.observerService_.addObserver(this, this.topic_, false);
-
-  // If the request doesn't issue, don't hang around forever
-  var twentySeconds = 20 * 1000;
-  this.alarm_ = new G_Alarm(BindToObject(this.stopObserving, this), 
-                            twentySeconds);
-}
-
-/**
- * Invoked by the observerservice. See nsIObserve.
- */
-PROT_CookieStripper.prototype.observe = function(subject, topic, data) {
-  if (topic != this.topic_ || subject != this.channel_)
-    return;
-
-  G_Debug(this, "Stripping cookies for channel.");
-
-  this.channel_.QueryInterface(Components.interfaces.nsIHttpChannel);
-  this.channel_.setRequestHeader("Cookie", "", false /* replace, not add */);
-  this.alarm_.cancel();
-  this.stopObserving();
-}
-
-/**
- * Remove us from the observerservice
- */
-PROT_CookieStripper.prototype.stopObserving = function() {
-  G_Debug(this, "Removing observer");
-  this.observerService_.removeObserver(this, this.topic_);
-  this.channel_ = this.alarm_ = this.observerService_ = null;
-}
-
-/**
- * XPCOM cruft
- */
-PROT_CookieStripper.prototype.QueryInterface = function(iid) {
-  var Ci = Components.interfaces;
-  if (iid.equals(Ci.nsISupports) || iid.equals(Ci.nsIObserve))
-    return this;
-  throw Components.results.NS_ERROR_NO_INTERFACE;
-}
-

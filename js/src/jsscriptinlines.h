@@ -7,17 +7,12 @@
 #ifndef jsscriptinlines_h
 #define jsscriptinlines_h
 
-#include "jsautooplen.h"
-#include "jscntxt.h"
-#include "jsfun.h"
-#include "jsopcode.h"
 #include "jsscript.h"
 
-#include "jit/AsmJS.h"
 #include "jit/BaselineJIT.h"
-#include "vm/GlobalObject.h"
-#include "vm/RegExpObject.h"
-#include "vm/Shape.h"
+#include "jit/IonAnalysis.h"
+#include "vm/EnvironmentObject.h"
+#include "wasm/AsmJS.h"
 
 #include "jscompartmentinlines.h"
 
@@ -25,125 +20,115 @@
 
 namespace js {
 
-inline
-Bindings::Bindings()
-    : callObjShape_(NULL), bindingArrayAndFlag_(TEMPORARY_STORAGE_BIT), numArgs_(0), numVars_(0)
-{}
-
-inline
-AliasedFormalIter::AliasedFormalIter(JSScript *script)
-  : begin_(script->bindings.bindingArray()),
-    p_(begin_),
-    end_(begin_ + (script->funHasAnyAliasedFormal ? script->bindings.numArgs() : 0)),
-    slot_(CallObject::RESERVED_SLOTS)
+ScriptCounts::ScriptCounts()
+  : pcCounts_(),
+    throwCounts_(),
+    ionCounts_(nullptr)
 {
-    settle();
 }
 
-extern void
-CurrentScriptFileLineOriginSlow(JSContext *cx, const char **file, unsigned *linenop, JSPrincipals **origin);
-
-inline void
-CurrentScriptFileLineOrigin(JSContext *cx, const char **file, unsigned *linenop, JSPrincipals **origin,
-                            LineOption opt = NOT_CALLED_FROM_JSOP_EVAL)
+ScriptCounts::ScriptCounts(PCCountsVector&& jumpTargets)
+  : pcCounts_(Move(jumpTargets)),
+    throwCounts_(),
+    ionCounts_(nullptr)
 {
-    if (opt == CALLED_FROM_JSOP_EVAL) {
-        JSScript *script = NULL;
-        jsbytecode *pc = NULL;
-        types::TypeScript::GetPcScript(cx, &script, &pc);
-        JS_ASSERT(JSOp(*pc) == JSOP_EVAL);
-        JS_ASSERT(*(pc + JSOP_EVAL_LENGTH) == JSOP_LINENO);
-        *file = script->filename();
-        *linenop = GET_UINT16(pc + JSOP_EVAL_LENGTH);
-        *origin = script->originPrincipals;
-        return;
-    }
-
-    CurrentScriptFileLineOriginSlow(cx, file, linenop, origin);
 }
 
-inline void
-ScriptCounts::destroy(FreeOp *fop)
+ScriptCounts::ScriptCounts(ScriptCounts&& src)
+  : pcCounts_(Move(src.pcCounts_)),
+    throwCounts_(Move(src.throwCounts_)),
+    ionCounts_(Move(src.ionCounts_))
 {
-    fop->free_(pcCountsVector);
-    fop->delete_(ionCounts);
+    src.ionCounts_ = nullptr;
 }
 
-inline void
-MarkScriptBytecode(JSRuntime *rt, const jsbytecode *bytecode)
+ScriptCounts&
+ScriptCounts::operator=(ScriptCounts&& src)
 {
-    /*
-     * As an invariant, a ScriptBytecodeEntry should not be 'marked' outside of
-     * a GC. Since SweepScriptBytecodes is only called during a full gc,
-     * to preserve this invariant, only mark during a full gc.
-     */
-    if (rt->gcIsFull)
-        SharedScriptData::fromBytecode(bytecode)->marked = true;
+    pcCounts_ = Move(src.pcCounts_);
+    throwCounts_ = Move(src.throwCounts_);
+    ionCounts_ = Move(src.ionCounts_);
+    src.ionCounts_ = nullptr;
+    return *this;
+}
+
+ScriptCounts::~ScriptCounts()
+{
+    js_delete(ionCounts_);
+}
+
+ScriptAndCounts::ScriptAndCounts(JSScript* script)
+  : script(script),
+    scriptCounts()
+{
+    script->releaseScriptCounts(&scriptCounts);
+}
+
+ScriptAndCounts::ScriptAndCounts(ScriptAndCounts&& sac)
+  : script(Move(sac.script)),
+    scriptCounts(Move(sac.scriptCounts))
+{
 }
 
 void
-SetFrameArgumentsObject(JSContext *cx, AbstractFramePtr frame,
-                        HandleScript script, JSObject *argsobj);
+SetFrameArgumentsObject(JSContext* cx, AbstractFramePtr frame,
+                        HandleScript script, JSObject* argsobj);
+
+inline JSFunction*
+LazyScript::functionDelazifying(JSContext* cx) const
+{
+    Rooted<const LazyScript*> self(cx, this);
+    if (self->function_ && !self->function_->getOrCreateScript(cx))
+        return nullptr;
+    return self->function_;
+}
 
 } // namespace js
 
-inline void
-JSScript::setFunction(JSFunction *fun)
+inline JSFunction*
+JSScript::functionDelazifying() const
 {
-    JS_ASSERT(fun->isTenured());
-    function_ = fun;
-}
-
-inline JSFunction *
-JSScript::getFunction(size_t index)
-{
-    JSFunction *fun = &getObject(index)->as<JSFunction>();
-#ifdef DEBUG
-    JS_ASSERT_IF(fun->isNative(), IsAsmJSModuleNative(fun->native()));
-#endif
+    JSFunction* fun = function();
+    if (fun && fun->isInterpretedLazy()) {
+        fun->setUnlazifiedScript(const_cast<JSScript*>(this));
+        // If this script has a LazyScript, make sure the LazyScript has a
+        // reference to the script when delazifying its canonical function.
+        if (lazyScript && !lazyScript->maybeScript())
+            lazyScript->initScript(const_cast<JSScript*>(this));
+    }
     return fun;
 }
 
-inline JSFunction *
-JSScript::getCallerFunction()
+inline void
+JSScript::ensureNonLazyCanonicalFunction(JSContext* cx)
 {
-    JS_ASSERT(savedCallerFun);
-    return getFunction(0);
+    // Infallibly delazify the canonical script.
+    JSFunction* fun = function();
+    if (fun && fun->isInterpretedLazy())
+        functionDelazifying();
 }
 
-inline JSFunction *
-JSScript::functionOrCallerFunction()
+inline JSFunction*
+JSScript::getFunction(size_t index)
 {
-    if (function())
-        return function();
-    if (savedCallerFun)
-        return getCallerFunction();
-    return NULL;
+    JSFunction* fun = &getObject(index)->as<JSFunction>();
+    MOZ_ASSERT_IF(fun->isNative(), IsAsmJSModuleNative(fun->native()));
+    return fun;
 }
 
-inline js::RegExpObject *
+inline js::RegExpObject*
 JSScript::getRegExp(size_t index)
 {
-    js::ObjectArray *arr = regexps();
-    JS_ASSERT(uint32_t(index) < arr->length);
-    JSObject *obj = arr->vector[index];
-    JS_ASSERT(obj->is<js::RegExpObject>());
-    return (js::RegExpObject *) obj;
+    return &getObject(index)->as<js::RegExpObject>();
 }
 
-inline bool
-JSScript::isEmpty() const
+inline js::RegExpObject*
+JSScript::getRegExp(jsbytecode* pc)
 {
-    if (length > 3)
-        return false;
-
-    jsbytecode *pc = code;
-    if (noScriptRval && JSOp(*pc) == JSOP_FALSE)
-        ++pc;
-    return JSOp(*pc) == JSOP_STOP;
+    return &getObject(pc)->as<js::RegExpObject>();
 }
 
-inline js::GlobalObject &
+inline js::GlobalObject&
 JSScript::global() const
 {
     /*
@@ -153,88 +138,67 @@ JSScript::global() const
     return *compartment()->maybeGlobal();
 }
 
-inline void
-JSScript::writeBarrierPre(JSScript *script)
+inline js::LexicalScope*
+JSScript::maybeNamedLambdaScope() const
 {
-#ifdef JSGC_INCREMENTAL
-    if (!script || !script->runtime()->needsBarrier())
-        return;
-
-    JS::Zone *zone = script->zone();
-    if (zone->needsBarrier()) {
-        JS_ASSERT(!zone->rt->isHeapMajorCollecting());
-        JSScript *tmp = script;
-        MarkScriptUnbarriered(zone->barrierTracer(), &tmp, "write barrier");
-        JS_ASSERT(tmp == script);
+    // Dynamically created Functions via the 'new Function' are considered
+    // named lambdas but they do not have the named lambda scope of
+    // textually-created named lambdas.
+    js::Scope* scope = outermostScope();
+    if (scope->kind() == js::ScopeKind::NamedLambda ||
+        scope->kind() == js::ScopeKind::StrictNamedLambda)
+    {
+        MOZ_ASSERT_IF(!strict(), scope->kind() == js::ScopeKind::NamedLambda);
+        MOZ_ASSERT_IF(strict(), scope->kind() == js::ScopeKind::StrictNamedLambda);
+        return &scope->as<js::LexicalScope>();
     }
-#endif
+    return nullptr;
 }
 
-inline void
-JSScript::writeBarrierPost(JSScript *script, void *addr)
+inline js::Shape*
+JSScript::initialEnvironmentShape() const
 {
-}
-
-/* static */ inline void
-js::LazyScript::writeBarrierPre(js::LazyScript *lazy)
-{
-#ifdef JSGC_INCREMENTAL
-    if (!lazy)
-        return;
-
-    JS::Zone *zone = lazy->zone();
-    if (zone->needsBarrier()) {
-        JS_ASSERT(!zone->rt->isHeapMajorCollecting());
-        js::LazyScript *tmp = lazy;
-        MarkLazyScriptUnbarriered(zone->barrierTracer(), &tmp, "write barrier");
-        JS_ASSERT(tmp == lazy);
+    js::Scope* scope = bodyScope();
+    if (scope->is<js::FunctionScope>()) {
+        if (js::Shape* envShape = scope->environmentShape())
+            return envShape;
+        if (js::Scope* namedLambdaScope = maybeNamedLambdaScope())
+            return namedLambdaScope->environmentShape();
+    } else if (scope->is<js::EvalScope>()) {
+        return scope->environmentShape();
     }
-#endif
+    return nullptr;
 }
 
-inline JSPrincipals *
+inline JSPrincipals*
 JSScript::principals()
 {
-    return compartment()->principals;
-}
-
-inline JSFunction *
-JSScript::originalFunction() const {
-    if (!isCallsiteClone)
-        return NULL;
-    return &enclosingScopeOrOriginalFunction_->as<JSFunction>();
+    return compartment()->principals();
 }
 
 inline void
-JSScript::setOriginalFunctionObject(JSObject *fun) {
-    JS_ASSERT(isCallsiteClone);
-    JS_ASSERT(fun->is<JSFunction>());
-    enclosingScopeOrOriginalFunction_ = fun;
-}
-
-inline void
-JSScript::setIonScript(js::jit::IonScript *ionScript) {
-    if (hasIonScript())
-        js::jit::IonScript::writeBarrierPre(tenuredZone(), ion);
-    ion = ionScript;
-    updateBaselineOrIonRaw();
-}
-
-inline void
-JSScript::setParallelIonScript(js::jit::IonScript *ionScript) {
-    if (hasParallelIonScript())
-        js::jit::IonScript::writeBarrierPre(tenuredZone(), parallelIon);
-    parallelIon = ionScript;
-}
-
-inline void
-JSScript::setBaselineScript(js::jit::BaselineScript *baselineScript) {
-#ifdef JS_ION
+JSScript::setBaselineScript(JSRuntime* maybeRuntime, js::jit::BaselineScript* baselineScript)
+{
     if (hasBaselineScript())
-        js::jit::BaselineScript::writeBarrierPre(tenuredZone(), baseline);
-#endif
+        js::jit::BaselineScript::writeBarrierPre(zone(), baseline);
+    MOZ_ASSERT(!hasIonScript());
     baseline = baselineScript;
-    updateBaselineOrIonRaw();
+    resetWarmUpResetCounter();
+    updateBaselineOrIonRaw(maybeRuntime);
+}
+
+inline bool
+JSScript::ensureHasAnalyzedArgsUsage(JSContext* cx)
+{
+    if (analyzedArgsUsage())
+        return true;
+    return js::jit::AnalyzeArgumentsUsage(cx, this);
+}
+
+inline bool
+JSScript::isDebuggee() const
+{
+    return compartment_->debuggerObservesAllExecution() || hasDebugScript_;
 }
 
 #endif /* jsscriptinlines_h */

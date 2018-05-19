@@ -5,7 +5,7 @@
 @namespace html url(http://www.w3.org/1999/xhtml);
 
 /* These styles affect only the bound element, not other page content. */
-
+/* Keep any changes to these styles in sync with plugin-doorhanger.inc.css */
 .mainBox {
   font: message-box;
   font-size: 12px;
@@ -16,12 +16,11 @@
   background-color: rgb(72,72,72);
   color: white;
   -moz-user-select: none;
-  position: relative;
 }
 
 .hoverBox {
   display: table-cell;
-  -moz-box-sizing: border-box;
+  box-sizing: border-box;
   padding: 5px;
   vertical-align: middle;
   width: 100%;
@@ -31,6 +30,15 @@
 :-moz-handler-vulnerable-no-update .hoverBox:active,
 :-moz-handler-clicktoplay .hoverBox:active {
   background-color: rgb(65, 65, 65);
+}
+
+:-moz-handler-clicktoplay .hoverBox:active .msgTapToPlay,
+:-moz-handler-clicktoplay .hoverBox:active .msgClickToPlay,
+:-moz-handler-vulnerable-updatable .hoverBox:active .msgTapToPlay,
+:-moz-handler-vulnerable-updatable .hoverBox:active .msgClickToPlay,
+:-moz-handler-vulnerable-no-update .hoverBox:active .msgTapToPlay,
+:-moz-handler-vulnerable-no-update .hoverBox:active .msgClickToPlay {
+  color: red;
 }
 
 :-moz-handler-vulnerable-updatable .hoverBox,
@@ -55,13 +63,6 @@ html|a {
   margin-bottom: 6px;
 }
 
-:-moz-type-unsupported .icon,
-:-moz-type-unsupported-platform .icon {
-  background-image: url(chrome://mozapps/skin/plugins/contentPluginMissing.png);
-}
-:-moz-type-unsupported .icon[installable] {
-  background-image: url(chrome://mozapps/skin/plugins/contentPluginDownload.png);
-}
 :-moz-handler-vulnerable-updatable .icon,
 :-moz-handler-vulnerable-no-update .icon {
   background-image: url(chrome://mozapps/skin/plugins/contentPluginBlocked.png);
@@ -70,12 +71,10 @@ html|a {
 :-moz-handler-blocked .icon {
   background-image: url(chrome://mozapps/skin/plugins/contentPluginBlocked.png);
 }
+a .icon,
 :-moz-handler-clicktoplay .icon {
   background-image: url(chrome://mozapps/skin/plugins/contentPluginActivate.png);
   -moz-user-focus: normal;
-}
-:-moz-handler-disabled .icon {
-  background-image: url(chrome://mozapps/skin/plugins/contentPluginDisabled.png);
 }
 :-moz-handler-crashed .icon {
   background-image: url(chrome://mozapps/skin/plugins/contentPluginCrashed.png);
@@ -83,18 +82,32 @@ html|a {
 
 .throbber {
   padding-left: 16px; /* width of the background image */
-  background: url(chrome://global/skin/icons/loading_16.png) no-repeat;
+  background: url(chrome://global/skin/icons/loading.png) no-repeat;
   margin-left: 5px;
 }
 
+@media (min-resolution: 1.1dppx) {
+  .throbber {
+    background-image: url(chrome://global/skin/icons/loading@2x.png);
+    background-size: 16px;
+  }
+}
+
+.msgTapToPlay,
+.msgClickToPlay {
+  text-decoration: underline;
+}
+
 @media not all and (-moz-touch-enabled) {
-  :-moz-handler-clicktoplay .msgTapToPlay {
+  :-moz-handler-clicktoplay .msgTapToPlay,
+  a .msgTapToPlay  {
     display: none;
   }
 }
 
 @media (-moz-touch-enabled) {
-  :-moz-handler-clicktoplay .msgClickToPlay {
+    :-moz-handler-clicktoplay .msgClickToPlay,
+    a .msgClickToPlay {
     display: none;
   }
 }
@@ -154,20 +167,15 @@ html|a {
 
 .closeIcon {
   display: block;
-  position: absolute;
   width: 16px;
   height: 16px;
-  top: 4px;
-  right: 4px;
+  margin-top: 4px;
+  margin-inline-start: -20px;
+  margin-inline-end: 4px;
   border: none;
   background-color: transparent;
   background-image: url("chrome://mozapps/skin/plugins/contentPluginClose.png");
   background-repeat: no-repeat;
-}
-
-.mainBox[chromedir="rtl"] .closeIcon {
-  right: auto;
-  left: 4px;
 }
 
 .closeIcon:hover {

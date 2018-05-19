@@ -7,39 +7,54 @@
 #ifndef ds_BitArray_h
 #define ds_BitArray_h
 
-#include "jstypes.h" 
+#include "mozilla/TemplateLib.h"
 
-#include "js/TemplateLib.h" 
+#include <limits.h>
+
+#include "jstypes.h"
 
 namespace js {
 
 template <size_t nbits>
-class BitArray {
+class BitArray
+{
   private:
-    static const size_t numSlots =
-        nbits / JS_BITS_PER_WORD + (nbits % JS_BITS_PER_WORD == 0 ? 0 : 1);
-    uintptr_t map[numSlots];
+    // Use a 32 bit word to make it easier to access a BitArray from JIT code.
+    using WordT = uint32_t;
+
+    static const size_t bitsPerElement = sizeof(WordT) * CHAR_BIT;
+    static const size_t numSlots = nbits / bitsPerElement + (nbits % bitsPerElement == 0 ? 0 : 1);
+    static const size_t paddingBits = (numSlots * bitsPerElement) - nbits;
+    static_assert(paddingBits < bitsPerElement, "More padding bits than expected.");
+    static const WordT paddingMask = WordT(-1) >> paddingBits;
+
+    WordT map[numSlots];
 
   public:
     void clear(bool value) {
         memset(map, value ? 0xFF : 0, sizeof(map));
+        if (value)
+            map[numSlots - 1] &= paddingMask;
     }
 
     inline bool get(size_t offset) const {
-        uintptr_t index, mask;
-        getMarkWordAndMask(offset, &index, &mask);
+        size_t index;
+        WordT mask;
+        getIndexAndMask(offset, &index, &mask);
         return map[index] & mask;
     }
 
-    inline void set(size_t offset) {
-        uintptr_t index, mask;
-        getMarkWordAndMask(offset, &index, &mask);
+    void set(size_t offset) {
+        size_t index;
+        WordT mask;
+        getIndexAndMask(offset, &index, &mask);
         map[index] |= mask;
     }
 
-    inline void unset(size_t offset) {
-        uintptr_t index, mask;
-        getMarkWordAndMask(offset, &index, &mask);
+    void unset(size_t offset) {
+        size_t index;
+        WordT mask;
+        getIndexAndMask(offset, &index, &mask);
         map[index] &= ~mask;
     }
 
@@ -51,11 +66,14 @@ class BitArray {
         return true;
     }
 
-  private:
-    inline void getMarkWordAndMask(size_t offset,
-                                   uintptr_t *indexp, uintptr_t *maskp) const {
-        *indexp = offset >> tl::FloorLog2<JS_BITS_PER_WORD>::result;
-        *maskp = uintptr_t(1) << (offset & (JS_BITS_PER_WORD - 1));
+    static void getIndexAndMask(size_t offset, size_t* indexp, WordT* maskp) {
+        static_assert(bitsPerElement == 32, "unexpected bitsPerElement value");
+        *indexp = offset / bitsPerElement;
+        *maskp = WordT(1) << (offset % bitsPerElement);
+    }
+
+    static size_t offsetOfMap() {
+        return offsetof(BitArray<nbits>, map);
     }
 };
 

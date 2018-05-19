@@ -26,15 +26,34 @@ function run_test() {
 
   const rootPrefBranch = prefSvc.getBranch("");
   
-  let isWin7 = false;
-  let isWindows = ("@mozilla.org/windows-registry-key;1" in Components.classes);
-  if (isWindows) {
+  let noMailto = false;
+  if (mozinfo.os == "win") {
+    // Check mailto handler from registry.
+    // If registry entry is nothing, no mailto handler
+    let regSvc = Cc["@mozilla.org/windows-registry-key;1"].
+                 createInstance(Ci.nsIWindowsRegKey);
     try {
-      let version = Cc["@mozilla.org/system-info;1"]
-                      .getService(Ci.nsIPropertyBag2)
-                      .getProperty("version");
-      isWin7 = (parseFloat(version) == 6.1);
-    } catch (ex) { }
+      regSvc.open(regSvc.ROOT_KEY_CLASSES_ROOT,
+                  "mailto",
+                  regSvc.ACCESS_READ);
+      noMailto = false;
+    } catch (ex) {
+      noMailto = true;
+    }
+    regSvc.close();
+  }
+
+  if (mozinfo.os == "linux") {
+    // Check mailto handler from GIO
+    // If there isn't one, then we have no mailto handler
+    let gIOSvc = Cc["@mozilla.org/gio-service;1"].
+                 createInstance(Ci.nsIGIOService);
+    try {
+      gIOSvc.getAppForURIScheme("mailto");
+      noMailto = false;
+    } catch (ex) {
+      noMailto = true;
+    }
   }
 
   //**************************************************************************//
@@ -49,7 +68,7 @@ function run_test() {
   // XXX We could, of course, create an actual executable in the directory:
   //executable.append("localhandler");
   //if (!executable.exists())
-  //  executable.create(Ci.nsIFile.NORMAL_FILE_TYPE, 0755);
+  //  executable.create(Ci.nsIFile.NORMAL_FILE_TYPE, 0o755);
 
   var localHandler = {
     name: "Local Handler",
@@ -150,8 +169,8 @@ function run_test() {
   else
     do_check_eq(0, protoInfo.possibleApplicationHandlers.length);
 
-  // Win7 doesn't have a default mailto: handler
-  if (isWin7)
+  // Win7+ or Linux's GIO might not have a default mailto: handler
+  if (noMailto)
     do_check_true(protoInfo.alwaysAskBeforeHandling);
   else
     do_check_false(protoInfo.alwaysAskBeforeHandling);
@@ -161,12 +180,12 @@ function run_test() {
   protoInfo = protoSvc.getProtocolHandlerInfo("mailto");
   if (haveDefaultHandlersVersion) {
     do_check_eq(2, protoInfo.possibleApplicationHandlers.length);
-    // Win7 doesn't have a default mailto: handler, but on other platforms
+    // Win7+ or Linux's GIO may have no default mailto: handler. Otherwise
     // alwaysAskBeforeHandling is expected to be false here, because although
     // the pref is true, the value in RDF is false. The injected mailto handler
     // carried over the default pref value, and so when we set the pref above
     // to true it's ignored.
-    if (isWin7)
+    if (noMailto)
       do_check_true(protoInfo.alwaysAskBeforeHandling);
     else
       do_check_false(protoInfo.alwaysAskBeforeHandling);
@@ -441,7 +460,9 @@ function run_test() {
   lolType = handlerSvc.getTypeFromExtension("lolcat");
   do_check_eq(lolType, "application/lolcat");
 
-  if (env.get("PERSONAL_MAILCAP")) {
+  // test mailcap entries with needsterminal are ignored on non-Windows non-Mac.
+  if (mozinfo.os != "win" && mozinfo.os != "mac") {
+    env.set('PERSONAL_MAILCAP', do_get_file('mailcap').path);
     handlerInfo = mimeSvc.getFromTypeAndExtension("text/plain", null);
     do_check_eq(handlerInfo.preferredAction, Ci.nsIHandlerInfo.useSystemDefault);
     do_check_eq(handlerInfo.defaultDescription, "sed");

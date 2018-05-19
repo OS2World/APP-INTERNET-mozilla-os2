@@ -22,18 +22,8 @@ interface HTMLElement : Element {
   [Constant]
   readonly attribute DOMStringMap dataset;
 
-  // microdata 
-  [SetterThrows, Pure]
-           attribute boolean itemScope;
-  [PutForwards=value,Constant] readonly attribute DOMSettableTokenList itemType;
-  [SetterThrows, Pure]
-           attribute DOMString itemId;
-  [PutForwards=value,Constant] readonly attribute DOMSettableTokenList itemRef;
-  [PutForwards=value,Constant] readonly attribute DOMSettableTokenList itemProp;
-  [Constant]
-  readonly attribute HTMLPropertiesCollection properties;
-  [Throws]
-           attribute any itemValue;
+  [GetterThrows, Pure, TreatNullAs=EmptyString]
+           attribute DOMString innerText;
 
   // user interaction
   [SetterThrows, Pure]
@@ -51,7 +41,7 @@ interface HTMLElement : Element {
   readonly attribute DOMString accessKeyLabel;
   [SetterThrows, Pure]
            attribute boolean draggable;
-  //[PutForwards=value] readonly attribute DOMSettableTokenList dropzone;
+  //[PutForwards=value] readonly attribute DOMTokenList dropzone;
   [SetterThrows, Pure]
            attribute DOMString contentEditable;
   [Pure]
@@ -76,14 +66,8 @@ interface HTMLElement : Element {
   readonly attribute CSSStyleDeclaration style;
 
   // Mozilla specific stuff
-  // FIXME Bug 810677 Move className from HTMLElement to Element
-           attribute DOMString className;
-
-  [SetterThrows]
            attribute EventHandler oncopy;
-  [SetterThrows]
            attribute EventHandler oncut;
-  [SetterThrows]
            attribute EventHandler onpaste;
 };
 
@@ -97,24 +81,27 @@ partial interface HTMLElement {
   readonly attribute long offsetHeight;
 };
 
+// Extension for scroll-grabbing, used in the B2G dynamic toolbar.
+// This is likely to be revised.
+partial interface HTMLElement {
+  [Func="nsGenericHTMLElement::IsScrollGrabAllowed"]
+           attribute boolean scrollgrab;
+};
+
 [NoInterfaceObject]
 interface TouchEventHandlers {
-  [SetterThrows,Func="nsGenericHTMLElement::TouchEventsEnabled"]
+  [Func="nsGenericHTMLElement::TouchEventsEnabled"]
            attribute EventHandler ontouchstart;
-  [SetterThrows,Func="nsGenericHTMLElement::TouchEventsEnabled"]
+  [Func="nsGenericHTMLElement::TouchEventsEnabled"]
            attribute EventHandler ontouchend;
-  [SetterThrows,Func="nsGenericHTMLElement::TouchEventsEnabled"]
+  [Func="nsGenericHTMLElement::TouchEventsEnabled"]
            attribute EventHandler ontouchmove;
-  [SetterThrows,Func="nsGenericHTMLElement::TouchEventsEnabled"]
-           attribute EventHandler ontouchenter;
-  [SetterThrows,Func="nsGenericHTMLElement::TouchEventsEnabled"]
-           attribute EventHandler ontouchleave;
-  [SetterThrows,Func="nsGenericHTMLElement::TouchEventsEnabled"]
+  [Func="nsGenericHTMLElement::TouchEventsEnabled"]
            attribute EventHandler ontouchcancel;
 };
 
 HTMLElement implements GlobalEventHandlers;
-HTMLElement implements NodeEventHandlers;
 HTMLElement implements TouchEventHandlers;
+HTMLElement implements OnErrorEventHandlerForNodes;
 
 interface HTMLUnknownElement : HTMLElement {};

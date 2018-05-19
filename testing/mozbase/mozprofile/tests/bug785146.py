@@ -7,13 +7,10 @@
 import mozfile
 import os
 import shutil
+import sqlite3
 import tempfile
 import unittest
 from mozprofile.permissions import Permissions
-try:
-    import sqlite3
-except ImportError:
-    from pysqlite2 import dbapi2 as sqlite3
 
 
 class PermissionsTest(unittest.TestCase):
@@ -48,7 +45,7 @@ http://127.0.0.1:8888           privileged
         entries = cur.fetchall()
 
         schema_version = entries[0][0]
-        self.assertEqual(schema_version, 2)
+        self.assertEqual(schema_version, 5)
 
 if __name__ == '__main__':
     unittest.main()

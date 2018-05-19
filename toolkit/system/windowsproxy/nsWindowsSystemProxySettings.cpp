@@ -7,20 +7,23 @@
 #include <ras.h>
 #include <wininet.h>
 
+#include "mozilla/ArrayUtils.h"
 #include "mozilla/Attributes.h"
-#include "mozilla/Util.h"
 #include "nsISystemProxySettings.h"
 #include "nsIServiceManager.h"
 #include "mozilla/ModuleUtils.h"
 #include "nsPrintfCString.h"
-#include "nsNetUtil.h"
+#include "nsNetCID.h"
 #include "nsISupportsPrimitives.h"
 #include "nsIURI.h"
+#include "GeckoProfiler.h"
+#include "prnetdb.h"
+#include "ProxyUtils.h"
 
-class nsWindowsSystemProxySettings MOZ_FINAL : public nsISystemProxySettings
+class nsWindowsSystemProxySettings final : public nsISystemProxySettings
 {
 public:
-    NS_DECL_ISUPPORTS
+    NS_DECL_THREADSAFE_ISUPPORTS
     NS_DECL_NSISYSTEMPROXYSETTINGS
 
     nsWindowsSystemProxySettings() {};
@@ -33,7 +36,7 @@ private:
     bool PatternMatch(const nsACString& aHost, const nsACString& aOverride);
 };
 
-NS_IMPL_THREADSAFE_ISUPPORTS1(nsWindowsSystemProxySettings, nsISystemProxySettings)
+NS_IMPL_ISUPPORTS(nsWindowsSystemProxySettings, nsISystemProxySettings)
 
 NS_IMETHODIMP
 nsWindowsSystemProxySettings::GetMainThreadOnly(bool *aMainThreadOnly)
@@ -82,13 +85,13 @@ static nsresult ReadInternetOption(uint32_t aOption, uint32_t& aFlags,
     INTERNET_PER_CONN_OPTION_LISTW list;
     list.dwSize = sizeof(INTERNET_PER_CONN_OPTION_LISTW);
     list.pszConnection = connFlags & INTERNET_CONNECTION_MODEM ?
-                         connName : NULL;
+                         connName : nullptr;
     list.dwOptionCount = mozilla::ArrayLength(options);
     list.dwOptionError = 0;
     list.pOptions = options;
 
     unsigned long size = sizeof(INTERNET_PER_CONN_OPTION_LISTW);
-    if (!InternetQueryOptionW(NULL, INTERNET_OPTION_PER_CONNECTION_OPTION,
+    if (!InternetQueryOptionW(nullptr, INTERNET_OPTION_PER_CONNECTION_OPTION,
                               &list, &size)) {
         if (GetLastError() != ERROR_INVALID_PARAMETER) {
             return NS_ERROR_FAILURE;
@@ -96,7 +99,8 @@ static nsresult ReadInternetOption(uint32_t aOption, uint32_t& aFlags,
         options[0].dwOption = INTERNET_PER_CONN_FLAGS;
         size = sizeof(INTERNET_PER_CONN_OPTION_LISTW);
         MOZ_SEH_TRY {
-            if (!InternetQueryOptionW(NULL, INTERNET_OPTION_PER_CONNECTION_OPTION,
+            if (!InternetQueryOptionW(nullptr,
+                                      INTERNET_OPTION_PER_CONNECTION_OPTION,
                                       &list, &size)) {
                 return NS_ERROR_FAILURE;
             }
@@ -145,10 +149,18 @@ nsWindowsSystemProxySettings::MatchOverride(const nsACString& aHost)
             const nsAutoCString override(Substring(cbuf, start,
                                                    delimiter - start));
             if (override.EqualsLiteral("<local>")) {
-                // This override matches local addresses.
-                if (host.EqualsLiteral("localhost") ||
-                    host.EqualsLiteral("127.0.0.1"))
+                PRNetAddr addr;
+                bool isIpAddr = (PR_StringToNetAddr(host.get(), &addr) == PR_SUCCESS);
+
+                // Don't use proxy for local hosts (plain hostname, no dots)
+                if (!isIpAddr && !host.Contains('.')) {
                     return true;
+                }
+
+                if (host.EqualsLiteral("127.0.0.1") ||
+                    host.EqualsLiteral("::1")) {
+                    return true;
+                }
             } else if (PatternMatch(host, override)) {
                 return true;
             }
@@ -166,42 +178,13 @@ bool
 nsWindowsSystemProxySettings::PatternMatch(const nsACString& aHost,
                                            const nsACString& aOverride)
 {
-    nsAutoCString host(aHost);
-    nsAutoCString override(aOverride);
-    int32_t overrideLength = override.Length();
-    int32_t tokenStart = 0;
-    int32_t offset = 0;
-    bool star = false;
-
-    while (tokenStart < overrideLength) {
-        int32_t tokenEnd = override.FindChar('*', tokenStart);
-        if (tokenEnd == tokenStart) {
-            star = true;
-            tokenStart++;
-            // If the character following the '*' is a '.' character then skip
-            // it so that "*.foo.com" allows "foo.com".
-            if (override.FindChar('.', tokenStart) == tokenStart)
-                tokenStart++;
-        } else {
-            if (tokenEnd == -1)
-                tokenEnd = overrideLength;
-            nsAutoCString token(Substring(override, tokenStart,
-                                          tokenEnd - tokenStart));
-            offset = host.Find(token, offset);
-            if (offset == -1 || (!star && offset))
-                return false;
-            star = false;
-            tokenStart = tokenEnd;
-            offset += token.Length();
-        }
-    }
-
-    return (star || (offset == host.Length()));
+    return mozilla::toolkit::system::IsHostProxyEntry(aHost, aOverride);
 }
 
 nsresult
 nsWindowsSystemProxySettings::GetPACURI(nsACString& aResult)
 {
+    PROFILER_LABEL_FUNC(js::ProfileEntry::Category::STORAGE);
     nsresult rv;
     uint32_t flags = 0;
     nsAutoString buf;
@@ -303,13 +286,13 @@ NS_GENERIC_FACTORY_CONSTRUCTOR_INIT(nsWindowsSystemProxySettings, Init)
 NS_DEFINE_NAMED_CID(NS_WINDOWSSYSTEMPROXYSERVICE_CID);
 
 static const mozilla::Module::CIDEntry kSysProxyCIDs[] = {
-    { &kNS_WINDOWSSYSTEMPROXYSERVICE_CID, false, NULL, nsWindowsSystemProxySettingsConstructor },
-    { NULL }
+    { &kNS_WINDOWSSYSTEMPROXYSERVICE_CID, false, nullptr, nsWindowsSystemProxySettingsConstructor },
+    { nullptr }
 };
 
 static const mozilla::Module::ContractIDEntry kSysProxyContracts[] = {
     { NS_SYSTEMPROXYSETTINGS_CONTRACTID, &kNS_WINDOWSSYSTEMPROXYSERVICE_CID },
-    { NULL }
+    { nullptr }
 };
 
 static const mozilla::Module kSysProxyModule = {

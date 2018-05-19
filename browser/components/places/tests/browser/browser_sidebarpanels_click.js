@@ -18,7 +18,7 @@ function test() {
   // If a sidebar is already open, close it.
   if (!document.getElementById("sidebar-box").hidden) {
     info("Unexpected sidebar found - a previous test failed to cleanup correctly");
-    toggleSidebar();
+    SidebarUI.hide();
   }
 
   let sidebar = document.getElementById("sidebar");
@@ -53,11 +53,10 @@ function test() {
     init: function(aCallback) {
       // Add a history entry.
       let uri = PlacesUtils._uri(TEST_URL);
-      addVisits(
-        { uri: uri, visitDate: Date.now() * 1000,
-          transition: PlacesUtils.history.TRANSITION_TYPED },
-        window,
-        aCallback);
+      PlacesTestUtils.addVisits({
+        uri: uri, visitDate: Date.now() * 1000,
+        transition: PlacesUtils.history.TRANSITION_TYPED
+      }).then(aCallback);
     },
     prepare: function() {
       sidebar.contentDocument.getElementById("byvisited").doCommand();
@@ -68,7 +67,7 @@ function test() {
       is(tree.selectedNode.itemId, -1, "The selected node is not bookmarked");
     },
     cleanup: function(aCallback) {
-      waitForClearHistory(aCallback);
+      PlacesTestUtils.clearHistory().then(aCallback);
     },
     sidebarName: HISTORY_SIDEBAR_ID,
     treeName: HISTORY_SIDEBAR_TREE_ID,
@@ -77,7 +76,7 @@ function test() {
 
   function testPlacesPanel(preFunc, postFunc) {
     currentTest.init(function() {
-      toggleSidebar(currentTest.sidebarName);
+      SidebarUI.show(currentTest.sidebarName);
     });
 
     sidebar.addEventListener("load", function() {
@@ -96,7 +95,7 @@ function test() {
           aSubject.Dialog.ui.button0.click();
 
           executeSoon(function () {
-              toggleSidebar(currentTest.sidebarName);
+              SidebarUI.hide();
               currentTest.cleanup(postFunc);
             });
         }
@@ -117,27 +116,6 @@ function test() {
         // for the purpose of this test.
       });
     }, true);
-  }
-
-  function synthesizeClickOnSelectedTreeCell(aTree) {
-    let tbo = aTree.treeBoxObject;
-    is(tbo.view.selection.count, 1,
-       "The test node should be successfully selected");
-    // Get selection rowID.
-    let min = {}, max = {};
-    tbo.view.selection.getRangeAt(0, min, max);
-    let rowID = min.value;
-    tbo.ensureRowIsVisible(rowID);
-
-    // Calculate the click coordinates.
-    let x = {}, y = {}, width = {}, height = {};
-    tbo.getCoordsForCellItem(rowID, aTree.columns[0], "text",
-                             x, y, width, height);
-    x = x.value + width.value / 2;
-    y = y.value + height.value / 2;
-    // Simulate the click.
-    EventUtils.synthesizeMouse(aTree.body, x, y, {},
-                               aTree.ownerDocument.defaultView);
   }
 
   function changeSidebarDirection(aDirection) {
@@ -175,5 +153,5 @@ function test() {
   }
 
   // Ensure history is clean before starting the test.
-  waitForClearHistory(runNextTest);
+  PlacesTestUtils.clearHistory().then(runNextTest);
 }

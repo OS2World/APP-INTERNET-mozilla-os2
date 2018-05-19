@@ -13,70 +13,58 @@
 
 #include "nsIFrame.h"
 #include "nsStyleStruct.h"
-#include "imgIRequest.h"
-#include "imgIContainer.h"
+#include "nsIContent.h" // for GetParent()
+#include "nsTextFrame.h" // for nsTextFrame::ShouldSuppressLineBreak
 
 inline void
-nsStyleBorder::SetBorderImage(imgRequestProxy* aImage)
+nsStyleImage::EnsureCachedBIData() const
 {
-  mBorderImageSource = aImage;
-  mSubImages.Clear();
-}
-
-inline imgRequestProxy*
-nsStyleBorder::GetBorderImage() const
-{
-  NS_ABORT_IF_FALSE(!mBorderImageSource || mImageTracked,
-                    "Should be tracking any images we're going to use!");
-  return mBorderImageSource;
-}
-
-inline bool nsStyleBorder::IsBorderImageLoaded() const
-{
-  uint32_t status;
-  return mBorderImageSource &&
-         NS_SUCCEEDED(mBorderImageSource->GetImageStatus(&status)) &&
-         (status & imgIRequest::STATUS_LOAD_COMPLETE) &&
-         !(status & imgIRequest::STATUS_ERROR);
+  if (!mCachedBIData) {
+    const_cast<nsStyleImage*>(this)->mCachedBIData =
+      mozilla::MakeUnique<CachedBorderImageData>();
+  }
 }
 
 inline void
-nsStyleBorder::SetSubImage(uint8_t aIndex, imgIContainer* aSubImage) const
+nsStyleImage::SetSubImage(uint8_t aIndex, imgIContainer* aSubImage) const
 {
-  const_cast<nsStyleBorder*>(this)->mSubImages.ReplaceObjectAt(aSubImage, aIndex);
+  EnsureCachedBIData();
+  mCachedBIData->SetSubImage(aIndex, aSubImage);
 }
 
 inline imgIContainer*
-nsStyleBorder::GetSubImage(uint8_t aIndex) const
+nsStyleImage::GetSubImage(uint8_t aIndex) const
 {
-  imgIContainer* subImage = nullptr;
-  if (aIndex < mSubImages.Count())
-    subImage = mSubImages[aIndex];
-  return subImage;
+  return (mCachedBIData) ? mCachedBIData->GetSubImage(aIndex) : nullptr;
 }
 
 bool
-nsStyleText::HasTextShadow(const nsIFrame* aContextFrame) const
+nsStyleText::HasTextShadow() const
 {
-  NS_ASSERTION(aContextFrame->StyleText() == this, "unexpected aContextFrame");
-  return mTextShadow && !aContextFrame->IsSVGText();
+  return mTextShadow;
 }
 
 nsCSSShadowArray*
-nsStyleText::GetTextShadow(const nsIFrame* aContextFrame) const
+nsStyleText::GetTextShadow() const
+{
+  return mTextShadow;
+}
+
+bool
+nsStyleText::NewlineIsSignificant(const nsTextFrame* aContextFrame) const
 {
   NS_ASSERTION(aContextFrame->StyleText() == this, "unexpected aContextFrame");
-  if (aContextFrame->IsSVGText()) {
-    return nullptr;
-  }
-  return mTextShadow;
+  return NewlineIsSignificantStyle() &&
+         !aContextFrame->ShouldSuppressLineBreak() &&
+         !aContextFrame->StyleContext()->IsTextCombined();
 }
 
 bool
 nsStyleText::WhiteSpaceCanWrap(const nsIFrame* aContextFrame) const
 {
   NS_ASSERTION(aContextFrame->StyleText() == this, "unexpected aContextFrame");
-  return WhiteSpaceCanWrapStyle() && !aContextFrame->IsSVGText();
+  return WhiteSpaceCanWrapStyle() && !aContextFrame->IsSVGText() &&
+         !aContextFrame->StyleContext()->IsTextCombined();
 }
 
 bool
@@ -126,15 +114,13 @@ nsStyleDisplay::IsOriginalDisplayInlineOutside(const nsIFrame* aContextFrame) co
   return IsOriginalDisplayInlineOutsideStyle();
 }
 
-uint8_t
+mozilla::StyleDisplay
 nsStyleDisplay::GetDisplay(const nsIFrame* aContextFrame) const
 {
   NS_ASSERTION(aContextFrame->StyleDisplay() == this, "unexpected aContextFrame");
-  if (aContextFrame->IsSVGText() &&
-      mDisplay != NS_STYLE_DISPLAY_NONE) {
+  if (aContextFrame->IsSVGText() && mDisplay != mozilla::StyleDisplay::None) {
     return aContextFrame->GetType() == nsGkAtoms::blockFrame ?
-             NS_STYLE_DISPLAY_BLOCK :
-             NS_STYLE_DISPLAY_INLINE;
+             mozilla::StyleDisplay::Block : mozilla::StyleDisplay::Inline;
   }
   return mDisplay;
 }
@@ -146,6 +132,9 @@ nsStyleDisplay::IsFloating(const nsIFrame* aContextFrame) const
   return IsFloatingStyle() && !aContextFrame->IsSVGText();
 }
 
+// If you change this function, also change the corresponding block in
+// nsCSSFrameConstructor::ConstructFrameFromItemInternal that references
+// this function in comments.
 bool
 nsStyleDisplay::HasTransform(const nsIFrame* aContextFrame) const
 {
@@ -153,15 +142,80 @@ nsStyleDisplay::HasTransform(const nsIFrame* aContextFrame) const
   return HasTransformStyle() && aContextFrame->IsFrameOfType(nsIFrame::eSupportsCSSTransforms);
 }
 
+template<class StyleContextLike>
 bool
-nsStyleDisplay::IsPositioned(const nsIFrame* aContextFrame) const
+nsStyleDisplay::HasFixedPosContainingBlockStyleInternal(
+                  StyleContextLike* aStyleContext) const
 {
-  NS_ASSERTION(aContextFrame->StyleDisplay() == this,
-               "unexpected aContextFrame");
-  return (IsAbsolutelyPositionedStyle() ||
-          IsRelativelyPositionedStyle() ||
-          HasTransform(aContextFrame)) &&
-         !aContextFrame->IsSVGText();
+  // NOTE: Any CSS properties that influence the output of this function
+  // should have the CSS_PROPERTY_FIXPOS_CB set on them.
+  NS_ASSERTION(aStyleContext->StyleDisplay() == this,
+               "unexpected aStyleContext");
+  return IsContainPaint() ||
+         HasPerspectiveStyle() ||
+         (mWillChangeBitField & NS_STYLE_WILL_CHANGE_FIXPOS_CB) ||
+         aStyleContext->StyleEffects()->HasFilters();
+}
+
+template<class StyleContextLike>
+bool
+nsStyleDisplay::IsFixedPosContainingBlockForAppropriateFrame(
+                  StyleContextLike* aStyleContext) const
+{
+  // NOTE: Any CSS properties that influence the output of this function
+  // should have the CSS_PROPERTY_FIXPOS_CB set on them.
+  return HasFixedPosContainingBlockStyleInternal(aStyleContext) ||
+         HasTransformStyle();
+}
+
+bool
+nsStyleDisplay::IsFixedPosContainingBlock(const nsIFrame* aContextFrame) const
+{
+  // NOTE: Any CSS properties that influence the output of this function
+  // should have the CSS_PROPERTY_FIXPOS_CB set on them.
+  if (!HasFixedPosContainingBlockStyleInternal(aContextFrame->StyleContext()) &&
+      !HasTransform(aContextFrame)) {
+    return false;
+  }
+  return !aContextFrame->IsSVGText();
+}
+
+template<class StyleContextLike>
+bool
+nsStyleDisplay::HasAbsPosContainingBlockStyleInternal(
+                  StyleContextLike* aStyleContext) const
+{
+  // NOTE: Any CSS properties that influence the output of this function
+  // should have the CSS_PROPERTY_ABSPOS_CB set on them.
+  NS_ASSERTION(aStyleContext->StyleDisplay() == this,
+               "unexpected aStyleContext");
+  return IsAbsolutelyPositionedStyle() ||
+         IsRelativelyPositionedStyle() ||
+         (mWillChangeBitField & NS_STYLE_WILL_CHANGE_ABSPOS_CB);
+}
+
+template<class StyleContextLike>
+bool
+nsStyleDisplay::IsAbsPosContainingBlockForAppropriateFrame(StyleContextLike* aStyleContext) const
+{
+  // NOTE: Any CSS properties that influence the output of this function
+  // should have the CSS_PROPERTY_ABSPOS_CB set on them.
+  return HasAbsPosContainingBlockStyleInternal(aStyleContext) ||
+         IsFixedPosContainingBlockForAppropriateFrame(aStyleContext);
+}
+
+bool
+nsStyleDisplay::IsAbsPosContainingBlock(const nsIFrame* aContextFrame) const
+{
+  // NOTE: Any CSS properties that influence the output of this function
+  // should have the CSS_PROPERTY_ABSPOS_CB set on them.
+  nsStyleContext* sc = aContextFrame->StyleContext();
+  if (!HasAbsPosContainingBlockStyleInternal(sc) &&
+      !HasFixedPosContainingBlockStyleInternal(sc) &&
+      !HasTransform(aContextFrame)) {
+    return false;
+  }
+  return !aContextFrame->IsSVGText();
 }
 
 bool
@@ -179,7 +233,7 @@ nsStyleDisplay::IsAbsolutelyPositioned(const nsIFrame* aContextFrame) const
 }
 
 uint8_t
-nsStyleVisibility::GetEffectivePointerEvents(nsIFrame* aFrame) const
+nsStyleUserInterface::GetEffectivePointerEvents(nsIFrame* aFrame) const
 {
   if (aFrame->GetContent() && !aFrame->GetContent()->GetParent()) {
     // The root element has a cluster of frames associated with it
@@ -188,10 +242,23 @@ nsStyleVisibility::GetEffectivePointerEvents(nsIFrame* aFrame) const
     // frame.
     nsIFrame* f = aFrame->GetContent()->GetPrimaryFrame();
     if (f) {
-      return f->StyleVisibility()->mPointerEvents;
+      return f->StyleUserInterface()->mPointerEvents;
     }
   }
   return mPointerEvents;
+}
+
+bool
+nsStyleBackground::HasLocalBackground() const
+{
+  NS_FOR_VISIBLE_IMAGE_LAYERS_BACK_TO_FRONT(i, mImage) {
+    const nsStyleImageLayers::Layer& layer = mImage.mLayers[i];
+    if (!layer.mImage.IsEmpty() &&
+        layer.mAttachment == NS_STYLE_IMAGELAYER_ATTACHMENT_LOCAL) {
+      return true;
+    }
+  }
+  return false;
 }
 
 #endif /* !defined(nsStyleStructInlines_h_) */

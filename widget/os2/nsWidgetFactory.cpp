@@ -23,6 +23,7 @@
  */
 
 #include "mozilla/ModuleUtils.h"
+#include "mozilla/WidgetUtils.h"
 #include "nsIModule.h"
 #include "nsCOMPtr.h"
 #include "nsWidgetsCID.h"
@@ -30,6 +31,7 @@
 #include "nsWindow.h"
 #include "nsAppShell.h"
 #include "nsAppShellSingleton.h"
+#include "mozilla/ModuleUtils.h"
 #include "nsBidiKeyboard.h"
 #include "nsDragService.h"
 #include "nsIFile.h"
@@ -51,6 +53,18 @@
 #include "nsPrintOptionsOS2.h"
 #include "nsPrintSession.h"
 #include "nsIdleServiceOS2.h"
+
+using namespace mozilla;
+
+// taken from gonk/nsWidgetFactory.cpp. GfxInfo is a legacy kludge, unfortunately
+// for the time being we still have to implement it on all platforms.
+#include "../gonk/GfxInfo.h"
+namespace mozilla {
+namespace widget {
+// This constructor should really be shared with all platforms.
+NS_GENERIC_FACTORY_CONSTRUCTOR_INIT(GfxInfo, Init)
+}
+}
 
 // objects that just require generic constructors
 NS_GENERIC_FACTORY_CONSTRUCTOR(nsBidiKeyboard)
@@ -80,6 +94,7 @@ NS_DEFINE_NAMED_CID(NS_CLIPBOARD_CID);
 NS_DEFINE_NAMED_CID(NS_CLIPBOARDHELPER_CID);
 NS_DEFINE_NAMED_CID(NS_DRAGSERVICE_CID);
 NS_DEFINE_NAMED_CID(NS_FILEPICKER_CID);
+NS_DEFINE_NAMED_CID(NS_GFXINFO_CID);
 NS_DEFINE_NAMED_CID(NS_SOUND_CID);
 NS_DEFINE_NAMED_CID(NS_WINDOW_CID);
 NS_DEFINE_NAMED_CID(NS_TRANSFERABLE_CID);
@@ -94,25 +109,27 @@ NS_DEFINE_NAMED_CID(NS_IDLE_SERVICE_CID);
 
 
 static const mozilla::Module::CIDEntry kWidgetCIDs[] = {
-    { &kNS_APPSHELL_CID, false, NULL, nsAppShellConstructor },
-    { &kNS_BIDIKEYBOARD_CID, false, NULL, nsBidiKeyboardConstructor },
-    { &kNS_CHILD_CID, false, NULL, nsChildWindowConstructor },
-    { &kNS_CLIPBOARD_CID, false, NULL, nsClipboardConstructor },
-    { &kNS_CLIPBOARDHELPER_CID, false, NULL, nsClipboardHelperConstructor },
-    { &kNS_DRAGSERVICE_CID, false, NULL, nsDragServiceConstructor },
-    { &kNS_FILEPICKER_CID, false, NULL, nsFilePickerConstructor },
-    { &kNS_SOUND_CID, false, NULL, nsSoundConstructor },
-    { &kNS_WINDOW_CID, false, NULL, nsWindowConstructor },
-    { &kNS_TRANSFERABLE_CID, false, NULL, nsTransferableConstructor },
-    { &kNS_HTMLFORMATCONVERTER_CID, false, NULL, nsHTMLFormatConverterConstructor },
-    { &kNS_SCREENMANAGER_CID, false, NULL, nsScreenManagerOS2Constructor },
-    { &kNS_DEVICE_CONTEXT_SPEC_CID, false, NULL, nsDeviceContextSpecOS2Constructor },
-    { &kNS_PRINTSETTINGSSERVICE_CID, false, NULL, nsPrintOptionsOS2Constructor },
-    { &kNS_PRINTSESSION_CID, false, NULL, nsPrintSessionConstructor },
-    { &kNS_PRINTER_ENUMERATOR_CID, false, NULL, nsPrinterEnumeratorOS2Constructor },
-    { &kNS_RWSSERVICE_CID, false, NULL, nsRwsServiceConstructor },
-    { &kNS_IDLE_SERVICE_CID, false, NULL, nsIdleServiceOS2Constructor },
-    { NULL }
+    { &kNS_APPSHELL_CID, false, nullptr, nsAppShellConstructor },
+    { &kNS_BIDIKEYBOARD_CID, false, nullptr, nsBidiKeyboardConstructor },
+    { &kNS_CHILD_CID, false, nullptr, nsChildWindowConstructor },
+    { &kNS_CLIPBOARD_CID, false, nullptr, nsClipboardConstructor },
+    { &kNS_CLIPBOARDHELPER_CID, false, nullptr, nsClipboardHelperConstructor },
+    { &kNS_DRAGSERVICE_CID, false, nullptr, nsDragServiceConstructor },
+    { &kNS_FILEPICKER_CID, false, nullptr, nsFilePickerConstructor },
+    { &kNS_GFXINFO_CID, false, nullptr, mozilla::widget::GfxInfoConstructor },
+    { &kNS_SOUND_CID, false, nullptr, nsSoundConstructor },
+    { &kNS_WINDOW_CID, false, nullptr, nsWindowConstructor },
+    { &kNS_TRANSFERABLE_CID, false, nullptr, nsTransferableConstructor },
+    { &kNS_HTMLFORMATCONVERTER_CID, false, nullptr, nsHTMLFormatConverterConstructor },
+    { &kNS_SCREENMANAGER_CID, false, nullptr, nsScreenManagerOS2Constructor,
+      Module::MAIN_PROCESS_ONLY },
+    { &kNS_DEVICE_CONTEXT_SPEC_CID, false, nullptr, nsDeviceContextSpecOS2Constructor },
+    { &kNS_PRINTSETTINGSSERVICE_CID, false, nullptr, nsPrintOptionsOS2Constructor },
+    { &kNS_PRINTSESSION_CID, false, nullptr, nsPrintSessionConstructor },
+    { &kNS_PRINTER_ENUMERATOR_CID, false, nullptr, nsPrinterEnumeratorOS2Constructor },
+    { &kNS_RWSSERVICE_CID, false, nullptr, nsRwsServiceConstructor },
+    { &kNS_IDLE_SERVICE_CID, false, nullptr, nsIdleServiceOS2Constructor },
+    { nullptr }
 };
 
 static const mozilla::Module::ContractIDEntry kWidgetContracts[] = {
@@ -123,18 +140,19 @@ static const mozilla::Module::ContractIDEntry kWidgetContracts[] = {
   { "@mozilla.org/widget/clipboardhelper;1", &kNS_CLIPBOARDHELPER_CID },
   { "@mozilla.org/widget/dragservice;1", &kNS_DRAGSERVICE_CID },
   { "@mozilla.org/filepicker;1", &kNS_FILEPICKER_CID },
+  { "@mozilla.org/gfx/info;1", &kNS_GFXINFO_CID },
   { "@mozilla.org/sound;1", &kNS_SOUND_CID },
   { "@mozilla.org/widget/window/os2;1", &kNS_WINDOW_CID },
   { "@mozilla.org/widget/transferable;1", &kNS_TRANSFERABLE_CID },
   { "@mozilla.org/widget/htmlformatconverter;1", &kNS_HTMLFORMATCONVERTER_CID },
-  { "@mozilla.org/gfx/screenmanager;1", &kNS_SCREENMANAGER_CID },
+  { "@mozilla.org/gfx/screenmanager;1", &kNS_SCREENMANAGER_CID, Module::MAIN_PROCESS_ONLY },
   { "@mozilla.org/gfx/devicecontextspec;1", &kNS_DEVICE_CONTEXT_SPEC_CID },
   { "@mozilla.org/gfx/printsettings-service;1", &kNS_PRINTSETTINGSSERVICE_CID },
   { "@mozilla.org/gfx/printsession;1", &kNS_PRINTSESSION_CID },
   { "@mozilla.org/gfx/printerenumerator;1", &kNS_PRINTER_ENUMERATOR_CID },
   { NS_RWSSERVICE_CONTRACTID, &kNS_RWSSERVICE_CID },
   { "@mozilla.org/widget/idleservice;1", &kNS_IDLE_SERVICE_CID },
-  { NULL }
+  { nullptr }
 };
 
 static void
@@ -150,8 +168,8 @@ static const mozilla::Module kWidgetModule = {
   mozilla::Module::kVersion,
   kWidgetCIDs,
   kWidgetContracts,
-  NULL,
-  NULL,
+  nullptr,
+  nullptr,
   nsAppShellInit,
   nsWidgetOS2ModuleDtor
 };

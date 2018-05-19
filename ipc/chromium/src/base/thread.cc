@@ -1,23 +1,31 @@
+/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
+/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 // Copyright (c) 2006-2009 The Chromium Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
 #include "base/thread.h"
 
-#include "base/lazy_instance.h"
 #include "base/string_util.h"
 #include "base/thread_local.h"
 #include "base/waitable_event.h"
 #include "GeckoProfiler.h"
+#include "mozilla/IOInterposer.h"
+#include "nsThreadUtils.h"
+
+#ifdef MOZ_TASK_TRACER
+#include "GeckoTaskTracer.h"
+#endif
 
 namespace base {
 
 // This task is used to trigger the message loop to exit.
-class ThreadQuitTask : public Task {
+class ThreadQuitTask : public mozilla::Runnable {
  public:
-  virtual void Run() {
+  NS_IMETHOD Run() override {
     MessageLoop::current()->Quit();
     Thread::SetThreadWasQuitProperly(true);
+    return NS_OK;
   }
 };
 
@@ -41,9 +49,11 @@ Thread::Thread(const char *name)
       message_loop_(NULL),
       thread_id_(0),
       name_(name) {
+  MOZ_COUNT_CTOR(base::Thread);
 }
 
 Thread::~Thread() {
+  MOZ_COUNT_DTOR(base::Thread);
   Stop();
 }
 
@@ -53,19 +63,22 @@ namespace {
 // because its Stop method was called.  This allows us to catch cases where
 // MessageLoop::Quit() is called directly, which is unexpected when using a
 // Thread to setup and run a MessageLoop.
-base::LazyInstance<base::ThreadLocalBoolean> lazy_tls_bool(
-    base::LINKER_INITIALIZED);
+
+static base::ThreadLocalBoolean& get_tls_bool() {
+  static base::ThreadLocalBoolean tls_ptr;
+  return tls_ptr;
+}
 
 }  // namespace
 
 void Thread::SetThreadWasQuitProperly(bool flag) {
-  lazy_tls_bool.Pointer()->Set(flag);
+  get_tls_bool().Set(flag);
 }
 
 bool Thread::GetThreadWasQuitProperly() {
   bool quit_properly = true;
 #ifndef NDEBUG
-  quit_properly = lazy_tls_bool.Pointer()->Get();
+  quit_properly = get_tls_bool().Get();
 #endif
   return quit_properly;
 }
@@ -103,8 +116,10 @@ void Thread::Stop() {
   DCHECK_NE(thread_id_, PlatformThread::CurrentId());
 
   // StopSoon may have already been called.
-  if (message_loop_)
-    message_loop_->PostTask(FROM_HERE, new ThreadQuitTask());
+  if (message_loop_) {
+    RefPtr<ThreadQuitTask> task = new ThreadQuitTask();
+    message_loop_->PostTask(task.forget());
+  }
 
   // Wait for the thread to exit.  It should already have terminated but make
   // sure this assumption is valid.
@@ -133,20 +148,25 @@ void Thread::StopSoon() {
   // to someone calling Quit() on our message loop directly.
   DCHECK(message_loop_);
 
-  message_loop_->PostTask(FROM_HERE, new ThreadQuitTask());
+  RefPtr<ThreadQuitTask> task = new ThreadQuitTask();
+  message_loop_->PostTask(task.forget());
 }
 
 void Thread::ThreadMain() {
   char aLocal;
   profiler_register_thread(name_.c_str(), &aLocal);
+  mozilla::IOInterposer::RegisterCurrentThread();
 
   // The message loop for this thread.
-  MessageLoop message_loop(startup_data_->options.message_loop_type);
+  MessageLoop message_loop(startup_data_->options.message_loop_type,
+                           NS_GetCurrentThread());
 
   // Complete the initialization of our Thread object.
   thread_id_ = PlatformThread::CurrentId();
   PlatformThread::SetName(name_.c_str());
   message_loop.set_thread_name(name_);
+  message_loop.set_hang_timeouts(startup_data_->options.transient_hang_timeout,
+                                 startup_data_->options.permanent_hang_timeout);
   message_loop_ = &message_loop;
 
   // Let the thread do extra initialization.
@@ -165,7 +185,12 @@ void Thread::ThreadMain() {
   // Assert that MessageLoop::Quit was called by ThreadQuitTask.
   DCHECK(GetThreadWasQuitProperly());
 
+  mozilla::IOInterposer::UnregisterCurrentThread();
   profiler_unregister_thread();
+
+#ifdef MOZ_TASK_TRACER
+  mozilla::tasktracer::FreeTraceInfo();
+#endif
 
   // We can't receive messages anymore.
   message_loop_ = NULL;

@@ -18,7 +18,7 @@ class ReadbackLayerD3D9 :
 {
 public:
     ReadbackLayerD3D9(LayerManagerD3D9 *aManager)
-    : ReadbackLayer(aManager, NULL),
+    : ReadbackLayer(aManager, nullptr),
       LayerD3D9(aManager)
   {
       mImplData = static_cast<LayerD3D9*>(this);
@@ -28,6 +28,7 @@ public:
   virtual void RenderLayer() {}
 };
 
-} /* layers */
-} /* mozilla */
+} // namespace layers
+} // namespace mozilla
+
 #endif /* GFX_READBACKLAYERD3D9_H */

@@ -1,4 +1,4 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
+/* -*- indent-tabs-mode: nil; js-indent-level: 2 -*- */
 /* vim: set ts=2 et sw=2 tw=80: */
 /* Any copyright is dedicated to the Public Domain.
    http://creativecommons.org/publicdomain/zero/1.0/ */
@@ -10,265 +10,291 @@
 ////////////////////////////////////////////////////////////////////////////////
 //// Globals
 
-XPCOMUtils.defineLazyModuleGetter(this, "FileUtils",
-                                  "resource://gre/modules/FileUtils.jsm");
+XPCOMUtils.defineLazyModuleGetter(this, "Downloads",
+                                  "resource://gre/modules/Downloads.jsm");
 XPCOMUtils.defineLazyModuleGetter(this, "DownloadsCommon",
                                   "resource:///modules/DownloadsCommon.jsm");
+XPCOMUtils.defineLazyModuleGetter(this, "FileUtils",
+                                  "resource://gre/modules/FileUtils.jsm");
+XPCOMUtils.defineLazyModuleGetter(this, "Promise",
+                                  "resource://gre/modules/Promise.jsm");
+XPCOMUtils.defineLazyModuleGetter(this, "Task",
+                                  "resource://gre/modules/Task.jsm");
+XPCOMUtils.defineLazyModuleGetter(this, "PlacesUtils",
+                                  "resource://gre/modules/PlacesUtils.jsm");
 const nsIDM = Ci.nsIDownloadManager;
 
-let gTestTargetFile = FileUtils.getFile("TmpD", ["dm-ui-test.file"]);
+var gTestTargetFile = FileUtils.getFile("TmpD", ["dm-ui-test.file"]);
 gTestTargetFile.createUnique(Ci.nsIFile.NORMAL_FILE_TYPE, FileUtils.PERMS_FILE);
+
+// Load mocking/stubbing library, sinon
+// docs: http://sinonjs.org/docs/
+Services.scriptloader.loadSubScript("resource://testing-common/sinon-1.16.1.js");
+
 registerCleanupFunction(function () {
   gTestTargetFile.remove(false);
+
+  delete window.sinon;
+  delete window.setImmediate;
+  delete window.clearImmediate;
 });
 
-/**
- * This objects contains a property for each column in the downloads table.
- */
-let gDownloadRowTemplate = {
-  name: "test-download.txt",
-  source: "http://www.example.com/test-download.txt",
-  target: NetUtil.newURI(gTestTargetFile).spec,
-  startTime: 1180493839859230,
-  endTime: 1180493839859234,
-  state: nsIDM.DOWNLOAD_FINISHED,
-  currBytes: 0,
-  maxBytes: -1,
-  preferredAction: 0,
-  autoResume: 0
-};
-
 ////////////////////////////////////////////////////////////////////////////////
-//// Infrastructure
+//// Asynchronous support subroutines
 
-// All test are run through the test runner.
-function test()
+function promiseOpenAndLoadWindow(aOptions)
 {
-  testRunner.runTest(this.gen_test);
+  return new Promise((resolve, reject) => {
+    let win = OpenBrowserWindow(aOptions);
+    win.addEventListener("load", function onLoad() {
+      win.removeEventListener("load", onLoad);
+      resolve(win);
+    });
+  });
 }
 
 /**
- * Runs a browser-chrome test defined through a generator function.
+ * Waits for a load (or custom) event to finish in a given tab. If provided
+ * load an uri into the tab.
  *
- * This object is a singleton, initialized automatically when this script is
- * included.  Every browser-chrome test file includes a new copy of this object.
+ * @param tab
+ *        The tab to load into.
+ * @param [optional] url
+ *        The url to load, or the current url.
+ * @param [optional] event
+ *        The load event type to wait for.  Defaults to "load".
+ * @return {Promise} resolved when the event is handled.
+ * @resolves to the received event
+ * @rejects if a valid load event is not received within a meaningful interval
  */
-var testRunner = {
-  _testIterator: null,
-  _lastEventResult: undefined,
-  _testRunning: false,
-  _eventRaised: false,
+function promiseTabLoadEvent(tab, url, eventType="load")
+{
+  let deferred = Promise.defer();
+  info("Wait tab event: " + eventType);
 
-  // --- Main test runner ---
-
-  /**
-   * Runs the test described by the provided generator function asynchronously.
-   *
-   * Calling yield in the generator will cause it to wait until continueTest is
-   * called.  The parameter provided to continueTest will be the return value of
-   * the yield operator.
-   *
-   * @param aGenerator
-   *        Test generator function.  The function will be called with no
-   *        arguments to retrieve its iterator.
-   */
-  runTest: function TR_runTest(aGenerator) {
-    waitForExplicitFinish();
-    testRunner._testIterator = aGenerator();
-    testRunner.continueTest();
-  },
-
-  /**
-   * Continues the currently running test.
-   *
-   * @param aEventResult
-   *        This will be the return value of the yield operator in the test.
-   */
-  continueTest: function TR_continueTest(aEventResult) {
-    // Store the last event result, or set it to undefined.
-    testRunner._lastEventResult = aEventResult;
-
-    // Never reenter the main loop, but notify that the event has been raised.
-    if (testRunner._testRunning) {
-      testRunner._eventRaised = true;
+  function handle(event) {
+    if (event.originalTarget != tab.linkedBrowser.contentDocument ||
+        event.target.location.href == "about:blank" ||
+        (url && event.target.location.href != url)) {
+      info("Skipping spurious '" + eventType + "'' event" +
+           " for " + event.target.location.href);
       return;
     }
-
-    // Enter the main iteration loop.
-    testRunner._testRunning = true;
-    try {
-      do {
-        // Call the iterator, but don't leave the loop if the expected event is
-        // raised during the execution of the generator.
-        testRunner._eventRaised = false;
-        testRunner._testIterator.send(testRunner._lastEventResult);
-      } while (testRunner._eventRaised);
-    }
-    catch (e) {
-      // This block catches exceptions raised by the generator, including the
-      // normal StopIteration exception.  Unexpected exceptions are reported as
-      // test failures.
-      if (!(e instanceof StopIteration))
-        ok(false, e);
-      // In any case, stop the tests in this file.
-      finish();
-    }
-
-    // Wait for the next event or finish.
-    testRunner._testRunning = false;
+    // Remove reference to tab from the cleanup function:
+    realCleanup = () => {};
+    tab.linkedBrowser.removeEventListener(eventType, handle, true);
+    info("Tab event received: " + eventType);
+    deferred.resolve(event);
   }
-};
 
-////////////////////////////////////////////////////////////////////////////////
-//// Asynchronous generator-based support subroutines
+  // Juggle a bit to avoid leaks:
+  let realCleanup = () => tab.linkedBrowser.removeEventListener(eventType, handle, true);
+  registerCleanupFunction(() => realCleanup());
 
-//
-// The following functions are all generators that can be used inside the main
-// test generator to perform specific tasks asynchronously.  To invoke these
-// subroutines correctly, an iteration syntax should be used:
-//
-//   for (let yy in gen_example("Parameter")) yield;
-//
+  tab.linkedBrowser.addEventListener(eventType, handle, true, true);
+  if (url)
+    tab.linkedBrowser.loadURI(url);
+  return deferred.promise;
+}
 
-function gen_resetState(aData)
+function promiseWindowClosed(win)
 {
-  let statement = Services.downloads.DBConnection.createAsyncStatement(
-                  "DELETE FROM moz_downloads");
-  try {
-    statement.executeAsync({
-      handleResult: function(aResultSet) { },
-      handleError: function(aError)
-      {
-        Cu.reportError(aError);
-      },
-      handleCompletion: function(aReason)
-      {
-        testRunner.continueTest();
+  let promise = new Promise((resolve, reject) => {
+    Services.obs.addObserver(function obs(subject, topic) {
+      if (subject == win) {
+        Services.obs.removeObserver(obs, topic);
+        resolve();
       }
-    });
-    yield;
-  } finally {
-    statement.finalize();
+    }, "domwindowclosed", false);
+  });
+  win.close();
+  return promise;
+}
+
+
+function promiseFocus()
+{
+  let deferred = Promise.defer();
+  waitForFocus(deferred.resolve);
+  return deferred.promise;
+}
+
+function promisePanelOpened()
+{
+  let deferred = Promise.defer();
+
+  if (DownloadsPanel.panel && DownloadsPanel.panel.state == "open") {
+    return deferred.resolve();
   }
 
-  // Reset any prefs that might have been changed.
-  Services.prefs.clearUserPref("browser.download.panel.shown");
+  // Hook to wait until the panel is shown.
+  let originalOnPopupShown = DownloadsPanel.onPopupShown;
+  DownloadsPanel.onPopupShown = function () {
+    DownloadsPanel.onPopupShown = originalOnPopupShown;
+    originalOnPopupShown.apply(this, arguments);
 
-  // Ensure that the panel is closed and data is unloaded.
-  aData.clear();
-  aData._loadState = aData.kLoadNone;
+    // Defer to the next tick of the event loop so that we don't continue
+    // processing during the DOM event handler itself.
+    setTimeout(deferred.resolve, 0);
+  };
+
+  return deferred.promise;
+}
+
+function* task_resetState()
+{
+  // Remove all downloads.
+  let publicList = yield Downloads.getList(Downloads.PUBLIC);
+  let downloads = yield publicList.getAll();
+  for (let download of downloads) {
+    publicList.remove(download);
+    yield download.finalize(true);
+  }
+
   DownloadsPanel.hidePanel();
 
-  // Wait for focus on the main window.
-  waitForFocus(testRunner.continueTest);
-  yield;
+  yield promiseFocus();
 }
 
-function gen_addDownloadRows(aDataRows)
+function* task_addDownloads(aItems)
 {
-  let columnNames = Object.keys(gDownloadRowTemplate).join(", ");
-  let parameterNames = Object.keys(gDownloadRowTemplate)
-                             .map(function(n) ":" + n)
-                             .join(", ");
-  let statement = Services.downloads.DBConnection.createAsyncStatement(
-                  "INSERT INTO moz_downloads (" + columnNames +
-                  ", guid) VALUES(" + parameterNames + ", GENERATE_GUID())");
-  try {
-    // Execute the statement for each of the provided downloads in reverse.
-    for (let i = aDataRows.length - 1; i >= 0; i--) {
-      let dataRow = aDataRows[i];
+  let startTimeMs = Date.now();
 
-      // Populate insert parameters from the provided data.
-      for (let columnName in gDownloadRowTemplate) {
-        if (!(columnName in dataRow)) {
-          // Update the provided row object with data from the global template,
-          // for columns whose value is not provided explicitly.
-          dataRow[columnName] = gDownloadRowTemplate[columnName];
-        }
-        statement.params[columnName] = dataRow[columnName];
-      }
-
-      // Run the statement asynchronously and wait.
-      statement.executeAsync({
-        handleResult: function(aResultSet) { },
-        handleError: function(aError)
-        {
-          Cu.reportError(aError.message + " (Result = " + aError.result + ")");
-        },
-        handleCompletion: function(aReason)
-        {
-          testRunner.continueTest();
-        }
-      });
-      yield;
-
-      // At each iteration, ensure that the start and end time in the global
-      // template is distinct, as these column are used to sort each download
-      // in its category.
-      gDownloadRowTemplate.startTime++;
-      gDownloadRowTemplate.endTime++;
+  let publicList = yield Downloads.getList(Downloads.PUBLIC);
+  for (let item of aItems) {
+    let download = {
+      source: {
+        url: "http://www.example.com/test-download.txt",
+      },
+      target: {
+        path: gTestTargetFile.path,
+      },
+      succeeded: item.state == nsIDM.DOWNLOAD_FINISHED,
+      canceled: item.state == nsIDM.DOWNLOAD_CANCELED ||
+                item.state == nsIDM.DOWNLOAD_PAUSED,
+      error: item.state == nsIDM.DOWNLOAD_FAILED ? new Error("Failed.") : null,
+      hasPartialData: item.state == nsIDM.DOWNLOAD_PAUSED,
+      hasBlockedData: item.hasBlockedData || false,
+      startTime: new Date(startTimeMs++),
+    };
+    // `"errorObj" in download` must be false when there's no error.
+    if (item.errorObj) {
+      download.errorObj = item.errorObj;
     }
-  } finally {
-    statement.finalize();
+    yield publicList.add(yield Downloads.createDownload(download));
   }
 }
 
-function gen_openPanel(aData)
+function* task_openPanel()
 {
-  // Hook to wait until the test data has been loaded.
-  let originalOnViewLoadCompleted = DownloadsPanel.onViewLoadCompleted;
-  DownloadsPanel.onViewLoadCompleted = function () {
-    DownloadsPanel.onViewLoadCompleted = originalOnViewLoadCompleted;
-    originalOnViewLoadCompleted.apply(this);
-    testRunner.continueTest();
-  };
+  yield promiseFocus();
 
-  // Start loading all the downloads from the database asynchronously.
-  aData.ensurePersistentDataLoaded(false);
-
-  // Wait for focus on the main window.
-  waitForFocus(testRunner.continueTest);
-  yield;
-
-  // Open the downloads panel, waiting until loading is completed.
+  let promise = promisePanelOpened();
   DownloadsPanel.showPanel();
-  yield;
+  yield promise;
 }
 
-/**
- * Spin the event loop for aSeconds seconds, and then signal the test to
- * continue.
- *
- * @param aSeconds the number of seconds to wait.
- * @note This helper should _only_ be used when there's no valid event to
- *       listen to and one can't be made.
- */
-function waitFor(aSeconds)
-{
-  setTimeout(function() {
-    testRunner.continueTest();
-  }, aSeconds * 1000);
+function* setDownloadDir() {
+  let tmpDir = Services.dirsvc.get("TmpD", Ci.nsIFile);
+  tmpDir.append("testsavedir");
+  if (!tmpDir.exists()) {
+    tmpDir.create(Ci.nsIFile.DIRECTORY_TYPE, 0o755);
+    registerCleanupFunction(function () {
+      try {
+        tmpDir.remove(true);
+      } catch (e) {
+        // On Windows debug build this may fail.
+      }
+    });
+  }
+
+  yield new Promise(resolve => {
+    SpecialPowers.pushPrefEnv({"set": [
+      ["browser.download.folderList", 2],
+      ["browser.download.dir", tmpDir, Ci.nsIFile],
+    ]}, resolve);
+  });
 }
 
-/**
- * Make it so that the next time the downloads panel opens, we signal to
- * continue the test. This function needs to be called each time you want
- * to wait for the panel to open.
- *
- * Example usage:
- *
- * prepareForPanelOpen();
- * // Do something to open the panel
- * yield;
- * // We can assume the panel is open now.
- */
-function prepareForPanelOpen()
-{
-  // Hook to wait until the test data has been loaded.
-  let originalOnPopupShown = DownloadsPanel.onPopupShown;
-  DownloadsPanel.onPopupShown = function (aEvent) {
-    DownloadsPanel.onPopupShown = originalOnPopupShown;
-    DownloadsPanel.onPopupShown.apply(this, [aEvent]);
-    testRunner.continueTest();
-  };
+
+let gHttpServer = null;
+function startServer() {
+  gHttpServer = new HttpServer();
+  gHttpServer.start(-1);
+  registerCleanupFunction(function*() {
+     yield new Promise(function(resolve) {
+      gHttpServer.stop(resolve);
+    });
+  });
+
+  gHttpServer.registerPathHandler("/file1.txt", (request, response) => {
+    response.setStatusLine(null, 200, "OK");
+    response.write("file1");
+    response.processAsync();
+    response.finish();
+  });
+  gHttpServer.registerPathHandler("/file2.txt", (request, response) => {
+    response.setStatusLine(null, 200, "OK");
+    response.write("file2");
+    response.processAsync();
+    response.finish();
+  });
+  gHttpServer.registerPathHandler("/file3.txt", (request, response) => {
+    response.setStatusLine(null, 200, "OK");
+    response.write("file3");
+    response.processAsync();
+    response.finish();
+  });
+}
+
+function httpUrl(aFileName) {
+  return "http://localhost:" + gHttpServer.identity.primaryPort + "/" +
+    aFileName;
+}
+
+function task_clearHistory() {
+  return new Promise(function(resolve) {
+    Services.obs.addObserver(function observeCH(aSubject, aTopic, aData) {
+      Services.obs.removeObserver(observeCH, PlacesUtils.TOPIC_EXPIRATION_FINISHED);
+      resolve();
+    }, PlacesUtils.TOPIC_EXPIRATION_FINISHED, false);
+    PlacesUtils.history.clear();
+  });
+}
+
+function openLibrary(aLeftPaneRoot) {
+  let library = window.openDialog("chrome://browser/content/places/places.xul",
+                                  "", "chrome,toolbar=yes,dialog=no,resizable",
+                                  aLeftPaneRoot);
+
+  return new Promise(resolve => {
+    waitForFocus(resolve, library);
+  });
+}
+
+function promiseAlertDialogOpen(buttonAction) {
+  return new Promise(resolve => {
+    Services.ww.registerNotification(function onOpen(subj, topic, data) {
+      if (topic == "domwindowopened" && subj instanceof Ci.nsIDOMWindow) {
+        // The test listens for the "load" event which guarantees that the alert
+        // class has already been added (it is added when "DOMContentLoaded" is
+        // fired).
+        subj.addEventListener("load", function onLoad() {
+          subj.removeEventListener("load", onLoad);
+          if (subj.document.documentURI ==
+              "chrome://global/content/commonDialog.xul") {
+            Services.ww.unregisterNotification(onOpen);
+
+            let dialog = subj.document.getElementById("commonDialog");
+            ok(dialog.classList.contains("alert-dialog"),
+               "The dialog element should contain an alert class.");
+
+            let doc = subj.document.documentElement;
+            doc.getButton(buttonAction).click();
+            resolve();
+          }
+        });
+      }
+    });
+  });
 }

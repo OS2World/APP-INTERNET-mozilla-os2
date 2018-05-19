@@ -10,8 +10,8 @@
 
 
 #include "vpx_config.h"
+#include "vp8_rtcd.h"
 #include "vpx_ports/mem.h"
-#include "vp8/common/subpixel.h"
 #include "filter_x86.h"
 
 extern const short vp8_six_tap_mmx[8][6*8];
@@ -114,7 +114,6 @@ extern void vp8_filter_block1d8_v6_only_sse2
     unsigned int   output_height,
     const short   *vp8_filter
 );
-extern prototype_subpixel_predict(vp8_bilinear_predict8x8_mmx);
 
 
 #if HAVE_MMX
@@ -128,7 +127,7 @@ void vp8_sixtap_predict4x4_mmx
     int dst_pitch
 )
 {
-    DECLARE_ALIGNED_ARRAY(16, unsigned short, FData2, 16*16);  /* Temp data bufffer used in filtering */
+    DECLARE_ALIGNED(16, unsigned short, FData2[16*16]);  /* Temp data bufffer used in filtering */
     const short *HFilter, *VFilter;
     HFilter = vp8_six_tap_mmx[xoffset];
     vp8_filter_block1d_h6_mmx(src_ptr - (2 * src_pixels_per_line), FData2, src_pixels_per_line, 1, 9, 8, HFilter);
@@ -149,7 +148,7 @@ void vp8_sixtap_predict16x16_mmx
 )
 {
 
-    DECLARE_ALIGNED_ARRAY(16, unsigned short, FData2, 24*24);  /* Temp data bufffer used in filtering */
+    DECLARE_ALIGNED(16, unsigned short, FData2[24*24]);  /* Temp data bufffer used in filtering */
 
     const short *HFilter, *VFilter;
 
@@ -181,7 +180,7 @@ void vp8_sixtap_predict8x8_mmx
 )
 {
 
-    DECLARE_ALIGNED_ARRAY(16, unsigned short, FData2, 256);    /* Temp data bufffer used in filtering */
+    DECLARE_ALIGNED(16, unsigned short, FData2[256]);    /* Temp data bufffer used in filtering */
 
     const short *HFilter, *VFilter;
 
@@ -207,7 +206,7 @@ void vp8_sixtap_predict8x4_mmx
 )
 {
 
-    DECLARE_ALIGNED_ARRAY(16, unsigned short, FData2, 256);    /* Temp data bufffer used in filtering */
+    DECLARE_ALIGNED(16, unsigned short, FData2[256]);    /* Temp data bufffer used in filtering */
 
     const short *HFilter, *VFilter;
 
@@ -253,7 +252,7 @@ void vp8_sixtap_predict16x16_sse2
 
 )
 {
-    DECLARE_ALIGNED_ARRAY(16, unsigned short, FData2, 24*24);    /* Temp data bufffer used in filtering */
+    DECLARE_ALIGNED(16, unsigned short, FData2[24*24]);    /* Temp data bufffer used in filtering */
 
     const short *HFilter, *VFilter;
 
@@ -293,7 +292,7 @@ void vp8_sixtap_predict8x8_sse2
     int dst_pitch
 )
 {
-    DECLARE_ALIGNED_ARRAY(16, unsigned short, FData2, 256);  /* Temp data bufffer used in filtering */
+    DECLARE_ALIGNED(16, unsigned short, FData2[256]);  /* Temp data bufffer used in filtering */
     const short *HFilter, *VFilter;
 
     if (xoffset)
@@ -331,7 +330,7 @@ void vp8_sixtap_predict8x4_sse2
     int dst_pitch
 )
 {
-    DECLARE_ALIGNED_ARRAY(16, unsigned short, FData2, 256);  /* Temp data bufffer used in filtering */
+    DECLARE_ALIGNED(16, unsigned short, FData2[256]);  /* Temp data bufffer used in filtering */
     const short *HFilter, *VFilter;
 
     if (xoffset)
@@ -433,25 +432,41 @@ void vp8_sixtap_predict16x16_ssse3
 
 )
 {
-    DECLARE_ALIGNED_ARRAY(16, unsigned char, FData2, 24*24);
+    DECLARE_ALIGNED(16, unsigned char, FData2[24*24]);
 
     if (xoffset)
     {
         if (yoffset)
         {
-            vp8_filter_block1d16_h6_ssse3(src_ptr - (2 * src_pixels_per_line), src_pixels_per_line, FData2, 16, 21, xoffset);
-            vp8_filter_block1d16_v6_ssse3(FData2 , 16, dst_ptr, dst_pitch, 16, yoffset);
+            vp8_filter_block1d16_h6_ssse3(src_ptr - (2 * src_pixels_per_line),
+                                          src_pixels_per_line, FData2,
+                                          16, 21, xoffset);
+            vp8_filter_block1d16_v6_ssse3(FData2 , 16, dst_ptr, dst_pitch,
+                                          16, yoffset);
         }
         else
         {
             /* First-pass only */
-            vp8_filter_block1d16_h6_ssse3(src_ptr, src_pixels_per_line, dst_ptr, dst_pitch, 16, xoffset);
+            vp8_filter_block1d16_h6_ssse3(src_ptr, src_pixels_per_line,
+                                          dst_ptr, dst_pitch, 16, xoffset);
         }
     }
     else
     {
-        /* Second-pass only */
-        vp8_filter_block1d16_v6_ssse3(src_ptr - (2 * src_pixels_per_line) , src_pixels_per_line, dst_ptr, dst_pitch, 16, yoffset);
+        if (yoffset)
+        {
+            /* Second-pass only */
+            vp8_filter_block1d16_v6_ssse3(src_ptr - (2 * src_pixels_per_line),
+                                          src_pixels_per_line,
+                                          dst_ptr, dst_pitch, 16, yoffset);
+        }
+        else
+        {
+            /* ssse3 second-pass only function couldn't handle (xoffset==0 &&
+             * yoffset==0) case correctly. Add copy function here to guarantee
+             * six-tap function handles all possible offsets. */
+            vp8_copy_mem16x16(src_ptr, src_pixels_per_line, dst_ptr, dst_pitch);
+        }
     }
 }
 
@@ -465,24 +480,40 @@ void vp8_sixtap_predict8x8_ssse3
     int dst_pitch
 )
 {
-    DECLARE_ALIGNED_ARRAY(16, unsigned char, FData2, 256);
+    DECLARE_ALIGNED(16, unsigned char, FData2[256]);
 
     if (xoffset)
     {
         if (yoffset)
         {
-            vp8_filter_block1d8_h6_ssse3(src_ptr - (2 * src_pixels_per_line), src_pixels_per_line, FData2, 8, 13, xoffset);
-            vp8_filter_block1d8_v6_ssse3(FData2, 8, dst_ptr, dst_pitch, 8, yoffset);
+            vp8_filter_block1d8_h6_ssse3(src_ptr - (2 * src_pixels_per_line),
+                                         src_pixels_per_line, FData2,
+                                         8, 13, xoffset);
+            vp8_filter_block1d8_v6_ssse3(FData2, 8, dst_ptr, dst_pitch,
+                                         8, yoffset);
         }
         else
         {
-            vp8_filter_block1d8_h6_ssse3(src_ptr, src_pixels_per_line, dst_ptr, dst_pitch, 8, xoffset);
+            vp8_filter_block1d8_h6_ssse3(src_ptr, src_pixels_per_line,
+                                         dst_ptr, dst_pitch, 8, xoffset);
         }
     }
     else
     {
-        /* Second-pass only */
-        vp8_filter_block1d8_v6_ssse3(src_ptr - (2 * src_pixels_per_line), src_pixels_per_line, dst_ptr, dst_pitch, 8, yoffset);
+        if (yoffset)
+        {
+            /* Second-pass only */
+            vp8_filter_block1d8_v6_ssse3(src_ptr - (2 * src_pixels_per_line),
+                                         src_pixels_per_line,
+                                         dst_ptr, dst_pitch, 8, yoffset);
+        }
+        else
+        {
+            /* ssse3 second-pass only function couldn't handle (xoffset==0 &&
+             * yoffset==0) case correctly. Add copy function here to guarantee
+             * six-tap function handles all possible offsets. */
+            vp8_copy_mem8x8(src_ptr, src_pixels_per_line, dst_ptr, dst_pitch);
+        }
     }
 }
 
@@ -497,25 +528,41 @@ void vp8_sixtap_predict8x4_ssse3
     int dst_pitch
 )
 {
-    DECLARE_ALIGNED_ARRAY(16, unsigned char, FData2, 256);
+    DECLARE_ALIGNED(16, unsigned char, FData2[256]);
 
     if (xoffset)
     {
         if (yoffset)
         {
-            vp8_filter_block1d8_h6_ssse3(src_ptr - (2 * src_pixels_per_line), src_pixels_per_line, FData2, 8, 9, xoffset);
-            vp8_filter_block1d8_v6_ssse3(FData2, 8, dst_ptr, dst_pitch, 4, yoffset);
+            vp8_filter_block1d8_h6_ssse3(src_ptr - (2 * src_pixels_per_line),
+                                         src_pixels_per_line, FData2,
+                                         8, 9, xoffset);
+            vp8_filter_block1d8_v6_ssse3(FData2, 8, dst_ptr, dst_pitch,
+                                         4, yoffset);
         }
         else
         {
             /* First-pass only */
-            vp8_filter_block1d8_h6_ssse3(src_ptr, src_pixels_per_line, dst_ptr, dst_pitch, 4, xoffset);
+            vp8_filter_block1d8_h6_ssse3(src_ptr, src_pixels_per_line,
+                                         dst_ptr, dst_pitch, 4, xoffset);
         }
     }
     else
     {
-        /* Second-pass only */
-        vp8_filter_block1d8_v6_ssse3(src_ptr - (2 * src_pixels_per_line), src_pixels_per_line, dst_ptr, dst_pitch, 4, yoffset);
+        if (yoffset)
+        {
+            /* Second-pass only */
+            vp8_filter_block1d8_v6_ssse3(src_ptr - (2 * src_pixels_per_line),
+                                         src_pixels_per_line,
+                                         dst_ptr, dst_pitch, 4, yoffset);
+        }
+        else
+        {
+            /* ssse3 second-pass only function couldn't handle (xoffset==0 &&
+             * yoffset==0) case correctly. Add copy function here to guarantee
+             * six-tap function handles all possible offsets. */
+            vp8_copy_mem8x4(src_ptr, src_pixels_per_line, dst_ptr, dst_pitch);
+        }
     }
 }
 
@@ -529,25 +576,50 @@ void vp8_sixtap_predict4x4_ssse3
     int dst_pitch
 )
 {
-  DECLARE_ALIGNED_ARRAY(16, unsigned char, FData2, 4*9);
+  DECLARE_ALIGNED(16, unsigned char, FData2[4*9]);
 
   if (xoffset)
   {
       if (yoffset)
       {
-          vp8_filter_block1d4_h6_ssse3(src_ptr - (2 * src_pixels_per_line), src_pixels_per_line, FData2, 4, 9, xoffset);
-          vp8_filter_block1d4_v6_ssse3(FData2, 4, dst_ptr, dst_pitch, 4, yoffset);
+          vp8_filter_block1d4_h6_ssse3(src_ptr - (2 * src_pixels_per_line),
+                                       src_pixels_per_line,
+                                       FData2, 4, 9, xoffset);
+          vp8_filter_block1d4_v6_ssse3(FData2, 4, dst_ptr, dst_pitch,
+                                       4, yoffset);
       }
       else
       {
-          vp8_filter_block1d4_h6_ssse3(src_ptr, src_pixels_per_line, dst_ptr, dst_pitch, 4, xoffset);
+          vp8_filter_block1d4_h6_ssse3(src_ptr, src_pixels_per_line,
+                                       dst_ptr, dst_pitch, 4, xoffset);
       }
   }
   else
   {
-      vp8_filter_block1d4_v6_ssse3(src_ptr - (2 * src_pixels_per_line), src_pixels_per_line, dst_ptr, dst_pitch, 4, yoffset);
-  }
+      if (yoffset)
+      {
+          vp8_filter_block1d4_v6_ssse3(src_ptr - (2 * src_pixels_per_line),
+                                       src_pixels_per_line,
+                                       dst_ptr, dst_pitch, 4, yoffset);
+      }
+      else
+      {
+        /* ssse3 second-pass only function couldn't handle (xoffset==0 &&
+          * yoffset==0) case correctly. Add copy function here to guarantee
+          * six-tap function handles all possible offsets. */
+          int r;
 
+          for (r = 0; r < 4; r++)
+          {
+            dst_ptr[0]  = src_ptr[0];
+            dst_ptr[1]  = src_ptr[1];
+            dst_ptr[2]  = src_ptr[2];
+            dst_ptr[3]  = src_ptr[3];
+            dst_ptr     += dst_pitch;
+            src_ptr     += src_pixels_per_line;
+          }
+      }
+  }
 }
 
 #endif

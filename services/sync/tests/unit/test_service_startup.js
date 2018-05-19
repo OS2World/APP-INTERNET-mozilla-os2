@@ -10,13 +10,18 @@ Svc.Prefs.set("registerEngines", "Tab,Bookmarks,Form,History");
 Cu.import("resource://services-sync/service.js");
 
 function run_test() {
+  validate_all_future_pings();
   _("When imported, Service.onStartup is called");
   initTestLogging("Trace");
 
-  new SyncTestingInfrastructure();
+  let xps = Cc["@mozilla.org/weave/service;1"]
+              .getService(Ci.nsISupports)
+              .wrappedJSObject;
+  do_check_false(xps.enabled);
 
   // Test fixtures
   Service.identity.username = "johndoe";
+  do_check_true(xps.enabled);
 
   Cu.import("resource://services-sync/service.js");
 
@@ -25,15 +30,11 @@ function run_test() {
 
   _("Engines are registered.");
   let engines = Service.engineManager.getAll();
-  do_check_true(Utils.deepEquals([engine.name for each (engine in engines)],
+  do_check_true(Utils.deepEquals(engines.map(engine => engine.name),
                                  ['tabs', 'bookmarks', 'forms', 'history']));
 
   _("Observers are notified of startup");
   do_test_pending();
-
-  let xps = Cc["@mozilla.org/weave/service;1"]
-              .getService(Ci.nsISupports)
-              .wrappedJSObject;
 
   do_check_false(Service.status.ready);
   do_check_false(xps.ready);

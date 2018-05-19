@@ -1,6 +1,4 @@
-/* -*- Mode: Java; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * vim:set ts=2 sw=2 sts=2 et filetype=javascript
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
@@ -12,7 +10,11 @@ module.metadata = {
 
 const { Cc, Ci, Cr } = require("chrome");
 const apiUtils = require("./deprecated/api-utils");
-const errors = require("./deprecated/errors");
+const { isString, isUndefined, instanceOf } = require('./lang/type');
+const { URL, isLocalURL } = require('./url');
+const { data } = require('./self');
+
+const NOTIFICATION_DIRECTIONS  = ["auto", "ltr", "rtl"];
 
 try {
   let alertServ = Cc["@mozilla.org/alerts-service;1"].
@@ -31,34 +33,44 @@ catch (err) {
 exports.notify = function notifications_notify(options) {
   let valOpts = validateOptions(options);
   let clickObserver = !valOpts.onClick ? null : {
-    observe: function notificationClickObserved(subject, topic, data) {
-      if (topic === "alertclickcallback")
-        errors.catchAndLog(valOpts.onClick).call(exports, valOpts.data);
+    observe: (subject, topic, data) => {
+      if (topic === "alertclickcallback") {
+        try {
+          valOpts.onClick.call(exports, valOpts.data);
+        }
+        catch(e) {
+          console.exception(e);
+        }
+      }
     }
   };
   function notifyWithOpts(notifyFn) {
-    notifyFn(valOpts.iconURL, valOpts.title, valOpts.text, !!clickObserver,
-             valOpts.data, clickObserver);
+    let { iconURL } = valOpts;
+    iconURL = iconURL && isLocalURL(iconURL) ? data.url(iconURL) : iconURL;
+
+    notifyFn(iconURL, valOpts.title, valOpts.text, !!clickObserver,
+             valOpts.data, clickObserver, valOpts.tag, valOpts.dir, valOpts.lang);
   }
   try {
     notifyWithOpts(notify);
   }
-  catch (err if err instanceof Ci.nsIException &&
-                err.result == Cr.NS_ERROR_FILE_NOT_FOUND) {
-    console.warn("The notification icon named by " + valOpts.iconURL +
-                 " does not exist.  A default icon will be used instead.");
-    delete valOpts.iconURL;
-    notifyWithOpts(notify);
-  }
   catch (err) {
-    notifyWithOpts(notifyUsingConsole);
+    if (err instanceof Ci.nsIException && err.result == Cr.NS_ERROR_FILE_NOT_FOUND) {
+      console.warn("The notification icon named by " + iconURL +
+                   " does not exist.  A default icon will be used instead.");
+      delete valOpts.iconURL;
+      notifyWithOpts(notify);
+    }
+    else {
+      notifyWithOpts(notifyUsingConsole);
+    }
   }
 };
 
 function notifyUsingConsole(iconURL, title, text) {
   title = title ? "[" + title + "]" : "";
   text = text || "";
-  let str = [title, text].filter(function (s) s).join(" ");
+  let str = [title, text].filter(s => s).join(" ");
   console.log(str);
 }
 
@@ -68,15 +80,32 @@ function validateOptions(options) {
       is: ["string", "undefined"]
     },
     iconURL: {
-      is: ["string", "undefined"]
+      is: ["string", "undefined", "object"],
+      ok: function(value) {
+        return isUndefined(value) || isString(value) || (value instanceof URL);
+      },
+      msg: "`iconURL` must be a string or an URL instance."
     },
     onClick: {
       is: ["function", "undefined"]
     },
     text: {
-      is: ["string", "undefined"]
+      is: ["string", "undefined", "number"]
     },
     title: {
+      is: ["string", "undefined", "number"]
+    },
+    tag: {
+      is: ["string", "undefined", "number"]
+    },
+    dir: {
+      is: ["string", "undefined"],
+      ok: function(value) {
+        return isUndefined(value) || ~NOTIFICATION_DIRECTIONS.indexOf(value);
+      },
+      msg: '`dir` option must be one of: "auto", "ltr" or "rtl".'
+    },
+    lang: {
       is: ["string", "undefined"]
     }
   });

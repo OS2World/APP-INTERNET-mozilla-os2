@@ -1,12 +1,12 @@
 // This file tests bug 250375
 
-const Cc = Components.classes;
-const Ci = Components.interfaces;
-const Cu = Components.utils;
-const Cr = Components.results;
-
 Cu.import("resource://testing-common/httpd.js");
 Cu.import("resource://gre/modules/Services.jsm");
+Cu.import("resource://gre/modules/NetUtil.jsm");
+
+XPCOMUtils.defineLazyGetter(this, "URL", function() {
+  return "http://localhost:" + httpserv.identity.primaryPort + "/";
+});
 
 function inChildProcess() {
   return Cc["@mozilla.org/xre/app-info;1"]
@@ -57,12 +57,8 @@ var listener = {
 };
 
 function makeChan() {
-  var ios = Components.classes["@mozilla.org/network/io-service;1"]
-                      .getService(Components.interfaces.nsIIOService);
-  var chan = ios.newChannel("http://localhost:4444/", null, null)
+  return NetUtil.newChannel({uri: URL, loadUsingSystemPrincipal: true})
                 .QueryInterface(Components.interfaces.nsIHttpChannel);
-
-  return chan;
 }
 
 var httpserv = null;
@@ -73,13 +69,13 @@ function run_test() {
     Services.prefs.setIntPref("network.cookie.cookieBehavior", 0);
 
   httpserv = new HttpServer();
-  httpserv.start(4444);
+  httpserv.start(-1);
 
   var chan = makeChan();
 
   chan.setRequestHeader("Cookie", cookieVal, false);
 
-  chan.asyncOpen(listener, null);
+  chan.asyncOpen2(listener);
 
   do_test_pending();
 }
@@ -98,7 +94,7 @@ function run_test_continued() {
   cookieVal = cookie2 + "; " + cookieVal;
 
   listener._iteration++;
-  chan.asyncOpen(listener, null);
+  chan.asyncOpen2(listener);
 
   do_test_pending();
 }

@@ -37,7 +37,7 @@
       }
 
       this.eventSeq = [
-        new invokerChecker(EVENT_REORDER, currentBrowser)
+        new invokerChecker(EVENT_DOCUMENT_LOAD_COMPLETE, currentTabDocument)
       ];
 
       this.finalCheck = function loadURI_finalCheck()
@@ -60,7 +60,7 @@
       }
 
       this.eventSeq = [
-        new invokerChecker(EVENT_REORDER, currentBrowser)
+        new invokerChecker(EVENT_DOCUMENT_LOAD_COMPLETE, currentTabDocument)
       ];
 
       this.finalCheck = function loadURI_finalCheck()
@@ -78,7 +78,7 @@
     ////////////////////////////////////////////////////////////////////////////
     // Testing
 
-    gA11yEventDumpToConsole = true; // debug
+    //gA11yEventDumpToConsole = true; // debug
 
     var gQueue = null;
     function doTests()

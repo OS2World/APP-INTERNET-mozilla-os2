@@ -18,43 +18,78 @@
 
 <pre id="test">
 <script class="testbody" type="text/javascript">
-netscape.security.PrivilegeManager.enablePrivilege('UniversalXPConnect');
 
-const Cc = Components.classes;
-const Ci = Components.interfaces;
+const Cc = SpecialPowers.Cc;
+const Ci = SpecialPowers.Ci;
 
-var gNotificationIsAvailable;
+const chromeScript = SpecialPowers.loadChromeScript(_ => {
+  const { utils: Cu } = Components;
 
-if (!("@mozilla.org/alerts-service;1" in Cc)) {
-  todo(false, "Alerts service does not exist in this application");
-} else {
-  ok(true, "Alerts service exists in this application");
+  Cu.import("resource://gre/modules/Services.jsm");
+  Cu.import("resource://gre/modules/Timer.jsm");
 
-  var notifier;
-  try {
-    notifier = Cc["@mozilla.org/alerts-service;1"].
-               getService(Ci.nsIAlertsService);
-    ok(true, "Alerts service is available");
-  } catch (ex) {
-    todo(false, "Alerts service is not available. (Mac OS X without Growl?)", ex);
+  function anyXULAlertsVisible() {
+    var windows = Services.wm.getEnumerator("alert:alert");
+    return windows.hasMoreElements();
   }
 
-  if (notifier) {
-    try {
-      notifier.showAlertNotification(null, "Notification test",
-                                     "This notification has no observer");
-      ok(true, "showAlertNotification() succeeded");
+  addMessageListener("anyXULAlertsVisible", anyXULAlertsVisible);
 
-      gNotificationIsAvailable = true;
+  addMessageListener("waitForAlerts", function waitForAlerts() {
+    if (anyXULAlertsVisible()) {
+      setTimeout(waitForAlerts, 1000);
+    } else {
+      sendAsyncMessage("waitedForAlerts");
+    }
+  });
+});
+
+function waitForAlertsThenFinish() {
+  chromeScript.addMessageListener("waitedForAlerts", function waitedForAlerts() {
+    chromeScript.removeMessageListener("waitedForAlerts", waitedForAlerts);
+    ok(true, "Alert disappeared.");
+    SimpleTest.finish();
+  });
+  chromeScript.sendAsyncMessage("waitForAlerts");
+}
+
+function runTest() {
+  if (!("@mozilla.org/alerts-service;1" in Cc)) {
+    todo(false, "Alerts service does not exist in this application");
+  } else {
+    ok(true, "Alerts service exists in this application");
+
+    var notifier;
+    try {
+      notifier = Cc["@mozilla.org/alerts-service;1"].
+                 getService(Ci.nsIAlertsService);
+      ok(true, "Alerts service is available");
     } catch (ex) {
-      todo(false, "showAlertNotification() failed. (Mac OS X without Growl?)", ex);
+      todo(false, "Alerts service is not available.", ex);
+    }
+
+    if (notifier) {
+      try {
+        notifier.showAlertNotification(null, "Notification test",
+                                       "This notification has no observer");
+        ok(true, "showAlertNotification() succeeded");
+      } catch (ex) {
+        todo(false, "showAlertNotification() failed.", ex);
+      }
     }
   }
 }
 
-if (gNotificationIsAvailable) {
-  ok(true, "Notification should actually display during later tests... (Hope this doesn't disturb them!)");
-}
+SimpleTest.waitForExplicitFinish();
+SimpleTest.requestFlakyTimeout("untriaged");
+
+// sendSyncMessage returns an array of arrays: the outer array is from the
+// message manager, and the inner array is from the chrome script's listeners.
+// See the comment in test_SpecialPowersLoadChromeScript.html.
+var [[alertsVisible]] = chromeScript.sendSyncMessage("anyXULAlertsVisible");
+ok(!alertsVisible, "Alerts should not be present at the start of the test.");
+runTest();
+setTimeout(waitForAlertsThenFinish, 1000);
 </script>
 </pre>
 </body>

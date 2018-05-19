@@ -2,12 +2,6 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this file,
 # You can obtain one at http://mozilla.org/MPL/2.0/.
 
-"""Module to handle the installation and uninstallation of Gecko based
-applications across platforms.
-
-"""
-import mozinfo
-import mozfile
 from optparse import OptionParser
 import os
 import shutil
@@ -16,6 +10,15 @@ import sys
 import tarfile
 import time
 import zipfile
+
+import mozfile
+import mozinfo
+
+try:
+    import pefile
+    has_pefile = True
+except ImportError:
+    has_pefile = False
 
 if mozinfo.isMac:
     from plistlib import readPlist
@@ -51,17 +54,16 @@ def get_binary(path, app_name):
     """Find the binary in the specified path, and return its path. If binary is
     not found throw an InvalidBinary exception.
 
-    Arguments:
-    path -- the path within to search for the binary
-    app_name -- application binary without file extension to look for
-
+    :param path: Path within to search for the binary
+    :param app_name: Application binary without file extension to look for
     """
     binary = None
 
     # On OS X we can get the real binary from the app bundle
     if mozinfo.isMac:
         plist = '%s/Contents/Info.plist' % path
-        assert os.path.isfile(plist), '"%s" has not been found.' % plist
+        if not os.path.isfile(plist):
+            raise InvalidBinary('%s/Contents/Info.plist not found' % path)
 
         binary = os.path.join(path, 'Contents/MacOS/',
                               readPlist(plist)['CFBundleExecutable'])
@@ -80,10 +82,7 @@ def get_binary(path, app_name):
                     break
 
     if not binary:
-        # The expected binary has not been found. Make sure we clean the
-        # install folder to remove any traces
-        shutil.rmtree(path)
-
+        # The expected binary has not been found.
         raise InvalidBinary('"%s" does not contain a valid binary.' % path)
 
     return binary
@@ -93,38 +92,51 @@ def install(src, dest):
     """Install a zip, exe, tar.gz, tar.bz2 or dmg file, and return the path of
     the installation folder.
 
-    Arguments:
-    src  -- the path to the install file
-    dest -- the path to install to (to ensure we do not overwrite any existent
-                                    files the folder should not exist yet)
-
+    :param src: Path to the install file
+    :param dest: Path to install to (to ensure we do not overwrite any existent
+                 files the folder should not exist yet)
     """
     src = os.path.realpath(src)
     dest = os.path.realpath(dest)
 
     if not is_installer(src):
-        raise InvalidSource(src + ' is not a recognized file type ' +
-                                  '(zip, exe, tar.gz, tar.bz2 or dmg)')
+        raise InvalidSource(src + ' is not valid installer file.')
 
+    did_we_create = False
     if not os.path.exists(dest):
+        did_we_create = True
         os.makedirs(dest)
 
     trbk = None
     try:
         install_dir = None
-        if zipfile.is_zipfile(src) or tarfile.is_tarfile(src):
-            install_dir = mozfile.extract(src, dest)[0]
-        elif src.lower().endswith('.dmg'):
+        if src.lower().endswith('.dmg'):
             install_dir = _install_dmg(src, dest)
         elif src.lower().endswith('.exe'):
             install_dir = _install_exe(src, dest)
+        elif zipfile.is_zipfile(src) or tarfile.is_tarfile(src):
+            install_dir = mozfile.extract(src, dest)[0]
 
         return install_dir
 
-    except Exception, e:
+    except:
         cls, exc, trbk = sys.exc_info()
-        error = InstallError('Failed to install "%s"' % src)
-        raise InstallError, error, trbk
+        if did_we_create:
+            try:
+                # try to uninstall this properly
+                uninstall(dest)
+            except:
+                # uninstall may fail, let's just try to clean the folder
+                # in this case
+                try:
+                    mozfile.remove(dest)
+                except:
+                    pass
+        if issubclass(cls, Exception):
+            error = InstallError('Failed to install "%s (%s)"' % (src, str(exc)))
+            raise InstallError, error, trbk
+        # any other kind of exception like KeyboardInterrupt is just re-raised.
+        raise cls, exc, trbk
 
     finally:
         # trbk won't get GC'ed due to circular reference
@@ -140,9 +152,10 @@ def is_installer(src):
     Mac:     dmg
     Windows: zip, exe
 
-    Arguments:
-    src -- the path to the install file
+    On Windows pefile will be used to determine if the executable is the
+    right type, if it is installed on the system.
 
+    :param src: Path to the install file.
     """
     src = os.path.realpath(src)
 
@@ -154,15 +167,31 @@ def is_installer(src):
     elif mozinfo.isMac:
         return src.lower().endswith('.dmg')
     elif mozinfo.isWin:
-        return src.lower().endswith('.exe') or zipfile.is_zipfile(src)
+        if zipfile.is_zipfile(src):
+            return True
+
+        if os.access(src, os.X_OK) and src.lower().endswith('.exe'):
+            if has_pefile:
+                # try to determine if binary is actually a gecko installer
+                pe_data = pefile.PE(src)
+                data = {}
+                for info in getattr(pe_data, 'FileInfo', []):
+                    if info.Key == 'StringFileInfo':
+                        for string in info.StringTable:
+                            data.update(string.entries)
+                return 'BuildID' not in data
+            else:
+                # pefile not available, just assume a proper binary was passed in
+                return True
+
+        return False
 
 
 def uninstall(install_folder):
     """Uninstalls the application in the specified path. If it has been
     installed via an installer on Windows, use the uninstaller first.
 
-    Arguments:
-    install_folder -- the path of the installation folder
+    :param install_folder: Path of the installation folder
 
     """
     install_folder = os.path.realpath(install_folder)
@@ -180,7 +209,7 @@ def uninstall(install_folder):
             try:
                 cmdArgs = ['%s\uninstall\helper.exe' % install_folder, '/S']
                 result = subprocess.call(cmdArgs)
-                if not result is 0:
+                if result is not 0:
                     raise Exception('Execution of uninstaller failed.')
 
                 # The uninstaller spawns another process so the subprocess call
@@ -193,9 +222,9 @@ def uninstall(install_folder):
                     if time.time() > end_time:
                         raise Exception('Failure removing uninstall folder.')
 
-            except Exception, e:
+            except Exception, ex:
                 cls, exc, trbk = sys.exc_info()
-                error = UninstallError('Failed to uninstall %s' % install_folder)
+                error = UninstallError('Failed to uninstall %s (%s)' % (install_folder, str(ex)))
                 raise UninstallError, error, trbk
 
             finally:
@@ -205,20 +234,19 @@ def uninstall(install_folder):
 
     # Ensure that we remove any trace of the installation. Even the uninstaller
     # on Windows leaves files behind we have to explicitely remove.
-    shutil.rmtree(install_folder)
+    mozfile.remove(install_folder)
 
 
 def _install_dmg(src, dest):
     """Extract a dmg file into the destination folder and return the
     application folder.
 
-    Arguments:
     src -- DMG image which has to be extracted
     dest -- the path to extract to
 
     """
     try:
-        proc = subprocess.Popen('hdiutil attach %s' % src,
+        proc = subprocess.Popen('hdiutil attach -nobrowse -noautoopen "%s"' % src,
                                 shell=True,
                                 stdout=subprocess.PIPE)
 
@@ -265,11 +293,12 @@ def _install_exe(src, dest):
 
     # possibly gets around UAC in vista (still need to run as administrator)
     os.environ['__compat_layer'] = 'RunAsInvoker'
-    cmd = [src, '/S', '/D=%s' % os.path.realpath(dest)]
+    cmd = '"%s" /extractdir=%s' % (src, os.path.realpath(dest))
 
     # As long as we support Python 2.4 check_call will not be available.
     result = subprocess.call(cmd)
-    if not result is 0:
+
+    if result is not 0:
         raise Exception('Execution of installer failed.')
 
     return dest
@@ -311,4 +340,3 @@ def uninstall_cli(argv=sys.argv[1:]):
 
     # Run it
     uninstall(argv[0])
-

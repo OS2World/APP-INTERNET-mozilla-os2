@@ -1,10 +1,9 @@
-    COMPONENT(MEMORY, nsMemoryImpl::Create)
-    COMPONENT(DEBUG,  nsDebugImpl::Create)
+    COMPONENT_M(MEMORY, nsMemoryImpl::Create, Module::ALLOW_IN_GPU_PROCESS)
+    COMPONENT_M(DEBUG,  nsDebugImpl::Create, Module::ALLOW_IN_GPU_PROCESS)
     COMPONENT(ERRORSERVICE, nsErrorService::Create)
 
-    COMPONENT(CATEGORYMANAGER, nsCategoryManager::Create)
+    COMPONENT_M(CATEGORYMANAGER, nsCategoryManager::Create, Module::ALLOW_IN_GPU_PROCESS)
 
-    COMPONENT(BYTEBUFFER, ByteBufferImpl::Create)
     COMPONENT(SCRIPTABLEINPUTSTREAM, nsScriptableInputStream::Create)
     COMPONENT(BINARYINPUTSTREAM, nsBinaryInputStreamConstructor)
     COMPONENT(BINARYOUTPUTSTREAM, nsBinaryOutputStreamConstructor)
@@ -18,19 +17,15 @@
     COMPONENT(PERSISTENTPROPERTIES, nsPersistentProperties::Create)
 
     COMPONENT(SUPPORTSARRAY, nsSupportsArray::Create)
-    COMPONENT(ARRAY, nsArray::XPCOMConstructor)
+    COMPONENT(ARRAY, nsArrayBase::XPCOMConstructor)
     COMPONENT(CONSOLESERVICE, nsConsoleServiceConstructor)
-    COMPONENT(EXCEPTIONSERVICE, nsExceptionServiceConstructor)
     COMPONENT(ATOMSERVICE, nsAtomServiceConstructor)
-    COMPONENT(OBSERVERSERVICE, nsObserverService::Create)
-#ifdef MOZ_VISUAL_EVENT_TRACER
-    COMPONENT(VISUALEVENTTRACER, VisualEventTracerConstructor)
-#endif
+    COMPONENT_M(OBSERVERSERVICE, nsObserverService::Create, Module::ALLOW_IN_GPU_PROCESS)
 
-    COMPONENT(TIMER, nsTimerImplConstructor)
+    COMPONENT_M(TIMER, nsTimerConstructor, Module::ALLOW_IN_GPU_PROCESS)
 
 #define COMPONENT_SUPPORTS(TYPE, Type)                                         \
-  COMPONENT(SUPPORTS_##TYPE, nsSupports##Type##ImplConstructor)
+  COMPONENT(SUPPORTS_##TYPE, nsSupports##Type##Constructor)
 
     COMPONENT_SUPPORTS(ID, ID)
     COMPONENT_SUPPORTS(STRING, String)
@@ -57,15 +52,15 @@
     COMPONENT(ENVIRONMENT, nsEnvironment::Create)
 
     COMPONENT(THREADMANAGER, nsThreadManagerGetSingleton)
-    COMPONENT(THREADPOOL, nsThreadPoolConstructor)
+    COMPONENT_M(THREADPOOL, nsThreadPoolConstructor, Module::ALLOW_IN_GPU_PROCESS)
 
     COMPONENT(STRINGINPUTSTREAM, nsStringInputStreamConstructor)
     COMPONENT(MULTIPLEXINPUTSTREAM, nsMultiplexInputStreamConstructor)
 
-    COMPONENT(VARIANT, nsVariantConstructor)
+    COMPONENT(VARIANT, nsVariantCCConstructor)
     COMPONENT(INTERFACEINFOMANAGER_SERVICE, nsXPTIInterfaceInfoManagerGetSingleton)
 
-    COMPONENT(HASH_PROPERTY_BAG, nsHashPropertyBagConstructor)
+    COMPONENT(HASH_PROPERTY_BAG, nsHashPropertyBagCCConstructor)
 
     COMPONENT(UUID_GENERATOR, nsUUIDGeneratorConstructor)
 
@@ -83,3 +78,4 @@
     COMPONENT(IOUTIL, nsIOUtilConstructor)
     COMPONENT(CYCLE_COLLECTOR_LOGGER, nsCycleCollectorLoggerConstructor)
     COMPONENT(MESSAGE_LOOP, nsMessageLoopConstructor)
+    COMPONENT(STATUS_REPORTER_MANAGER, nsStatusReporterManagerConstructor)

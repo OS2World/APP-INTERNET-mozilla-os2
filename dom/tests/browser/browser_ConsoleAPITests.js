@@ -5,32 +5,100 @@
 
 const TEST_URI = "http://example.com/browser/dom/tests/browser/test-console-api.html";
 
-var gWindow, gLevel, gArgs, gTestDriver;
+add_task(function*() {
+  let tab = yield BrowserTestUtils.openNewForegroundTab(gBrowser, TEST_URI);
+  registerCleanupFunction(() => gBrowser.removeTab(tab));
+  let browser = gBrowser.selectedBrowser;
 
-function test() {
-  waitForExplicitFinish();
+  yield* consoleAPISanityTest(browser);
+  yield* observeConsoleTest(browser);
+  yield* startTraceTest(browser);
+  yield* startLocationTest(browser);
+  yield* startNativeCallbackTest(browser);
+  yield* startGroupTest(browser);
+  yield* startTimeTest(browser);
+  yield* startTimeEndTest(browser);
+  yield* startTimeStampTest(browser);
+  yield* startEmptyTimeStampTest(browser);
+  yield* startEmptyTimerTest(browser);
+});
 
-  var tab = gBrowser.addTab(TEST_URI);
-  gBrowser.selectedTab = tab;
-  var browser = gBrowser.selectedBrowser;
+function spawnWithObserver(browser, observerFunc, func) {
+  // Build the observer generating function.
+  let source = [
+    "const TEST_URI = 'http://example.com/browser/dom/tests/browser/test-console-api.html';",
+    // Create a promise to be resolved when the text is complete. It is stored
+    // on content, such that it can be waited on by calling waitForResolve. This
+    // is done rather than returning it from this function such that the
+    // initialization can be yeilded on before yeilding on the conclusion of the
+    // test.
+    "content._promise = new Promise(_resolve => {",
+    // These are variables which are used by the test runner to communicate
+    // state to the observer.
+    "  let gLevel, gArgs, gStyle;",
+    "  let expect = function(level) {",
+    "    gLevel = level;",
+    "    gArgs = Array.slice(arguments, 1);",
+    "  }",
+    // To ease the transition to the new format, content.window is avaliable as gWindow
+    // in the content.
+    "  let gWindow = content.window;",
+    // This method is called rather than _resolve such that the observer is removed
+    // before exiting the test
+    "  let resolve = () => {",
+    "    Services.obs.removeObserver(ConsoleObserver, 'console-api-log-event');",
+    "    _resolve();",
+    "  };",
+    // This is the observer itself, it calls the passed-in function whenever
+    // it encounters an event
+    "  let ConsoleObserver = {",
+    "    QueryInterface: XPCOMUtils.generateQI([Ci.nsIObserver]),",
+    "    observe: function(aSubject, aTopic, aData) {",
+    "      try {",
+    "        (" + observerFunc.toString() + ")(aSubject.wrappedJSObject);",
+    "      } catch (ex) {",
+    "        ok(false, 'Exception thrown in observe: ' + ex);",
+    "      }",
+    "    }",
+    "  };",
+    "  Services.obs.addObserver(ConsoleObserver, 'console-api-log-event', false);",
+    // Call the initialization function (if present)
+    func ? ("(" + func.toString() + ")();") : "",
+    "});",
+  ].join('\n');
 
-  registerCleanupFunction(function () {
-    gWindow = gLevel = gArgs = gTestDriver = null;
-    gBrowser.removeTab(tab);
+  return ContentTask.spawn(browser, null, new Function(source));
+}
+
+function waitForResolve(browser) {
+  return ContentTask.spawn(browser, null, function() {
+    return content._promise;
   });
+}
 
-  ConsoleObserver.init();
+function* consoleAPISanityTest(browser) {
+  yield ContentTask.spawn(browser, null, function() {
+    let win = XPCNativeWrapper.unwrap(content.window);
 
-  browser.addEventListener("DOMContentLoaded", function onLoad(event) {
-    browser.removeEventListener("DOMContentLoaded", onLoad, false);
-    executeSoon(function test_executeSoon() {
-      gWindow = browser.contentWindow;
-      consoleAPISanityTest();
-      gTestDriver = observeConsoleTest();
-      gTestDriver.next();
-    });
+    ok(win.console, "we have a console attached");
+    ok(win.console, "we have a console attached, 2nd attempt");
 
-  }, false);
+    ok(win.console.log, "console.log is here");
+    ok(win.console.info, "console.info is here");
+    ok(win.console.warn, "console.warn is here");
+    ok(win.console.error, "console.error is here");
+    ok(win.console.exception, "console.exception is here");
+    ok(win.console.trace, "console.trace is here");
+    ok(win.console.dir, "console.dir is here");
+    ok(win.console.group, "console.group is here");
+    ok(win.console.groupCollapsed, "console.groupCollapsed is here");
+    ok(win.console.groupEnd, "console.groupEnd is here");
+    ok(win.console.time, "console.time is here");
+    ok(win.console.timeEnd, "console.timeEnd is here");
+    ok(win.console.timeStamp, "console.timeStamp is here");
+    ok(win.console.assert, "console.assert is here");
+    ok(win.console.count, "console.count is here");
+  });
 }
 
 function testConsoleData(aMessageObject) {
@@ -40,12 +108,19 @@ function testConsoleData(aMessageObject) {
   is(aMessageObject.level, gLevel, "expected level received");
   ok(aMessageObject.arguments, "we have arguments");
 
-  if (gLevel == "trace") {
+  switch (gLevel) {
+  case "trace": {
     is(aMessageObject.arguments.length, 0, "arguments.length matches");
     is(aMessageObject.stacktrace.toSource(), gArgs.toSource(),
        "stack trace is correct");
+    break;
   }
-  else {
+  case "count": {
+    is(aMessageObject.counter.label, gArgs[0].label, "label matches");
+    is(aMessageObject.counter.count, gArgs[0].count, "count matches");
+    break;
+  }
+  default: {
     is(aMessageObject.arguments.length, gArgs.length, "arguments.length matches");
     gArgs.forEach(function (a, i) {
       // Waive Xray so that we don't get messed up by Xray ToString.
@@ -57,9 +132,151 @@ function testConsoleData(aMessageObject) {
         arg = arg.wrappedJSObject;
       is(arg, a, "correct arg " + i);
     });
-  }
 
-  gTestDriver.next();
+    if (gStyle) {
+      is(aMessageObject.styles.length, gStyle.length, "styles.length matches");
+      is(aMessageObject.styles + "", gStyle + "", "styles match");
+    } else {
+      ok(!aMessageObject.styles || aMessageObject.styles.length === 0,
+         "styles match");
+    }
+  }
+  }
+}
+
+function* observeConsoleTest(browser) {
+  yield spawnWithObserver(browser, testConsoleData, function(opts) {
+    let win = XPCNativeWrapper.unwrap(content.window);
+    expect("log", "arg");
+    win.console.log("arg");
+
+    expect("info", "arg", "extra arg");
+    win.console.info("arg", "extra arg");
+
+    expect("warn", "Lesson 1: PI is approximately equal to 3");
+    win.console.warn("Lesson %d: %s is approximately equal to %1.0f",
+                     1,
+                     "PI",
+                     3.14159);
+
+    expect("warn", "Lesson 1: PI is approximately equal to 3.14");
+    win.console.warn("Lesson %d: %s is approximately equal to %1.2f",
+                     1,
+                     "PI",
+                     3.14159);
+
+    expect("warn", "Lesson 1: PI is approximately equal to 3.141590");
+    win.console.warn("Lesson %d: %s is approximately equal to %f",
+                     1,
+                     "PI",
+                     3.14159);
+
+    expect("warn", "Lesson 1: PI is approximately equal to 3.1415900");
+    win.console.warn("Lesson %d: %s is approximately equal to %0.7f",
+                     1,
+                     "PI",
+                     3.14159);
+
+    expect("log", "%d, %s, %l");
+    win.console.log("%d, %s, %l");
+
+    expect("log", "%a %b %g");
+    win.console.log("%a %b %g");
+
+    expect("log", "%a %b %g", "a", "b");
+    win.console.log("%a %b %g", "a", "b");
+
+    expect("log", "2, a, %l", 3);
+    win.console.log("%d, %s, %l", 2, "a", 3);
+
+    // Bug #692550 handle null and undefined.
+    expect("log", "null, undefined");
+    win.console.log("%s, %s", null, undefined);
+
+    // Bug #696288 handle object as first argument.
+    let obj = { a: 1 };
+    expect("log", obj, "a");
+    win.console.log(obj, "a");
+
+    expect("dir", win.toString());
+    win.console.dir(win);
+
+    expect("error", "arg");
+    win.console.error("arg");
+
+    expect("exception", "arg");
+    win.console.exception("arg");
+
+    expect("log", "foobar");
+    gStyle = ["color:red;foobar;;"];
+    win.console.log("%cfoobar", gStyle[0]);
+
+    let obj4 = { d: 4 };
+    expect("warn", "foobar", obj4, "test", "bazbazstr", "last");
+    gStyle = [null, null, null, "color:blue;", "color:red"];
+    win.console.warn("foobar%Otest%cbazbaz%s%clast", obj4, gStyle[3], "str", gStyle[4]);
+
+    let obj3 = { c: 3 };
+    expect("info", "foobar", "bazbaz", obj3, "%comg", "color:yellow");
+    gStyle = [null, "color:pink;"];
+    win.console.info("foobar%cbazbaz", gStyle[1], obj3, "%comg", "color:yellow");
+
+    gStyle = null;
+    let obj2 = { b: 2 };
+    expect("log", "omg ", obj, " foo ", 4, obj2);
+    win.console.log("omg %o foo %o", obj, 4, obj2);
+
+    expect("assert", "message");
+    win.console.assert(false, "message");
+
+    expect("count", { label: "label a", count: 1 });
+    win.console.count("label a");
+
+    expect("count", { label: "label b", count: 1 });
+    win.console.count("label b");
+
+    expect("count", { label: "label a", count: 2 });
+    win.console.count("label a");
+
+    expect("count", { label: "label b", count: 2 });
+    win.console.count("label b");
+    dump("Resolving\n");
+    resolve();
+  });
+  dump("There\n");
+}
+
+function testTraceConsoleData(aMessageObject) {
+  let messageWindow = Services.wm.getOuterWindowWithId(aMessageObject.ID);
+  is(messageWindow, gWindow, "found correct window by window ID");
+
+  is(aMessageObject.level, gLevel, "expected level received");
+  ok(aMessageObject.arguments, "we have arguments");
+
+  is(gLevel, "trace", "gLevel should be trace");
+  is(aMessageObject.arguments.length, 0, "arguments.length matches");
+  dump(aMessageObject.stacktrace.toSource() + "\n" + gArgs.toSource() + "\n");
+  is(aMessageObject.stacktrace.toSource(), gArgs.toSource(),
+     "stack trace is correct");
+  resolve();
+}
+
+function* startTraceTest(browser) {
+  dump("HERE\n");
+  yield spawnWithObserver(browser, testTraceConsoleData, function(opts) {
+    dump("Observer attached\n");
+    gLevel = "trace";
+    gArgs = [
+      {columnNumber: 9, filename: TEST_URI, functionName: "window.foobar585956c", language: 2, lineNumber: 6},
+      {columnNumber: 16, filename: TEST_URI, functionName: "foobar585956b", language: 2, lineNumber: 11},
+      {columnNumber: 16, filename: TEST_URI, functionName: "foobar585956a", language: 2, lineNumber: 15},
+      {columnNumber: 1, filename: TEST_URI, functionName: "onclick", language: 2, lineNumber: 1}
+    ];
+
+  });
+
+  BrowserTestUtils.synthesizeMouseAtCenter("#test-trace", {}, browser);
+  yield waitForResolve(browser);
 }
 
 function testLocationData(aMessageObject) {
@@ -77,23 +294,35 @@ function testLocationData(aMessageObject) {
     is(aMessageObject.arguments[i], a, "correct arg " + i);
   });
 
-  startGroupTest();
+  resolve();
 }
 
-function startGroupTest() {
-  // Reset the observer function to cope with the fabricated test data.
-  ConsoleObserver.observe = function CO_observe(aSubject, aTopic, aData) {
-    try {
-      testConsoleGroup(aSubject.wrappedJSObject);
-    } catch (ex) {
-      // XXX Exceptions in this function currently aren't reported, because of
-      // some XPConnect weirdness, so report them manually
-      ok(false, "Exception thrown in CO_observe: " + ex);
-    }
-  };
-  let button = gWindow.document.getElementById("test-groups");
-  ok(button, "found #test-groups button");
-  EventUtils.synthesizeMouseAtCenter(button, {}, gWindow);
+function* startLocationTest(browser) {
+  yield spawnWithObserver(browser, testLocationData, function(opts) {
+    gLevel = "log";
+    gArgs = [
+      {filename: TEST_URI, functionName: "foobar646025", arguments: ["omg", "o", "d"], lineNumber: 19}
+    ];
+  });
+
+  BrowserTestUtils.synthesizeMouseAtCenter("#test-location", {}, browser);
+  yield waitForResolve(browser);
+}
+
+function testNativeCallback(aMessageObject) {
+  is(aMessageObject.level, "log", "expected level received");
+  is(aMessageObject.filename, "", "filename matches");
+  is(aMessageObject.lineNumber, 0, "lineNumber matches");
+  is(aMessageObject.functionName, "", "functionName matches");
+
+  resolve();
+}
+
+function* startNativeCallbackTest(browser) {
+  yield spawnWithObserver(browser, testNativeCallback);
+
+  BrowserTestUtils.synthesizeMouseAtCenter("#test-nativeCallback", {}, browser);
+  yield waitForResolve(browser);
 }
 
 function testConsoleGroup(aMessageObject) {
@@ -106,7 +335,7 @@ function testConsoleGroup(aMessageObject) {
      "expected level received");
 
   is(aMessageObject.functionName, "testGroups", "functionName matches");
-  ok(aMessageObject.lineNumber >= 45 && aMessageObject.lineNumber <= 47,
+  ok(aMessageObject.lineNumber >= 46 && aMessageObject.lineNumber <= 50,
      "lineNumber matches");
   if (aMessageObject.level == "groupCollapsed") {
     is(aMessageObject.groupName, "a group", "groupCollapsed groupName matches");
@@ -125,156 +354,15 @@ function testConsoleGroup(aMessageObject) {
   }
 
   if (aMessageObject.level == "groupEnd") {
-    startTimeTest();
+    resolve();
   }
 }
 
-function startTraceTest() {
-  gLevel = "trace";
-  gArgs = [
-    {filename: TEST_URI, lineNumber: 6, functionName: "window.foobar585956c", language: 2},
-    {filename: TEST_URI, lineNumber: 11, functionName: "foobar585956b", language: 2},
-    {filename: TEST_URI, lineNumber: 15, functionName: "foobar585956a", language: 2},
-    {filename: TEST_URI, lineNumber: 1, functionName: "onclick", language: 2}
-  ];
+function* startGroupTest(browser) {
+  yield spawnWithObserver(browser, testConsoleGroup);
 
-  let button = gWindow.document.getElementById("test-trace");
-  ok(button, "found #test-trace button");
-  EventUtils.synthesizeMouseAtCenter(button, {}, gWindow);
-}
-
-function startLocationTest() {
-  // Reset the observer function to cope with the fabricated test data.
-  ConsoleObserver.observe = function CO_observe(aSubject, aTopic, aData) {
-    try {
-      testLocationData(aSubject.wrappedJSObject);
-    } catch (ex) {
-      // XXX Exceptions in this function currently aren't reported, because of
-      // some XPConnect weirdness, so report them manually
-      ok(false, "Exception thrown in CO_observe: " + ex);
-    }
-  };
-  gLevel = "log";
-  gArgs = [
-    {filename: TEST_URI, lineNumber: 19, functionName: "foobar646025", arguments: ["omg", "o", "d"]}
-  ];
-
-  let button = gWindow.document.getElementById("test-location");
-  ok(button, "found #test-location button");
-  EventUtils.synthesizeMouseAtCenter(button, {}, gWindow);
-}
-
-function expect(level) {
-  gLevel = level;
-  gArgs = Array.slice(arguments, 1);
-}
-
-function observeConsoleTest() {
-  let win = XPCNativeWrapper.unwrap(gWindow);
-  expect("log", "arg");
-  win.console.log("arg");
-  yield;
-
-  expect("info", "arg", "extra arg");
-  win.console.info("arg", "extra arg");
-  yield;
-
-  // We don't currently support width and precision qualifiers, but we don't
-  // choke on them either.
-  expect("warn", "Lesson 1: PI is approximately equal to 3.14159");
-  win.console.warn("Lesson %d: %s is approximately equal to %1.2f",
-                   1,
-                   "PI",
-                   3.14159);
-  yield;
-
-  expect("log", "%d, %s, %l");
-  win.console.log("%d, %s, %l");
-  yield;
-
-  expect("log", "%a %b %c");
-  win.console.log("%a %b %c");
-  yield;
-
-  expect("log", "%a %b %c", "a", "b");
-  win.console.log("%a %b %c", "a", "b");
-  yield;
-
-  expect("log", "2, a, %l", 3);
-  win.console.log("%d, %s, %l", 2, "a", 3);
-  yield;
-
-  // Bug #692550 handle null and undefined.
-  expect("log", "null, undefined");
-  win.console.log("%s, %s", null, undefined);
-  yield;
-
-  // Bug #696288 handle object as first argument.
-  let obj = { a: 1 };
-  expect("log", obj, "a");
-  win.console.log(obj, "a");
-  yield;
-
-  expect("dir", win.toString());
-  win.console.dir(win);
-  yield;
-
-  expect("error", "arg");
-  win.console.error("arg");
-  yield;
-
-  let obj2 = { b: 2 };
-  expect("log", "omg ", obj, " foo ", 4, obj2);
-  win.console.log("omg %o foo %o", obj, 4, obj2);
-  yield;
-
-  startTraceTest();
-  yield;
-
-  startLocationTest();
-  yield;
-}
-
-function consoleAPISanityTest() {
-  let win = XPCNativeWrapper.unwrap(gWindow);
-  ok(win.console, "we have a console attached");
-  ok(win.console, "we have a console attached, 2nd attempt");
-
-  ok(win.console.log, "console.log is here");
-  ok(win.console.info, "console.info is here");
-  ok(win.console.warn, "console.warn is here");
-  ok(win.console.error, "console.error is here");
-  ok(win.console.trace, "console.trace is here");
-  ok(win.console.dir, "console.dir is here");
-  ok(win.console.group, "console.group is here");
-  ok(win.console.groupCollapsed, "console.groupCollapsed is here");
-  ok(win.console.groupEnd, "console.groupEnd is here");
-  ok(win.console.time, "console.time is here");
-  ok(win.console.timeEnd, "console.timeEnd is here");
-}
-
-function startTimeTest() {
-  // Reset the observer function to cope with the fabricated test data.
-  ConsoleObserver.observe = function CO_observe(aSubject, aTopic, aData) {
-    try {
-      testConsoleTime(aSubject.wrappedJSObject);
-    } catch (ex) {
-      // XXX Exceptions in this function currently aren't reported, because of
-      // some XPConnect weirdness, so report them manually
-      ok(false, "Exception thrown in CO_observe: " + ex);
-    }
-  };
-  gLevel = "time";
-  gArgs = [
-    {filename: TEST_URI, lineNumber: 23, functionName: "startTimer",
-     arguments: ["foo"],
-     timer: { name: "foo" },
-    }
-  ];
-
-  let button = gWindow.document.getElementById("test-time");
-  ok(button, "found #test-time button");
-  EventUtils.synthesizeMouseAtCenter(button, {}, gWindow);
+  BrowserTestUtils.synthesizeMouseAtCenter("#test-groups", {}, browser);
+  yield waitForResolve(browser);
 }
 
 function testConsoleTime(aMessageObject) {
@@ -293,31 +381,22 @@ function testConsoleTime(aMessageObject) {
     is(aMessageObject.arguments[i], a, "correct arg " + i);
   });
 
-  startTimeEndTest();
+  resolve();
 }
 
-function startTimeEndTest() {
-  // Reset the observer function to cope with the fabricated test data.
-  ConsoleObserver.observe = function CO_observe(aSubject, aTopic, aData) {
-    try {
-      testConsoleTimeEnd(aSubject.wrappedJSObject);
-    } catch (ex) {
-      // XXX Exceptions in this function currently aren't reported, because of
-      // some XPConnect weirdness, so report them manually
-      ok(false, "Exception thrown in CO_observe: " + ex);
-    }
-  };
-  gLevel = "timeEnd";
-  gArgs = [
-    {filename: TEST_URI, lineNumber: 27, functionName: "stopTimer",
-     arguments: ["foo"],
-     timer: { name: "foo" },
-    },
-  ];
+function* startTimeTest(browser) {
+  yield spawnWithObserver(browser, testConsoleTime, function(opts) {
+    gLevel = "time";
+    gArgs = [
+      {filename: TEST_URI, lineNumber: 23, functionName: "startTimer",
+       arguments: ["foo"],
+       timer: { name: "foo" },
+      }
+    ];
+  });
 
-  let button = gWindow.document.getElementById("test-timeEnd");
-  ok(button, "found #test-timeEnd button");
-  EventUtils.synthesizeMouseAtCenter(button, {}, gWindow);
+  BrowserTestUtils.synthesizeMouseAtCenter("#test-time", {}, browser);
+  yield waitForResolve(browser);
 }
 
 function testConsoleTimeEnd(aMessageObject) {
@@ -340,24 +419,83 @@ function testConsoleTimeEnd(aMessageObject) {
     is(aMessageObject.arguments[i], a, "correct arg " + i);
   });
 
-  startEmptyTimerTest();
+  resolve();
 }
 
-function startEmptyTimerTest() {
-  // Reset the observer function to cope with the fabricated test data.
-  ConsoleObserver.observe = function CO_observe(aSubject, aTopic, aData) {
-    try {
-      testEmptyTimer(aSubject.wrappedJSObject);
-    } catch (ex) {
-      // XXX Exceptions in this function currently aren't reported, because of
-      // some XPConnect weirdness, so report them manually
-      ok(false, "Exception thrown in CO_observe: " + ex);
-    }
-  };
+function* startTimeEndTest(browser) {
+  yield spawnWithObserver(browser, testConsoleTimeEnd, function(opts) {
+    gLevel = "timeEnd";
+    gArgs = [
+      {filename: TEST_URI, lineNumber: 27, functionName: "stopTimer",
+       arguments: ["foo"],
+       timer: { name: "foo" },
+      },
+    ];
+  });
 
-  let button = gWindow.document.getElementById("test-namelessTimer");
-  ok(button, "found #test-namelessTimer button");
-  EventUtils.synthesizeMouseAtCenter(button, {}, gWindow);
+  BrowserTestUtils.synthesizeMouseAtCenter("#test-timeEnd", {}, browser);
+  yield waitForResolve(browser);
+}
+
+function testConsoleTimeStamp(aMessageObject) {
+  let messageWindow = Services.wm.getOuterWindowWithId(aMessageObject.ID);
+  is(messageWindow, gWindow, "found correct window by window ID");
+
+  is(aMessageObject.level, gLevel, "expected level received");
+
+  is(aMessageObject.filename, gArgs[0].filename, "filename matches");
+  is(aMessageObject.lineNumber, gArgs[0].lineNumber, "lineNumber matches");
+  is(aMessageObject.functionName, gArgs[0].functionName, "functionName matches");
+  ok(aMessageObject.timeStamp > 0, "timeStamp is a positive value");
+
+  gArgs[0].arguments.forEach(function (a, i) {
+    is(aMessageObject.arguments[i], a, "correct arg " + i);
+  });
+
+  resolve();
+}
+
+function* startTimeStampTest(browser) {
+  yield spawnWithObserver(browser, testConsoleTimeStamp, function() {
+    gLevel = "timeStamp";
+    gArgs = [
+      {filename: TEST_URI, lineNumber: 58, functionName: "timeStamp",
+       arguments: ["!!!"]
+      }
+    ];
+  });
+
+  BrowserTestUtils.synthesizeMouseAtCenter("#test-timeStamp", {}, browser);
+  yield waitForResolve(browser);
+}
+
+function testEmptyConsoleTimeStamp(aMessageObject) {
+  let messageWindow = Services.wm.getOuterWindowWithId(aMessageObject.ID);
+  is(messageWindow, gWindow, "found correct window by window ID");
+
+  is(aMessageObject.level, gLevel, "expected level received");
+
+  is(aMessageObject.filename, gArgs[0].filename, "filename matches");
+  is(aMessageObject.lineNumber, gArgs[0].lineNumber, "lineNumber matches");
+  is(aMessageObject.functionName, gArgs[0].functionName, "functionName matches");
+  ok(aMessageObject.timeStamp > 0, "timeStamp is a positive value");
+  is(aMessageObject.arguments.length, 0, "we don't have arguments");
+
+  resolve();
+}
+
+function* startEmptyTimeStampTest(browser) {
+  yield spawnWithObserver(browser, testEmptyConsoleTimeStamp, function() {
+    gLevel = "timeStamp";
+    gArgs = [
+      {filename: TEST_URI, lineNumber: 58, functionName: "timeStamp",
+       arguments: []
+      }
+    ];
+  });
+
+  BrowserTestUtils.synthesizeMouseAtCenter("#test-emptyTimeStamp", {}, browser);
+  yield waitForResolve(browser);
 }
 
 function testEmptyTimer(aMessageObject) {
@@ -372,36 +510,13 @@ function testEmptyTimer(aMessageObject) {
   is(aMessageObject.functionName, "namelessTimer", "functionName matches");
   ok(aMessageObject.lineNumber == 31 || aMessageObject.lineNumber == 32,
      "lineNumber matches");
-  // Test finished
-  ConsoleObserver.destroy();
-  finish();
+
+  resolve();
 }
 
-var ConsoleObserver = {
-  QueryInterface: XPCOMUtils.generateQI([Ci.nsIObserver]),
+function* startEmptyTimerTest(browser) {
+  yield spawnWithObserver(browser, testEmptyTimer);
 
-  init: function CO_init() {
-    Services.obs.addObserver(this, "console-api-log-event", false);
-  },
-
-  destroy: function CO_destroy() {
-    Services.obs.removeObserver(this, "console-api-log-event");
-  },
-
-  observe: function CO_observe(aSubject, aTopic, aData) {
-    try {
-      testConsoleData(aSubject.wrappedJSObject);
-    } catch (ex) {
-      // XXX Exceptions in this function currently aren't reported, because of
-      // some XPConnect weirdness, so report them manually
-      ok(false, "Exception thrown in CO_observe: " + ex);
-    }
-  }
-};
-
-function getWindowId(aWindow)
-{
-  return aWindow.QueryInterface(Ci.nsIInterfaceRequestor)
-                .getInterface(Ci.nsIDOMWindowUtils)
-                .outerWindowID;
+  BrowserTestUtils.synthesizeMouseAtCenter("#test-namelessTimer", {}, browser);
+  yield waitForResolve(browser);
 }

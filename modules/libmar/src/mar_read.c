@@ -91,11 +91,16 @@ static int mar_consume_index(MarFile *mar, char **buf, const char *buf_end) {
   name = *buf;
   /* find namelen; must take care not to read beyond buf_end */
   while (**buf) {
-    if (*buf == buf_end)
+    /* buf_end points one byte past the end of buf's allocation */
+    if (*buf == (buf_end - 1))
       return -1;
     ++(*buf);
   }
   namelen = (*buf - name);
+  /* must ensure that namelen is valid */
+  if (namelen < 0) {
+    return -1;
+  }
   /* consume null byte */
   if (*buf == buf_end)
     return -1;
@@ -168,8 +173,11 @@ MarFile *mar_open(const char *path) {
   FILE *fp;
 
   fp = fopen(path, "rb");
-  if (!fp)
+  if (!fp) {
+    fprintf(stderr, "ERROR: could not open file in mar_open()\n");
+    perror(path);
     return NULL;
+  }
 
   return mar_fpopen(fp);
 }
@@ -179,8 +187,11 @@ MarFile *mar_wopen(const wchar_t *path) {
   FILE *fp;
 
   _wfopen_s(&fp, path, L"rb");
-  if (!fp)
+  if (!fp) {
+    fprintf(stderr, "ERROR: could not open file in mar_wopen()\n");
+    _wperror(path);
     return NULL;
+  }
 
   return mar_fpopen(fp);
 }
@@ -224,10 +235,10 @@ void mar_close(MarFile *mar) {
  */
 int get_mar_file_info_fp(FILE *fp, 
                          int *hasSignatureBlock,
-                         int *numSignatures,
+                         uint32_t *numSignatures,
                          int *hasAdditionalBlocks,
-                         int *offsetAdditionalBlocks,
-                         int *numAdditionalBlocks)
+                         uint32_t *offsetAdditionalBlocks,
+                         uint32_t *numAdditionalBlocks)
 {
   uint32_t offsetToIndex, offsetToContent, signatureCount, signatureLen, i;
   
@@ -327,7 +338,7 @@ int get_mar_file_info_fp(FILE *fp,
     }
   }
 
-  if (ftell(fp) == offsetToContent) {
+  if ((int64_t)ftell(fp) == (int64_t)offsetToContent) {
     *hasAdditionalBlocks = 0;
   } else {
     if (numAdditionalBlocks) {
@@ -367,6 +378,8 @@ read_product_info_block(char *path,
   MarFile mar;
   mar.fp = fopen(path, "rb");
   if (!mar.fp) {
+    fprintf(stderr, "ERROR: could not open file in read_product_info_block()\n");
+    perror(path);
     return -1;
   }
   rv = mar_read_product_info_block(&mar, infoBlock);
@@ -386,16 +399,19 @@ int
 mar_read_product_info_block(MarFile *mar, 
                             struct ProductInformationBlock *infoBlock)
 {
-  int i, hasAdditionalBlocks,
-    offsetAdditionalBlocks, numAdditionalBlocks,
+  uint32_t i, offsetAdditionalBlocks, numAdditionalBlocks,
     additionalBlockSize, additionalBlockID;
+  int hasAdditionalBlocks;
+
   /* The buffer size is 97 bytes because the MAR channel name < 64 bytes, and 
      product version < 32 bytes + 3 NULL terminator bytes. */
   char buf[97] = { '\0' };
-  int ret = get_mar_file_info_fp(mar->fp, NULL, NULL,
-                                 &hasAdditionalBlocks, 
-                                 &offsetAdditionalBlocks, 
-                                 &numAdditionalBlocks);
+  if (get_mar_file_info_fp(mar->fp, NULL, NULL,
+                           &hasAdditionalBlocks,
+                           &offsetAdditionalBlocks,
+                           &numAdditionalBlocks) != 0) {
+    return -1;
+  }
   for (i = 0; i < numAdditionalBlocks; ++i) {
     /* Read the additional block size */
     if (fread(&additionalBlockSize, 
@@ -539,14 +555,16 @@ int mar_read(MarFile *mar, const MarItem *item, int offset, char *buf,
  */
 int get_mar_file_info(const char *path, 
                       int *hasSignatureBlock,
-                      int *numSignatures,
+                      uint32_t *numSignatures,
                       int *hasAdditionalBlocks,
-                      int *offsetAdditionalBlocks,
-                      int *numAdditionalBlocks)
+                      uint32_t *offsetAdditionalBlocks,
+                      uint32_t *numAdditionalBlocks)
 {
   int rv;
   FILE *fp = fopen(path, "rb");
   if (!fp) {
+    fprintf(stderr, "ERROR: could not open file in get_mar_file_info()\n");
+    perror(path);
     return -1;
   }
 

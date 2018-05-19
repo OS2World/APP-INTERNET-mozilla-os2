@@ -9,6 +9,7 @@
 #include "PluginHangUIParent.h"
 
 #include "mozilla/Telemetry.h"
+#include "mozilla/ipc/ProtocolUtils.h"
 #include "mozilla/plugins/PluginModuleParent.h"
 
 #include "nsContentUtils.h"
@@ -18,6 +19,7 @@
 #include "nsIWindowMediator.h"
 #include "nsIWinTaskbar.h"
 #include "nsServiceManagerUtils.h"
+#include "nsThreadUtils.h"
 
 #include "WidgetUtils.h"
 
@@ -31,7 +33,7 @@ using std::string;
 using std::vector;
 
 namespace {
-class nsPluginHangUITelemetry : public nsRunnable
+class nsPluginHangUITelemetry : public mozilla::Runnable
 {
 public:
   nsPluginHangUITelemetry(int aResponseCode, int aDontAskCode,
@@ -44,7 +46,7 @@ public:
   }
 
   NS_IMETHOD
-  Run()
+  Run() override
   {
     mozilla::Telemetry::Accumulate(
               mozilla::Telemetry::PLUGIN_HANG_UI_USER_RESPONSE, mResponseCode);
@@ -63,12 +65,12 @@ private:
   uint32_t mResponseTimeMs;
   uint32_t mTimeoutMs;
 };
-} // anonymous namespace
+} // namespace
 
 namespace mozilla {
 namespace plugins {
 
-PluginHangUIParent::PluginHangUIParent(PluginModuleParent* aModule,
+PluginHangUIParent::PluginHangUIParent(PluginModuleChromeParent* aModule,
                                        const int32_t aHangUITimeoutPref,
                                        const int32_t aChildTimeoutPref)
   : mMutex("mozilla::plugins::PluginHangUIParent::mMutex"),
@@ -78,10 +80,10 @@ PluginHangUIParent::PluginHangUIParent(PluginModuleParent* aModule,
     mMainThreadMessageLoop(MessageLoop::current()),
     mIsShowing(false),
     mLastUserResponse(0),
-    mHangUIProcessHandle(NULL),
-    mMainWindowHandle(NULL),
-    mRegWait(NULL),
-    mShowEvent(NULL),
+    mHangUIProcessHandle(nullptr),
+    mMainWindowHandle(nullptr),
+    mRegWait(nullptr),
+    mShowEvent(nullptr),
     mShowTicks(0),
     mResponseTicks(0)
 {
@@ -153,7 +155,7 @@ PluginHangUIParent::Init(const nsString& aPluginName)
   CommandLine commandLine(exePath.value());
 
   nsXPIDLString localizedStr;
-  const PRUnichar* formatParams[] = { aPluginName.get() };
+  const char16_t* formatParams[] = { aPluginName.get() };
   rv = nsContentUtils::FormatLocalizedString(nsContentUtils::eDOM_PROPERTIES,
                                              "PluginHangUIMessage",
                                              formatParams,
@@ -223,7 +225,7 @@ PluginHangUIParent::Init(const nsString& aPluginName)
   }
   commandLine.AppendLooseValue(ipcCookie);
 
-  ScopedHandle showEvent(::CreateEvent(NULL, FALSE, FALSE, NULL));
+  ScopedHandle showEvent(::CreateEventW(nullptr, FALSE, FALSE, nullptr));
   if (!showEvent.IsValid()) {
     return false;
   }
@@ -231,7 +233,7 @@ PluginHangUIParent::Init(const nsString& aPluginName)
 
   MutexAutoLock lock(mMutex);
   STARTUPINFO startupInfo = { sizeof(STARTUPINFO) };
-  PROCESS_INFORMATION processInfo = { NULL };
+  PROCESS_INFORMATION processInfo = { nullptr };
   BOOL isProcessCreated = ::CreateProcess(exePath.value().c_str(),
                                           const_cast<wchar_t*>(commandLine.command_line_string().c_str()),
                                           nullptr,
@@ -260,7 +262,7 @@ PluginHangUIParent::Init(const nsString& aPluginName)
     // processes, which is not what we want.
     mIsShowing = true;
   }
-  mShowEvent = NULL;
+  mShowEvent = nullptr;
   return !(!isProcessCreated);
 }
 
@@ -285,11 +287,11 @@ PluginHangUIParent::UnwatchHangUIChildProcess(bool aWait)
 {
   mMutex.AssertCurrentThreadOwns();
   if (mRegWait) {
-    // If aWait is false then we want to pass a NULL (i.e. default constructor)
-    // completionEvent
+    // If aWait is false then we want to pass a nullptr (i.e. default
+    // constructor) completionEvent
     ScopedHandle completionEvent;
     if (aWait) {
-      completionEvent.Set(::CreateEvent(NULL, FALSE, FALSE, NULL));
+      completionEvent.Set(::CreateEventW(nullptr, FALSE, FALSE, nullptr));
       if (!completionEvent.IsValid()) {
         return false;
       }
@@ -299,8 +301,8 @@ PluginHangUIParent::UnwatchHangUIChildProcess(bool aWait)
     // it is okay to clear mRegWait; Windows is telling us that the wait's
     // callback is running but will be cleaned up once the callback returns.
     if (::UnregisterWaitEx(mRegWait, completionEvent) ||
-        !aWait && ::GetLastError() == ERROR_IO_PENDING) {
-      mRegWait = NULL;
+        (!aWait && ::GetLastError() == ERROR_IO_PENDING)) {
+      mRegWait = nullptr;
       if (aWait) {
         // We must temporarily unlock mMutex while waiting for the registered
         // wait callback to complete, or else we could deadlock.
@@ -352,9 +354,13 @@ PluginHangUIParent::RecvUserResponse(const unsigned int& aResponse)
   int responseCode;
   if (aResponse & HANGUI_USER_RESPONSE_STOP) {
     // User clicked Stop
-    mModule->TerminateChildProcess(mMainThreadMessageLoop);
+    mModule->TerminateChildProcess(mMainThreadMessageLoop,
+                                   mozilla::ipc::kInvalidProcessId,
+                                   NS_LITERAL_CSTRING("ModalHangUI"),
+                                   EmptyString());
     responseCode = 1;
   } else if(aResponse & HANGUI_USER_RESPONSE_CONTINUE) {
+    mModule->OnHangUIContinue();
     // User clicked Continue
     responseCode = 2;
   } else {
@@ -366,29 +372,30 @@ PluginHangUIParent::RecvUserResponse(const unsigned int& aResponse)
                                                                dontAskCode,
                                                                LastShowDurationMs(),
                                                                mTimeoutPrefMs);
-  NS_DispatchToMainThread(workItem, NS_DISPATCH_NORMAL);
+  NS_DispatchToMainThread(workItem);
   return true;
 }
 
 nsresult
 PluginHangUIParent::GetHangUIOwnerWindowHandle(NativeWindowHandle& windowHandle)
 {
-  windowHandle = NULL;
+  windowHandle = nullptr;
 
   nsresult rv;
   nsCOMPtr<nsIWindowMediator> winMediator(do_GetService(NS_WINDOWMEDIATOR_CONTRACTID,
                                                         &rv));
   NS_ENSURE_SUCCESS(rv, rv);
 
-  nsCOMPtr<nsIDOMWindow> navWin;
-  rv = winMediator->GetMostRecentWindow(NS_LITERAL_STRING("navigator:browser").get(),
+  nsCOMPtr<mozIDOMWindowProxy> navWin;
+  rv = winMediator->GetMostRecentWindow(u"navigator:browser",
                                         getter_AddRefs(navWin));
   NS_ENSURE_SUCCESS(rv, rv);
   if (!navWin) {
     return NS_ERROR_FAILURE;
   }
 
-  nsCOMPtr<nsIWidget> widget = WidgetUtils::DOMWindowToWidget(navWin);
+  nsPIDOMWindowOuter* win = nsPIDOMWindowOuter::From(navWin);
+  nsCOMPtr<nsIWidget> widget = WidgetUtils::DOMWindowToWidget(win);
   if (!widget) {
     return NS_ERROR_FAILURE;
   }

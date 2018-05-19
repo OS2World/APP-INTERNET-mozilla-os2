@@ -15,24 +15,20 @@
 #ifndef WEBRTC_MODULES_UTILITY_SOURCE_FILE_RECORDER_IMPL_H_
 #define WEBRTC_MODULES_UTILITY_SOURCE_FILE_RECORDER_IMPL_H_
 
-#include "coder.h"
-#include "common_types.h"
-#include "engine_configurations.h"
-#include "event_wrapper.h"
-#include "file_recorder.h"
-#include "media_file_defines.h"
-#include "media_file.h"
-#include "module_common_types.h"
-#include "resampler.h"
-#include "thread_wrapper.h"
-#include "tick_util.h"
-#include "typedefs.h"
+#include <list>
 
-#ifdef WEBRTC_MODULE_UTILITY_VIDEO
-    #include "frame_scaler.h"
-    #include "video_coder.h"
-    #include "video_frames_queue.h"
-#endif
+#include "webrtc/common_audio/resampler/include/resampler.h"
+#include "webrtc/common_types.h"
+#include "webrtc/engine_configurations.h"
+#include "webrtc/modules/interface/module_common_types.h"
+#include "webrtc/modules/media_file/interface/media_file.h"
+#include "webrtc/modules/media_file/interface/media_file_defines.h"
+#include "webrtc/modules/utility/interface/file_recorder.h"
+#include "webrtc/modules/utility/source/coder.h"
+#include "webrtc/system_wrappers/interface/event_wrapper.h"
+#include "webrtc/system_wrappers/interface/thread_wrapper.h"
+#include "webrtc/system_wrappers/interface/tick_util.h"
+#include "webrtc/typedefs.h"
 
 namespace webrtc {
 // The largest decoded frame size in samples (60ms with 32kHz sample rate).
@@ -40,32 +36,34 @@ enum { MAX_AUDIO_BUFFER_IN_SAMPLES = 60*32};
 enum { MAX_AUDIO_BUFFER_IN_BYTES = MAX_AUDIO_BUFFER_IN_SAMPLES*2};
 enum { kMaxAudioBufferQueueLength = 100 };
 
+class CriticalSectionWrapper;
+
 class FileRecorderImpl : public FileRecorder
 {
 public:
-    FileRecorderImpl(WebRtc_UWord32 instanceID, FileFormats fileFormat);
+    FileRecorderImpl(uint32_t instanceID, FileFormats fileFormat);
     virtual ~FileRecorderImpl();
 
     // FileRecorder functions.
-    virtual WebRtc_Word32 RegisterModuleFileCallback(FileCallback* callback);
+    virtual int32_t RegisterModuleFileCallback(FileCallback* callback);
     virtual FileFormats RecordingFileFormat() const;
-    virtual WebRtc_Word32 StartRecordingAudioFile(
+    virtual int32_t StartRecordingAudioFile(
         const char* fileName,
         const CodecInst& codecInst,
-        WebRtc_UWord32 notificationTimeMs,
+        uint32_t notificationTimeMs,
         ACMAMRPackingFormat amrFormat = AMRFileStorage);
-    virtual WebRtc_Word32 StartRecordingAudioFile(
+    virtual int32_t StartRecordingAudioFile(
         OutStream& destStream,
         const CodecInst& codecInst,
-        WebRtc_UWord32 notificationTimeMs,
+        uint32_t notificationTimeMs,
         ACMAMRPackingFormat amrFormat = AMRFileStorage);
-    virtual WebRtc_Word32 StopRecording();
+    virtual int32_t StopRecording();
     virtual bool IsRecording() const;
-    virtual WebRtc_Word32 codec_info(CodecInst& codecInst) const;
-    virtual WebRtc_Word32 RecordAudioToFile(
+    virtual int32_t codec_info(CodecInst& codecInst) const;
+    virtual int32_t RecordAudioToFile(
         const AudioFrame& frame,
         const TickTime* playoutTS = NULL);
-    virtual WebRtc_Word32 StartRecordingVideoFile(
+    virtual int32_t StartRecordingVideoFile(
         const char* fileName,
         const CodecInst& audioCodecInst,
         const VideoCodec& videoCodecInst,
@@ -74,21 +72,21 @@ public:
     {
         return -1;
     }
-    virtual WebRtc_Word32 RecordVideoToFile(const I420VideoFrame& videoFrame)
+    virtual int32_t RecordVideoToFile(const I420VideoFrame& videoFrame)
     {
         return -1;
     }
 
 protected:
-    virtual WebRtc_Word32 WriteEncodedAudioData(
-        const WebRtc_Word8* audioBuffer,
-        WebRtc_UWord16 bufferLength,
-        WebRtc_UWord16 millisecondsOfData,
+    virtual int32_t WriteEncodedAudioData(
+        const int8_t* audioBuffer,
+        size_t bufferLength,
+        uint16_t millisecondsOfData,
         const TickTime* playoutTS);
 
-    WebRtc_Word32 SetUpAudioEncoder();
+    int32_t SetUpAudioEncoder();
 
-    WebRtc_UWord32 _instanceID;
+    uint32_t _instanceID;
     FileFormats _fileFormat;
     MediaFile* _moduleFile;
 
@@ -96,68 +94,9 @@ private:
     CodecInst codec_info_;
     ACMAMRPackingFormat _amrFormat;
 
-    WebRtc_Word8 _audioBuffer[MAX_AUDIO_BUFFER_IN_BYTES];
+    int8_t _audioBuffer[MAX_AUDIO_BUFFER_IN_BYTES];
     AudioCoder _audioEncoder;
     Resampler _audioResampler;
 };
-
-
-#ifdef WEBRTC_MODULE_UTILITY_VIDEO
-class AviRecorder : public FileRecorderImpl
-{
-public:
-    AviRecorder(WebRtc_UWord32 instanceID, FileFormats fileFormat);
-    virtual ~AviRecorder();
-
-    // FileRecorder functions.
-    virtual WebRtc_Word32 StartRecordingVideoFile(
-        const char* fileName,
-        const CodecInst& audioCodecInst,
-        const VideoCodec& videoCodecInst,
-        ACMAMRPackingFormat amrFormat = AMRFileStorage,
-        bool videoOnly = false);
-    virtual WebRtc_Word32 StopRecording();
-    virtual WebRtc_Word32 RecordVideoToFile(const I420VideoFrame& videoFrame);
-
-protected:
-    virtual WebRtc_Word32 WriteEncodedAudioData(
-        const WebRtc_Word8*  audioBuffer,
-        WebRtc_UWord16 bufferLength,
-        WebRtc_UWord16 millisecondsOfData,
-        const TickTime* playoutTS);
-private:
-    static bool Run(ThreadObj threadObj);
-    bool Process();
-
-    bool StartThread();
-    bool StopThread();
-
-    WebRtc_Word32 EncodeAndWriteVideoToFile(I420VideoFrame& videoFrame);
-    WebRtc_Word32 ProcessAudio();
-
-    WebRtc_Word32 CalcI420FrameSize() const;
-    WebRtc_Word32 SetUpVideoEncoder();
-
-    VideoCodec _videoCodecInst;
-    bool _videoOnly;
-
-    ListWrapper _audioFramesToWrite;
-    bool _firstAudioFrameReceived;
-
-    VideoFramesQueue* _videoFramesQueue;
-
-    FrameScaler* _frameScaler;
-    VideoCoder* _videoEncoder;
-    WebRtc_Word32 _videoMaxPayloadSize;
-    EncodedVideoData _videoEncodedData;
-
-    ThreadWrapper* _thread;
-    EventWrapper& _timeEvent;
-    CriticalSectionWrapper* _critSec;
-    WebRtc_Word64 _writtenVideoFramesCounter;
-    WebRtc_Word64 _writtenAudioMS;
-    WebRtc_Word64 _writtenVideoMS;
-};
-#endif // WEBRTC_MODULE_UTILITY_VIDEO
-} // namespace webrtc
+}  // namespace webrtc
 #endif // WEBRTC_MODULES_UTILITY_SOURCE_FILE_RECORDER_IMPL_H_

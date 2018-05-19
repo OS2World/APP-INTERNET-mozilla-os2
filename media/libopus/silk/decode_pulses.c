@@ -1,9 +1,5 @@
 /***********************************************************************
-Copyright (c) 2006-2012 IETF Trust and Skype Limited. All rights reserved.
-
-This file is extracted from RFC6716. Please see that RFC for additional
-information.
-
+Copyright (c) 2006-2011, Skype Limited. All rights reserved.
 Redistribution and use in source and binary forms, with or without
 modification, are permitted provided that the following conditions
 are met:
@@ -16,7 +12,7 @@ documentation and/or other materials provided with the distribution.
 names of specific contributors, may be used to endorse or promote
 products derived from this software without specific prior written
 permission.
-THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS “AS IS”
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
 AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
 IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
 ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE
@@ -40,7 +36,7 @@ POSSIBILITY OF SUCH DAMAGE.
 /*********************************************/
 void silk_decode_pulses(
     ec_dec                      *psRangeDec,                    /* I/O  Compressor data structure                   */
-    opus_int                    pulses[],                       /* O    Excitation signal                           */
+    opus_int16                  pulses[],                       /* O    Excitation signal                           */
     const opus_int              signalType,                     /* I    Sigtype                                     */
     const opus_int              quantOffsetType,                /* I    quantOffsetType                             */
     const opus_int              frame_length                    /* I    Frame length                                */
@@ -48,7 +44,7 @@ void silk_decode_pulses(
 {
     opus_int   i, j, k, iter, abs_q, nLS, RateLevelIndex;
     opus_int   sum_pulses[ MAX_NB_SHELL_BLOCKS ], nLshifts[ MAX_NB_SHELL_BLOCKS ];
-    opus_int   *pulses_ptr;
+    opus_int16 *pulses_ptr;
     const opus_uint8 *cdf_ptr;
 
     /*********************/
@@ -73,9 +69,9 @@ void silk_decode_pulses(
         sum_pulses[ i ] = ec_dec_icdf( psRangeDec, cdf_ptr, 8 );
 
         /* LSB indication */
-        while( sum_pulses[ i ] == MAX_PULSES + 1 ) {
+        while( sum_pulses[ i ] == SILK_MAX_PULSES + 1 ) {
             nLshifts[ i ]++;
-            /* When we've already got 10 LSBs, we shift the table to not allow (MAX_PULSES + 1) */
+            /* When we've already got 10 LSBs, we shift the table to not allow (SILK_MAX_PULSES + 1) */
             sum_pulses[ i ] = ec_dec_icdf( psRangeDec,
                     silk_pulses_per_block_iCDF[ N_RATE_LEVELS - 1] + ( nLshifts[ i ] == 10 ), 8 );
         }
@@ -88,7 +84,7 @@ void silk_decode_pulses(
         if( sum_pulses[ i ] > 0 ) {
             silk_shell_decoder( &pulses[ silk_SMULBB( i, SHELL_CODEC_FRAME_LENGTH ) ], psRangeDec, sum_pulses[ i ] );
         } else {
-            silk_memset( &pulses[ silk_SMULBB( i, SHELL_CODEC_FRAME_LENGTH ) ], 0, SHELL_CODEC_FRAME_LENGTH * sizeof( opus_int ) );
+            silk_memset( &pulses[ silk_SMULBB( i, SHELL_CODEC_FRAME_LENGTH ) ], 0, SHELL_CODEC_FRAME_LENGTH * sizeof( pulses[0] ) );
         }
     }
 

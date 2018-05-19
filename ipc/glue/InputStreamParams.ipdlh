@@ -2,10 +2,11 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-include "ipc/IPCMessageUtils.h";
-
-using mozilla::void_t;
 include protocol PBlob;
+include ProtocolTypes;
+
+using struct mozilla::void_t
+  from "ipc/IPCMessageUtils.h";
 
 namespace mozilla {
 namespace ipc {
@@ -17,7 +18,7 @@ struct StringInputStreamParams
 
 struct FileInputStreamParams
 {
-  FileDescriptor file;
+  uint32_t fileDescriptorIndex;
   int32_t behaviorFlags;
   int32_t ioFlags;
 };
@@ -27,6 +28,13 @@ struct PartialFileInputStreamParams
   FileInputStreamParams fileStreamParams;
   uint64_t begin;
   uint64_t length;
+};
+
+struct TemporaryFileInputStreamParams
+{
+  uint32_t fileDescriptorIndex;
+  uint64_t startPos;
+  uint64_t endPos;
 };
 
 struct MultiplexInputStreamParams
@@ -39,7 +47,15 @@ struct MultiplexInputStreamParams
 
 struct RemoteInputStreamParams
 {
-  PBlob remoteBlob;
+  nsID id;
+};
+
+// XXX This may only be used for same-process inter-thread communication! The
+//     value should be reinterpret_cast'd to nsIInputStream. It carries a
+//     reference.
+struct SameProcessInputStreamParams
+{
+  intptr_t addRefedInputStream;
 };
 
 union InputStreamParams
@@ -47,10 +63,12 @@ union InputStreamParams
   StringInputStreamParams;
   FileInputStreamParams;
   PartialFileInputStreamParams;
+  TemporaryFileInputStreamParams;
   BufferedInputStreamParams;
   MIMEInputStreamParams;
   MultiplexInputStreamParams;
   RemoteInputStreamParams;
+  SameProcessInputStreamParams;
 };
 
 union OptionalInputStreamParams

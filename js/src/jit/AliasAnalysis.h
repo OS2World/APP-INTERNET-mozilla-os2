@@ -7,56 +7,25 @@
 #ifndef jit_AliasAnalysis_h
 #define jit_AliasAnalysis_h
 
-#include "MIR.h"
-#include "MIRGraph.h"
+#include "jit/AliasAnalysisShared.h"
+#include "jit/MIR.h"
+#include "jit/MIRGraph.h"
 
 namespace js {
 namespace jit {
 
-class MIRGraph;
+class LoopAliasInfo;
 
-typedef Vector<MDefinition *, 4, IonAllocPolicy> InstructionVector;
-
-class LoopAliasInfo : public TempObject {
-  private:
-    LoopAliasInfo *outer_;
-    MBasicBlock *loopHeader_;
-    InstructionVector invariantLoads_;
-
-  public:
-    LoopAliasInfo(LoopAliasInfo *outer, MBasicBlock *loopHeader)
-      : outer_(outer), loopHeader_(loopHeader)
-    { }
-
-    MBasicBlock *loopHeader() const {
-        return loopHeader_;
-    }
-    LoopAliasInfo *outer() const {
-        return outer_;
-    }
-    bool addInvariantLoad(MDefinition *ins) {
-        return invariantLoads_.append(ins);
-    }
-    const InstructionVector& invariantLoads() const {
-        return invariantLoads_;
-    }
-    MDefinition *firstInstruction() const {
-        return *loopHeader_->begin();
-    }
-};
-
-class AliasAnalysis
+class AliasAnalysis : public AliasAnalysisShared
 {
-    MIRGenerator *mir;
-    MIRGraph &graph_;
-    LoopAliasInfo *loop_;
+    LoopAliasInfo* loop_;
 
   public:
-    AliasAnalysis(MIRGenerator *mir, MIRGraph &graph);
-    bool analyze();
+    AliasAnalysis(MIRGenerator* mir, MIRGraph& graph);
+    MOZ_MUST_USE bool analyze() override;
 };
 
-} // namespace js
 } // namespace jit
+} // namespace js
 
 #endif /* jit_AliasAnalysis_h */

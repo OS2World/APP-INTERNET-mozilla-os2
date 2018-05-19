@@ -9,13 +9,20 @@
 
 [NoInterfaceObject]
 interface ChildNode {
-// On Element:
-//  readonly attribute Element? previousElementSibling;
-//  readonly attribute Element? nextElementSibling;
-
-// Not implemented yet:
-//  void before((Node or DOMString)... nodes);
-//  void after((Node or DOMString)... nodes);
-//  void replace((Node or DOMString)... nodes);
+  [Throws, Unscopable]
+  void before((Node or DOMString)... nodes);
+  [Throws, Unscopable]
+  void after((Node or DOMString)... nodes);
+  [Throws, Unscopable]
+  void replaceWith((Node or DOMString)... nodes);
+  [Unscopable]
   void remove();
+};
+
+[NoInterfaceObject]
+interface NonDocumentTypeChildNode {
+  [Pure]
+  readonly attribute Element? previousElementSibling;
+  [Pure]
+  readonly attribute Element? nextElementSibling;
 };

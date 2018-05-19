@@ -1,4 +1,4 @@
-# -*- Mode: python; c-basic-offset: 4; indent-tabs-mode: nil; tab-width: 40 -*-
+# -*- Mode: python; indent-tabs-mode: nil; tab-width: 40 -*-
 # vim: set filetype=python:
 # This Source Code Form is subject to the terms of the Mozilla Public
 # License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -15,8 +15,8 @@ XPIDL_SOURCES += [
     'nsIDOMXULDocument.idl',
     'nsIDOMXULElement.idl',
     'nsIDOMXULImageElement.idl',
-    'nsIDOMXULLabelElement.idl',
     'nsIDOMXULLabeledControlEl.idl',
+    'nsIDOMXULLabelElement.idl',
     'nsIDOMXULMenuListElement.idl',
     'nsIDOMXULMultSelectCntrlEl.idl',
     'nsIDOMXULPopupElement.idl',
@@ -28,12 +28,4 @@ XPIDL_SOURCES += [
 ]
 
 XPIDL_MODULE = 'dom_xul'
-
-XPIDL_FLAGS += [
-    '-I$(topsrcdir)/dom/interfaces/base',
-    '-I$(topsrcdir)/dom/interfaces/core',
-    '-I$(topsrcdir)/dom/interfaces/events',
-]
-
-MODULE = 'dom'
 

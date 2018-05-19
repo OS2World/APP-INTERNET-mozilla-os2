@@ -1,3 +1,5 @@
+/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
+/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 // Copyright (c) 2006-2008 The Chromium Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
@@ -141,7 +143,7 @@ class SyncWaiter : public WaitableEvent::Waiter {
 };
 
 bool WaitableEvent::TimedWait(const TimeDelta& max_time) {
-  const Time end_time(Time::Now() + max_time);
+  const TimeTicks end_time(TimeTicks::Now() + max_time);
   const bool finite_time = max_time.ToInternalValue() >= 0;
 
   kernel_->lock_.Acquire();
@@ -168,7 +170,7 @@ bool WaitableEvent::TimedWait(const TimeDelta& max_time) {
   // again before unlocking it.
 
   for (;;) {
-    const Time current_time(Time::Now());
+    const TimeTicks current_time(TimeTicks::Now());
 
     if (sw.fired() || (finite_time && current_time >= end_time)) {
       const bool return_value = sw.fired();

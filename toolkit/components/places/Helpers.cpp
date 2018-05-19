@@ -5,10 +5,10 @@
 
 #include "Helpers.h"
 #include "mozIStorageError.h"
-#include "plbase64.h"
 #include "prio.h"
 #include "nsString.h"
 #include "nsNavHistory.h"
+#include "mozilla/Base64.h"
 #include "mozilla/Services.h"
 #if defined(XP_OS2)
 #include "nsIRandomGenerator.h"
@@ -23,26 +23,26 @@ namespace places {
 ////////////////////////////////////////////////////////////////////////////////
 //// AsyncStatementCallback
 
-NS_IMPL_ISUPPORTS1(
+NS_IMPL_ISUPPORTS(
   AsyncStatementCallback
 , mozIStorageStatementCallback
 )
 
 NS_IMETHODIMP
-AsyncStatementCallback::HandleResult(mozIStorageResultSet *aResultSet)
+WeakAsyncStatementCallback::HandleResult(mozIStorageResultSet *aResultSet)
 {
-  NS_ABORT_IF_FALSE(false, "Was not expecting a resultset, but got it.");
+  MOZ_ASSERT(false, "Was not expecting a resultset, but got it.");
   return NS_OK;
 }
 
 NS_IMETHODIMP
-AsyncStatementCallback::HandleCompletion(uint16_t aReason)
+WeakAsyncStatementCallback::HandleCompletion(uint16_t aReason)
 {
   return NS_OK;
 }
 
 NS_IMETHODIMP
-AsyncStatementCallback::HandleError(mozIStorageError *aError)
+WeakAsyncStatementCallback::HandleError(mozIStorageError *aError)
 {
 #ifdef DEBUG
   int32_t result;
@@ -53,9 +53,9 @@ AsyncStatementCallback::HandleError(mozIStorageError *aError)
   NS_ENSURE_SUCCESS(rv, rv);
 
   nsAutoCString warnMsg;
-  warnMsg.Append("An error occurred while executing an async statement: ");
+  warnMsg.AppendLiteral("An error occurred while executing an async statement: ");
   warnMsg.AppendInt(result);
-  warnMsg.Append(" ");
+  warnMsg.Append(' ');
   warnMsg.Append(message);
   NS_WARNING(warnMsg.get());
 #endif
@@ -192,7 +192,7 @@ void
 GetReversedHostname(const nsString& aForward, nsString& aRevHost)
 {
   ReverseString(aForward, aRevHost);
-  aRevHost.Append(PRUnichar('.'));
+  aRevHost.Append(char16_t('.'));
 }
 
 void
@@ -204,35 +204,17 @@ ReverseString(const nsString& aInput, nsString& aReversed)
   }
 }
 
-static
-nsresult
-Base64urlEncode(const uint8_t* aBytes,
-                uint32_t aNumBytes,
-                nsCString& _result)
-{
-  // SetLength does not set aside space for NULL termination.  PL_Base64Encode
-  // will not NULL terminate, however, nsCStrings must be NULL terminated.  As a
-  // result, we set the capacity to be one greater than what we need, and the
-  // length to our desired length.
-  uint32_t length = (aNumBytes + 2) / 3 * 4; // +2 due to integer math.
-  NS_ENSURE_TRUE(_result.SetCapacity(length + 1, fallible_t()),
-                 NS_ERROR_OUT_OF_MEMORY);
-  _result.SetLength(length);
-  (void)PL_Base64Encode(reinterpret_cast<const char*>(aBytes), aNumBytes,
-                        _result.BeginWriting());
-
-  // base64url encoding is defined in RFC 4648.  It replaces the last two
-  // alphabet characters of base64 encoding with '-' and '_' respectively.
-  _result.ReplaceChar('+', '-');
-  _result.ReplaceChar('/', '_');
-  return NS_OK;
-}
-
 #ifdef XP_WIN
+} // namespace places
+} // namespace mozilla
+
 // Included here because windows.h conflicts with the use of mozIStorageError
-// above.
+// above, but make sure that these are not included inside mozilla::places.
 #include <windows.h>
 #include <wincrypt.h>
+
+namespace mozilla {
+namespace places {
 #endif
 
 static
@@ -292,7 +274,8 @@ GenerateGUID(nsCString& _guid)
   nsresult rv = GenerateRandomBytes(kRequiredBytesLength, buffer);
   NS_ENSURE_SUCCESS(rv, rv);
 
-  rv = Base64urlEncode(buffer, kRequiredBytesLength, _guid);
+  rv = Base64URLEncode(kRequiredBytesLength, buffer,
+                       Base64URLEncodePaddingPolicy::Omit, _guid);
   NS_ENSURE_SUCCESS(rv, rv);
 
   NS_ASSERTION(_guid.Length() == GUID_LENGTH, "GUID is not the right size!");
@@ -329,10 +312,20 @@ TruncateTitle(const nsACString& aTitle, nsACString& aTrimmed)
   }
 }
 
+PRTime
+RoundToMilliseconds(PRTime aTime) {
+  return aTime - (aTime % PR_USEC_PER_MSEC);
+}
+
+PRTime
+RoundedPRNow() {
+  return RoundToMilliseconds(PR_Now());
+}
+
 void
 ForceWALCheckpoint()
 {
-  nsRefPtr<Database> DB = Database::GetDatabase();
+  RefPtr<Database> DB = Database::GetDatabase();
   if (DB) {
     nsCOMPtr<mozIStorageAsyncStatement> stmt = DB->GetAsyncStatement(
       "pragma wal_checkpoint "
@@ -378,9 +371,9 @@ PlacesEvent::Notify()
   }
 }
 
-NS_IMPL_THREADSAFE_ISUPPORTS1(
+NS_IMPL_ISUPPORTS_INHERITED0(
   PlacesEvent
-, nsIRunnable
+, Runnable
 )
 
 ////////////////////////////////////////////////////////////////////////////////

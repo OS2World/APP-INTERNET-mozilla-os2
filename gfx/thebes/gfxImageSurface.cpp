@@ -4,20 +4,25 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 
+#include "mozilla/MemoryReporting.h"
+#if defined(HAVE_POSIX_MEMALIGN)
 #include "gfxAlphaRecovery.h"
+#endif
 #include "gfxImageSurface.h"
 
 #include "cairo.h"
 #include "mozilla/gfx/2D.h"
+#include "mozilla/gfx/HelpersCairo.h"
 #include "gfx2DGlue.h"
 #include <algorithm>
 
+using namespace mozilla;
 using namespace mozilla::gfx;
 
 gfxImageSurface::gfxImageSurface()
   : mSize(0, 0),
     mOwnsData(false),
-    mFormat(ImageFormatUnknown),
+    mFormat(SurfaceFormat::UNKNOWN),
     mStride(0)
 {
 }
@@ -25,17 +30,22 @@ gfxImageSurface::gfxImageSurface()
 void
 gfxImageSurface::InitFromSurface(cairo_surface_t *csurf)
 {
+    if (!csurf || cairo_surface_status(csurf)) {
+        MakeInvalid();
+        return;
+    }
+
     mSize.width = cairo_image_surface_get_width(csurf);
     mSize.height = cairo_image_surface_get_height(csurf);
     mData = cairo_image_surface_get_data(csurf);
-    mFormat = (gfxImageFormat) cairo_image_surface_get_format(csurf);
+    mFormat = CairoFormatToGfxFormat(cairo_image_surface_get_format(csurf));
     mOwnsData = false;
     mStride = cairo_image_surface_get_stride(csurf);
 
     Init(csurf, true);
 }
 
-gfxImageSurface::gfxImageSurface(unsigned char *aData, const gfxIntSize& aSize,
+gfxImageSurface::gfxImageSurface(unsigned char *aData, const IntSize& aSize,
                                  long aStride, gfxImageFormat aFormat)
 {
     InitWithData(aData, aSize, aStride, aFormat);
@@ -44,13 +54,13 @@ gfxImageSurface::gfxImageSurface(unsigned char *aData, const gfxIntSize& aSize,
 void
 gfxImageSurface::MakeInvalid()
 {
-    mSize = gfxIntSize(-1, -1);
-    mData = NULL;
+    mSize = IntSize(-1, -1);
+    mData = nullptr;
     mStride = 0;
 }
 
 void
-gfxImageSurface::InitWithData(unsigned char *aData, const gfxIntSize& aSize,
+gfxImageSurface::InitWithData(unsigned char *aData, const IntSize& aSize,
                               long aStride, gfxImageFormat aFormat)
 {
     mSize = aSize;
@@ -59,12 +69,13 @@ gfxImageSurface::InitWithData(unsigned char *aData, const gfxIntSize& aSize,
     mFormat = aFormat;
     mStride = aStride;
 
-    if (!CheckSurfaceSize(aSize))
+    if (!Factory::CheckSurfaceSize(aSize))
         MakeInvalid();
 
+    cairo_format_t cformat = GfxFormatToCairoFormat(mFormat);
     cairo_surface_t *surface =
         cairo_image_surface_create_for_data((unsigned char*)mData,
-                                            (cairo_format_t)mFormat,
+                                            cformat,
                                             mSize.width,
                                             mSize.height,
                                             mStride);
@@ -91,11 +102,11 @@ TryAllocAlignedBytes(size_t aSize)
              nullptr : ptr;
 #else
     // Oh well, hope that luck is with us in the allocator
-    return moz_malloc(aSize);
+    return malloc(aSize);
 #endif
 }
 
-gfxImageSurface::gfxImageSurface(const gfxIntSize& size, gfxImageFormat format, bool aClear)
+gfxImageSurface::gfxImageSurface(const IntSize& size, gfxImageFormat format, bool aClear)
  : mSize(size), mData(nullptr), mFormat(format)
 {
     AllocateAndInit(0, 0, aClear);
@@ -114,7 +125,7 @@ gfxImageSurface::AllocateAndInit(long aStride, int32_t aMinimalAllocation,
     if (aMinimalAllocation < mSize.height * mStride)
         aMinimalAllocation = mSize.height * mStride;
 
-    if (!CheckSurfaceSize(mSize))
+    if (!Factory::CheckSurfaceSize(mSize))
         MakeInvalid();
 
     // if we have a zero-sized surface, just leave mData nullptr
@@ -131,9 +142,10 @@ gfxImageSurface::AllocateAndInit(long aStride, int32_t aMinimalAllocation,
 
     mOwnsData = true;
 
+    cairo_format_t cformat = GfxFormatToCairoFormat(mFormat);
     cairo_surface_t *surface =
         cairo_image_surface_create_for_data((unsigned char*)mData,
-                                            (cairo_format_t)mFormat,
+                                            cformat,
                                             mSize.width,
                                             mSize.height,
                                             mStride);
@@ -146,7 +158,7 @@ gfxImageSurface::AllocateAndInit(long aStride, int32_t aMinimalAllocation,
     }
 }
 
-gfxImageSurface::gfxImageSurface(const gfxIntSize& size, gfxImageFormat format,
+gfxImageSurface::gfxImageSurface(const IntSize& size, gfxImageFormat format,
                                  long aStride, int32_t aExtraBytes, bool aClear)
  : mSize(size), mData(nullptr), mFormat(format)
 {
@@ -158,7 +170,7 @@ gfxImageSurface::gfxImageSurface(cairo_surface_t *csurf)
     mSize.width = cairo_image_surface_get_width(csurf);
     mSize.height = cairo_image_surface_get_height(csurf);
     mData = cairo_image_surface_get_data(csurf);
-    mFormat = (gfxImageFormat) cairo_image_surface_get_format(csurf);
+    mFormat = CairoFormatToGfxFormat(cairo_image_surface_get_format(csurf));
     mOwnsData = false;
     mStride = cairo_image_surface_get_stride(csurf);
 
@@ -172,21 +184,19 @@ gfxImageSurface::~gfxImageSurface()
 }
 
 /*static*/ long
-gfxImageSurface::ComputeStride(const gfxIntSize& aSize, gfxImageFormat aFormat)
+gfxImageSurface::ComputeStride(const IntSize& aSize, gfxImageFormat aFormat)
 {
     long stride;
 
-    if (aFormat == ImageFormatARGB32)
+    if (aFormat == SurfaceFormat::A8R8G8B8_UINT32)
         stride = aSize.width * 4;
-    else if (aFormat == ImageFormatRGB24)
+    else if (aFormat == SurfaceFormat::X8R8G8B8_UINT32)
         stride = aSize.width * 4;
-    else if (aFormat == ImageFormatRGB16_565)
+    else if (aFormat == SurfaceFormat::R5G6B5_UINT16)
         stride = aSize.width * 2;
-    else if (aFormat == ImageFormatA8)
+    else if (aFormat == SurfaceFormat::A8)
         stride = aSize.width;
-    else if (aFormat == ImageFormatA1) {
-        stride = (aSize.width + 7) / 8;
-    } else {
+    else {
         NS_WARNING("Unknown format specified to gfxImageSurface!");
         stride = aSize.width * 4;
     }
@@ -197,7 +207,7 @@ gfxImageSurface::ComputeStride(const gfxIntSize& aSize, gfxImageFormat aFormat)
 }
 
 size_t
-gfxImageSurface::SizeOfExcludingThis(nsMallocSizeOfFun aMallocSizeOf) const
+gfxImageSurface::SizeOfExcludingThis(mozilla::MallocSizeOf aMallocSizeOf) const
 {
     size_t n = gfxASurface::SizeOfExcludingThis(aMallocSizeOf);
     if (mOwnsData) {
@@ -207,7 +217,7 @@ gfxImageSurface::SizeOfExcludingThis(nsMallocSizeOfFun aMallocSizeOf) const
 }
 
 size_t
-gfxImageSurface::SizeOfIncludingThis(nsMallocSizeOfFun aMallocSizeOf) const
+gfxImageSurface::SizeOfIncludingThis(mozilla::MallocSizeOf aMallocSizeOf) const
 {
     return aMallocSizeOf(this) + SizeOfExcludingThis(aMallocSizeOf);
 }
@@ -220,7 +230,7 @@ gfxImageSurface::SizeOfIsMeasured() const
 
 // helper function for the CopyFrom methods
 static void
-CopyForStride(unsigned char* aDest, unsigned char* aSrc, const gfxIntSize& aSize, long aDestStride, long aSrcStride)
+CopyForStride(unsigned char* aDest, unsigned char* aSrc, const IntSize& aSize, long aDestStride, long aSrcStride)
 {
     if (aDestStride == aSrcStride) {
         memcpy (aDest, aSrc, aSrcStride * aSize.height);
@@ -237,13 +247,13 @@ CopyForStride(unsigned char* aDest, unsigned char* aSrc, const gfxIntSize& aSize
 
 // helper function for the CopyFrom methods
 static bool
-FormatsAreCompatible(gfxASurface::gfxImageFormat a1, gfxASurface::gfxImageFormat a2)
+FormatsAreCompatible(gfxImageFormat a1, gfxImageFormat a2)
 {
     if (a1 != a2 &&
-        !(a1 == gfxASurface::ImageFormatARGB32 &&
-          a2 == gfxASurface::ImageFormatRGB24) &&
-        !(a1 == gfxASurface::ImageFormatRGB24 &&
-          a2 == gfxASurface::ImageFormatARGB32)) {
+        !(a1 == SurfaceFormat::A8R8G8B8_UINT32 &&
+          a2 == SurfaceFormat::X8R8G8B8_UINT32) &&
+        !(a1 == SurfaceFormat::X8R8G8B8_UINT32 &&
+          a2 == SurfaceFormat::A8R8G8B8_UINT32)) {
         return false;
     }
 
@@ -253,13 +263,13 @@ FormatsAreCompatible(gfxASurface::gfxImageFormat a1, gfxASurface::gfxImageFormat
 bool
 gfxImageSurface::CopyFrom (SourceSurface *aSurface)
 {
-    mozilla::RefPtr<DataSourceSurface> data = aSurface->GetDataSurface();
+    RefPtr<DataSourceSurface> data = aSurface->GetDataSurface();
 
     if (!data) {
         return false;
     }
 
-    gfxIntSize size(data->GetSize().width, data->GetSize().height);
+    IntSize size(data->GetSize().width, data->GetSize().height);
     if (size != mSize) {
         return false;
     }
@@ -291,26 +301,72 @@ gfxImageSurface::CopyFrom(gfxImageSurface *other)
     return true;
 }
 
+bool
+gfxImageSurface::CopyTo(SourceSurface *aSurface) {
+    RefPtr<DataSourceSurface> data = aSurface->GetDataSurface();
+
+    if (!data) {
+        return false;
+    }
+
+    IntSize size(data->GetSize().width, data->GetSize().height);
+    if (size != mSize) {
+        return false;
+    }
+
+    if (!FormatsAreCompatible(SurfaceFormatToImageFormat(aSurface->GetFormat()),
+                              mFormat)) {
+        return false;
+    }
+
+    CopyForStride(data->GetData(), mData, size, data->Stride(), mStride);
+
+    return true;
+}
+
+already_AddRefed<DataSourceSurface>
+gfxImageSurface::CopyToB8G8R8A8DataSourceSurface()
+{
+  RefPtr<DataSourceSurface> dataSurface =
+    Factory::CreateDataSourceSurface(IntSize(GetSize().width, GetSize().height),
+                                     SurfaceFormat::B8G8R8A8);
+  if (dataSurface) {
+    CopyTo(dataSurface);
+  }
+  return dataSurface.forget();
+}
+
 already_AddRefed<gfxSubimageSurface>
 gfxImageSurface::GetSubimage(const gfxRect& aRect)
 {
     gfxRect r(aRect);
     r.Round();
+    MOZ_ASSERT(gfxRect(0, 0, mSize.width, mSize.height).Contains(r));
+
+    gfxImageFormat format = Format();
+
     unsigned char* subData = Data() +
         (Stride() * (int)r.Y()) +
         (int)r.X() * gfxASurface::BytePerPixelFromFormat(Format());
 
-    nsRefPtr<gfxSubimageSurface> image =
+    if (format == SurfaceFormat::A8R8G8B8_UINT32 &&
+        GetOpaqueRect().Contains(aRect)) {
+        format = SurfaceFormat::X8R8G8B8_UINT32;
+    }
+
+    RefPtr<gfxSubimageSurface> image =
         new gfxSubimageSurface(this, subData,
-                               gfxIntSize((int)r.Width(), (int)r.Height()));
+                               IntSize((int)r.Width(), (int)r.Height()),
+                               format);
 
     return image.forget();
 }
 
 gfxSubimageSurface::gfxSubimageSurface(gfxImageSurface* aParent,
                                        unsigned char* aData,
-                                       const gfxIntSize& aSize)
-  : gfxImageSurface(aData, aSize, aParent->Stride(), aParent->Format())
+                                       const IntSize& aSize,
+                                       gfxImageFormat aFormat)
+  : gfxImageSurface(aData, aSize, aParent->Stride(), aFormat)
   , mParent(aParent)
 {
 }
@@ -318,73 +374,6 @@ gfxSubimageSurface::gfxSubimageSurface(gfxImageSurface* aParent,
 already_AddRefed<gfxImageSurface>
 gfxImageSurface::GetAsImageSurface()
 {
-  nsRefPtr<gfxImageSurface> surface = this;
+  RefPtr<gfxImageSurface> surface = this;
   return surface.forget();
-}
-
-void
-gfxImageSurface::MovePixels(const nsIntRect& aSourceRect,
-                            const nsIntPoint& aDestTopLeft)
-{
-    const nsIntRect bounds(0, 0, mSize.width, mSize.height);
-    nsIntPoint offset = aDestTopLeft - aSourceRect.TopLeft(); 
-    nsIntRect clippedSource = aSourceRect;
-    clippedSource.IntersectRect(clippedSource, bounds);
-    nsIntRect clippedDest = clippedSource + offset;
-    clippedDest.IntersectRect(clippedDest, bounds);
-    const nsIntRect dest = clippedDest;
-    const nsIntRect source = dest - offset;
-    // NB: this relies on IntersectRect() and operator+/- preserving
-    // x/y for empty rectangles
-    NS_ABORT_IF_FALSE(bounds.Contains(dest) && bounds.Contains(source) &&
-                      aSourceRect.Contains(source) &&
-                      nsIntRect(aDestTopLeft, aSourceRect.Size()).Contains(dest) &&
-                      source.Size() == dest.Size() &&
-                      offset == (dest.TopLeft() - source.TopLeft()),
-                      "Messed up clipping, crash or corruption will follow");
-    if (source.IsEmpty() || source.IsEqualInterior(dest)) {
-        return;
-    }
-
-    long naturalStride = ComputeStride(mSize, mFormat);
-    if (mStride == naturalStride && dest.width == bounds.width) {
-        // Fast path: this is a vertical shift of some rows in a
-        // "normal" image surface.  We can directly memmove and
-        // hopefully stay in SIMD land.
-        unsigned char* dst = mData + dest.y * mStride;
-        const unsigned char* src = mData + source.y * mStride;
-        size_t nBytes = dest.height * mStride;
-        memmove(dst, src, nBytes);
-        return;
-    }
-
-    // Slow(er) path: have to move row-by-row.
-    const int32_t bpp = BytePerPixelFromFormat(mFormat);
-    const size_t nRowBytes = dest.width * bpp;
-    // dstRow points at the first pixel within the current destination
-    // row, and similarly for srcRow.  endSrcRow is one row beyond the
-    // last row we need to copy.  stride is either +mStride or
-    // -mStride, depending on which direction we're copying.
-    unsigned char* dstRow;
-    unsigned char* srcRow;
-    unsigned char* endSrcRow;   // NB: this may point outside the image
-    long stride;
-    if (dest.y > source.y) {
-        // We're copying down from source to dest, so walk backwards
-        // starting from the last rows to avoid stomping pixels we
-        // need.
-        stride = -mStride;
-        dstRow = mData + dest.x * bpp + (dest.YMost() - 1) * mStride;
-        srcRow = mData + source.x * bpp + (source.YMost() - 1) * mStride;
-        endSrcRow = mData + source.x * bpp + (source.y - 1) * mStride;
-    } else {
-        stride = mStride;
-        dstRow = mData + dest.x * bpp + dest.y * mStride;
-        srcRow = mData + source.x * bpp + source.y * mStride;
-        endSrcRow = mData + source.x * bpp + source.YMost() * mStride;
-    }
-
-    for (; srcRow != endSrcRow; dstRow += stride, srcRow += stride) {
-        memmove(dstRow, srcRow, nRowBytes);
-    }
 }

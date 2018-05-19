@@ -19,12 +19,23 @@ class nsIURI;
 class nsDOMCSSRect;
 class nsDOMCSSRGBColor;
 
+// There is no CSS_TURN constant on the CSSPrimitiveValue interface,
+// since that unit is newer than DOM Level 2 Style, and CSS OM will
+// probably expose CSS values in some other way in the future.  We
+// use this value in mType for "turn"-unit angles, but we define it
+// here to avoid exposing it to content.
+#define CSS_TURN 30U
+// Likewise we have some internal aliases for CSS_NUMBER that we don't
+// want to expose.
+#define CSS_NUMBER_INT32 31U
+#define CSS_NUMBER_UINT32 32U
+
 /**
  * Read-only CSS primitive value - a DOM object representing values in DOM
  * computed style.
  */
-class nsROCSSPrimitiveValue MOZ_FINAL : public mozilla::dom::CSSValue,
-  public nsIDOMCSSPrimitiveValue
+class nsROCSSPrimitiveValue final : public mozilla::dom::CSSValue,
+                                    public nsIDOMCSSPrimitiveValue
 {
 public:
   NS_DECL_CYCLE_COLLECTING_ISUPPORTS
@@ -37,13 +48,21 @@ public:
   NS_DECL_NSIDOMCSSVALUE
 
   // CSSValue
-  virtual void GetCssText(nsString& aText, mozilla::ErrorResult& aRv) MOZ_OVERRIDE MOZ_FINAL;
-  virtual void SetCssText(const nsAString& aText, mozilla::ErrorResult& aRv) MOZ_OVERRIDE MOZ_FINAL;
-  virtual uint16_t CssValueType() const MOZ_OVERRIDE MOZ_FINAL;
+  virtual void GetCssText(nsString& aText, mozilla::ErrorResult& aRv) override final;
+  virtual void SetCssText(const nsAString& aText, mozilla::ErrorResult& aRv) override final;
+  virtual uint16_t CssValueType() const override final;
 
   // CSSPrimitiveValue
   uint16_t PrimitiveType()
   {
+    // New value types were introduced but not added to CSS OM.
+    // Return CSS_UNKNOWN to avoid exposing CSS_TURN to content.
+    if (mType > CSS_RGBCOLOR) {
+      if (mType == CSS_NUMBER_INT32 || mType == CSS_NUMBER_UINT32) {
+        return CSS_NUMBER;
+      }
+      return CSS_UNKNOWN;
+    }
     return mType;
   }
   void SetFloatValue(uint16_t aUnitType, float aValue,
@@ -58,12 +77,15 @@ public:
 
   // nsROCSSPrimitiveValue
   nsROCSSPrimitiveValue();
-  ~nsROCSSPrimitiveValue();
 
   void SetNumber(float aValue);
   void SetNumber(int32_t aValue);
   void SetNumber(uint32_t aValue);
   void SetPercent(float aValue);
+  void SetDegree(float aValue);
+  void SetGrad(float aValue);
+  void SetRadian(float aValue);
+  void SetTurn(float aValue);
   void SetAppUnits(nscoord aValue);
   void SetAppUnits(float aValue);
   void SetIdent(nsCSSKeyword aKeyword);
@@ -82,19 +104,23 @@ public:
     return nullptr;
   }
 
-  virtual JSObject *WrapObject(JSContext *cx,
-                               JS::Handle<JSObject*> scope) MOZ_OVERRIDE;
+  virtual JSObject *WrapObject(JSContext *cx, JS::Handle<JSObject*> aGivenProto) override;
 
 private:
+  ~nsROCSSPrimitiveValue();
+
   uint16_t mType;
 
   union {
     nscoord         mAppUnits;
     float           mFloat;
-    nsDOMCSSRGBColor* mColor;
-    nsDOMCSSRect*     mRect;
-    PRUnichar*      mString;
-    nsIURI*         mURI;
+    int32_t         mInt32;
+    uint32_t        mUint32;
+    // These can't be nsCOMPtr/nsRefPtr's because they are used inside a union.
+    nsDOMCSSRGBColor* MOZ_OWNING_REF mColor;
+    nsDOMCSSRect* MOZ_OWNING_REF mRect;
+    char16_t*      mString;
+    nsIURI* MOZ_OWNING_REF mURI;
     nsCSSKeyword    mKeyword;
   } mValue;
 };

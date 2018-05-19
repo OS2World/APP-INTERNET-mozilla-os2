@@ -2,7 +2,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-(function(){
+(function() {
 
 var Cc = Components.classes;
 var Ci = Components.interfaces;
@@ -14,7 +14,7 @@ Components.utils.import("resource://gre/modules/PrivateBrowsingUtils.jsm");
 var satchelFormListener = {
     QueryInterface : XPCOMUtils.generateQI([Ci.nsIFormSubmitObserver,
                                             Ci.nsIDOMEventListener,
-                                            Ci.nsObserver,
+                                            Ci.nsIObserver,
                                             Ci.nsISupportsWeakReference]),
 
     debug          : true,
@@ -104,7 +104,7 @@ var satchelFormListener = {
             if (!this.enabled)
                 return;
 
-            if (PrivateBrowsingUtils.isWindowPrivate(domWin))
+            if (PrivateBrowsingUtils.isContentWindowPrivate(domWin))
                 return;
 
             this.log("Form submit observer notified.");

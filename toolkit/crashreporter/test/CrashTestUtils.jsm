@@ -1,4 +1,5 @@
-// XXXkhuey this needs a license header.
+/* Any copyright is dedicated to the Public Domain.
+ * http://creativecommons.org/publicdomain/zero/1.0/ */
 
 this.EXPORTED_SYMBOLS = ["CrashTestUtils"];
 
@@ -16,6 +17,7 @@ this.CrashTestUtils = {
   CRASH_RUNTIMEABORT:          2,
   CRASH_OOM:                   3,
   CRASH_MOZ_CRASH:             4,
+  CRASH_ABORT:                 5,
 
   // Constants for dumpHasStream()
   // From google_breakpad/common/minidump_format.h
@@ -26,10 +28,11 @@ this.CrashTestUtils = {
 // Grab APIs from the testcrasher shared library
 Components.utils.import("resource://gre/modules/Services.jsm");
 Components.utils.import("resource://gre/modules/ctypes.jsm");
-let dir = Services.dirsvc.get("CurWorkD", Components.interfaces.nsILocalFile);
-let file = dir.clone();
+var dir = Services.dirsvc.get("CurWorkD", Components.interfaces.nsILocalFile);
+var file = dir.clone();
+file = file.parent;
 file.append(ctypes.libraryName("testcrasher"));
-let lib = ctypes.open(file.path);
+var lib = ctypes.open(file.path);
 CrashTestUtils.crash = lib.declare("Crash",
                                    ctypes.default_abi,
                                    ctypes.void_t,
@@ -49,7 +52,7 @@ try {
                                                            ctypes.default_abi,
                                                            ctypes.void_t);
 }
-catch(ex) {}
+catch (ex) {}
 
 CrashTestUtils.dumpHasStream = lib.declare("DumpHasStream",
                                            ctypes.default_abi,

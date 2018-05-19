@@ -18,7 +18,7 @@ this.FormAutoCompleteResult =
                                  labels,
                                  comments,
                                  prevResult) {
-  this._searchString = searchString;
+  this.searchString = searchString;
   this._searchResult = searchResult;
   this._defaultIndex = defaultIndex;
   this._errorDescription = errorDescription;
@@ -37,7 +37,7 @@ this.FormAutoCompleteResult =
 FormAutoCompleteResult.prototype = {
 
   // The user's query string
-  _searchString: "",
+  searchString: "",
 
   // The result code of this result object, see |get searchResult| for possible values.
   _searchResult: 0,
@@ -45,7 +45,7 @@ FormAutoCompleteResult.prototype = {
   // The default item that should be entered if none is selected
   _defaultIndex: 0,
 
-  //The reason the search failed
+  // The reason the search failed
   _errorDescription: "",
 
   /**
@@ -58,13 +58,6 @@ FormAutoCompleteResult.prototype = {
 
   get wrappedJSObject() {
     return this;
-  },
-
-  /**
-   * @return the user's query string
-   */
-  get searchString() {
-    return this._searchString;
   },
 
   /**
@@ -117,7 +110,7 @@ FormAutoCompleteResult.prototype = {
 
   getLabelAt: function(index) {
     this._checkIndexBounds(index);
-    return this._labels[index];
+    return this._labels[index] || this._values[index];
   },
 
   /**
@@ -137,15 +130,18 @@ FormAutoCompleteResult.prototype = {
    */
   getStyleAt: function(index) {
     this._checkIndexBounds(index);
-    if (!this._comments[index]) {
-      return null;  // not a category label, so no special styling
+
+    if (this._formHistResult && index < this._formHistResult.matchCount) {
+      return "fromhistory";
     }
 
-    if (index == 0) {
-      return "suggestfirst";  // category label on first line of results
+    if (this._formHistResult &&
+        this._formHistResult.matchCount > 0 &&
+        index == this._formHistResult.matchCount) {
+      return "datalist-first";
     }
 
-    return "suggesthint";   // category label on any other line of results
+    return null;
   },
 
   /**
@@ -156,6 +152,15 @@ FormAutoCompleteResult.prototype = {
   getImageAt: function(index) {
     this._checkIndexBounds(index);
     return "";
+  },
+
+  /**
+   * Retrieves a result
+   * @param  index    the index of the result requested
+   * @return          the result at the specified index
+   */
+  getFinalCompleteValueAt: function(index) {
+    return this.getValueAt(index);
   },
 
   /**

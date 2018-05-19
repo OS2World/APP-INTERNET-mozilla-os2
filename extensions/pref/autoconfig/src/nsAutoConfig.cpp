@@ -3,10 +3,6 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifdef MOZ_LOGGING
-// sorry, this has to be before the pre-compiled header
-#define FORCE_PR_LOG /* Allow logging in the release build */
-#endif
 #include "nsAutoConfig.h"
 #include "nsIURI.h"
 #include "nsIHttpChannel.h"
@@ -19,11 +15,18 @@
 #include "nsIPromptService.h"
 #include "nsIServiceManager.h"
 #include "nsIStringBundle.h"
+#include "nsContentUtils.h"
 #include "nsCRT.h"
+#include "nsNetCID.h"
+#include "nsNetUtil.h"
 #include "nspr.h"
 #include <algorithm>
 
-PRLogModuleInfo *MCD;
+#include "mozilla/Logging.h"
+
+using mozilla::LogLevel;
+
+mozilla::LazyLogModule MCD("MCD");
 
 extern nsresult EvaluateAdminConfigScript(const char *js_buffer, size_t length,
                                           const char *filename, 
@@ -33,7 +36,7 @@ extern nsresult EvaluateAdminConfigScript(const char *js_buffer, size_t length,
 
 // nsISupports Implementation
 
-NS_IMPL_THREADSAFE_ISUPPORTS6(nsAutoConfig, nsIAutoConfig, nsITimerCallback, nsIStreamListener, nsIObserver, nsIRequestObserver, nsISupportsWeakReference)
+NS_IMPL_ISUPPORTS(nsAutoConfig, nsIAutoConfig, nsITimerCallback, nsIStreamListener, nsIObserver, nsIRequestObserver, nsISupportsWeakReference)
 
 nsAutoConfig::nsAutoConfig()
 {
@@ -123,7 +126,7 @@ nsAutoConfig::OnStopRequest(nsIRequest *request, nsISupports *context,
 
     // If the request is failed, go read the failover.jsc file
     if (NS_FAILED(aStatus)) {
-        PR_LOG(MCD, PR_LOG_DEBUG, ("mcd request failed with status %x\n", aStatus));
+        MOZ_LOG(MCD, LogLevel::Debug, ("mcd request failed with status %x\n", aStatus));
         return readOfflineFile();
     }
 
@@ -134,7 +137,7 @@ nsAutoConfig::OnStopRequest(nsIRequest *request, nsISupports *context,
         pHTTPCon->GetResponseStatus(&httpStatus);
         if (httpStatus != 200) 
         {
-            PR_LOG(MCD, PR_LOG_DEBUG, ("mcd http request failed with status %x\n", httpStatus));
+            MOZ_LOG(MCD, LogLevel::Debug, ("mcd http request failed with status %x\n", httpStatus));
             return readOfflineFile();
         }
     }
@@ -175,7 +178,7 @@ NS_IMETHODIMP nsAutoConfig::Notify(nsITimer *timer)
 
 NS_IMETHODIMP nsAutoConfig::Observe(nsISupports *aSubject, 
                                     const char *aTopic, 
-                                    const PRUnichar *someData)
+                                    const char16_t *someData)
 {
     nsresult rv = NS_OK;
     if (!nsCRT::strcmp(aTopic, "profile-after-change")) {
@@ -199,7 +202,7 @@ nsresult nsAutoConfig::downloadAutoConfig()
     static bool firstTime = true;
     
     if (mConfigURL.IsEmpty()) {
-        PR_LOG(MCD, PR_LOG_DEBUG, ("global config url is empty - did you set autoadmin.global_config_url?\n"));
+        MOZ_LOG(MCD, LogLevel::Debug, ("global config url is empty - did you set autoadmin.global_config_url?\n"));
         NS_WARNING("AutoConfig called without global_config_url");
         return NS_OK;
     }
@@ -208,7 +211,7 @@ nsresult nsAutoConfig::downloadAutoConfig()
     // in the previous read, we need to remove it when timer kicks in and 
     // downloads the autoconfig file again. 
     // If necessary, the email address will be added again as an argument.
-    int32_t index = mConfigURL.RFindChar((PRUnichar)'?');
+    int32_t index = mConfigURL.RFindChar((char16_t)'?');
     if (index != -1)
         mConfigURL.Truncate(index);
 
@@ -261,7 +264,7 @@ nsresult nsAutoConfig::downloadAutoConfig()
                In this case the autoconfig URL is a script and 
                emailAddr as passed as an argument 
             */
-            mConfigURL.Append("?");
+            mConfigURL.Append('?');
             mConfigURL.Append(emailAddr); 
         }
     }
@@ -273,17 +276,26 @@ nsresult nsAutoConfig::downloadAutoConfig()
     rv = NS_NewURI(getter_AddRefs(url), mConfigURL.get(), nullptr, nullptr);
     if (NS_FAILED(rv))
     {
-        PR_LOG(MCD, PR_LOG_DEBUG, ("failed to create URL - is autoadmin.global_config_url valid? - %s\n", mConfigURL.get()));
+        MOZ_LOG(MCD, LogLevel::Debug, ("failed to create URL - is autoadmin.global_config_url valid? - %s\n", mConfigURL.get()));
         return rv;
     }
 
-    PR_LOG(MCD, PR_LOG_DEBUG, ("running MCD url %s\n", mConfigURL.get()));
+    MOZ_LOG(MCD, LogLevel::Debug, ("running MCD url %s\n", mConfigURL.get()));
     // open a channel for the url
-    rv = NS_NewChannel(getter_AddRefs(channel),url, nullptr, nullptr, nullptr, nsIRequest::INHIBIT_PERSISTENT_CACHING | nsIRequest::LOAD_BYPASS_CACHE);
+    rv = NS_NewChannel(getter_AddRefs(channel),
+                       url,
+                       nsContentUtils::GetSystemPrincipal(),
+                       nsILoadInfo::SEC_ALLOW_CROSS_ORIGIN_DATA_IS_NULL,
+                       nsIContentPolicy::TYPE_OTHER,
+                       nullptr,  // loadGroup
+                       nullptr,  // aCallbacks
+                       nsIRequest::INHIBIT_PERSISTENT_CACHING |
+                       nsIRequest::LOAD_BYPASS_CACHE);
+
     if (NS_FAILED(rv)) 
         return rv;
 
-    rv = channel->AsyncOpen(this, nullptr); 
+    rv = channel->AsyncOpen2(this);
     if (NS_FAILED(rv)) {
         readOfflineFile();
         return rv;
@@ -502,11 +514,11 @@ nsresult nsAutoConfig::PromptForEMailAddress(nsACString &emailAddress)
     NS_ENSURE_SUCCESS(rv, rv);
 
     nsXPIDLString title;
-    rv = bundle->GetStringFromName(NS_LITERAL_STRING("emailPromptTitle").get(), getter_Copies(title));
+    rv = bundle->GetStringFromName(u"emailPromptTitle", getter_Copies(title));
     NS_ENSURE_SUCCESS(rv, rv);
 
     nsXPIDLString err;
-    rv = bundle->GetStringFromName(NS_LITERAL_STRING("emailPromptMsg").get(), getter_Copies(err));
+    rv = bundle->GetStringFromName(u"emailPromptMsg", getter_Copies(err));
     NS_ENSURE_SUCCESS(rv, rv);
     bool check = false;
     nsXPIDLString emailResult;

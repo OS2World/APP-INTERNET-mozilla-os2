@@ -3,6 +3,7 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 include protocol PContent;
+include protocol PChannelDiverter;
 
 namespace mozilla {
 namespace dom {
@@ -12,13 +13,15 @@ protocol PExternalHelperApp
   manager PContent;
 
 parent:
-  OnStartRequest(nsCString entityID);
-  OnDataAvailable(nsCString data, uint64_t offset, uint32_t count);
-  OnStopRequest(nsresult code);
+  async OnStartRequest(nsCString entityID);
+  async OnDataAvailable(nsCString data, uint64_t offset, uint32_t count);
+  async OnStopRequest(nsresult code);
+
+  async DivertToParentUsing(PChannelDiverter diverter);
 
 child:
-  Cancel(nsresult aStatus);
-  __delete__();
+  async Cancel(nsresult aStatus);
+  async __delete__();
 };
 
 

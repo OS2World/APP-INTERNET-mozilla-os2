@@ -12,8 +12,8 @@
 #define nsPresState_h_
 
 #include "nsPoint.h"
+#include "gfxPoint.h"
 #include "nsAutoPtr.h"
-#include "nsRect.h"
 
 class nsPresState
 {
@@ -21,8 +21,12 @@ public:
   nsPresState()
     : mContentData(nullptr)
     , mScrollState(0, 0)
+    , mAllowScrollOriginDowngrade(true)
+    , mResolution(1.0)
+    , mScaleToResolution(false)
     , mDisabledSet(false)
     , mDisabled(false)
+    , mDroppedDown(false)
   {}
 
   void SetScrollState(const nsPoint& aState)
@@ -30,9 +34,39 @@ public:
     mScrollState = aState;
   }
 
-  nsPoint GetScrollState()
+  nsPoint GetScrollPosition() const
   {
     return mScrollState;
+  }
+
+  void SetAllowScrollOriginDowngrade(bool aAllowScrollOriginDowngrade)
+  {
+    mAllowScrollOriginDowngrade = aAllowScrollOriginDowngrade;
+  }
+
+  bool GetAllowScrollOriginDowngrade()
+  {
+    return mAllowScrollOriginDowngrade;
+  }
+
+  void SetResolution(float aSize)
+  {
+    mResolution = aSize;
+  }
+
+  float GetResolution() const
+  {
+    return mResolution;
+  }
+
+  void SetScaleToResolution(bool aScaleToResolution)
+  {
+    mScaleToResolution = aScaleToResolution;
+  }
+
+  bool GetScaleToResolution() const
+  {
+    return mScaleToResolution;
   }
 
   void ClearNonScrollState()
@@ -41,7 +75,7 @@ public:
     mDisabledSet = false;
   }
 
-  bool GetDisabled()
+  bool GetDisabled() const
   {
     return mDisabled;
   }
@@ -52,12 +86,12 @@ public:
     mDisabledSet = true;
   }
 
-  bool IsDisabledSet()
+  bool IsDisabledSet() const
   {
     return mDisabledSet;
   }
 
-  nsISupports* GetStateProperty()
+  nsISupports* GetStateProperty() const
   {
     return mContentData;
   }
@@ -67,12 +101,26 @@ public:
     mContentData = aProperty;
   }
 
+  void SetDroppedDown(bool aDroppedDown)
+  {
+    mDroppedDown = aDroppedDown;
+  }
+
+  bool GetDroppedDown() const
+  {
+    return mDroppedDown;
+  }
+
 // MEMBER VARIABLES
 protected:
   nsCOMPtr<nsISupports> mContentData;
   nsPoint mScrollState;
+  bool mAllowScrollOriginDowngrade;
+  float mResolution;
+  bool mScaleToResolution;
   bool mDisabledSet;
   bool mDisabled;
+  bool mDroppedDown;
 };
 
 #endif /* nsPresState_h_ */

@@ -5,6 +5,181 @@ in the Mozilla product series from release to release.
 CHANGES
 
 
+Firefox 45.9.0 GA (2017-10-04)
+
+  - Update Firefox to latest version 45.9.0 ESR (including many upstream and
+    OS/2 fixes and improvements) and switch project status to GA (general
+    availability) due to reaching application stability suitable for use by
+    general public. About 40 distinct bugs were fixed for this release.
+
+  - Switch to RPM distribution and discontinue a separate ZIP distribution
+    (ZIP packages automatically generated from RPM packages are still
+    available).
+
+  - Make FFmpeg DLLs loadable again (45.5.0 Beta 8 regression).
+
+  - Fix crashes when changing mouse cursor shape.
+
+  - Fix delayed response/choppy window scrolling (45.5.0 Beta 8 regression).
+
+  - Fix command line parsing errors when handling path separators
+    (38.8.0 Beta 7 regression).
+
+  - Fix crashes when copy-pasting rich text from OpenOffice.
+
+  - Fix 100% CPU load from plugin-container.exe.
+
+  - Make binary NP plugins requiring proper process environment (e.g. Awget)
+    work.
+
+  - Make binary NP plugins that do custom painting (e.g. Flash) work in OOP
+    mode (for Flash this also requires a fixed Odin and a fresh Flash wrapper
+    build). Note that OOP (out-of-process) mode for plugins is always on
+    since version 45.
+
+  - Read binary NP plugin DLL properties w/o loading it for execution, which
+    improves security as of the main Firefox process by disallowing execution
+    of arbitrary code.
+
+  - Prevent possible doubled paint operations in browser windows.
+
+  - Make full-screen mode activated by F11 work (45.5.0 Beta 8 regression).
+
+  - Fix garbled national characters when using Firefox Sync with Windows,
+    Linux and macOS machines.
+
+  - Make printing from the internal PDF viewer work.
+
+  - Replace too generic "An error occurred while printing" error with "No
+    printers available" in the Print dialog when no printers are configured in
+    the system.
+
+  - Use the built-in PostScript generator when printing. This provides better
+    printing quality and also restricts the printer list in the Print dialog to
+    only PostScript printers, as other types of printers are not supported
+    by Firefox anyway.
+
+  - Support the HOME environment variable as a profile directory (used when
+    MOZILLA_HOME is absent).
+
+  - Support forward slashes and UNIXROOT paths (starting with `/@`) everywhere
+    in Firefox (including the values of HOME and MOZILLA_HOME environment
+    variables).
+
+  - Load binary NP plugins from a `/@unixroot/usr/mozilla/plugins` directory
+    (intended for installing plugins using RPM/YUM) in addition to
+    MOZ_PLUGIN_PATH.
+
+
+Firefox 45.5.0 Beta 8 (2017-05-19)
+
+   - Update Firefox to latest version 45.5.0 ESR (including many fixes to
+     the OS/2 code to adapt it to the ongoing Firefox evolution).
+
+   - Make firefox.exe set BEGINLIBPATH/LIBPATHSTRICT so that a run! or
+     script wrapper is no more necessary to start different versions of
+     Firefox in parallel or to launch firefox.exe from an arbitrary directory.
+
+   - Link against external LIBJPEG, LIBPNG, ZLIB, BZIP2 and HUNSPELL DLLs.
+
+   - Use kLIBC 0.6.6 DLL directly in JS code.
+
+   - Link against LIBCx DLL for automatic EXCEPTQ trap report creation
+     everywhere.
+
+
+Firefox 38.8.0 Beta 7 (2016-05-27)
+
+   - Update Firefox to latest version 38.8.0 ESR.
+
+   - Fix saved passwords not shown on the Options->Security page.
+
+   - Fix broken Open in New Tab and Restore Session functionality.
+     This also fixes opening URLs from command line in new tabs
+     instead of creating a new window.
+
+   - Add support for dynamic FFmpeg DLL discovery and enable MP4 video support
+     by default. This allows to play H264/AAC video files in HTML5 if supported
+     FFmpeg DLLs are present on the system (see README.OS2).
+
+   - Set default font families to generic "serif", "sans-serif" and "monospace"
+     instead of fixed familiy names. This allows Firefox to automatically pick
+     up system-global defaults set (or changed) in FontConfig (see README.OS2).
+
+   - Report the OS/2 error code and faluty module name in a PM message box and
+     to the standard output if Mozilla runime (XUL.DLL) cannot be loaded at
+     startup.
+
+
+Firefox 38.2.1 Beta 6 (2016-02-21)
+
+   - Update Firefox to version 38.2.1 ESR.
+
+   - Switch to original fontconfig for much better font substitution.
+
+   - Switch from GPI to Pango for better text layout and rendering. This
+     obsoletes 'gfx.os2.font.*' properties and also brings long-awaited
+     support for @font-face (loadable Web fonts).
+
+   - Temporarily disable native print driver spport which is currently
+     broken.
+
+
+Firefox 31.8.0 Beta 5 (2015-07-24)
+
+   - Update Firefox to version 31.8.0 ESR.
+
+   - Put back all OS/2 code that was removed by the Mozilla team between
+     versions 24 and 31 to bring Firefox back to life.
+
+   - Review JavsScript support to fix infamous crashes under heavy JS usage and
+     greatly improve overal JS performance on OS/2.
+
+   - Enable audio in HTML5 content and in JS using libkai.
+
+   - Temporarily disable out-of-process mode for all plugins to fix 100% CPU
+     load.
+
+   - Make File->Quit shortcut (Ctrl+Q) work again.
+
+
+Firefox 24.8.1 Beta 4 (2015-03-10)
+
+   - Clean up temporary files (mozilla-temp-XXX) in %TEMP% directory.
+
+   - Fix check boxes in "Clear Recent History" dialog.
+
+   - Make most visited sites' thumbnails on new tab canvas work again.
+
+   - Set correct defaults for "gfx.os2.font.*" preferences.
+
+   - Finally allow loading XUL.DLL into high memory.
+
+   - Get rid of MOZJS.DLL (it's now part of XUL.DLL).
+
+   - Use universal builds of FreeType and FontConfig (see README).
+
+   - Use newer GCC 4.9.2 compiler (requires a new GCC runtime, see README).
+
+   - Use newer LIBC 0.6.6 library (requires a new LIBC runtime, see README).
+
+
+Firefox 24.8.1 Beta 3 (2014-12-30)
+
+   - Fix EXCEPTQ report generation.
+
+   - Rebuild with newer LIBOS2 to allow loading XUL.DLL to high memory.
+
+
+Firefox 24.8.1 Beta 2 (2014-09-26)
+
+   - Update Firefox to latest version 24.8.1 ESR.
+
+   - Fix spell checking in text input fields.
+
+   - Update EXCEPTQ Add-On download link in README.OS2.
+
+
 Firefox 24.3.0 Beta (2014-05-30)
 
    - Update Firefox to version 24.3.0 ESR.

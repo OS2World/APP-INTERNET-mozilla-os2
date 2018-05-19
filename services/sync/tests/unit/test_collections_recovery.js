@@ -6,7 +6,7 @@ Cu.import("resource://services-sync/service.js");
 Cu.import("resource://services-sync/util.js");
 Cu.import("resource://testing-common/services/sync/utils.js");
 
-add_test(function test_missing_crypto_collection() {
+add_identity_test(this, function* test_missing_crypto_collection() {
   let johnHelper = track_collections_helper();
   let johnU      = johnHelper.with_updated_collection;
   let johnColls  = johnHelper.collections;
@@ -24,9 +24,7 @@ add_test(function test_missing_crypto_collection() {
     };
   }
 
-  setBasicCredentials("johndoe", "ilovejane", "a-aaaaa-aaaaa-aaaaa-aaaaa-aaaaa");
-  Service.serverURL = TEST_SERVER_URL;
-  Service.clusterURL = TEST_CLUSTER_URL;
+  yield configureIdentity({username: "johndoe"});
 
   let handlers = {
     "/1.1/johndoe/info/collections": maybe_empty(johnHelper.handler),
@@ -35,11 +33,15 @@ add_test(function test_missing_crypto_collection() {
   };
   let collections = ["clients", "bookmarks", "forms", "history",
                      "passwords", "prefs", "tabs"];
-  for each (let coll in collections) {
+  // Disable addon sync because AddonManager won't be initialized here.
+  Service.engineManager.unregister("addons");
+
+  for (let coll of collections) {
     handlers["/1.1/johndoe/storage/" + coll] =
       johnU(coll, new ServerCollection({}, true).handler());
   }
   let server = httpd_setup(handlers);
+  Service.serverURL = server.baseURI;
 
   try {
     let fresh = 0;
@@ -51,7 +53,7 @@ add_test(function test_missing_crypto_collection() {
     };
 
     _("Startup, no meta/global: freshStart called once.");
-    Service.sync();
+    yield sync_and_validate_telem();
     do_check_eq(fresh, 1);
     fresh = 0;
 
@@ -61,17 +63,19 @@ add_test(function test_missing_crypto_collection() {
 
     _("Simulate a bad info/collections.");
     delete johnColls.crypto;
-    Service.sync();
+    yield sync_and_validate_telem();
     do_check_eq(fresh, 1);
     fresh = 0;
 
     _("Regular sync: no need to freshStart.");
-    Service.sync();
+    yield sync_and_validate_telem();
     do_check_eq(fresh, 0);
 
   } finally {
     Svc.Prefs.resetBranch("");
-    server.stop(run_next_test);
+    let deferred = Promise.defer();
+    server.stop(deferred.resolve);
+    yield deferred.promise;
   }
 });
 

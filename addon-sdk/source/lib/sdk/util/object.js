@@ -1,12 +1,13 @@
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
-
 "use strict";
 
 module.metadata = {
   "stability": "unstable"
 };
+
+const { flatten } = require('./array');
 
 /**
  * Merges all the properties of all arguments into first argument. If two or
@@ -29,11 +30,12 @@ module.metadata = {
  */
 function merge(source) {
   let descriptor = {};
+
   // `Boolean` converts the first parameter to a boolean value. Any object is
   // converted to `true` where `null` and `undefined` becames `false`. Therefore
   // the `filter` method will keep only objects that are defined and not null.
   Array.slice(arguments, 1).filter(Boolean).forEach(function onEach(properties) {
-    Object.getOwnPropertyNames(properties).forEach(function(name) {
+    getOwnPropertyIdentifiers(properties).forEach(function(name) {
       descriptor[name] = Object.getOwnPropertyDescriptor(properties, name);
     });
   });
@@ -54,4 +56,49 @@ function extend(source) {
 }
 exports.extend = extend;
 
+function has(obj, key) {
+  return obj.hasOwnProperty(key);
+}
+exports.has = has;
 
+function each(obj, fn) {
+  for (let key in obj) has(obj, key) && fn(obj[key], key, obj);
+}
+exports.each = each;
+
+/**
+ * Like `merge`, except no property descriptors are manipulated, for use
+ * with platform objects. Identical to underscore's `extend`. Useful for
+ * merging XPCOM objects
+ */
+function safeMerge(source) {
+  Array.slice(arguments, 1).forEach(function onEach (obj) {
+    for (let prop in obj) source[prop] = obj[prop];
+  });
+  return source;
+}
+exports.safeMerge = safeMerge;
+
+/*
+ * Returns a copy of the object without omitted properties
+ */
+function omit(source, ...values) {
+  let copy = {};
+  let keys = flatten(values);
+  for (let prop in source)
+    if (!~keys.indexOf(prop))
+      copy[prop] = source[prop];
+  return copy;
+}
+exports.omit = omit;
+
+// get object's own property Symbols and/or Names, including nonEnumerables by default
+function getOwnPropertyIdentifiers(object, options = { names: true, symbols: true, nonEnumerables: true }) {
+  const symbols = !options.symbols ? [] :
+                  Object.getOwnPropertySymbols(object);
+  const names = !options.names ? [] :
+                options.nonEnumerables ? Object.getOwnPropertyNames(object) :
+                Object.keys(object);
+  return [...names, ...symbols];
+}
+exports.getOwnPropertyIdentifiers = getOwnPropertyIdentifiers;

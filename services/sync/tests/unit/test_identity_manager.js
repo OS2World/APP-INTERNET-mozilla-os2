@@ -5,11 +5,11 @@ Cu.import("resource://services-sync/constants.js");
 Cu.import("resource://services-sync/identity.js");
 Cu.import("resource://services-sync/util.js");
 
-let identity = new IdentityManager();
+var identity = new IdentityManager();
 
 function run_test() {
   initTestLogging("Trace");
-  Log4Moz.repository.getLogger("Sync.Identity").level = Log4Moz.Level.Trace;
+  Log.repository.getLogger("Sync.Identity").level = Log.Level.Trace;
 
   run_next_test();
 }

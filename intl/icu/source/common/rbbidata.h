@@ -1,7 +1,9 @@
+// Copyright (C) 2016 and later: Unicode, Inc. and others.
+// License & terms of use: http://www.unicode.org/copyright.html
 /*
 *******************************************************************************
 *
-*   Copyright (C) 1999-2011 International Business Machines
+*   Copyright (C) 1999-2014 International Business Machines
 *   Corporation and others.  All Rights Reserved.
 *
 *******************************************************************************
@@ -49,6 +51,7 @@ ubrk_swap(const UDataSwapper *ds,
 
 #include "unicode/uobject.h"
 #include "unicode/unistr.h"
+#include "umutex.h"
 #include "utrie.h"
 
 U_NAMESPACE_BEGIN
@@ -149,6 +152,7 @@ public:
     RBBIDataWrapper(UDataMemory* udm, UErrorCode &status);
     ~RBBIDataWrapper();
 
+    void                  init0();
     void                  init(const RBBIDataHeader *data, UErrorCode &status);
     RBBIDataWrapper      *addReference();
     void                  removeReference();
@@ -180,8 +184,8 @@ public:
     UTrie               fTrie;
 
 private:
-    int32_t             fRefCount;
-    UDataMemory        *fUDataMem;
+    u_atomic_int32_t    fRefCount;
+    UDataMemory  *fUDataMem;
     UnicodeString       fRuleString;
     UBool               fDontFreeData;
 

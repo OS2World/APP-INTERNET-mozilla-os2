@@ -19,11 +19,6 @@ function test() {
 
   gBrowser.loadURI("http://mochi.test:8888/browser/toolkit/content/tests/browser/data/post_form_outer.sjs");
 
-  registerCleanupFunction(function () {
-    gBrowser.addTab();
-    gBrowser.removeCurrentTab();
-  });
-
   gBrowser.addEventListener("pageshow", function pageShown(event) {
     if (event.target.location == "about:blank")
       return;
@@ -111,7 +106,7 @@ function createTemporarySaveDirectory() {
                   .get("TmpD", Ci.nsIFile);
   saveDir.append("testsavedir");
   if (!saveDir.exists())
-    saveDir.create(Ci.nsIFile.DIRECTORY_TYPE, 0755);
+    saveDir.create(Ci.nsIFile.DIRECTORY_TYPE, 0o755);
   return saveDir;
 }
 

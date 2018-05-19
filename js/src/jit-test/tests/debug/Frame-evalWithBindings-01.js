@@ -1,6 +1,6 @@
 // evalWithBindings basics
 
-var g = newGlobal('new-compartment');
+var g = newGlobal();
 var dbg = new Debugger(g);
 var hits = 0;
 dbg.onDebuggerStatement = function (frame) {
@@ -30,6 +30,6 @@ g.f();
 g.eval("with ({y: 3}) { debugger; }");
 
 // shadowing
-g.eval("let (x = 50, y = 3) { debugger; }");
+g.eval("{ let x = 50, y = 3; debugger; }");
 
 assertEq(hits, 6);

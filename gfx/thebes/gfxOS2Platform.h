@@ -7,7 +7,6 @@
 #define GFX_OS2_PLATFORM_H
 
 #include "gfxPlatform.h"
-#include "gfxOS2Fonts.h"
 #include "gfxFontUtils.h"
 #include "nsTArray.h"
 
@@ -20,43 +19,76 @@ public:
     virtual ~gfxOS2Platform();
 
     static gfxOS2Platform *GetPlatform() {
-        return (gfxOS2Platform*) gfxPlatform::GetPlatform();
+        return static_cast<gfxOS2Platform*>(gfxPlatform::GetPlatform());
     }
 
-    already_AddRefed<gfxASurface>
-        CreateOffscreenSurface(const gfxIntSize& size,
-                               gfxASurface::gfxContentType contentType);
+    virtual already_AddRefed<gfxASurface>
+      CreateOffscreenSurface(const IntSize& aSize,
+                             gfxImageFormat aFormat) override;
 
-    nsresult GetFontList(nsIAtom *aLangGroup,
-                         const nsACString& aGenericFamily,
-                         nsTArray<nsString>& aListOfFonts);
-    nsresult UpdateFontList();
-    nsresult ResolveFontName(const nsAString& aFontName,
-                             FontResolverCallback aCallback,
-                             void *aClosure, bool& aAborted);
-    nsresult GetStandardFamilyName(const nsAString& aFontName, nsAString& aFamilyName);
+    virtual nsresult GetFontList(nsIAtom *aLangGroup,
+                                 const nsACString& aGenericFamily,
+                                 nsTArray<nsString>& aListOfFonts) override;
 
-    gfxFontGroup *CreateFontGroup(const nsAString &aFamilies,
-                                  const gfxFontStyle *aStyle,
-                                  gfxUserFontSet *aUserFontSet);
+    virtual nsresult UpdateFontList() override;
 
-    // Given a string and a font we already have, find the font that
-    // supports the most code points and most closely resembles aFont.
-    // This simple version involves looking at the fonts on the machine to see
-    // which code points they support.
-    already_AddRefed<gfxOS2Font> FindFontForChar(uint32_t aCh, gfxOS2Font *aFont);
+    virtual gfxPlatformFontList* CreatePlatformFontList() override;
 
-    // return true if it's already known that we don't have a font for this char
-    bool noFontWithChar(uint32_t aCh) {
-        return mCodepointsWithNoFonts.test(aCh);
-    }
+    virtual nsresult GetStandardFamilyName(const nsAString& aFontName,
+                                           nsAString& aFamilyName) override;
+
+    gfxFontGroup*
+    CreateFontGroup(const mozilla::FontFamilyList& aFontFamilyList,
+                    const gfxFontStyle* aStyle,
+                    gfxTextPerfMetrics* aTextPerf,
+                    gfxUserFontSet* aUserFontSet,
+                    gfxFloat aDevToCssSize) override;
+
+    /**
+     * Look up a local platform font using the full font face name (needed to
+     * support @font-face src local() )
+     */
+    virtual gfxFontEntry* LookupLocalFont(const nsAString& aFontName,
+                                          uint16_t aWeight,
+                                          int16_t aStretch,
+                                          uint8_t aStyle) override;
+
+    /**
+     * Activate a platform font (needed to support @font-face src url() )
+     *
+     */
+    virtual gfxFontEntry* MakePlatformFont(const nsAString& aFontName,
+                                           uint16_t aWeight,
+                                           int16_t aStretch,
+                                           uint8_t aStyle,
+                                           const uint8_t* aFontData,
+                                           uint32_t aLength) override;
+
+    /**
+     * Check whether format is supported on a platform or not (if unclear,
+     * returns true).
+     */
+    virtual bool IsFontFormatSupported(nsIURI *aFontURI,
+                                       uint32_t aFormatFlags) override;
+
+
+    static bool UseFcFontList() { return sUseFcFontList; }
+
+    void FontsPrefsChanged(const char *aPref) override;
+
+    // maximum number of fonts to substitute for a generic
+    uint32_t MaxGenericSubstitions();
 
 protected:
     static gfxFontconfigUtils *sFontconfigUtils;
 
+    int8_t mMaxGenericSubstitutions;
+
 private:
-    // when font lookup fails for a character, cache it to skip future searches
-    gfxSparseBitSet mCodepointsWithNoFonts;
+
+    // xxx - this will be removed once the new fontconfig platform font list
+    // replaces gfxPangoFontGroup
+    static bool sUseFcFontList;
 };
 
 #endif /* GFX_OS2_PLATFORM_H */

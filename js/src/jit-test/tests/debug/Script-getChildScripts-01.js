@@ -1,6 +1,6 @@
 // Basic getChildScripts tests.
 
-var g = newGlobal('new-compartment');
+var g = newGlobal();
 var dbg = new Debugger(g);
 var log;
 function note(s) {
@@ -38,5 +38,5 @@ test("var obj = {get x() { return 0; }, set x(v) {}}; debugger;",
      "S[SS]");
 test("function r(n) { for (var i = 0; i < n; i++) yield i; } debugger;",
      "S[S]");
-test("var it = (3 for (p in obj)); debugger;",
+test("function* qux(n) { for (var i = 0; i < n; i++) yield i; } debugger;",
      "S[S]");

@@ -10,12 +10,11 @@
 */
 
 /*global ToObject: false, ToInteger: false, IsCallable: false,
-         ThrowError: false, AssertionFailed: false, SetScriptHints: false,
+         ThrowRangeError: false, ThrowTypeError: false,
+         AssertionFailed: false,
          MakeConstructible: false, DecompileArg: false,
          RuntimeDefaultLocale: false,
-         ParallelDo: false, ParallelSlices: false, NewDenseArray: false,
-         UnsafeSetElement: false, ShouldForceSequential: false,
-         ParallelTestsShouldPass: false,
+         NewDenseArray: false,
          Dump: false,
          callFunction: false,
          TO_UINT32: false,
@@ -23,65 +22,40 @@
          JSMSG_EMPTY_ARRAY_REDUCE: false, JSMSG_CANT_CONVERT_TO: false,
 */
 
-/* Utility macros */
-#define TO_INT32(x) (x | 0)
-#define TO_UINT32(x) (x >>> 0)
+#include "SelfHostingDefines.h"
 
-/* cache built-in functions before applications can change them */
-var std_isFinite = isFinite;
-var std_isNaN = isNaN;
-var std_Array_indexOf = ArrayIndexOf;
-var std_Array_join = Array.prototype.join;
-var std_Array_push = Array.prototype.push;
-var std_Array_shift = Array.prototype.shift;
-var std_Array_slice = Array.prototype.slice;
-var std_Array_sort = Array.prototype.sort;
-var std_Array_unshift = Array.prototype.unshift;
-var std_Boolean_toString = Boolean.prototype.toString;
-var Std_Date = Date;
-var std_Date_now = Date.now;
-var std_Date_valueOf = Date.prototype.valueOf;
-var std_Function_bind = Function.prototype.bind;
-var std_Function_apply = Function.prototype.apply;
-var std_Math_floor = Math.floor;
-var std_Math_max = Math.max;
-var std_Math_min = Math.min;
-var std_Number_valueOf = Number.prototype.valueOf;
-var std_Number_POSITIVE_INFINITY = Number.POSITIVE_INFINITY;
-var std_Object_create = Object.create;
-var std_Object_defineProperty = Object.defineProperty;
-var std_Object_getOwnPropertyNames = Object.getOwnPropertyNames;
-var std_Object_hasOwnProperty = Object.prototype.hasOwnProperty;
-var std_RegExp_test = RegExp.prototype.test;
-var Std_String = String;
-var std_String_indexOf = String.prototype.indexOf;
-var std_String_lastIndexOf = String.prototype.lastIndexOf;
-var std_String_match = String.prototype.match;
-var std_String_replace = String.prototype.replace;
-var std_String_split = String.prototype.split;
-var std_String_startsWith = String.prototype.startsWith;
-var std_String_substring = String.prototype.substring;
-var std_String_toLowerCase = String.prototype.toLowerCase;
-var std_String_toUpperCase = String.prototype.toUpperCase;
-var std_WeakMap_get = WeakMap.prototype.get;
-var std_WeakMap_has = WeakMap.prototype.has;
-var std_WeakMap_set = WeakMap.prototype.set;
+// Assertions and debug printing, defined here instead of in the header above
+// to make `assert` invisible to C++.
+#ifdef DEBUG
+#define assert(b, info) if (!(b)) AssertionFailed(__FILE__ + ":" + __LINE__ + ": " + info)
+#define dbg(msg) DumpMessage(callFunction(std_Array_pop, \
+                                          StringSplitString(__FILE__, '/')) \
+                             + '#' + __LINE__ + ': ' + msg)
+#else
+#define assert(b, info) // Elided assertion.
+#define dbg(msg) // Elided debugging output.
+#endif
+
+// All C++-implemented standard builtins library functions used in self-hosted
+// code are installed via the std_functions JSFunctionSpec[] in
+// SelfHosting.cpp.
+//
+// Do not create an alias to a self-hosted builtin, otherwise it will be cloned
+// twice.
+//
+// WeakMap is a bare constructor without properties or methods.
+var std_WeakMap = WeakMap;
+// StopIteration is a bare constructor without properties or methods.
+var std_StopIteration = StopIteration;
 
 
 /********** List specification type **********/
 
-
 /* Spec: ECMAScript Language Specification, 5.1 edition, 8.8 */
-function List() {}
-{
-  let ListProto = std_Object_create(null);
-  ListProto.indexOf = std_Array_indexOf;
-  ListProto.join = std_Array_join;
-  ListProto.push = std_Array_push;
-  ListProto.slice = std_Array_slice;
-  ListProto.sort = std_Array_sort;
-  MakeConstructible(List, ListProto);
+function List() {
+    this.length = 0;
 }
+MakeConstructible(List, {__proto__: null});
 
 
 /********** Record specification type **********/
@@ -115,38 +89,139 @@ function ToNumber(v) {
 }
 
 
-/* Spec: ECMAScript Language Specification, 5.1 edition, 9.8 and 15.2.1.1 */
-function ToString(v) {
-    assert(arguments.length > 0, "__toString");
-    return Std_String(v);
-}
-
-
-/* Spec: ECMAScript Language Specification, 5.1 edition, 9.10 */
-function CheckObjectCoercible(v) {
+// ES6 7.2.1 (previously, ES5 9.10 under the name "CheckObjectCoercible").
+function RequireObjectCoercible(v) {
     if (v === undefined || v === null)
-        ThrowError(JSMSG_CANT_CONVERT_TO, ToString(v), "object");
+        ThrowTypeError(JSMSG_CANT_CONVERT_TO, ToString(v), "object");
 }
 
+/* Spec: ECMAScript Draft, 6 edition May 22, 2014, 7.1.15 */
+function ToLength(v) {
+    v = ToInteger(v);
 
-/********** Various utility functions **********/
+    if (v <= 0)
+        return 0;
 
-
-/** Returns true iff Type(v) is Object; see ES5 8.6. */
-function IsObject(v) {
-    // Watch out for |typeof null === "object"| as the most obvious pitfall.
-    // But also be careful of SpiderMonkey's objects that emulate undefined
-    // (i.e. |document.all|), which have bogus |typeof| behavior.  Detect
-    // these objects using strict equality, which said bogosity doesn't affect.
-    return (typeof v === "object" && v !== null) ||
-           (typeof v === "undefined" && v !== undefined);
+    // Math.pow(2, 53) - 1 = 0x1fffffffffffff
+    return std_Math_min(v, 0x1fffffffffffff);
 }
 
+/* Spec: ECMAScript Draft, 6th edition Oct 14, 2014, 7.2.4 */
+function SameValueZero(x, y) {
+    return x === y || (x !== x && y !== y);
+}
 
-/********** Assertions **********/
+// ES 2017 draft (April 6, 2016) 7.3.9
+function GetMethod(V, P) {
+    // Step 1.
+    assert(IsPropertyKey(P), "Invalid property key");
 
+    // Step 2.
+    var func = V[P];
 
-function assert(b, info) {
-    if (!b)
-        AssertionFailed(info);
+    // Step 3.
+    if (func === undefined || func === null)
+        return undefined;
+
+    // Step 4.
+    if (!IsCallable(func))
+        ThrowTypeError(JSMSG_NOT_FUNCTION, typeof func);
+
+    // Step 5.
+    return func;
+}
+
+/* Spec: ECMAScript Draft, 6th edition Dec 24, 2014, 7.2.7 */
+function IsPropertyKey(argument) {
+    var type = typeof argument;
+    return type === "string" || type === "symbol";
+}
+
+/* Spec: ECMAScript Draft, 6th edition Dec 24, 2014, 7.4.1 */
+function GetIterator(obj, method) {
+    // Steps 1-2.
+    if (arguments.length === 1)
+        method = GetMethod(obj, std_iterator);
+
+    // Steps 3-4.
+    var iterator = callContentFunction(method, obj);
+
+    // Step 5.
+    if (!IsObject(iterator))
+        ThrowTypeError(JSMSG_NOT_ITERATOR, ToString(iterator));
+
+    // Step 6.
+    return iterator;
+}
+
+var _builtinCtorsCache = {__proto__: null};
+
+function GetBuiltinConstructor(builtinName) {
+    var ctor = _builtinCtorsCache[builtinName] ||
+               (_builtinCtorsCache[builtinName] = GetBuiltinConstructorImpl(builtinName));
+    assert(ctor, `No builtin with name "${builtinName}" found`);
+    return ctor;
+}
+
+function GetBuiltinPrototype(builtinName) {
+    return (_builtinCtorsCache[builtinName] || GetBuiltinConstructor(builtinName)).prototype;
+}
+
+// ES 2016 draft Mar 25, 2016 7.3.20.
+function SpeciesConstructor(obj, defaultConstructor) {
+    // Step 1.
+    assert(IsObject(obj), "not passed an object");
+
+    // Step 2.
+    var ctor = obj.constructor;
+
+    // Step 3.
+    if (ctor === undefined)
+        return defaultConstructor;
+
+    // Step 4.
+    if (!IsObject(ctor))
+        ThrowTypeError(JSMSG_NOT_NONNULL_OBJECT, "object's 'constructor' property");
+
+    // Steps 5.
+    var s = ctor[std_species];
+
+    // Step 6.
+    if (s === undefined || s === null)
+        return defaultConstructor;
+
+    // Step 7.
+    if (IsConstructor(s))
+        return s;
+
+    // Step 8.
+    ThrowTypeError(JSMSG_NOT_CONSTRUCTOR, "@@species property of object's constructor");
+}
+
+function GetTypeError(msg) {
+    try {
+        FUN_APPLY(ThrowTypeError, undefined, arguments);
+    } catch (e) {
+        return e;
+    }
+    assert(false, "the catch block should've returned from this function.");
+}
+
+function GetInternalError(msg) {
+    try {
+        FUN_APPLY(ThrowInternalError, undefined, arguments);
+    } catch (e) {
+        return e;
+    }
+    assert(false, "the catch block should've returned from this function.");
+}
+
+// To be used when a function is required but calling it shouldn't do anything.
+function NullFunction() {}
+
+/*************************************** Testing functions ***************************************/
+function outer() {
+    return function inner() {
+        return "foo";
+    }
 }

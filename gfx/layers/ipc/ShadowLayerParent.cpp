@@ -5,27 +5,45 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#include "LayerTransactionParent.h"
 #include "ShadowLayerParent.h"
-#include "ShadowLayers.h"
+#include "Layers.h"                     // for Layer, ContainerLayer
+#include "nsDebug.h"                    // for NS_RUNTIMEABORT
+#include "nsISupportsImpl.h"            // for Layer::AddRef, etc
 
-#include "BasicLayers.h"
+#include "mozilla/layers/PaintedLayerComposite.h"
+#include "mozilla/layers/CanvasLayerComposite.h"
+#include "mozilla/layers/ColorLayerComposite.h"
+#include "mozilla/layers/ImageLayerComposite.h"
+#include "mozilla/layers/ContainerLayerComposite.h"
 
 namespace mozilla {
 namespace layers {
 
-ShadowLayerParent::ShadowLayerParent() : mLayer(NULL)
+ShadowLayerParent::ShadowLayerParent() : mLayer(nullptr)
 {
 }
 
 ShadowLayerParent::~ShadowLayerParent()
 {
+  Disconnect();
+}
+
+void
+ShadowLayerParent::Disconnect()
+{
+  if (mLayer) {
+    mLayer->Disconnect();
+    mLayer = nullptr;
+  }
 }
 
 void
 ShadowLayerParent::Bind(Layer* layer)
 {
-  mLayer = layer;
+  if (mLayer != layer) {
+    Disconnect();
+    mLayer = layer;
+  }
 }
 
 void
@@ -35,15 +53,55 @@ ShadowLayerParent::Destroy()
   // created, but just before the transaction in which Bind() would
   // have been called.  In that case, we'll ignore shadow-layers
   // transactions from there on and never get a layer here.
-  if (mLayer) {
-    mLayer->Disconnect();
-  }
+  Disconnect();
 }
 
-ContainerLayer*
-ShadowLayerParent::AsContainer() const
+ContainerLayerComposite*
+ShadowLayerParent::AsContainerLayerComposite() const
 {
-  return static_cast<ContainerLayer*>(AsLayer());
+  return mLayer && mLayer->GetType() == Layer::TYPE_CONTAINER
+         ? static_cast<ContainerLayerComposite*>(mLayer.get())
+         : nullptr;
+}
+
+CanvasLayerComposite*
+ShadowLayerParent::AsCanvasLayerComposite() const
+{
+  return mLayer && mLayer->GetType() == Layer::TYPE_CANVAS
+         ? static_cast<CanvasLayerComposite*>(mLayer.get())
+         : nullptr;
+}
+
+ColorLayerComposite*
+ShadowLayerParent::AsColorLayerComposite() const
+{
+  return mLayer && mLayer->GetType() == Layer::TYPE_COLOR
+         ? static_cast<ColorLayerComposite*>(mLayer.get())
+         : nullptr;
+}
+
+ImageLayerComposite*
+ShadowLayerParent::AsImageLayerComposite() const
+{
+  return mLayer && mLayer->GetType() == Layer::TYPE_IMAGE
+         ? static_cast<ImageLayerComposite*>(mLayer.get())
+         : nullptr;
+}
+
+RefLayerComposite*
+ShadowLayerParent::AsRefLayerComposite() const
+{
+  return mLayer && mLayer->GetType() == Layer::TYPE_REF
+         ? static_cast<RefLayerComposite*>(mLayer.get())
+         : nullptr;
+}
+
+PaintedLayerComposite*
+ShadowLayerParent::AsPaintedLayerComposite() const
+{
+  return mLayer && mLayer->GetType() == Layer::TYPE_PAINTED
+         ? static_cast<PaintedLayerComposite*>(mLayer.get())
+         : nullptr;
 }
 
 void
@@ -56,15 +114,11 @@ ShadowLayerParent::ActorDestroy(ActorDestroyReason why)
 
   case Deletion:
     // See comment near Destroy() above.
-    if (mLayer) {
-      mLayer->Disconnect();
-    }
+    Disconnect();
     break;
 
   case AbnormalShutdown:
-    if (mLayer) {
-      mLayer->Disconnect();
-    }
+    Disconnect();
     break;
 
   case NormalShutdown:
@@ -77,7 +131,7 @@ ShadowLayerParent::ActorDestroy(ActorDestroyReason why)
     return;                     // unreached
   }
 
-  mLayer = NULL;
+  mLayer = nullptr;
 }
 
 } // namespace layers

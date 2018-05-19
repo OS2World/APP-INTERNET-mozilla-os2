@@ -5,17 +5,18 @@
 
 #include "nsRangeFrame.h"
 
+#include "mozilla/EventStates.h"
+#include "mozilla/TouchEvents.h"
+
 #include "nsContentCreatorFunctions.h"
 #include "nsContentList.h"
 #include "nsContentUtils.h"
-#include "nsCSSRenderingBorders.h"
-#include "nsFontMetrics.h"
+#include "nsCSSPseudoElements.h"
+#include "nsCSSRendering.h"
 #include "nsFormControlFrame.h"
 #include "nsIContent.h"
 #include "nsIDocument.h"
-#include "nsIDOMHTMLInputElement.h"
-#include "nsINameSpaceManager.h"
-#include "nsINodeInfo.h"
+#include "nsNameSpaceManager.h"
 #include "nsIPresShell.h"
 #include "nsGkAtoms.h"
 #include "mozilla/dom/HTMLInputElement.h"
@@ -23,9 +24,9 @@
 #include "nsNodeInfoManager.h"
 #include "nsRenderingContext.h"
 #include "mozilla/dom/Element.h"
-#include "prtypes.h"
-
-#include <algorithm>
+#include "mozilla/StyleSetHandle.h"
+#include "mozilla/StyleSetHandleInlines.h"
+#include "nsThemeConstants.h"
 
 #ifdef ACCESSIBILITY
 #include "nsAccessibilityService.h"
@@ -34,6 +35,10 @@
 #define LONG_SIDE_TO_SHORT_SIDE_RATIO 10
 
 using namespace mozilla;
+using namespace mozilla::dom;
+using namespace mozilla::image;
+
+NS_IMPL_ISUPPORTS(nsRangeFrame::DummyTouchListener, nsIDOMEventListener)
 
 nsIFrame*
 NS_NewRangeFrame(nsIPresShell* aPresShell, nsStyleContext* aContext)
@@ -48,6 +53,11 @@ nsRangeFrame::nsRangeFrame(nsStyleContext* aContext)
 
 nsRangeFrame::~nsRangeFrame()
 {
+#ifdef DEBUG
+  if (mOuterFocusStyle) {
+    mOuterFocusStyle->FrameRelease();
+  }
+#endif
 }
 
 NS_IMPL_FRAMEARENA_HELPERS(nsRangeFrame)
@@ -58,30 +68,29 @@ NS_QUERYFRAME_HEAD(nsRangeFrame)
 NS_QUERYFRAME_TAIL_INHERITING(nsContainerFrame)
 
 void
-nsRangeFrame::Init(nsIContent* aContent,
-                   nsIFrame*   aParent,
-                   nsIFrame*   aPrevInFlow)
+nsRangeFrame::Init(nsIContent*       aContent,
+                   nsContainerFrame* aParent,
+                   nsIFrame*         aPrevInFlow)
 {
-  // B2G's AsyncPanZoomController::ReceiveInputEvent handles touch events
-  // without checking whether the out-of-process document that it controls
-  // will handle them, unless it has been told that the document might do so.
-  // This is for perf reasons, otherwise it has to wait for the event to be
-  // round-tripped to the other process and back, delaying panning, etc.
-  // We must call SetHasTouchEventListeners() in order to get APZC to wait
-  // until the event has been round-tripped and check whether it has been
-  // handled, otherwise B2G will end up panning the document when the user
-  // tries to drag our thumb.
-  //
-  nsIPresShell* presShell = PresContext()->GetPresShell();
-  if (presShell) {
-    nsIDocument* document = presShell->GetDocument();
-    if (document) {
-      nsPIDOMWindow* innerWin = document->GetInnerWindow();
-      if (innerWin) {
-        innerWin->SetHasTouchEventListeners();
-      }
-    }
+  // With APZ enabled, touch events may be handled directly by the APZC code
+  // if the APZ knows that there is no content interested in the touch event.
+  // The range input element *is* interested in touch events, but doesn't use
+  // the usual mechanism (i.e. registering an event listener) to handle touch
+  // input. Instead, we do it here so that the APZ finds out about it, and
+  // makes sure to wait for content to run handlers before handling the touch
+  // input itself.
+  if (!mDummyTouchListener) {
+    mDummyTouchListener = new DummyTouchListener();
   }
+  aContent->AddEventListener(NS_LITERAL_STRING("touchstart"), mDummyTouchListener, false);
+
+  StyleSetHandle styleSet = PresContext()->StyleSet();
+
+  mOuterFocusStyle =
+    styleSet->ProbePseudoElementStyle(aContent->AsElement(),
+                                      CSSPseudoElementType::mozFocusOuter,
+                                      StyleContext());
+
   return nsContainerFrame::Init(aContent, aParent, aPrevInFlow);
 }
 
@@ -91,6 +100,9 @@ nsRangeFrame::DestroyFrom(nsIFrame* aDestructRoot)
   NS_ASSERTION(!GetPrevContinuation() && !GetNextContinuation(),
                "nsRangeFrame should not have continuations; if it does we "
                "need to call RegUnregAccessKey only for the first.");
+
+  mContent->RemoveEventListener(NS_LITERAL_STRING("touchstart"), mDummyTouchListener, false);
+
   nsFormControlFrame::RegUnRegAccessKey(static_cast<nsIFrame*>(this), false);
   nsContentUtils::DestroyAnonymousContent(&mTrackDiv);
   nsContentUtils::DestroyAnonymousContent(&mProgressDiv);
@@ -99,30 +111,25 @@ nsRangeFrame::DestroyFrom(nsIFrame* aDestructRoot)
 }
 
 nsresult
-nsRangeFrame::MakeAnonymousDiv(nsIContent** aResult,
-                               nsCSSPseudoElements::Type aPseudoType,
+nsRangeFrame::MakeAnonymousDiv(Element** aResult,
+                               CSSPseudoElementType aPseudoType,
                                nsTArray<ContentInfo>& aElements)
 {
-  // Get the NodeInfoManager and tag necessary to create the anonymous divs.
-  nsCOMPtr<nsIDocument> doc = mContent->GetDocument();
+  nsCOMPtr<nsIDocument> doc = mContent->GetComposedDoc();
+  RefPtr<Element> resultElement = doc->CreateHTMLElement(nsGkAtoms::div);
 
-  nsCOMPtr<nsINodeInfo> nodeInfo;
-  nodeInfo = doc->NodeInfoManager()->GetNodeInfo(nsGkAtoms::div, nullptr,
-                                                 kNameSpaceID_XHTML,
-                                                 nsIDOMNode::ELEMENT_NODE);
-  NS_ENSURE_TRUE(nodeInfo, NS_ERROR_OUT_OF_MEMORY);
-  nsresult rv = NS_NewHTMLElement(aResult, nodeInfo.forget(),
-                                  dom::NOT_FROM_PARSER);
-  NS_ENSURE_SUCCESS(rv, rv);
   // Associate the pseudo-element with the anonymous child.
-  nsRefPtr<nsStyleContext> newStyleContext =
+  RefPtr<nsStyleContext> newStyleContext =
     PresContext()->StyleSet()->ResolvePseudoElementStyle(mContent->AsElement(),
                                                          aPseudoType,
-                                                         StyleContext());
+                                                         StyleContext(),
+                                                         resultElement);
 
-  if (!aElements.AppendElement(ContentInfo(*aResult, newStyleContext))) {
+  if (!aElements.AppendElement(ContentInfo(resultElement, newStyleContext))) {
     return NS_ERROR_OUT_OF_MEMORY;
   }
+
+  resultElement.forget(aResult);
   return NS_OK;
 }
 
@@ -133,30 +140,38 @@ nsRangeFrame::CreateAnonymousContent(nsTArray<ContentInfo>& aElements)
 
   // Create the ::-moz-range-track pseuto-element (a div):
   rv = MakeAnonymousDiv(getter_AddRefs(mTrackDiv),
-                        nsCSSPseudoElements::ePseudo_mozRangeTrack,
+                        CSSPseudoElementType::mozRangeTrack,
                         aElements);
   NS_ENSURE_SUCCESS(rv, rv);
 
   // Create the ::-moz-range-progress pseudo-element (a div):
   rv = MakeAnonymousDiv(getter_AddRefs(mProgressDiv),
-                        nsCSSPseudoElements::ePseudo_mozRangeProgress,
+                        CSSPseudoElementType::mozRangeProgress,
                         aElements);
   NS_ENSURE_SUCCESS(rv, rv);
 
   // Create the ::-moz-range-thumb pseudo-element (a div):
   rv = MakeAnonymousDiv(getter_AddRefs(mThumbDiv),
-                        nsCSSPseudoElements::ePseudo_mozRangeThumb,
+                        CSSPseudoElementType::mozRangeThumb,
                         aElements);
   return rv;
 }
 
 void
-nsRangeFrame::AppendAnonymousContentTo(nsBaseContentList& aElements,
+nsRangeFrame::AppendAnonymousContentTo(nsTArray<nsIContent*>& aElements,
                                        uint32_t aFilter)
 {
-  aElements.MaybeAppendElement(mTrackDiv);
-  aElements.MaybeAppendElement(mProgressDiv);
-  aElements.MaybeAppendElement(mThumbDiv);
+  if (mTrackDiv) {
+    aElements.AppendElement(mTrackDiv);
+  }
+
+  if (mProgressDiv) {
+    aElements.AppendElement(mProgressDiv);
+  }
+
+  if (mThumbDiv) {
+    aElements.AppendElement(mThumbDiv);
+  }
 }
 
 class nsDisplayRangeFocusRing : public nsDisplayItem
@@ -171,45 +186,75 @@ public:
     MOZ_COUNT_DTOR(nsDisplayRangeFocusRing);
   }
 #endif
-  
-  virtual void Paint(nsDisplayListBuilder* aBuilder, nsRenderingContext* aCtx) MOZ_OVERRIDE;
-  NS_DISPLAY_DECL_NAME("RangeFocusRing", TYPE_OUTLINE)
+
+  nsDisplayItemGeometry* AllocateGeometry(nsDisplayListBuilder* aBuilder) override;
+  void ComputeInvalidationRegion(nsDisplayListBuilder* aBuilder,
+                                 const nsDisplayItemGeometry* aGeometry,
+                                 nsRegion *aInvalidRegion) override;
+  virtual nsRect GetBounds(nsDisplayListBuilder* aBuilder, bool* aSnap) override;
+  virtual void Paint(nsDisplayListBuilder* aBuilder, nsRenderingContext* aCtx) override;
+  NS_DISPLAY_DECL_NAME("RangeFocusRing", TYPE_RANGE_FOCUS_RING)
 };
+
+nsDisplayItemGeometry*
+nsDisplayRangeFocusRing::AllocateGeometry(nsDisplayListBuilder* aBuilder)
+{
+  return new nsDisplayItemGenericImageGeometry(this, aBuilder);
+}
+
+void
+nsDisplayRangeFocusRing::ComputeInvalidationRegion(
+  nsDisplayListBuilder* aBuilder,
+  const nsDisplayItemGeometry* aGeometry,
+  nsRegion* aInvalidRegion)
+{
+  auto geometry =
+    static_cast<const nsDisplayItemGenericImageGeometry*>(aGeometry);
+
+  if (aBuilder->ShouldSyncDecodeImages() &&
+      geometry->ShouldInvalidateToSyncDecodeImages()) {
+    bool snap;
+    aInvalidRegion->Or(*aInvalidRegion, GetBounds(aBuilder, &snap));
+  }
+
+  nsDisplayItem::ComputeInvalidationRegion(aBuilder, aGeometry, aInvalidRegion);
+}
+
+nsRect
+nsDisplayRangeFocusRing::GetBounds(nsDisplayListBuilder* aBuilder, bool* aSnap)
+{
+  *aSnap = false;
+  nsRect rect(ToReferenceFrame(), Frame()->GetSize());
+
+  // We want to paint as if specifying a border for ::-moz-focus-outer
+  // specifies an outline for our frame, so inflate by the border widths:
+  nsStyleContext* styleContext =
+    static_cast<nsRangeFrame*>(mFrame)->mOuterFocusStyle;
+  MOZ_ASSERT(styleContext, "We only exist if mOuterFocusStyle is non-null");
+  rect.Inflate(styleContext->StyleBorder()->GetComputedBorder());
+
+  return rect;
+}
 
 void
 nsDisplayRangeFocusRing::Paint(nsDisplayListBuilder* aBuilder,
                                nsRenderingContext* aCtx)
 {
-  nsPresContext *presContext = mFrame->PresContext();
-  nscoord appUnitsPerDevPixel = presContext->DevPixelsToAppUnits(1);
-  gfxContext* ctx = aCtx->ThebesContext();
-  nsRect r = nsRect(ToReferenceFrame(), mFrame->GetSize());
-  gfxRect pxRect(nsLayoutUtils::RectToGfxRect(r, appUnitsPerDevPixel));
-  uint8_t borderStyles[4] = { NS_STYLE_BORDER_STYLE_DOTTED,
-                              NS_STYLE_BORDER_STYLE_DOTTED,
-                              NS_STYLE_BORDER_STYLE_DOTTED,
-                              NS_STYLE_BORDER_STYLE_DOTTED };
-  gfxFloat borderWidths[4] = { 1, 1, 1, 1 };
-  gfxCornerSizes borderRadii(0);
-  nscolor borderColors[4] = { NS_RGB(0, 0, 0), NS_RGB(0, 0, 0),
-                              NS_RGB(0, 0, 0), NS_RGB(0, 0, 0) };
-  nsStyleContext* bgContext = mFrame->StyleContext();
-  nscolor bgColor =
-    bgContext->GetVisitedDependentColor(eCSSProperty_background_color);
+  bool unused;
+  nsStyleContext* styleContext =
+    static_cast<nsRangeFrame*>(mFrame)->mOuterFocusStyle;
+  MOZ_ASSERT(styleContext, "We only exist if mOuterFocusStyle is non-null");
 
-  ctx->Save();
-  nsCSSBorderRenderer br(appUnitsPerDevPixel,
-                         ctx,
-                         pxRect,
-                         borderStyles,
-                         borderWidths,
-                         borderRadii,
-                         borderColors,
-                         nullptr,
-                         0,
-                         bgColor);
-  br.DrawBorders();
-  ctx->Restore();
+  PaintBorderFlags flags = aBuilder->ShouldSyncDecodeImages()
+                         ? PaintBorderFlags::SYNC_DECODE_IMAGES
+                         : PaintBorderFlags();
+
+  DrawResult result =
+    nsCSSRendering::PaintBorder(mFrame->PresContext(), *aCtx, mFrame,
+                                mVisibleRect, GetBounds(aBuilder, &unused),
+                                styleContext, flags);
+
+  nsDisplayItemGenericImageGeometry::UpdateDrawResult(this, result);
 }
 
 void
@@ -236,29 +281,46 @@ nsRangeFrame::BuildDisplayList(nsDisplayListBuilder*   aBuilder,
   }
 
   // Draw a focus outline if appropriate:
-  nsEventStates eventStates = mContent->AsElement()->State();
-  if (!eventStates.HasState(NS_EVENT_STATE_FOCUSRING) ||
-      eventStates.HasState(NS_EVENT_STATE_DISABLED)) {
+
+  if (!aBuilder->IsForPainting() ||
+      !IsVisibleForPainting(aBuilder)) {
+    // we don't want the focus ring item for hit-testing or if the item isn't
+    // in the area being [re]painted
     return;
   }
-  nsPresContext *presContext = PresContext();
-  const nsStyleDisplay *disp = StyleDisplay();
-  if ((!IsThemed(disp) ||
-       !presContext->GetTheme()->ThemeDrawsFocusForWidget(disp->mAppearance)) &&
-      IsVisibleForPainting(aBuilder)) {
-    aLists.Content()->AppendNewToTop(
-      new (aBuilder) nsDisplayRangeFocusRing(aBuilder, this));
+
+  EventStates eventStates = mContent->AsElement()->State();
+  if (eventStates.HasState(NS_EVENT_STATE_DISABLED) ||
+      !eventStates.HasState(NS_EVENT_STATE_FOCUSRING)) {
+    return; // can't have focus or doesn't match :-moz-focusring
   }
+
+  if (!mOuterFocusStyle ||
+      !mOuterFocusStyle->StyleBorder()->HasBorder()) {
+    // no ::-moz-focus-outer specified border (how style specifies a focus ring
+    // for range)
+    return;
+  }
+
+  const nsStyleDisplay *disp = StyleDisplay();
+  if (IsThemed(disp) &&
+      PresContext()->GetTheme()->ThemeDrawsFocusForWidget(disp->mAppearance)) {
+    return; // the native theme displays its own visual indication of focus
+  }
+
+  aLists.Content()->AppendNewToTop(
+    new (aBuilder) nsDisplayRangeFocusRing(aBuilder, this));
 }
 
-NS_IMETHODIMP
+void
 nsRangeFrame::Reflow(nsPresContext*           aPresContext,
-                     nsHTMLReflowMetrics&     aDesiredSize,
-                     const nsHTMLReflowState& aReflowState,
+                     ReflowOutput&     aDesiredSize,
+                     const ReflowInput& aReflowInput,
                      nsReflowStatus&          aStatus)
 {
+  MarkInReflow();
   DO_GLOBAL_REFLOW_COUNT("nsRangeFrame");
-  DISPLAY_REFLOW(aPresContext, this, aReflowState, aDesiredSize, aStatus);
+  DISPLAY_REFLOW(aPresContext, this, aReflowInput, aDesiredSize, aStatus);
 
   NS_ASSERTION(mTrackDiv, "::-moz-range-track div must exist!");
   NS_ASSERTION(mProgressDiv, "::-moz-range-progress div must exist!");
@@ -271,18 +333,20 @@ nsRangeFrame::Reflow(nsPresContext*           aPresContext,
     nsFormControlFrame::RegUnRegAccessKey(this, true);
   }
 
-  nscoord computedHeight = aReflowState.ComputedHeight();
-  if (computedHeight == NS_AUTOHEIGHT) {
-    computedHeight = 0;
+  WritingMode wm = aReflowInput.GetWritingMode();
+  nscoord computedBSize = aReflowInput.ComputedBSize();
+  if (computedBSize == NS_AUTOHEIGHT) {
+    computedBSize = 0;
   }
-  aDesiredSize.width = aReflowState.ComputedWidth() +
-                       aReflowState.mComputedBorderPadding.LeftRight();
-  aDesiredSize.height = computedHeight +
-                        aReflowState.mComputedBorderPadding.TopBottom();
+  LogicalSize
+    finalSize(wm,
+              aReflowInput.ComputedISize() +
+              aReflowInput.ComputedLogicalBorderPadding().IStartEnd(wm),
+              computedBSize +
+              aReflowInput.ComputedLogicalBorderPadding().BStartEnd(wm));
+  aDesiredSize.SetSize(wm, finalSize);
 
-  nsresult rv =
-    ReflowAnonymousContent(aPresContext, aDesiredSize, aReflowState);
-  NS_ENSURE_SUCCESS(rv, rv);
+  ReflowAnonymousContent(aPresContext, aDesiredSize, aReflowInput);
 
   aDesiredSize.SetOverflowAreasToDesiredBounds();
 
@@ -305,20 +369,18 @@ nsRangeFrame::Reflow(nsPresContext*           aPresContext,
 
   aStatus = NS_FRAME_COMPLETE;
 
-  NS_FRAME_SET_TRUNCATION(aStatus, aReflowState, aDesiredSize);
-
-  return NS_OK;
+  NS_FRAME_SET_TRUNCATION(aStatus, aReflowInput, aDesiredSize);
 }
 
-nsresult
+void
 nsRangeFrame::ReflowAnonymousContent(nsPresContext*           aPresContext,
-                                     nsHTMLReflowMetrics&     aDesiredSize,
-                                     const nsHTMLReflowState& aReflowState)
+                                     ReflowOutput&     aDesiredSize,
+                                     const ReflowInput& aReflowInput)
 {
   // The width/height of our content box, which is the available width/height
   // for our anonymous content:
-  nscoord rangeFrameContentBoxWidth = aReflowState.ComputedWidth();
-  nscoord rangeFrameContentBoxHeight = aReflowState.ComputedHeight();
+  nscoord rangeFrameContentBoxWidth = aReflowInput.ComputedWidth();
+  nscoord rangeFrameContentBoxHeight = aReflowInput.ComputedHeight();
   if (rangeFrameContentBoxHeight == NS_AUTOHEIGHT) {
     rangeFrameContentBoxHeight = 0;
   }
@@ -334,9 +396,11 @@ nsRangeFrame::ReflowAnonymousContent(nsPresContext*           aPresContext,
     // of the track's border box on the center of the nsRangeFrame's content
     // box.
 
-    nsHTMLReflowState trackReflowState(aPresContext, aReflowState, trackFrame,
-                                       nsSize(aReflowState.ComputedWidth(),
-                                              NS_UNCONSTRAINEDSIZE));
+    WritingMode wm = trackFrame->GetWritingMode();
+    LogicalSize availSize = aReflowInput.ComputedSize(wm);
+    availSize.BSize(wm) = NS_UNCONSTRAINEDSIZE;
+    ReflowInput trackReflowInput(aPresContext, aReflowInput,
+                                       trackFrame, availSize);
 
     // Find the x/y position of the track frame such that it will be positioned
     // as described above. These coordinates are with respect to the
@@ -345,81 +409,74 @@ nsRangeFrame::ReflowAnonymousContent(nsPresContext*           aPresContext,
     nscoord trackY = rangeFrameContentBoxHeight / 2;
 
     // Account for the track's border and padding (we ignore its margin):
-    trackX -= trackReflowState.mComputedBorderPadding.left +
-                trackReflowState.ComputedWidth() / 2;
-    trackY -= trackReflowState.mComputedBorderPadding.top +
-                trackReflowState.ComputedHeight() / 2;
+    trackX -= trackReflowInput.ComputedPhysicalBorderPadding().left +
+                trackReflowInput.ComputedWidth() / 2;
+    trackY -= trackReflowInput.ComputedPhysicalBorderPadding().top +
+                trackReflowInput.ComputedHeight() / 2;
 
     // Make relative to our border box instead of our content box:
-    trackX += aReflowState.mComputedBorderPadding.left;
-    trackY += aReflowState.mComputedBorderPadding.top;
+    trackX += aReflowInput.ComputedPhysicalBorderPadding().left;
+    trackY += aReflowInput.ComputedPhysicalBorderPadding().top;
 
     nsReflowStatus frameStatus;
-    nsHTMLReflowMetrics trackDesiredSize;
-    nsresult rv = ReflowChild(trackFrame, aPresContext, trackDesiredSize,
-                              trackReflowState, trackX, trackY, 0, frameStatus);
-    NS_ENSURE_SUCCESS(rv, rv);
+    ReflowOutput trackDesiredSize(aReflowInput);
+    ReflowChild(trackFrame, aPresContext, trackDesiredSize,
+                trackReflowInput, trackX, trackY, 0, frameStatus);
     MOZ_ASSERT(NS_FRAME_IS_FULLY_COMPLETE(frameStatus),
                "We gave our child unconstrained height, so it should be complete");
-    rv = FinishReflowChild(trackFrame, aPresContext, &trackReflowState,
-                           trackDesiredSize, trackX, trackY, 0);
-    NS_ENSURE_SUCCESS(rv, rv);
+    FinishReflowChild(trackFrame, aPresContext, trackDesiredSize,
+                      &trackReflowInput, trackX, trackY, 0);
   }
 
   nsIFrame* thumbFrame = mThumbDiv->GetPrimaryFrame();
 
   if (thumbFrame) { // display:none?
-    nsHTMLReflowState thumbReflowState(aPresContext, aReflowState, thumbFrame,
-                                       nsSize(aReflowState.ComputedWidth(),
-                                              NS_UNCONSTRAINEDSIZE));
+    WritingMode wm = thumbFrame->GetWritingMode();
+    LogicalSize availSize = aReflowInput.ComputedSize(wm);
+    availSize.BSize(wm) = NS_UNCONSTRAINEDSIZE;
+    ReflowInput thumbReflowInput(aPresContext, aReflowInput,
+                                       thumbFrame, availSize);
 
     // Where we position the thumb depends on its size, so we first reflow
     // the thumb at {0,0} to obtain its size, then position it afterwards.
 
     nsReflowStatus frameStatus;
-    nsHTMLReflowMetrics thumbDesiredSize;
-    nsresult rv = ReflowChild(thumbFrame, aPresContext, thumbDesiredSize,
-                              thumbReflowState, 0, 0, 0, frameStatus);
-    NS_ENSURE_SUCCESS(rv, rv);
+    ReflowOutput thumbDesiredSize(aReflowInput);
+    ReflowChild(thumbFrame, aPresContext, thumbDesiredSize,
+                thumbReflowInput, 0, 0, 0, frameStatus);
     MOZ_ASSERT(NS_FRAME_IS_FULLY_COMPLETE(frameStatus),
                "We gave our child unconstrained height, so it should be complete");
-    rv = FinishReflowChild(thumbFrame, aPresContext, &thumbReflowState,
-                           thumbDesiredSize, 0, 0, 0);
-    NS_ENSURE_SUCCESS(rv, rv);
-
-    DoUpdateThumbPosition(thumbFrame, nsSize(aDesiredSize.width,
-                                             aDesiredSize.height));
+    FinishReflowChild(thumbFrame, aPresContext, thumbDesiredSize,
+                      &thumbReflowInput, 0, 0, 0);
+    DoUpdateThumbPosition(thumbFrame, nsSize(aDesiredSize.Width(),
+                                             aDesiredSize.Height()));
   }
 
   nsIFrame* rangeProgressFrame = mProgressDiv->GetPrimaryFrame();
 
   if (rangeProgressFrame) { // display:none?
-    nsHTMLReflowState progressReflowState(aPresContext, aReflowState,
-                                          rangeProgressFrame,
-                                          nsSize(aReflowState.ComputedWidth(),
-                                                 NS_UNCONSTRAINEDSIZE));
+    WritingMode wm = rangeProgressFrame->GetWritingMode();
+    LogicalSize availSize = aReflowInput.ComputedSize(wm);
+    availSize.BSize(wm) = NS_UNCONSTRAINEDSIZE;
+    ReflowInput progressReflowInput(aPresContext, aReflowInput,
+                                          rangeProgressFrame, availSize);
 
     // We first reflow the range-progress frame at {0,0} to obtain its
     // unadjusted dimensions, then we adjust it to so that the appropriate edge
     // ends at the thumb.
 
     nsReflowStatus frameStatus;
-    nsHTMLReflowMetrics progressDesiredSize;
-    nsresult rv = ReflowChild(rangeProgressFrame, aPresContext,
-                              progressDesiredSize, progressReflowState, 0, 0,
-                              0, frameStatus);
-    NS_ENSURE_SUCCESS(rv, rv);
+    ReflowOutput progressDesiredSize(aReflowInput);
+    ReflowChild(rangeProgressFrame, aPresContext,
+                progressDesiredSize, progressReflowInput, 0, 0,
+                0, frameStatus);
     MOZ_ASSERT(NS_FRAME_IS_FULLY_COMPLETE(frameStatus),
                "We gave our child unconstrained height, so it should be complete");
-    rv = FinishReflowChild(rangeProgressFrame, aPresContext,
-                           &progressReflowState, progressDesiredSize, 0, 0, 0);
-    NS_ENSURE_SUCCESS(rv, rv);
-
-    DoUpdateRangeProgressFrame(rangeProgressFrame, nsSize(aDesiredSize.width,
-                                                          aDesiredSize.height));
+    FinishReflowChild(rangeProgressFrame, aPresContext,
+                      progressDesiredSize, &progressReflowInput, 0, 0, 0);
+    DoUpdateRangeProgressFrame(rangeProgressFrame, nsSize(aDesiredSize.Width(),
+                                                          aDesiredSize.Height()));
   }
-
-  return NS_OK;
 }
 
 #ifdef ACCESSIBILITY
@@ -433,7 +490,7 @@ nsRangeFrame::AccessibleType()
 double
 nsRangeFrame::GetValueAsFractionOfRange()
 {
-  MOZ_ASSERT(mContent->IsHTML(nsGkAtoms::input), "bad cast");
+  MOZ_ASSERT(mContent->IsHTMLElement(nsGkAtoms::input), "bad cast");
   dom::HTMLInputElement* input = static_cast<dom::HTMLInputElement*>(mContent);
 
   MOZ_ASSERT(input->GetType() == NS_FORM_INPUT_RANGE);
@@ -456,13 +513,13 @@ nsRangeFrame::GetValueAsFractionOfRange()
 }
 
 Decimal
-nsRangeFrame::GetValueAtEventPoint(nsGUIEvent* aEvent)
+nsRangeFrame::GetValueAtEventPoint(WidgetGUIEvent* aEvent)
 {
-  MOZ_ASSERT(aEvent->eventStructType == NS_MOUSE_EVENT ||
-             aEvent->eventStructType == NS_TOUCH_EVENT,
-             "Unexpected event type - aEvent->refPoint may be meaningless");
+  MOZ_ASSERT(aEvent->mClass == eMouseEventClass ||
+             aEvent->mClass == eTouchEventClass,
+             "Unexpected event type - aEvent->mRefPoint may be meaningless");
 
-  MOZ_ASSERT(mContent->IsHTML(nsGkAtoms::input), "bad cast");
+  MOZ_ASSERT(mContent->IsHTMLElement(nsGkAtoms::input), "bad cast");
   dom::HTMLInputElement* input = static_cast<dom::HTMLInputElement*>(mContent);
 
   MOZ_ASSERT(input->GetType() == NS_FORM_INPUT_RANGE);
@@ -476,13 +533,13 @@ nsRangeFrame::GetValueAtEventPoint(nsGUIEvent* aEvent)
   }
   Decimal range = maximum - minimum;
 
-  nsIntPoint absPoint;
-  if (aEvent->eventStructType == NS_TOUCH_EVENT) {
-    MOZ_ASSERT(static_cast<nsTouchEvent*>(aEvent)->touches.Length() == 1,
-               "Unexpected number of touches");
-    absPoint = static_cast<nsTouchEvent*>(aEvent)->touches[0]->mRefPoint;
+  LayoutDeviceIntPoint absPoint;
+  if (aEvent->mClass == eTouchEventClass) {
+    MOZ_ASSERT(aEvent->AsTouchEvent()->mTouches.Length() == 1,
+               "Unexpected number of mTouches");
+    absPoint = aEvent->AsTouchEvent()->mTouches[0]->mRefPoint;
   } else {
-    absPoint = aEvent->refPoint;
+    absPoint = aEvent->mRefPoint;
   }
   nsPoint point =
     nsLayoutUtils::GetEventCoordinatesRelativeTo(aEvent, absPoint, this);
@@ -498,12 +555,10 @@ nsRangeFrame::GetValueAtEventPoint(nsGUIEvent* aEvent)
   if (IsThemed()) {
     // We need to get the size of the thumb from the theme.
     nsPresContext *presContext = PresContext();
-    nsRefPtr<nsRenderingContext> tmpCtx =
-      presContext->PresShell()->GetReferenceRenderingContext();
     bool notUsedCanOverride;
-    nsIntSize size;
+    LayoutDeviceIntSize size;
     presContext->GetTheme()->
-      GetMinimumWidgetSize(tmpCtx.get(), this, NS_THEME_RANGE_THUMB, &size,
+      GetMinimumWidgetSize(presContext, this, NS_THEME_RANGE_THUMB, &size,
                            &notUsedCanOverride);
     thumbSize.width = presContext->DevPixelsToAppUnits(size.width);
     thumbSize.height = presContext->DevPixelsToAppUnits(size.height);
@@ -524,8 +579,8 @@ nsRangeFrame::GetValueAtEventPoint(nsGUIEvent* aEvent)
     nscoord posAtStart = rangeContentRect.x + thumbSize.width/2;
     nscoord posAtEnd = posAtStart + traversableDistance;
     nscoord posOfPoint = mozilla::clamped(point.x, posAtStart, posAtEnd);
-    fraction = Decimal(posOfPoint - posAtStart) / traversableDistance;
-    if (StyleVisibility()->mDirection == NS_STYLE_DIRECTION_RTL) {
+    fraction = Decimal(posOfPoint - posAtStart) / Decimal(traversableDistance);
+    if (IsRightToLeft()) {
       fraction = Decimal(1) - fraction;
     }
   } else {
@@ -538,10 +593,10 @@ nsRangeFrame::GetValueAtEventPoint(nsGUIEvent* aEvent)
     nscoord posOfPoint = mozilla::clamped(point.y, posAtStart, posAtEnd);
     // For a vertical range, the top (posAtStart) is the highest value, so we
     // subtract the fraction from 1.0 to get that polarity correct.
-    fraction = Decimal(1) - Decimal(posOfPoint - posAtStart) / traversableDistance;
+    fraction = Decimal(1) - Decimal(posOfPoint - posAtStart) / Decimal(traversableDistance);
   }
 
-  MOZ_ASSERT(fraction >= 0 && fraction <= 1);
+  MOZ_ASSERT(fraction >= Decimal(0) && fraction <= Decimal(1));
   return minimum + fraction * range;
 }
 
@@ -603,13 +658,11 @@ nsRangeFrame::DoUpdateThumbPosition(nsIFrame* aThumbFrame,
   double fraction = GetValueAsFractionOfRange();
   MOZ_ASSERT(fraction >= 0.0 && fraction <= 1.0);
 
-  // We are called under Reflow, so we need to pass IsHorizontal a valid rect.
-  nsSize frameSizeOverride(aRangeSize.width, aRangeSize.height);
-  if (IsHorizontal(&frameSizeOverride)) {
+  if (IsHorizontal()) {
     if (thumbSize.width < rangeContentBoxSize.width) {
       nscoord traversableDistance =
         rangeContentBoxSize.width - thumbSize.width;
-      if (StyleVisibility()->mDirection == NS_STYLE_DIRECTION_RTL) {
+      if (IsRightToLeft()) {
         newPosition.x += NSToCoordRound((1.0 - fraction) * traversableDistance);
       } else {
         newPosition.x += NSToCoordRound(fraction * traversableDistance);
@@ -654,11 +707,9 @@ nsRangeFrame::DoUpdateRangeProgressFrame(nsIFrame* aRangeProgressFrame,
   double fraction = GetValueAsFractionOfRange();
   MOZ_ASSERT(fraction >= 0.0 && fraction <= 1.0);
 
-  // We are called under Reflow, so we need to pass IsHorizontal a valid rect.
-  nsSize frameSizeOverride(aRangeSize.width, aRangeSize.height);
-  if (IsHorizontal(&frameSizeOverride)) {
+  if (IsHorizontal()) {
     nscoord progLength = NSToCoordRound(fraction * rangeContentBoxSize.width);
-    if (StyleVisibility()->mDirection == NS_STYLE_DIRECTION_RTL) {
+    if (IsRightToLeft()) {
       progRect.x += rangeContentBoxSize.width - progLength;
     }
     progRect.y += (rangeContentBoxSize.height - progSize.height)/2;
@@ -672,7 +723,7 @@ nsRangeFrame::DoUpdateRangeProgressFrame(nsIFrame* aRangeProgressFrame,
   aRangeProgressFrame->SetRect(progRect);
 }
 
-NS_IMETHODIMP
+nsresult
 nsRangeFrame::AttributeChanged(int32_t  aNameSpaceID,
                                nsIAtom* aAttribute,
                                int32_t  aModType)
@@ -695,10 +746,11 @@ nsRangeFrame::AttributeChanged(int32_t  aNameSpaceID,
       // HTMLInputElement. Given that we're changing away from being a range
       // and this frame will shortly be destroyed, there's no point in calling
       // UpdateForValueChange() anyway.
-      MOZ_ASSERT(mContent->IsHTML(nsGkAtoms::input), "bad cast");
+      MOZ_ASSERT(mContent->IsHTMLElement(nsGkAtoms::input), "bad cast");
       bool typeIsRange = static_cast<dom::HTMLInputElement*>(mContent)->GetType() ==
                            NS_FORM_INPUT_RANGE;
-      MOZ_ASSERT(typeIsRange || aAttribute == nsGkAtoms::value, "why?");
+      // If script changed the <input>'s type before setting these attributes
+      // then we don't need to do anything since we are going to be reframed.
       if (typeIsRange) {
         UpdateForValueChange();
       }
@@ -711,21 +763,23 @@ nsRangeFrame::AttributeChanged(int32_t  aNameSpaceID,
   return nsContainerFrame::AttributeChanged(aNameSpaceID, aAttribute, aModType);
 }
 
-nsSize
-nsRangeFrame::ComputeAutoSize(nsRenderingContext *aRenderingContext,
-                              nsSize aCBSize, nscoord aAvailableWidth,
-                              nsSize aMargin, nsSize aBorder,
-                              nsSize aPadding, bool aShrinkWrap)
+LogicalSize
+nsRangeFrame::ComputeAutoSize(nsRenderingContext* aRenderingContext,
+                              WritingMode         aWM,
+                              const LogicalSize&  aCBSize,
+                              nscoord             aAvailableISize,
+                              const LogicalSize&  aMargin,
+                              const LogicalSize&  aBorder,
+                              const LogicalSize&  aPadding,
+                              ComputeSizeFlags    aFlags)
 {
   nscoord oneEm = NSToCoordRound(StyleFont()->mFont.size *
                                  nsLayoutUtils::FontSizeInflationFor(this)); // 1em
 
-  // frameSizeOverride values just gets us to fall back to being horizontal
-  // (the actual values are irrelevant, as long as width > height):
-  nsSize frameSizeOverride(10,1);
-  bool isHorizontal = IsHorizontal(&frameSizeOverride);
+  bool isInlineOriented = IsInlineOriented();
 
-  nsSize autoSize;
+  const WritingMode wm = GetWritingMode();
+  LogicalSize autoSize(wm);
 
   // nsFrame::ComputeSize calls GetMinimumWidgetSize to prevent us from being
   // given too small a size when we're natively themed. If we're themed, we set
@@ -733,19 +787,19 @@ nsRangeFrame::ComputeAutoSize(nsRenderingContext *aRenderingContext,
   // GetMinimumWidgetSize check to correct that dimension to the natural
   // thickness of a slider in the current theme.
 
-  if (isHorizontal) {
-    autoSize.width = LONG_SIDE_TO_SHORT_SIDE_RATIO * oneEm;
-    autoSize.height = IsThemed() ? 0 : oneEm;
+  if (isInlineOriented) {
+    autoSize.ISize(wm) = LONG_SIDE_TO_SHORT_SIDE_RATIO * oneEm;
+    autoSize.BSize(wm) = IsThemed() ? 0 : oneEm;
   } else {
-    autoSize.width = IsThemed() ? 0 : oneEm;
-    autoSize.height = LONG_SIDE_TO_SHORT_SIDE_RATIO * oneEm;
+    autoSize.ISize(wm) = IsThemed() ? 0 : oneEm;
+    autoSize.BSize(wm) = LONG_SIDE_TO_SHORT_SIDE_RATIO * oneEm;
   }
 
-  return autoSize;
+  return autoSize.ConvertTo(aWM, wm);
 }
 
 nscoord
-nsRangeFrame::GetMinWidth(nsRenderingContext *aRenderingContext)
+nsRangeFrame::GetMinISize(nsRenderingContext *aRenderingContext)
 {
   // nsFrame::ComputeSize calls GetMinimumWidgetSize to prevent us from being
   // given too small a size when we're natively themed. If we aren't native
@@ -754,36 +808,40 @@ nsRangeFrame::GetMinWidth(nsRenderingContext *aRenderingContext)
 }
 
 nscoord
-nsRangeFrame::GetPrefWidth(nsRenderingContext *aRenderingContext)
+nsRangeFrame::GetPrefISize(nsRenderingContext *aRenderingContext)
 {
-  // frameSizeOverride values just gets us to fall back to being horizontal:
-  nsSize frameSizeOverride(10,1);
-  bool isHorizontal = IsHorizontal(&frameSizeOverride);
+  bool isInline = IsInlineOriented();
 
-  if (!isHorizontal && IsThemed()) {
+  if (!isInline && IsThemed()) {
     // nsFrame::ComputeSize calls GetMinimumWidgetSize to prevent us from being
     // given too small a size when we're natively themed. We return zero and
-    // depend on that correction to get our "natuaral" width when we're a
+    // depend on that correction to get our "natural" width when we're a
     // vertical slider.
     return 0;
   }
 
-  nscoord prefWidth = NSToCoordRound(StyleFont()->mFont.size *
+  nscoord prefISize = NSToCoordRound(StyleFont()->mFont.size *
                                      nsLayoutUtils::FontSizeInflationFor(this)); // 1em
 
-  if (isHorizontal) {
-    prefWidth *= LONG_SIDE_TO_SHORT_SIDE_RATIO;
+  if (isInline) {
+    prefISize *= LONG_SIDE_TO_SHORT_SIDE_RATIO;
   }
 
-  return prefWidth;
+  return prefISize;
 }
 
 bool
-nsRangeFrame::IsHorizontal(const nsSize *aFrameSizeOverride) const
+nsRangeFrame::IsHorizontal() const
 {
-  dom::HTMLInputElement* element = static_cast<dom::HTMLInputElement*>(mContent);
-  return !element->AttrValueIs(kNameSpaceID_None, nsGkAtoms::orient,
-                               nsGkAtoms::vertical, eCaseMatters);
+  dom::HTMLInputElement* element =
+    static_cast<dom::HTMLInputElement*>(mContent);
+  return element->AttrValueIs(kNameSpaceID_None, nsGkAtoms::orient,
+                              nsGkAtoms::horizontal, eCaseMatters) ||
+         (!element->AttrValueIs(kNameSpaceID_None, nsGkAtoms::orient,
+                               nsGkAtoms::vertical, eCaseMatters) &&
+          GetWritingMode().IsVertical() ==
+            element->AttrValueIs(kNameSpaceID_None, nsGkAtoms::orient,
+                                 nsGkAtoms::block, eCaseMatters));
 }
 
 double
@@ -818,14 +876,74 @@ nsRangeFrame::GetType() const
 bool
 nsRangeFrame::ShouldUseNativeStyle() const
 {
+  nsIFrame* trackFrame = mTrackDiv->GetPrimaryFrame();
+  nsIFrame* progressFrame = mProgressDiv->GetPrimaryFrame();
+  nsIFrame* thumbFrame = mThumbDiv->GetPrimaryFrame();
+
   return (StyleDisplay()->mAppearance == NS_THEME_RANGE) &&
-         !PresContext()->HasAuthorSpecifiedRules(const_cast<nsRangeFrame*>(this),
+         !PresContext()->HasAuthorSpecifiedRules(this,
                                                  (NS_AUTHOR_SPECIFIED_BORDER |
                                                   NS_AUTHOR_SPECIFIED_BACKGROUND)) &&
-         !PresContext()->HasAuthorSpecifiedRules(mTrackDiv->GetPrimaryFrame(),
+         trackFrame &&
+         !PresContext()->HasAuthorSpecifiedRules(trackFrame,
                                                  STYLES_DISABLING_NATIVE_THEMING) &&
-         !PresContext()->HasAuthorSpecifiedRules(mProgressDiv->GetPrimaryFrame(),
+         progressFrame &&
+         !PresContext()->HasAuthorSpecifiedRules(progressFrame,
                                                  STYLES_DISABLING_NATIVE_THEMING) &&
-         !PresContext()->HasAuthorSpecifiedRules(mThumbDiv->GetPrimaryFrame(),
+         thumbFrame &&
+         !PresContext()->HasAuthorSpecifiedRules(thumbFrame,
                                                  STYLES_DISABLING_NATIVE_THEMING);
+}
+
+Element*
+nsRangeFrame::GetPseudoElement(CSSPseudoElementType aType)
+{
+  if (aType == CSSPseudoElementType::mozRangeTrack) {
+    return mTrackDiv;
+  }
+
+  if (aType == CSSPseudoElementType::mozRangeThumb) {
+    return mThumbDiv;
+  }
+
+  if (aType == CSSPseudoElementType::mozRangeProgress) {
+    return mProgressDiv;
+  }
+
+  return nsContainerFrame::GetPseudoElement(aType);
+}
+
+nsStyleContext*
+nsRangeFrame::GetAdditionalStyleContext(int32_t aIndex) const
+{
+  // We only implement this so that SetAdditionalStyleContext will be
+  // called if style changes that would change the -moz-focus-outer
+  // pseudo-element have occurred.
+  if (aIndex != 0) {
+    return nullptr;
+  }
+  return mOuterFocusStyle;
+}
+
+void
+nsRangeFrame::SetAdditionalStyleContext(int32_t aIndex,
+                                        nsStyleContext* aStyleContext)
+{
+  MOZ_ASSERT(aIndex == 0,
+             "GetAdditionalStyleContext is handling other indexes?");
+
+#ifdef DEBUG
+  if (mOuterFocusStyle) {
+    mOuterFocusStyle->FrameRelease();
+  }
+#endif
+
+  // The -moz-focus-outer pseudo-element's style has changed.
+  mOuterFocusStyle = aStyleContext;
+
+#ifdef DEBUG
+  if (mOuterFocusStyle) {
+    mOuterFocusStyle->FrameAddRef();
+  }
+#endif
 }

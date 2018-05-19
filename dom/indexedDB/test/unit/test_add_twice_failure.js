@@ -12,7 +12,8 @@ function testSteps()
   let request = indexedDB.open(name, 1);
   request.onerror = errorHandler;
   request.onupgradeneeded = grabEventAndContinueHandler;
-  let event = yield;
+  request.onsuccess = grabEventAndContinueHandler;
+  let event = yield undefined;
 
   let db = request.result;
 
@@ -24,16 +25,19 @@ function testSteps()
   request = objectStore.add({}, key);
   request.onerror = errorHandler;
   request.onsuccess = grabEventAndContinueHandler;
-  event = yield;
+  event = yield undefined;
 
   is(request.result, key, "Correct key");
 
   request = objectStore.add({}, key);
   request.addEventListener("error", new ExpectError("ConstraintError", true));
   request.onsuccess = unexpectedSuccessHandler;
-  yield;
+  yield undefined;
+
+  // Wait for success.
+  yield undefined;
 
   finishTest();
-  yield;
+  yield undefined;
 }
 

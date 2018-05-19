@@ -15,16 +15,17 @@
  */
 
 #define LOG_TAG "Keyboard"
+#include "cutils_log.h"
 
 #include <stdlib.h>
 #include <unistd.h>
 #include <limits.h>
 
-#include "utils_Log.h"
 #include "Keyboard.h"
 #include "KeycodeLabels.h"
 #include "KeyLayoutMap.h"
 #include "KeyCharacterMap.h"
+#include "InputDevice.h"
 #include <utils/Errors.h>
 #include <cutils/properties.h>
 
@@ -32,13 +33,10 @@ namespace android {
 
 // --- KeyMap ---
 
-KeyMap::KeyMap() :
-        keyLayoutMap(NULL), keyCharacterMap(NULL) {
+KeyMap::KeyMap() {
 }
 
 KeyMap::~KeyMap() {
-    delete keyLayoutMap;
-    delete keyCharacterMap;
 }
 
 status_t KeyMap::load(const InputDeviceIdentifier& deviceIdenfifier,
@@ -114,14 +112,12 @@ status_t KeyMap::loadKeyLayout(const InputDeviceIdentifier& deviceIdentifier,
         return NAME_NOT_FOUND;
     }
 
-    KeyLayoutMap* map;
-    status_t status = KeyLayoutMap::load(path, &map);
+    status_t status = KeyLayoutMap::load(path, &keyLayoutMap);
     if (status) {
         return status;
     }
 
     keyLayoutFile.setTo(path);
-    keyLayoutMap = map;
     return OK;
 }
 
@@ -133,14 +129,13 @@ status_t KeyMap::loadKeyCharacterMap(const InputDeviceIdentifier& deviceIdentifi
         return NAME_NOT_FOUND;
     }
 
-    KeyCharacterMap* map;
-    status_t status = KeyCharacterMap::load(path, &map);
+    status_t status = KeyCharacterMap::load(path,
+            KeyCharacterMap::FORMAT_BASE, &keyCharacterMap);
     if (status) {
         return status;
     }
 
     keyCharacterMapFile.setTo(path);
-    keyCharacterMap = map;
     return OK;
 }
 
@@ -209,6 +204,9 @@ const char* getAxisLabel(int32_t axisId) {
     return lookupLabelByValue(axisId, AXES);
 }
 
+int32_t getLedByLabel(const char* label) {
+    return int32_t(lookupValueByLabel(label, LEDS));
+}
 static int32_t setEphemeralMetaState(int32_t mask, bool down, int32_t oldMetaState) {
     int32_t newMetaState;
     if (down) {
@@ -245,7 +243,6 @@ static int32_t toggleLockedMetaState(int32_t mask, bool down, int32_t oldMetaSta
 }
 
 int32_t updateMetaState(int32_t keyCode, bool down, int32_t oldMetaState) {
-    int32_t mask;
     switch (keyCode) {
     case AKEYCODE_ALT_LEFT:
         return setEphemeralMetaState(AMETA_ALT_LEFT_ON, down, oldMetaState);

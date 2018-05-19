@@ -1,4 +1,4 @@
-//* -*- Mode: Javascript; tab-width: 8; indent-tabs-mode: nil; js-indent-level: 2 -*- *
+//* -*- indent-tabs-mode: nil; js-indent-level: 2 -*- *
 function dumpn(s) {
   dump(s + "\n");
 }
@@ -6,10 +6,10 @@ function dumpn(s) {
 const NS_APP_USER_PROFILE_50_DIR = "ProfD";
 const NS_APP_USER_PROFILE_LOCAL_50_DIR = "ProfLD";
 
-const Cc = Components.classes;
-const Ci = Components.interfaces;
-const Cu = Components.utils;
-const Cr = Components.results;
+var Cc = Components.classes;
+var Ci = Components.interfaces;
+var Cu = Components.utils;
+var Cr = Components.results;
 
 Cu.import("resource://testing-common/httpd.js");
 
@@ -29,7 +29,14 @@ prefBranch.setIntPref("urlclassifier.gethashnoise", 0);
 
 // Enable malware/phishing checking for tests
 prefBranch.setBoolPref("browser.safebrowsing.malware.enabled", true);
-prefBranch.setBoolPref("browser.safebrowsing.enabled", true);
+prefBranch.setBoolPref("browser.safebrowsing.blockedURIs.enabled", true);
+prefBranch.setBoolPref("browser.safebrowsing.phishing.enabled", true);
+
+// Enable all completions for tests
+prefBranch.setCharPref("urlclassifier.disallow_completions", "");
+
+// Hash completion timeout
+prefBranch.setIntPref("urlclassifier.gethash.timeout_ms", 5000);
 
 function delFile(name) {
   try {
@@ -47,11 +54,25 @@ function cleanUp() {
   delFile("safebrowsing/classifier.hashkey");
   delFile("safebrowsing/test-phish-simple.sbstore");
   delFile("safebrowsing/test-malware-simple.sbstore");
-  delFile("safebrowsing/test-phish-simple.cache");
-  delFile("safebrowsing/test-malware-simple.cache");
+  delFile("safebrowsing/test-unwanted-simple.sbstore");
+  delFile("safebrowsing/test-block-simple.sbstore");
+  delFile("safebrowsing/test-track-simple.sbstore");
+  delFile("safebrowsing/test-trackwhite-simple.sbstore");
   delFile("safebrowsing/test-phish-simple.pset");
   delFile("safebrowsing/test-malware-simple.pset");
+  delFile("safebrowsing/test-unwanted-simple.pset");
+  delFile("safebrowsing/test-block-simple.pset");
+  delFile("safebrowsing/test-track-simple.pset");
+  delFile("safebrowsing/test-trackwhite-simple.pset");
+  delFile("safebrowsing/moz-phish-simple.sbstore");
+  delFile("safebrowsing/moz-phish-simple.pset");
+  delFile("testLarge.pset");
+  delFile("testNoDelta.pset");
 }
+
+// Update uses allTables by default
+var allTables = "test-phish-simple,test-malware-simple,test-unwanted-simple,test-track-simple,test-trackwhite-simple,test-block-simple";
+var mozTables = "moz-phish-simple";
 
 var dbservice = Cc["@mozilla.org/url-classifier/dbservice;1"].getService(Ci.nsIUrlClassifierDBService);
 var streamUpdater = Cc["@mozilla.org/url-classifier/streamupdater;1"]
@@ -104,6 +125,18 @@ function buildMalwareUpdate(chunks, hashSize) {
   return buildUpdate({"test-malware-simple" : chunks}, hashSize);
 }
 
+function buildUnwantedUpdate(chunks, hashSize) {
+  return buildUpdate({"test-unwanted-simple" : chunks}, hashSize);
+}
+
+function buildBlockedUpdate(chunks, hashSize) {
+  return buildUpdate({"test-block-simple" : chunks}, hashSize);
+}
+
+function buildMozPhishingUpdate(chunks, hashSize) {
+  return buildUpdate({"moz-phish-simple" : chunks}, hashSize);
+}
+
 function buildBareUpdate(chunks, hashSize) {
   return buildUpdate({"" : chunks}, hashSize);
 }
@@ -111,7 +144,7 @@ function buildBareUpdate(chunks, hashSize) {
 /**
  * Performs an update of the dbservice manually, bypassing the stream updater
  */
-function doSimpleUpdate(updateText, success, failure, clientKey) {
+function doSimpleUpdate(updateText, success, failure) {
   var listener = {
     QueryInterface: function(iid)
     {
@@ -127,9 +160,7 @@ function doSimpleUpdate(updateText, success, failure, clientKey) {
     updateSuccess: function(requestedTimeout) { success(requestedTimeout); }
   };
 
-  dbservice.beginUpdate(listener,
-                        "test-phish-simple,test-malware-simple",
-                        clientKey);
+  dbservice.beginUpdate(listener, allTables);
   dbservice.beginStream("", "");
   dbservice.updateStream(updateText);
   dbservice.finishStream();
@@ -164,15 +195,15 @@ function doErrorUpdate(tables, success, failure) {
  * Performs an update of the dbservice using the stream updater and a
  * data: uri
  */
-function doStreamUpdate(updateText, success, failure, downloadFailure, clientKey) {
+function doStreamUpdate(updateText, success, failure, downloadFailure) {
   var dataUpdate = "data:," + encodeURIComponent(updateText);
 
-  if (!downloadFailure)
+  if (!downloadFailure) {
     downloadFailure = failure;
+  }
 
-  streamUpdater.updateUrl = dataUpdate;
-  streamUpdater.downloadUpdates("test-phish-simple,test-malware-simple", "",
-                                clientKey, success, failure, downloadFailure);
+  streamUpdater.downloadUpdates(allTables, "", true,
+                                dataUpdate, success, failure, downloadFailure);
 }
 
 var gAssertions = {
@@ -193,24 +224,41 @@ tableData : function(expectedTables, cb)
     });
 },
 
-checkUrls: function(urls, expected, cb)
+checkUrls: function(urls, expected, cb, useMoz = false)
 {
   // work with a copy of the list.
   urls = urls.slice(0);
   var doLookup = function() {
     if (urls.length > 0) {
+      var tables = useMoz ? mozTables : allTables;
       var fragment = urls.shift();
-      var principal = secMan.getNoAppCodebasePrincipal(iosvc.newURI("http://" + fragment, null, null));
-      dbservice.lookup(principal,
-                       function(arg) {
-                         do_check_eq(expected, arg);
-                         doLookup();
-                       }, true);
+      var principal = secMan.createCodebasePrincipal(iosvc.newURI("http://" + fragment, null, null), {});
+      dbservice.lookup(principal, tables,
+                                function(arg) {
+                                  do_check_eq(expected, arg);
+                                  doLookup();
+                                }, true);
     } else {
       cb();
     }
   };
   doLookup();
+},
+
+checkTables: function(url, expected, cb)
+{
+  var principal = secMan.createCodebasePrincipal(iosvc.newURI("http://" + url, null, null), {});
+  dbservice.lookup(principal, allTables, function(tables) {
+    // Rebuild tables in a predictable order.
+    var parts = tables.split(",");
+    while (parts[parts.length - 1] == '') {
+      parts.pop();
+    }
+    parts.sort();
+    tables = parts.join(",");
+    do_check_eq(tables, expected);
+    cb();
+  }, true);
 },
 
 urlsDontExist: function(urls, cb)
@@ -228,6 +276,21 @@ malwareUrlsExist: function(urls, cb)
   this.checkUrls(urls, 'test-malware-simple', cb);
 },
 
+unwantedUrlsExist: function(urls, cb)
+{
+  this.checkUrls(urls, 'test-unwanted-simple', cb);
+},
+
+blockedUrlsExist: function(urls, cb)
+{
+  this.checkUrls(urls, 'test-block-simple', cb);
+},
+
+mozPhishingUrlsExist: function(urls, cb)
+{
+  this.checkUrls(urls, 'moz-phish-simple', cb, true);
+},
+
 subsDontExist: function(urls, cb)
 {
   // XXX: there's no interface for checking items in the subs table
@@ -238,6 +301,11 @@ subsExist: function(urls, cb)
 {
   // XXX: there's no interface for checking items in the subs table
   cb();
+},
+
+urlExistInMultipleTables: function(data, cb)
+{
+  this.checkTables(data["url"], data["tables"], cb);
 }
 
 };
@@ -267,7 +335,7 @@ function updateError(arg)
 }
 
 // Runs a set of updates, and then checks a set of assertions.
-function doUpdateTest(updates, assertions, successCallback, errorCallback, clientKey) {
+function doUpdateTest(updates, assertions, successCallback, errorCallback) {
   var errorUpdate = function() {
     checkAssertions(assertions, errorCallback);
   }
@@ -275,7 +343,7 @@ function doUpdateTest(updates, assertions, successCallback, errorCallback, clien
   var runUpdate = function() {
     if (updates.length > 0) {
       var update = updates.shift();
-      doStreamUpdate(update, runUpdate, errorUpdate, null, clientKey);
+      doStreamUpdate(update, runUpdate, errorUpdate, null);
     } else {
       checkAssertions(assertions, successCallback);
     }

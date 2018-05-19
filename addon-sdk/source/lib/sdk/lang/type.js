@@ -1,5 +1,4 @@
-/* vim:ts=2:sts=2:sw=2:
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
@@ -109,14 +108,24 @@ function isObject(value) {
 exports.isObject = isObject;
 
 /**
+ * Detect whether a value is a generator.
+ *
+ * @param aValue
+ *        The value to identify.
+ * @return A boolean indicating whether the value is a generator.
+ */
+function isGenerator(aValue) {
+  return !!(aValue && aValue.isGenerator && aValue.isGenerator());
+}
+exports.isGenerator = isGenerator;
+
+/**
  * Returns true if `value` is an Array.
  * @examples
  *    isArray([1, 2, 3])  // true
  *    isArray({ 0: 'foo', length: 1 }) // false
  */
-var isArray = Array.isArray || function isArray(value) {
-  Object.prototype.toString.call(value) === "[object Array]";
-}
+var isArray = Array.isArray;
 exports.isArray = isArray;
 
 /**
@@ -126,9 +135,15 @@ exports.isArray = isArray;
  *    isArguments([1,2,3]); // false
  */
 function isArguments(value) {
-  Object.prototype.toString.call(value) === "[object Arguments]";
+  return Object.prototype.toString.call(value) === "[object Arguments]";
 }
 exports.isArguments = isArguments;
+
+var isMap = value => Object.prototype.toString.call(value) === "[object Map]"
+exports.isMap = isMap;
+
+var isSet = value => Object.prototype.toString.call(value) === "[object Set]"
+exports.isSet = isSet;
 
 /**
  * Returns true if it is a primitive `value`. (null, undefined, number,
@@ -199,6 +214,20 @@ function isJSON(value, visited) {
 exports.isJSON = function (value) {
   return isJSON(value);
 };
+
+/**
+ * Returns `true` if `value` is JSONable
+ */
+const isJSONable = (value) => {
+  try {
+    JSON.parse(JSON.stringify(value));
+  }
+  catch (e) {
+    return false;
+  }
+  return true;
+};
+exports.isJSONable = isJSONable;
 
 /**
  * Returns if `value` is an instance of a given `Type`. This is exactly same as

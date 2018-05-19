@@ -4,7 +4,7 @@
 
 #include "nsHtml5OwningUTF16Buffer.h"
 
-nsHtml5OwningUTF16Buffer::nsHtml5OwningUTF16Buffer(PRUnichar* aBuffer)
+nsHtml5OwningUTF16Buffer::nsHtml5OwningUTF16Buffer(char16_t* aBuffer)
   : nsHtml5UTF16Buffer(aBuffer, 0),
     next(nullptr),
     key(nullptr)
@@ -26,10 +26,10 @@ nsHtml5OwningUTF16Buffer::~nsHtml5OwningUTF16Buffer()
   DeleteBuffer();
 
   // This is to avoid dtor recursion on 'next', bug 706932.
-  nsRefPtr<nsHtml5OwningUTF16Buffer> tail;
+  RefPtr<nsHtml5OwningUTF16Buffer> tail;
   tail.swap(next);
   while (tail && tail->mRefCnt == 1) {
-    nsRefPtr<nsHtml5OwningUTF16Buffer> tmp;
+    RefPtr<nsHtml5OwningUTF16Buffer> tmp;
     tmp.swap(tail->next);
     tail.swap(tmp);
   }
@@ -39,13 +39,12 @@ nsHtml5OwningUTF16Buffer::~nsHtml5OwningUTF16Buffer()
 already_AddRefed<nsHtml5OwningUTF16Buffer>
 nsHtml5OwningUTF16Buffer::FalliblyCreate(int32_t aLength)
 {
-  const mozilla::fallible_t fallible = mozilla::fallible_t();
-  PRUnichar* newBuf = new (fallible) PRUnichar[aLength];
+  char16_t* newBuf = new (mozilla::fallible) char16_t[aLength];
   if (!newBuf) {
     return nullptr;
   }
-  nsRefPtr<nsHtml5OwningUTF16Buffer> newObj =
-    new (fallible) nsHtml5OwningUTF16Buffer(newBuf);
+  RefPtr<nsHtml5OwningUTF16Buffer> newObj =
+    new (mozilla::fallible) nsHtml5OwningUTF16Buffer(newBuf);
   if (!newObj) {
     delete[] newBuf;
     return nullptr;

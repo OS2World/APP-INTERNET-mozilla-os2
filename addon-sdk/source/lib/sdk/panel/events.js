@@ -14,14 +14,14 @@ module.metadata = {
 const events = require("../system/events");
 const { emit } = require("../event/core");
 
-let channel = {};
+var channel = {};
 
-function forward({ subject, type, data })
-  emit(channel, "data", { target: subject, type: type, data: data });
+function forward({ subject, type, data }) {
+  return emit(channel, "data", { target: subject, type: type, data: data });
+}
 
-["sdk-panel-show", "sdk-panel-hide", "sdk-panel-shown",
- "sdk-panel-hidden", "sdk-panel-content-changed", "sdk-panel-content-loaded",
- "sdk-panel-document-loaded"
-].forEach(function(type) events.on(type, forward));
+["popupshowing", "popuphiding", "popupshown", "popuphidden",
+"document-element-inserted", "DOMContentLoaded", "load"
+].forEach(type => events.on(type, forward));
 
 exports.events = channel;

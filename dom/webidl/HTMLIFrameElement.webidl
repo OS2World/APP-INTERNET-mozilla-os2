@@ -14,12 +14,11 @@
 interface HTMLIFrameElement : HTMLElement {
   [SetterThrows, Pure]
            attribute DOMString src;
-           // attribute DOMString srcdoc;
+  [SetterThrows, Pure]
+           attribute DOMString srcdoc;
   [SetterThrows, Pure]
            attribute DOMString name;
-  // [PutForwards=value] readonly attribute DOMSettableTokenList sandbox;
-  // We're implementing sandbox as a string for now, see bug 845057.
-  attribute DOMString sandbox;
+  [PutForwards=value] readonly attribute DOMTokenList sandbox;
            // attribute boolean seamless;
   [SetterThrows, Pure]
            attribute boolean allowFullscreen;
@@ -27,6 +26,9 @@ interface HTMLIFrameElement : HTMLElement {
            attribute DOMString width;
   [SetterThrows, Pure]
            attribute DOMString height;
+  [SetterThrows, Pure, Pref="network.http.enablePerElementReferrer"]
+           attribute DOMString referrerPolicy;
+  [NeedsSubjectPrincipal]
   readonly attribute Document? contentDocument;
   readonly attribute WindowProxy? contentWindow;
 };
@@ -48,6 +50,7 @@ partial interface HTMLIFrameElement {
 
 partial interface HTMLIFrameElement {
   // GetSVGDocument
+  [NeedsSubjectPrincipal]
   Document? getSVGDocument();
 };
 
@@ -64,3 +67,4 @@ partial interface HTMLIFrameElement {
 };
 
 HTMLIFrameElement implements MozFrameLoaderOwner;
+HTMLIFrameElement implements BrowserElement;

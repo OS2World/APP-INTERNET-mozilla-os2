@@ -2,6 +2,8 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
+from __future__ import absolute_import
+
 from io import BytesIO
 import struct
 import zlib
@@ -12,7 +14,7 @@ from zipfile import (
 )
 from collections import OrderedDict
 from urlparse import urlparse, ParseResult
-import mozpack.path
+import mozpack.path as mozpath
 
 JAR_STORED = ZIP_STORED
 JAR_DEFLATED = ZIP_DEFLATED
@@ -330,14 +332,14 @@ class JarReader(object):
     Class with methods to read Jar files. Can open standard jar files as well
     as Mozilla jar files (see further details in the JarWriter documentation).
     '''
-    def __init__(self, file=None, fileobj=None):
+    def __init__(self, file=None, fileobj=None, data=None):
         '''
         Opens the given file as a Jar archive. Use the given file-like object
         if one is given instead of opening the given file name.
         '''
         if fileobj:
             data = fileobj.read()
-        else:
+        elif file:
             data = open(file, 'rb').read()
         self._data = memoryview(data)
         # The End of Central Directory Record has a variable size because of
@@ -376,7 +378,7 @@ class JarReader(object):
             entry = JarCdirEntry(self._data[offset:])
             offset += entry.size
             # Creator host system. 0 is MSDOS, 3 is Unix
-            host = entry['creator_version'] >> 16
+            host = entry['creator_version'] >> 8
             # External attributes values depend on host above. On Unix the
             # higher bits are the stat.st_mode value. On MSDOS, the lower bits
             # are the FAT attributes.
@@ -456,19 +458,23 @@ class JarWriter(object):
     archives as well as jar archives optimized for Gecko. See the documentation
     for the close() member function for a description of both layouts.
     '''
-    def __init__(self, file=None, fileobj=None, compress=True, optimize=True):
+    def __init__(self, file=None, fileobj=None, compress=True, optimize=True,
+                 compress_level=9):
         '''
         Initialize a Jar archive in the given file. Use the given file-like
         object if one is given instead of opening the given file name.
         The compress option determines the default behavior for storing data
         in the jar archive. The optimize options determines whether the jar
-        archive should be optimized for Gecko or not.
+        archive should be optimized for Gecko or not. ``compress_level``
+        defines the zlib compression level. It must be a value between 0 and 9
+        and defaults to 9, the highest and slowest level of compression.
         '''
         if fileobj:
             self._data = fileobj
         else:
             self._data = open(file, 'wb')
         self._compress = compress
+        self._compress_level = compress_level
         self._contents = OrderedDict()
         self._last_preloaded = None
         self._optimize = optimize
@@ -564,7 +570,7 @@ class JarWriter(object):
         self._data.write(end.serialize())
         self._data.close()
 
-    def add(self, name, data, compress=None):
+    def add(self, name, data, compress=None, mode=None, skip_duplicates=False):
         '''
         Add a new member to the jar archive, with the given name and the given
         data.
@@ -574,11 +580,17 @@ class JarWriter(object):
         When the data should be compressed (True or None with self.compress ==
         True), it is only really compressed if the compressed size is smaller
         than the uncompressed size.
+        The mode option gives the unix permissions that should be stored
+        for the jar entry.
+        If a duplicated member is found skip_duplicates will prevent raising
+        an exception if set to True.
         The given data may be a buffer, a file-like instance, a Deflater or a
         JarFileReader instance. The latter two allow to avoid uncompressing
         data to recompress it.
         '''
-        if name in self._contents:
+        name = mozpath.normsep(name)
+
+        if name in self._contents and not skip_duplicates:
             raise JarWriterError("File %s already in JarWriter" % name)
         if compress is None:
             compress = self._compress
@@ -586,20 +598,24 @@ class JarWriter(object):
                 or (isinstance(data, Deflater) and data.compress == compress):
             deflater = data
         else:
-            deflater = Deflater(compress)
+            deflater = Deflater(compress, compress_level=self._compress_level)
             if isinstance(data, basestring):
                 deflater.write(data)
             elif hasattr(data, 'read'):
-                data.seek(0)
+                if hasattr(data, 'seek'):
+                    data.seek(0)
                 deflater.write(data.read())
             else:
                 raise JarWriterError("Don't know how to handle %s" %
                                      type(data))
         # Fill a central directory entry for this new member.
         entry = JarCdirEntry()
-        # Not storing as created on unix, which avoids having to deal with
-        # st_mode.
         entry['creator_version'] = 20
+        if mode is not None:
+            # Set creator host system (upper byte of creator_version)
+            # to 3 (Unix) so mode is honored when there is one.
+            entry['creator_version'] |= 3 << 8
+            entry['external_attr'] = (mode & 0xFFFF) << 16L
         if deflater.compressed:
             entry['min_version'] = 20  # Version 2.0 supports deflated streams
             entry['general_flag'] = 2  # Max compression
@@ -641,7 +657,7 @@ class Deflater(object):
     compressed unless the compressed form is smaller than the uncompressed
     data.
     '''
-    def __init__(self, compress=True):
+    def __init__(self, compress=True, compress_level=9):
         '''
         Initialize a Deflater. The compress argument determines whether to
         try to compress at all.
@@ -649,7 +665,8 @@ class Deflater(object):
         self._data = BytesIO()
         self.compress = compress
         if compress:
-            self._deflater = zlib.compressobj(9, zlib.DEFLATED, -MAX_WBITS)
+            self._deflater = zlib.compressobj(compress_level, zlib.DEFLATED,
+                                              -MAX_WBITS)
             self._deflated = BytesIO()
         else:
             self._deflater = None
@@ -796,4 +813,4 @@ class JarLog(dict):
             if os.path.isabs(path[1:]):
                 path = path[1:]
             path = os.path.realpath(path)
-            return mozpack.path.normsep(os.path.normcase(path))
+            return mozpath.normsep(os.path.normcase(path))

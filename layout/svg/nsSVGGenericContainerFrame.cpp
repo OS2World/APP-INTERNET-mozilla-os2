@@ -21,7 +21,7 @@ NS_IMPL_FRAMEARENA_HELPERS(nsSVGGenericContainerFrame)
 //----------------------------------------------------------------------
 // nsIFrame methods
 
-NS_IMETHODIMP
+nsresult
 nsSVGGenericContainerFrame::AttributeChanged(int32_t         aNameSpaceID,
                                              nsIAtom*        aAttribute,
                                              int32_t         aModType)
@@ -46,16 +46,9 @@ nsSVGGenericContainerFrame::GetType() const
 // nsSVGContainerFrame methods:
 
 gfxMatrix
-nsSVGGenericContainerFrame::GetCanvasTM(uint32_t aFor)
+nsSVGGenericContainerFrame::GetCanvasTM()
 {
-  if (!(GetStateBits() & NS_STATE_SVG_NONDISPLAY_CHILD)) {
-    if ((aFor == FOR_PAINTING && NS_SVGDisplayListPaintingEnabled()) ||
-        (aFor == FOR_HIT_TESTING && NS_SVGDisplayListHitTestingEnabled())) {
-      return nsSVGIntegrationUtils::GetCSSPxToDevPxMatrix(this);
-    }
-  }
-
-  NS_ASSERTION(mParent, "null parent");
+  NS_ASSERTION(GetParent(), "null parent");
   
-  return static_cast<nsSVGContainerFrame*>(mParent)->GetCanvasTM(aFor);
+  return static_cast<nsSVGContainerFrame*>(GetParent())->GetCanvasTM();
 }

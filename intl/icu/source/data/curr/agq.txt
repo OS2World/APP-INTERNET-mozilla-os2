@@ -1,14 +1,5 @@
-﻿// ***************************************************************************
-// *
-// * Copyright (C) 2012 International Business Machines
-// * Corporation and others.  All Rights Reserved.
-// * Tool: org.unicode.cldr.icu.NewLdml2IcuConverter
-// * Source File: <path>/common/main/agq.xml
-// *
-// ***************************************************************************
-/**
- *  ICU <specials> source: <path>/xml/main/agq.xml
- */
+﻿// © 2016 and later: Unicode, Inc. and others.
+// License & terms of use: http://www.unicode.org/copyright.html#License
 agq{
     Currencies{
         AED{
@@ -81,7 +72,7 @@ agq{
         }
         GBP{
             "£",
-            "Bɔ̀ŋ Sɨ̀telè è Bèletì",
+            "Bɔ̀ŋ è Bèletì",
         }
         GHC{
             "GHC",
@@ -221,6 +212,10 @@ agq{
         }
         ZMK{
             "ZMK",
+            "Kwachà è Zambìa (1968–2012)",
+        }
+        ZMW{
+            "ZMW",
             "Kwachà è Zambìa",
         }
         ZWD{
@@ -228,5 +223,5 @@ agq{
             "Dɔlà è Zìmbagbɛ̀",
         }
     }
-    Version{"2.0.77.46"}
+    Version{"2.1.27.40"}
 }

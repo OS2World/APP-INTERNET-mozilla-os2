@@ -8,15 +8,18 @@
  *  be found in the AUTHORS file in the root of the source tree.
  */
 
-#ifndef WEBRTC_MODULES_AUDIO_CODING_MAIN_TEST_TEST_ALL_CODECS_H_
-#define WEBRTC_MODULES_AUDIO_CODING_MAIN_TEST_TEST_ALL_CODECS_H_
+#ifndef WEBRTC_MODULES_AUDIO_CODING_MAIN_TEST_TESTALLCODECS_H_
+#define WEBRTC_MODULES_AUDIO_CODING_MAIN_TEST_TESTALLCODECS_H_
 
-#include "ACMTest.h"
-#include "Channel.h"
-#include "PCMFile.h"
-#include "typedefs.h"
+#include "webrtc/base/scoped_ptr.h"
+#include "webrtc/modules/audio_coding/main/test/ACMTest.h"
+#include "webrtc/modules/audio_coding/main/test/Channel.h"
+#include "webrtc/modules/audio_coding/main/test/PCMFile.h"
+#include "webrtc/typedefs.h"
 
 namespace webrtc {
+
+class Config;
 
 class TestPack : public AudioPacketizationCallback {
  public:
@@ -25,31 +28,33 @@ class TestPack : public AudioPacketizationCallback {
 
   void RegisterReceiverACM(AudioCodingModule* acm);
 
-  int32_t SendData(FrameType frame_type, uint8_t payload_type,
-                   uint32_t timestamp, const uint8_t* payload_data,
-                   uint16_t payload_size,
-                   const RTPFragmentationHeader* fragmentation);
+  int32_t SendData(FrameType frame_type,
+                   uint8_t payload_type,
+                   uint32_t timestamp,
+                   const uint8_t* payload_data,
+                   size_t payload_size,
+                   const RTPFragmentationHeader* fragmentation) override;
 
-  uint16_t payload_size();
+  size_t payload_size();
   uint32_t timestamp_diff();
   void reset_payload_size();
 
  private:
-  AudioCodingModule*  receiver_acm_;
+  AudioCodingModule* receiver_acm_;
   uint16_t sequence_number_;
   uint8_t payload_data_[60 * 32 * 2 * 2];
   uint32_t timestamp_diff_;
   uint32_t last_in_timestamp_;
   uint64_t total_bytes_;
-  uint16_t payload_size_;
+  size_t payload_size_;
 };
 
 class TestAllCodecs : public ACMTest {
  public:
-  TestAllCodecs(int test_mode);
+  explicit TestAllCodecs(int test_mode);
   ~TestAllCodecs();
 
-  void Perform();
+  void Perform() override;
 
  private:
   // The default value of '-1' indicates that the registration is based only on
@@ -57,23 +62,23 @@ class TestAllCodecs : public ACMTest {
   // This is useful for codecs which support several sampling frequency.
   // Note! Only mono mode is tested in this test.
   void RegisterSendCodec(char side, char* codec_name, int32_t sampling_freq_hz,
-                         int rate, int packet_size, int extra_byte);
+                         int rate, int packet_size, size_t extra_byte);
 
   void Run(TestPack* channel);
   void OpenOutFile(int test_number);
   void DisplaySendReceiveCodec();
 
   int test_mode_;
-  AudioCodingModule* acm_a_;
-  AudioCodingModule* acm_b_;
+  rtc::scoped_ptr<AudioCodingModule> acm_a_;
+  rtc::scoped_ptr<AudioCodingModule> acm_b_;
   TestPack* channel_a_to_b_;
   PCMFile infile_a_;
   PCMFile outfile_b_;
   int test_count_;
-  uint16_t packet_size_samples_;
-  uint16_t packet_size_bytes_;
+  int packet_size_samples_;
+  size_t packet_size_bytes_;
 };
 
 }  // namespace webrtc
 
-#endif  // WEBRTC_MODULES_AUDIO_CODING_MAIN_TEST_TEST_ALL_CODECS_H_
+#endif  // WEBRTC_MODULES_AUDIO_CODING_MAIN_TEST_TESTALLCODECS_H_

@@ -21,7 +21,7 @@
                                 onset="this.setAttribute('position', val); return val;"/>
       <property name="popupBoxObject">
         <getter>
-          return this.boxObject.QueryInterface(Components.interfaces.nsIPopupBoxObject);
+          return this.boxObject;
         </getter>
       </property>
 
@@ -49,7 +49,7 @@
             if (popupBox)
               popupBox.openPopup(aAnchorElement, aPosition, aX, aY,
                                  aIsContextMenu, aAttributesOverride, aTriggerEvent);
-          } catch(e) {}
+          } catch (e) {}
         ]]>
         </body>
       </method>
@@ -65,11 +65,32 @@
             var popupBox = this.popupBoxObject;
             if (popupBox)
               popupBox.openPopupAtScreen(aX, aY, aIsContextMenu, aTriggerEvent);
-          } catch(e) {}
+          } catch (e) {}
         ]]>
         </body>
       </method>
-      
+
+      <method name="openPopupAtScreenRect">
+        <parameter name="aPosition"/>
+        <parameter name="aX"/>
+        <parameter name="aY"/>
+        <parameter name="aWidth"/>
+        <parameter name="aHeight"/>
+        <parameter name="aIsContextMenu"/>
+        <parameter name="aAttributesOverride"/>
+        <parameter name="aTriggerEvent"/>
+        <body>
+        <![CDATA[
+          try {
+            var popupBox = this.popupBoxObject;
+            if (popupBox)
+              popupBox.openPopupAtScreenRect(aPosition, aX, aY, aWidth, aHeight,
+                                             aIsContextMenu, aAttributesOverride, aTriggerEvent);
+          } catch (e) {}
+        ]]>
+        </body>
+      </method>
+
       <method name="showPopup">
         <parameter name="element"/>
         <parameter name="xpos"/>
@@ -83,33 +104,34 @@
           var menuBox = null;
           try {
             popupBox = this.popupBoxObject;
-          } catch(e) {}
+          } catch (e) {}
           try {
             menuBox = this.parentNode.boxObject;
-          } catch(e) {}
-          if (menuBox instanceof Components.interfaces.nsIMenuBoxObject)
+          } catch (e) {}
+          if (menuBox instanceof MenuBoxObject)
             menuBox.openMenu(true);
           else if (popupBox)
             popupBox.showPopup(element, this, xpos, ypos, popuptype, anchoralignment, popupalignment);
         ]]>
         </body>
       </method>
-      
+
       <method name="hidePopup">
+        <parameter name="cancel"/>
         <body>
         <![CDATA[
           var popupBox = null;
           var menuBox = null;
           try {
-            popupBox = this.boxObject.QueryInterface(Components.interfaces.nsIPopupBoxObject);
-          } catch(e) {}
+            popupBox = this.popupBoxObject;
+          } catch (e) {}
           try {
             menuBox = this.parentNode.boxObject;
-          } catch(e) {}
-          if (menuBox instanceof Components.interfaces.nsIMenuBoxObject)
+          } catch (e) {}
+          if (menuBox instanceof MenuBoxObject)
             menuBox.openMenu(false);
-          else if (popupBox)
-            popupBox.hidePopup();
+          else if (popupBox instanceof PopupBoxObject)
+            popupBox.hidePopup(cancel);
         ]]>
         </body>
       </method>
@@ -142,7 +164,7 @@
         ]]>
         </getter>
       </property>
-      
+
       <method name="enableKeyboardNavigator">
         <parameter name="aEnableKeyboardNavigator"/>
         <body>
@@ -151,7 +173,7 @@
         ]]>
         </body>
       </method>
-      
+
       <method name="enableRollup">
         <parameter name="aEnableRollup"/>
         <body>
@@ -160,7 +182,7 @@
         ]]>
         </body>
       </method>
-      
+
       <method name="sizeTo">
         <parameter name="aWidth"/>
         <parameter name="aHeight"/>
@@ -170,7 +192,7 @@
         ]]>
         </body>
       </method>
-      
+
       <method name="moveTo">
         <parameter name="aLeft"/>
         <parameter name="aTop"/>
@@ -201,29 +223,28 @@
         ]]>
         </body>
       </method>
-    </implementation>     
+
+      <method name="setConstraintRect">
+        <parameter name="aRect"/>
+        <body>
+        <![CDATA[
+          this.popupBoxObject.setConstraintRect(aRect);
+        ]]>
+        </body>
+      </method>
+    </implementation>
 
   </binding>
 
-  <binding id="popup"
+  <binding id="popup" role="xul:menupopup"
            extends="chrome://global/content/bindings/popup.xml#popup-base">
-    
+
     <content>
       <xul:arrowscrollbox class="popup-internal-box" flex="1" orient="vertical"
                           smoothscroll="false">
         <children/>
       </xul:arrowscrollbox>
     </content>
-
-    <implementation implements="nsIAccessibleProvider">
-      <property name="accessibleType" readonly="true">
-        <getter>
-          <![CDATA[
-              return Components.interfaces.nsIAccessibleProvider.XULMenupopup;
-            ]]>
-        </getter>
-      </property>
-    </implementation>
 
     <handlers>
       <handler event="popupshowing" phase="target">
@@ -247,20 +268,9 @@
     </handlers>
   </binding>
 
-  <binding id="panel"
+  <binding id="panel" role="xul:panel"
            extends="chrome://global/content/bindings/popup.xml#popup-base">
-    <!-- This separate binding for dialog-like panels - not menu, list or autocomplete popups
-         exposes the popup as an alert or a pane, depending on whether it is always intended
-         to get keyboard navigation when it opens -->
-    <implementation implements="nsIDOMXULPopupElement, nsIAccessibleProvider">
-      <property name="accessibleType" readonly="true">
-        <getter>
-          <![CDATA[
-          return (this.getAttribute("noautofocus") == "true") ?
-                       Components.interfaces.nsIAccessibleProvider.XULAlert :
-                       Components.interfaces.nsIAccessibleProvider.XULPane;
-        ]]></getter>
-      </property>
+    <implementation implements="nsIDOMXULPopupElement">
       <field name="_prevFocus">0</field>
       <field name="_dragBindingAlive">true</field>
       <constructor>
@@ -271,23 +281,26 @@
             let tmp = {};
             Components.utils.import("resource://gre/modules/WindowDraggingUtils.jsm", tmp);
             let draghandle = new tmp.WindowDraggingElement(this);
-            draghandle.mouseDownCheck = function () this._dragBindingAlive;
+            draghandle.mouseDownCheck = function () {
+              return this._dragBindingAlive;
+            }
           } catch (e) {}
         }
       ]]>
       </constructor>
     </implementation>
-    
+
     <handlers>
       <handler event="popupshowing"><![CDATA[
         // Capture the previous focus before has a chance to get set inside the panel
         try {
-          this._prevFocus = document.commandDispatcher.focusedElement;
-          if (!this._prevFocus)  // Content window has focus
-            this._prevFocus = document.commandDispatcher.focusedWindow;
-        } catch (ex) {
-          this._prevFocus = document.activeElement;
-        }
+          this._prevFocus = Components.utils
+                            .getWeakReference(document.commandDispatcher.focusedElement);
+          if (this._prevFocus.get())
+            return;
+        } catch (ex) { }
+
+        this._prevFocus = Components.utils.getWeakReference(document.activeElement);
       ]]></handler>
       <handler event="popupshown"><![CDATA[
         // Fire event for accessibility APIs
@@ -303,27 +316,48 @@
         }
       ]]></handler>
       <handler event="popuphidden"><![CDATA[
+        function doFocus() {
+          // Focus was set on an element inside this panel,
+          // so we need to move it back to where it was previously
+          try {
+            let fm = Components.classes["@mozilla.org/focus-manager;1"]
+                               .getService(Components.interfaces.nsIFocusManager);
+            fm.setFocus(prevFocus, fm.FLAG_NOSCROLL);
+          } catch (e) {
+            prevFocus.focus();
+          }
+        }
         var currentFocus = this._currentFocus;
-        var prevFocus = this._prevFocus;
+        var prevFocus = this._prevFocus ? this._prevFocus.get() : null;
         this._currentFocus = null;
         this._prevFocus = null;
-        if (prevFocus && currentFocus && this.getAttribute("norestorefocus") != "true") {
+
+        // Avoid changing focus if focus changed while we hide the popup
+        // (This can happen e.g. if the popup is hiding as a result of a
+        // click/keypress that focused something)
+        let nowFocus;
+        try {
+          nowFocus = document.commandDispatcher.focusedElement;
+        } catch (e) {
+          nowFocus = document.activeElement;
+        }
+        if (nowFocus && nowFocus != currentFocus)
+          return;
+
+        if (prevFocus && this.getAttribute("norestorefocus") != "true") {
           // Try to restore focus
           try {
             if (document.commandDispatcher.focusedWindow != window)
               return; // Focus has already been set to a window outside of this panel
-          } catch(ex) {}
+          } catch (ex) {}
+
+          if (!currentFocus) {
+            doFocus();
+            return;
+          }
           while (currentFocus) {
             if (currentFocus == this) {
-              // Focus was set on an element inside this panel,
-              // so we need to move it back to where it was previously
-              try {
-                let fm = Components.classes["@mozilla.org/focus-manager;1"]
-                                   .getService(Components.interfaces.nsIFocusManager);
-                fm.setFocus(prevFocus, fm.FLAG_NOSCROLL);
-              } catch(e) {
-                prevFocus.focus();
-              }
+              doFocus();
               return;
             }
             currentFocus = currentFocus.parentNode;
@@ -334,17 +368,16 @@
   </binding>
 
   <binding id="arrowpanel" extends="chrome://global/content/bindings/popup.xml#panel">
-    <content flip="both" side="top" position="bottomcenter topleft">
-      <xul:box anonid="container" class="panel-arrowcontainer" flex="1"
+    <content flip="both" side="top" position="bottomcenter topleft" consumeoutsideclicks="false">
+      <xul:vbox anonid="container" class="panel-arrowcontainer" flex="1"
                xbl:inherits="side,panelopen">
         <xul:box anonid="arrowbox" class="panel-arrowbox">
           <xul:image anonid="arrow" class="panel-arrow" xbl:inherits="side"/>
         </xul:box>
         <xul:box class="panel-arrowcontent" xbl:inherits="side,align,dir,orient,pack" flex="1">
           <children/>
-          <xul:box class="panel-inner-arrowcontentfooter" xbl:inherits="footertype" hidden="true"/>
         </xul:box>
-      </xul:box>
+      </xul:vbox>
     </content>
     <implementation>
       <field name="_fadeTimer">null</field>
@@ -354,19 +387,9 @@
         <body>
         <![CDATA[
           this.popupBoxObject.sizeTo(aWidth, aHeight);
-          if (this.state == "open")
+          if (this.state == "open") {
             this.adjustArrowPosition();
-        ]]>
-        </body>
-      </method>
-      <method name="moveTo">
-        <parameter name="aLeft"/>
-        <parameter name="aTop"/>
-        <body>
-        <![CDATA[
-          this.popupBoxObject.moveTo(aLeft, aTop);
-          if (this.state == "open")
-            this.adjustArrowPosition();
+          }
         ]]>
         </body>
       </method>
@@ -379,8 +402,6 @@
         <body>
         <![CDATA[
           this.popupBoxObject.moveToAnchor(aAnchorElement, aPosition, aX, aY, aAttributesOverride);
-          if (this.state == "open")
-            this.adjustArrowPosition();
         ]]>
         </body>
       </method>
@@ -391,27 +412,26 @@
 
         var anchor = this.anchorNode;
         if (!anchor) {
-          arrow.hidden = true;
           return;
         }
 
         var container = document.getAnonymousElementByAttribute(this, "anonid", "container");
         var arrowbox = document.getAnonymousElementByAttribute(this, "anonid", "arrowbox");
 
-        // if this panel has a "sliding" arrow, we may have previously set margins...
-        arrowbox.style.removeProperty("margin");
-
         var position = this.alignmentPosition;
+        var offset = this.alignmentOffset;
+
+        this.setAttribute("arrowposition", position);
+
         if (position.indexOf("start_") == 0 || position.indexOf("end_") == 0) {
-          container.orient = "";
+          container.orient = "horizontal";
           arrowbox.orient = "vertical";
           if (position.indexOf("_after") > 0) {
             arrowbox.pack = "end";
-            arrowbox.style.marginBottom = this.alignmentOffset + "px";
           } else {
             arrowbox.pack = "start";
-            arrowbox.style.marginTop = this.alignmentOffset + "px";
           }
+          arrowbox.style.transform = "translate(0, " + -offset + "px)";
 
           // The assigned side stays the same regardless of direction.
           var isRTL = (window.getComputedStyle(this).direction == "rtl");
@@ -426,15 +446,14 @@
           }
         }
         else if (position.indexOf("before_") == 0 || position.indexOf("after_") == 0) {
-          container.orient = "vertical";
+          container.orient = "";
           arrowbox.orient = "";
           if (position.indexOf("_end") > 0) {
             arrowbox.pack = "end";
-            arrowbox.style.marginRight = this.alignmentOffset + "px";
           } else {
             arrowbox.pack = "start";
-            arrowbox.style.marginLeft = this.alignmentOffset + "px";
           }
+          arrowbox.style.transform = "translate(" + -offset + "px, 0)";
 
           if (position.indexOf("before_") == 0) {
             container.dir = "reverse";
@@ -445,8 +464,6 @@
             this.setAttribute("side", "top");
           }
         }
-
-        arrow.hidden = false;
         ]]>
         </body>
       </method>
@@ -454,56 +471,73 @@
     <handlers>
       <handler event="popupshowing" phase="target">
       <![CDATA[
+        var arrow = document.getAnonymousElementByAttribute(this, "anonid", "arrow");
+        arrow.hidden = this.anchorNode == null;
+        document.getAnonymousElementByAttribute(this, "anonid", "arrowbox")
+                .style.removeProperty("transform");
+
         this.adjustArrowPosition();
+
+        if (this.getAttribute("animate") != "false") {
+          this.setAttribute("animate", "open");
+        }
+
         // set fading
         var fade = this.getAttribute("fade");
-        var fadeDelay = (fade == "fast") ? 1 : fade == "slow" ? 4000 : 0;
-        if (fadeDelay) {
-          this._fadeTimer = setTimeout(function (self) {
-            self.style.opacity = 0.2;
-          }, fadeDelay, this);
+        var fadeDelay = 0;
+        if (fade == "fast") {
+          fadeDelay = 1;
         }
+        else if (fade == "slow") {
+          fadeDelay = 4000;
+        }
+        else {
+          return;
+        }
+
+        this._fadeTimer = setTimeout(() => this.hidePopup(true), fadeDelay, this);
       ]]>
       </handler>
       <handler event="popuphiding" phase="target">
-        clearTimeout(this._fadeTimer);
-        this.style.removeProperty("opacity");
-      </handler>
-      <handler event="transitionend" phase="target">
-      <![CDATA[
-        if (event.propertyName == "opacity" &&
-            event.originalTarget == this) {
-          this.hidePopup();
-          this.style.removeProperty("opacity");
+        let animate = (this.getAttribute("animate") != "false");
+
+        if (this._fadeTimer) {
+          clearTimeout(this._fadeTimer);
+          if (animate) {
+            this.setAttribute("animate", "fade");
+          }
         }
-      ]]>
+        else if (animate) {
+          this.setAttribute("animate", "cancel");
+        }
       </handler>
       <handler event="popupshown" phase="target">
         this.setAttribute("panelopen", "true");
       </handler>
       <handler event="popuphidden" phase="target">
         this.removeAttribute("panelopen");
+        if (this.getAttribute("animate") != "false") {
+          this.removeAttribute("animate");
+        }
+      </handler>
+      <handler event="popuppositioned" phase="target">
+        this.adjustArrowPosition();
       </handler>
     </handlers>
   </binding>
 
-  <binding id="tooltip" extends="chrome://global/content/bindings/popup.xml#popup-base">
+  <binding id="tooltip" role="xul:tooltip"
+           extends="chrome://global/content/bindings/popup.xml#popup-base">
     <content>
       <children>
         <xul:label class="tooltip-label" xbl:inherits="xbl:text=label" flex="1"/>
       </children>
     </content>
-    
-    <implementation implements="nsIAccessibleProvider">
-      <property name="accessibleType" readonly="true">
-        <getter>
-          return Components.interfaces.nsIAccessibleProvider.XULTooltip;
-        </getter>
-      </property>
 
+    <implementation>
       <field name="_mouseOutCount">0</field>
       <field name="_isMouseOver">false</field>
-      
+
       <property name="label"
                 onget="return this.getAttribute('label');"
                 onset="this.setAttribute('label', val); return val;"/>
@@ -512,126 +546,35 @@
                                    else this.removeAttribute('page');
                                    return val;"
                             onget="return this.getAttribute('page') == 'true';"/>
+      <property name="textProvider"
+                readonly="true">
+        <getter>
+        <![CDATA[
+          if (!this._textProvider) {
+            this._textProvider = Components.classes["@mozilla.org/embedcomp/default-tooltiptextprovider;1"]
+                                 .getService(Components.interfaces.nsITooltipTextProvider);
+          }
+          return this._textProvider;
+        ]]>
+        </getter>
+      </property>
 
       <!-- Given the supplied element within a page, set the tooltip's text to the text
            for that element. Returns true if text was assigned, and false if the no text
            is set, which normally would be used to cancel tooltip display.
-
-           Note that DefaultTooltipTextProvider::GetNodeText() from nsDocShellTreeOwner.cpp
-           also performs the same function, but for embedded clients that don't use a XUL/JS
-           layer. These two should be kept synchronized.
-        --> 
+        -->
       <method name="fillInPageTooltip">
         <parameter name="tipElement"/>
         <body>
         <![CDATA[
-          // Don't show the tooltip if the tooltip node is a document or disconnected.
-          if (!tipElement || !tipElement.ownerDocument ||
-              (tipElement.ownerDocument.compareDocumentPosition(tipElement) & document.DOCUMENT_POSITION_DISCONNECTED)) {
-            return false;
+          let tttp = this.textProvider;
+          let textObj = {}, dirObj = {};
+          let shouldChangeText = tttp.getNodeText(tipElement, textObj, dirObj);
+          if (shouldChangeText) {
+            this.style.direction = dirObj.value;
+            this.label = textObj.value;
           }
-
-          var defView = tipElement.ownerDocument.defaultView;
-          // XXX Work around bug 350679:
-          // "Tooltips can be fired in documents with no view".
-          if (!defView)
-            return false;
-
-          const XLinkNS = "http://www.w3.org/1999/xlink";
-          const XULNS = "http://www.mozilla.org/keymaster/gatekeeper/there.is.only.xul";
-
-          var titleText = null;
-          var XLinkTitleText = null;
-          var SVGTitleText = null;
-          var lookingForSVGTitle = true;
-          var direction = tipElement.ownerDocument.dir;
-
-          // If the element is invalid per HTML5 Forms specifications and has no title,
-          // show the constraint validation error message.
-          if ((tipElement instanceof HTMLInputElement ||
-               tipElement instanceof HTMLTextAreaElement ||
-               tipElement instanceof HTMLSelectElement ||
-               tipElement instanceof HTMLButtonElement) &&
-              !tipElement.hasAttribute('title') &&
-              (!tipElement.form || !tipElement.form.noValidate)) {
-            // If the element is barred from constraint validation or valid,
-            // the validation message will be the empty string.
-            titleText = tipElement.validationMessage || null;
-          }
-
-          // If the element is an <input type='file'> without a title, we should show
-          // the current file selection.
-          if (!titleText &&
-              tipElement instanceof HTMLInputElement &&
-              tipElement.type == 'file' &&
-              !tipElement.hasAttribute('title')) {
-            let files = tipElement.files;
-
-            if (files.length == 0) {
-              try {
-                var bundle = Components.classes['@mozilla.org/intl/stringbundle;1']
-                                       .getService(Components.interfaces.nsIStringBundleService)
-                                       .createBundle("chrome://global/locale/layout/HtmlForm.properties");
-                if (tipElement.multiple) {
-                  titleText = bundle.GetStringFromName("NoFilesSelected");
-                } else {
-                  titleText = bundle.GetStringFromName("NoFileSelected");
-                }
-              } catch(e) {}
-            } else {
-              titleText = files[0].name;
-              for (let i=1; i<files.length; ++i) {
-                titleText += "\n" + files[i].name;
-              }
-            }
-          }
-
-          while ((titleText == null) && (XLinkTitleText == null) &&
-                 (SVGTitleText == null) && tipElement) {
-            if (tipElement.nodeType == Node.ELEMENT_NODE &&
-                tipElement.namespaceURI != XULNS) {
-              titleText = tipElement.getAttribute("title");
-
-              if ((tipElement instanceof HTMLAnchorElement ||
-                   tipElement instanceof HTMLAreaElement ||
-                   tipElement instanceof HTMLLinkElement ||
-                   tipElement instanceof SVGAElement) && tipElement.href) {
-                XLinkTitleText = tipElement.getAttributeNS(XLinkNS, "title");
-              }
-              if (lookingForSVGTitle &&
-                  (!(tipElement instanceof SVGElement) ||
-                   tipElement.parentNode.nodeType == Node.DOCUMENT_NODE)) {
-                lookingForSVGTitle = false;
-              }
-              if (lookingForSVGTitle) {
-                for (let childNode of tipElement.childNodes) {
-                  if (childNode instanceof SVGTitleElement) {
-                    SVGTitleText = childNode.textContent;
-                    break;
-                  }
-                }
-              }
-
-              direction = defView.getComputedStyle(tipElement, "")
-                                 .getPropertyValue("direction");
-            }
-
-            tipElement = tipElement.parentNode;
-          }
-
-          this.style.direction = direction;
-
-          return [titleText, XLinkTitleText, SVGTitleText].some(function (t) {
-            if (t && /\S/.test(t)) {
-              // Make CRLF and CR render one line break each.
-              this.label = t.replace(/\r\n?/g, '\n');
-              return true;
-            }
-
-            return false;
-          }, this);
-
-          return false;
+          return shouldChangeText;
         ]]>
         </body>
       </method>
@@ -640,10 +583,9 @@
     <handlers>
       <handler event="mouseover"><![CDATA[
         var rel = event.relatedTarget;
-        //dump("ENTERING " + (rel ? rel.localName : "null") + "\n");
         if (!rel)
           return;
-          
+
         // find out if the node we entered from is one of our anonymous children
         while (rel) {
           if (rel == this)
@@ -658,12 +600,11 @@
 
       <handler event="mouseout"><![CDATA[
         var rel = event.relatedTarget;
-        //dump("LEAVING " + (rel ? rel.localName : "null") + "\n");
 
         // relatedTarget is null when the titletip is first shown: a mouseout event fires
         // because the mouse is exiting the main window and entering the titletip "window".
         // relatedTarget is also null when the mouse exits the main window completely,
-        // so count how many times relatedTarget was null after titletip is first shown 
+        // so count how many times relatedTarget was null after titletip is first shown
         // and hide popup the 2nd time
         if (!rel) {
           ++this._mouseOutCount;
@@ -671,18 +612,18 @@
             this.hidePopup();
           return;
         }
-          
+
         // find out if the node we are entering is one of our anonymous children
         while (rel) {
           if (rel == this)
             break;
           rel = rel.parentNode;
         }
-        
+
         // if the entered node is not a descendant of ours, hide the tooltip
         if (rel != this && this._isMouseOver) {
           this.hidePopup();
-        }        
+        }
       ]]></handler>
 
       <handler event="popupshowing"><![CDATA[

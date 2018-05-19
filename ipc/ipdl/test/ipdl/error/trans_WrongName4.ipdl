@@ -1,8 +1,8 @@
-rpc protocol trans_WrongName4 {
+intr protocol trans_WrongName4 {
 
 child:
-    rpc Msg();
-    __delete__();
+    intr Msg();
+    async __delete__();
 
 state S1:
     send Msg goto S1;

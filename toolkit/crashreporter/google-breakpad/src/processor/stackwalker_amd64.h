@@ -69,13 +69,30 @@ class StackwalkerAMD64 : public Stackwalker {
   // Implementation of Stackwalker, using amd64 context (stack pointer in %rsp,
   // stack base in %rbp) and stack conventions (saved stack pointer at 0(%rbp))
   virtual StackFrame* GetContextFrame();
-  virtual StackFrame* GetCallerFrame(const CallStack* stack);
+  virtual StackFrame* GetCallerFrame(const CallStack* stack,
+                                     bool stack_scan_allowed);
 
   // Use cfi_frame_info (derived from STACK CFI records) to construct
   // the frame that called frames.back(). The caller takes ownership
   // of the returned frame. Return NULL on failure.
   StackFrameAMD64* GetCallerByCFIFrameInfo(const vector<StackFrame*> &frames,
                                            CFIFrameInfo* cfi_frame_info);
+
+  // Checks whether end-of-stack is reached.  An instruction address of 0 is an
+  // end-of-stack marker.  If the stack pointer of the caller is at a lower
+  // address than the stack pointer of the callee, then that's clearly incorrect
+  // and it is treated as end-of-stack to enforce progress and avoid infinite
+  // loops.
+  bool IsEndOfStack(uint64_t caller_rip, uint64_t caller_rsp,
+                    uint64_t callee_rsp);
+
+  // Assumes a traditional frame layout where the frame pointer has not been
+  // omitted. The expectation is that caller's %rbp is pushed to the stack
+  // after the return address of the callee, and that the callee's %rsp can
+  // be used to find the pushed %rbp.
+  // Caller owns the returned frame object. Returns NULL on failure.
+  StackFrameAMD64* GetCallerByFramePointerRecovery(
+      const vector<StackFrame*>& frames);
 
   // Scan the stack for plausible return addresses. The caller takes ownership
   // of the returned frame. Return NULL on failure.

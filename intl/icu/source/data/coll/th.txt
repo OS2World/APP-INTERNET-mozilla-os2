@@ -1,20 +1,13 @@
-﻿// ***************************************************************************
-// *
-// * Copyright (C) 2012 International Business Machines
-// * Corporation and others.  All Rights Reserved.
-// * Tool: com.ibm.icu.dev.tool.cldr.LDML2ICUConverter.java
-// * Source File:<path>/common/collation/th.xml
-// *
-// ***************************************************************************
-/**
- *  ICU <specials> source: <path>/xml/collation/th.xml
- */
+﻿// © 2016 and later: Unicode, Inc. and others.
+// License & terms of use: http://www.unicode.org/copyright.html#License
 th{
-    Version{"2.0.71.89"}
+    Version{"2.1.19.14"}
     collations{
         standard{
             Sequence{
-                " [alternate shifted ] [normalization on ]"
+                "[normalization on]"
+                "[alternate shifted]"
+                "[reorder Thai]"
                 "&[before 1]๚<ฯ"
                 "&๛<ๆ"
                 "&๎<<์"
@@ -24,7 +17,7 @@ th{
                 "&ๅํ<<<ํๅ"
                 "&ไ<ฺ"
             }
-            Version{"22.1.1"}
+            Version{"30.0.3"}
         }
     }
 }

@@ -1,17 +1,7 @@
-﻿// ***************************************************************************
-// *
-// * Copyright (C) 2012 International Business Machines
-// * Corporation and others.  All Rights Reserved.
-// * Tool: org.unicode.cldr.icu.NewLdml2IcuConverter
-// * Source File: <path>/common/main/fa_AF.xml
-// *
-// ***************************************************************************
+﻿// © 2016 and later: Unicode, Inc. and others.
+// License & terms of use: http://www.unicode.org/copyright.html#License
 fa_AF{
     Currencies{
-        AFN{
-            "؋",
-            "افغانی افغانستان",
-        }
         AUD{
             "A$",
             "دالر آسترالیا",
@@ -20,12 +10,16 @@ fa_AF{
             "BND",
             "دالر برونی",
         }
-        BYR{
-            "BYR",
+        BYN{
+            "BYN",
             "روبل روسیهٔ سفید",
         }
+        BYR{
+            "BYR",
+            "روبل روسیهٔ سفید (۲۰۰۰–۲۰۱۶)",
+        }
         CAD{
-            "CA$",
+            "$CA",
             "دالر کانادا",
         }
         CHF{
@@ -37,11 +31,11 @@ fa_AF{
             "کرون دنمارک",
         }
         JPY{
-            "JP¥",
+            "¥",
             "ین جاپان",
         }
         MXN{
-            "MX$",
+            "$MX",
             "پزوی مکسیکو",
         }
         NLG{
@@ -65,9 +59,9 @@ fa_AF{
             "سامانی تاجکستان",
         }
         USD{
-            "US$",
+            "$",
             "دالر امریکا",
         }
     }
-    Version{"2.0.77.46"}
+    Version{"2.1.29.44"}
 }

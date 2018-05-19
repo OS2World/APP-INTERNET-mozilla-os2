@@ -5,12 +5,14 @@
 
 #include "nsReadableUtils.h"
 #include "nsTreeUtils.h"
-#include "nsChildIterator.h"
+#include "ChildIterator.h"
 #include "nsCRT.h"
 #include "nsIAtom.h"
-#include "nsINameSpaceManager.h"
+#include "nsNameSpaceManager.h"
 #include "nsGkAtoms.h"
-#include "nsINodeInfo.h"
+#include "nsIContent.h"
+
+using namespace mozilla;
 
 nsresult
 nsTreeUtils::TokenizeProperties(const nsAString& aProperties, AtomArray & aPropertiesArray)
@@ -42,7 +44,7 @@ nsTreeUtils::TokenizeProperties(const nsAString& aProperties, AtomArray & aPrope
     if (iter == first)
       break;
 
-    nsCOMPtr<nsIAtom> atom = do_GetAtom(Substring(first, iter));
+    nsCOMPtr<nsIAtom> atom = NS_Atomize(Substring(first, iter));
     aPropertiesArray.AppendElement(atom);
   } while (iter != end);
 
@@ -52,11 +54,9 @@ nsTreeUtils::TokenizeProperties(const nsAString& aProperties, AtomArray & aPrope
 nsIContent*
 nsTreeUtils::GetImmediateChild(nsIContent* aContainer, nsIAtom* aTag)
 {
-  ChildIterator iter, last;
-  for (ChildIterator::Init(aContainer, &iter, &last); iter != last; ++iter) {
-    nsIContent* child = *iter;
-
-    if (child->Tag() == aTag) {
+  dom::FlattenedChildIterator iter(aContainer);
+  for (nsIContent* child = iter.GetNextChild(); child; child = iter.GetNextChild()) {
+    if (child->IsXULElement(aTag)) {
       return child;
     }
   }
@@ -67,10 +67,9 @@ nsTreeUtils::GetImmediateChild(nsIContent* aContainer, nsIAtom* aTag)
 nsIContent*
 nsTreeUtils::GetDescendantChild(nsIContent* aContainer, nsIAtom* aTag)
 {
-  ChildIterator iter, last;
-  for (ChildIterator::Init(aContainer, &iter, &last); iter != last; ++iter) {
-    nsIContent* child = *iter;
-    if (child->Tag() == aTag) {
+  dom::FlattenedChildIterator iter(aContainer);
+  for (nsIContent* child = iter.GetNextChild(); child; child = iter.GetNextChild()) {
+    if (child->IsXULElement(aTag)) {
       return child;
     }
 

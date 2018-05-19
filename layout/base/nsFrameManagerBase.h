@@ -19,25 +19,17 @@
 #ifndef _nsFrameManagerBase_h_
 #define _nsFrameManagerBase_h_
 
-#include "pldhash.h"
+#include "nsDebug.h"
+#include "PLDHashTable.h"
+#include "mozilla/Attributes.h"
 
-class nsIPresShell;
-class nsStyleSet;
-class nsIContent;
-class nsPlaceholderFrame;
 class nsIFrame;
-class nsStyleContext;
-class nsIAtom;
-class nsStyleChangeList;
-class nsILayoutHistoryState;
+class nsIPresShell;
 
 class nsFrameManagerBase
 {
 public:
-  nsFrameManagerBase()
-  {
-    memset(this, '\0', sizeof(nsFrameManagerBase));
-  }
+  nsFrameManagerBase();
 
   bool IsDestroyingFrames() { return mIsDestroyingFrames; }
 
@@ -46,8 +38,8 @@ public:
    * root frame is controlled by the frame manager. When the frame manager is
    * destroyed, it destroys the entire frame hierarchy.
    */
-  NS_HIDDEN_(nsIFrame*) GetRootFrame() const { return mRootFrame; }
-  NS_HIDDEN_(void)      SetRootFrame(nsIFrame* aRootFrame)
+  nsIFrame* GetRootFrame() const { return mRootFrame; }
+  void      SetRootFrame(nsIFrame* aRootFrame)
   {
     NS_ASSERTION(!mRootFrame, "already have a root frame");
     mRootFrame = aRootFrame;
@@ -59,12 +51,11 @@ protected:
   class UndisplayedMap;
 
   // weak link, because the pres shell owns us
-  nsIPresShell*                   mPresShell;
-  // the pres shell owns the style set
-  nsStyleSet*                     mStyleSet;
+  nsIPresShell* MOZ_NON_OWNING_REF mPresShell;
   nsIFrame*                       mRootFrame;
   PLDHashTable                    mPlaceholderMap;
   UndisplayedMap*                 mUndisplayedMap;
+  UndisplayedMap*                 mDisplayContentsMap;
   bool                            mIsDestroyingFrames;  // The frame manager is destroying some frame(s).
 
   // The frame tree generation number

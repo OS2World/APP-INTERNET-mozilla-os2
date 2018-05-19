@@ -21,16 +21,16 @@ class CriticalSectionPosix : public CriticalSectionWrapper {
  public:
   CriticalSectionPosix();
 
-  virtual ~CriticalSectionPosix();
+  ~CriticalSectionPosix() override;
 
-  virtual void Enter();
-  virtual void Leave();
+  void Enter() override;
+  void Leave() override;
 
  private:
   pthread_mutex_t mutex_;
   friend class ConditionVariablePosix;
 };
 
-} // namespace webrtc
+}  // namespace webrtc
 
 #endif  // WEBRTC_SYSTEM_WRAPPERS_SOURCE_CRITICAL_SECTION_POSIX_H_

@@ -7,8 +7,14 @@
 
 %{ C++
 #include "jspubtd.h"
+
+// windows.h #defines CreateEvent
+#ifdef CreateEvent
+#undef CreateEvent
+#endif
 %}
 
+interface mozIDOMWindowProxy;
 interface nsIDOMNodeIterator;
 interface nsIDOMNodeFilter;
 interface nsIDOMTreeWalker;
@@ -27,7 +33,7 @@ interface nsIDOMLocation;
  * http://dvcs.w3.org/hg/domcore/raw-file/tip/Overview.html
  */
 
-[scriptable, uuid(75996de6-6b0f-43e5-ae79-c98fa669da9a)]
+[uuid(b15fa0f4-97c1-4388-af62-2ceff7a89bdf)]
 interface nsIDOMDocument : nsIDOMNode
 {
   readonly attribute nsIDOMDocumentType         doctype;
@@ -100,7 +106,7 @@ interface nsIDOMDocument : nsIDOMNode
    *
    * @see <http://www.whatwg.org/html/#dom-document-defaultview>
    */
-  readonly attribute nsIDOMWindow   defaultView;
+  readonly attribute mozIDOMWindowProxy   defaultView;
 
   /**
    * @see <http://www.whatwg.org/html/#dom-document-characterset>
@@ -223,7 +229,7 @@ interface nsIDOMDocument : nsIDOMNode
    *
    * @see <http://dev.w3.org/csswg/cssom/#dom-document-styleSheetSets>
    */
-  readonly attribute nsIDOMDOMStringList styleSheetSets;
+  readonly attribute nsISupports styleSheetSets;
 
   /**
    * Calling this method must change the disabled attribute on each StyleSheet
@@ -388,24 +394,22 @@ interface nsIDOMDocument : nsIDOMNode
   void mozExitPointerLock();
 
   /**
-   * Inline event handler for readystatechange events.
-   */
-  [implicit_jscontext] attribute jsval onreadystatechange;
-
-  [implicit_jscontext] attribute jsval onmouseenter;
-  [implicit_jscontext] attribute jsval onmouseleave;
-
-  /**
    * Visibility API implementation.
    */
   readonly attribute boolean hidden;
-  readonly attribute boolean mozHidden;
   readonly attribute DOMString visibilityState;
-  readonly attribute DOMString mozVisibilityState;
 
   /**
    * Returns "BackCompat" if we're in quirks mode or "CSS1Compat" if we're in
    * strict mode.  (XML documents are always in strict mode.)
    */
   readonly attribute DOMString compatMode;
+
+  /**
+   * Return nodes that match a given CSS selector.
+   *
+   * @see <http://dev.w3.org/2006/webapi/selectors-api/>
+   */
+  nsIDOMElement querySelector([Null(Stringify)] in DOMString selectors);
+  nsIDOMNodeList querySelectorAll([Null(Stringify)] in DOMString selectors);
 };

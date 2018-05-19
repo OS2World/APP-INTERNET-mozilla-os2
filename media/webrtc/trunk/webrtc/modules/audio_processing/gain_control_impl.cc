@@ -8,22 +8,20 @@
  *  be found in the AUTHORS file in the root of the source tree.
  */
 
-#include "gain_control_impl.h"
+#include "webrtc/modules/audio_processing/gain_control_impl.h"
 
-#include <cassert>
+#include <assert.h>
 
-#include "critical_section_wrapper.h"
-#include "gain_control.h"
-
-#include "audio_processing_impl.h"
-#include "audio_buffer.h"
+#include "webrtc/modules/audio_processing/audio_buffer.h"
+#include "webrtc/modules/audio_processing/agc/legacy/gain_control.h"
+#include "webrtc/system_wrappers/interface/critical_section_wrapper.h"
 
 namespace webrtc {
 
 typedef void Handle;
 
 namespace {
-WebRtc_Word16 MapSetting(GainControl::Mode mode) {
+int16_t MapSetting(GainControl::Mode mode) {
   switch (mode) {
     case GainControl::kAdaptiveAnalog:
       return kAgcModeAdaptiveAnalog;
@@ -37,9 +35,11 @@ WebRtc_Word16 MapSetting(GainControl::Mode mode) {
 }
 }  // namespace
 
-GainControlImpl::GainControlImpl(const AudioProcessingImpl* apm)
-  : ProcessingComponent(apm),
+GainControlImpl::GainControlImpl(const AudioProcessing* apm,
+                                 CriticalSectionWrapper* crit)
+  : ProcessingComponent(),
     apm_(apm),
+    crit_(crit),
     mode_(kAdaptiveAnalog),
     minimum_capture_level_(0),
     maximum_capture_level_(255),
@@ -57,20 +57,14 @@ int GainControlImpl::ProcessRenderAudio(AudioBuffer* audio) {
     return apm_->kNoError;
   }
 
-  assert(audio->samples_per_split_channel() <= 160);
-
-  WebRtc_Word16* mixed_data = audio->low_pass_split_data(0);
-  if (audio->num_channels() > 1) {
-    audio->CopyAndMixLowPass(1);
-    mixed_data = audio->mixed_low_pass_data(0);
-  }
+  assert(audio->num_frames_per_band() <= 160);
 
   for (int i = 0; i < num_handles(); i++) {
     Handle* my_handle = static_cast<Handle*>(handle(i));
     int err = WebRtcAgc_AddFarend(
         my_handle,
-        mixed_data,
-        static_cast<WebRtc_Word16>(audio->samples_per_split_channel()));
+        audio->mixed_low_pass_data(),
+        static_cast<int16_t>(audio->num_frames_per_band()));
 
     if (err != apm_->kNoError) {
       return GetHandleError(my_handle);
@@ -85,19 +79,20 @@ int GainControlImpl::AnalyzeCaptureAudio(AudioBuffer* audio) {
     return apm_->kNoError;
   }
 
-  assert(audio->samples_per_split_channel() <= 160);
+  assert(audio->num_frames_per_band() <= 160);
   assert(audio->num_channels() == num_handles());
 
   int err = apm_->kNoError;
 
   if (mode_ == kAdaptiveAnalog) {
+    capture_levels_.assign(num_handles(), analog_capture_level_);
     for (int i = 0; i < num_handles(); i++) {
       Handle* my_handle = static_cast<Handle*>(handle(i));
       err = WebRtcAgc_AddMic(
           my_handle,
-          audio->low_pass_split_data(i),
-          audio->high_pass_split_data(i),
-          static_cast<WebRtc_Word16>(audio->samples_per_split_channel()));
+          audio->split_bands(i),
+          audio->num_bands(),
+          static_cast<int16_t>(audio->num_frames_per_band()));
 
       if (err != apm_->kNoError) {
         return GetHandleError(my_handle);
@@ -107,14 +102,13 @@ int GainControlImpl::AnalyzeCaptureAudio(AudioBuffer* audio) {
 
     for (int i = 0; i < num_handles(); i++) {
       Handle* my_handle = static_cast<Handle*>(handle(i));
-      WebRtc_Word32 capture_level_out = 0;
+      int32_t capture_level_out = 0;
 
       err = WebRtcAgc_VirtualMic(
           my_handle,
-          audio->low_pass_split_data(i),
-          audio->high_pass_split_data(i),
-          static_cast<WebRtc_Word16>(audio->samples_per_split_channel()),
-          //capture_levels_[i],
+          audio->split_bands(i),
+          audio->num_bands(),
+          static_cast<int16_t>(audio->num_frames_per_band()),
           analog_capture_level_,
           &capture_level_out);
 
@@ -139,22 +133,21 @@ int GainControlImpl::ProcessCaptureAudio(AudioBuffer* audio) {
     return apm_->kStreamParameterNotSetError;
   }
 
-  assert(audio->samples_per_split_channel() <= 160);
+  assert(audio->num_frames_per_band() <= 160);
   assert(audio->num_channels() == num_handles());
 
   stream_is_saturated_ = false;
   for (int i = 0; i < num_handles(); i++) {
     Handle* my_handle = static_cast<Handle*>(handle(i));
-    WebRtc_Word32 capture_level_out = 0;
-    WebRtc_UWord8 saturation_warning = 0;
+    int32_t capture_level_out = 0;
+    uint8_t saturation_warning = 0;
 
     int err = WebRtcAgc_Process(
         my_handle,
-        audio->low_pass_split_data(i),
-        audio->high_pass_split_data(i),
-        static_cast<WebRtc_Word16>(audio->samples_per_split_channel()),
-        audio->low_pass_split_data(i),
-        audio->high_pass_split_data(i),
+        audio->split_bands_const(i),
+        audio->num_bands(),
+        static_cast<int16_t>(audio->num_frames_per_band()),
+        audio->split_bands(i),
         capture_levels_[i],
         &capture_level_out,
         apm_->echo_cancellation()->stream_has_echo(),
@@ -190,13 +183,6 @@ int GainControlImpl::set_stream_analog_level(int level) {
   if (level < minimum_capture_level_ || level > maximum_capture_level_) {
     return apm_->kBadParameterError;
   }
-
-  if (mode_ == kAdaptiveAnalog) {
-    if (level != analog_capture_level_) {
-      // The analog level has been changed; update our internal levels.
-      capture_levels_.assign(num_handles(), level);
-    }
-  }
   analog_capture_level_ = level;
 
   return apm_->kNoError;
@@ -210,7 +196,7 @@ int GainControlImpl::stream_analog_level() {
 }
 
 int GainControlImpl::Enable(bool enable) {
-  CriticalSectionScoped crit_scoped(apm_->crit());
+  CriticalSectionScoped crit_scoped(crit_);
   return EnableComponent(enable);
 }
 
@@ -219,7 +205,7 @@ bool GainControlImpl::is_enabled() const {
 }
 
 int GainControlImpl::set_mode(Mode mode) {
-  CriticalSectionScoped crit_scoped(apm_->crit());
+  CriticalSectionScoped crit_scoped(crit_);
   if (MapSetting(mode) == -1) {
     return apm_->kBadParameterError;
   }
@@ -234,7 +220,7 @@ GainControl::Mode GainControlImpl::mode() const {
 
 int GainControlImpl::set_analog_level_limits(int minimum,
                                              int maximum) {
-  CriticalSectionScoped crit_scoped(apm_->crit());
+  CriticalSectionScoped crit_scoped(crit_);
   if (minimum < 0) {
     return apm_->kBadParameterError;
   }
@@ -266,7 +252,7 @@ bool GainControlImpl::stream_is_saturated() const {
 }
 
 int GainControlImpl::set_target_level_dbfs(int level) {
-  CriticalSectionScoped crit_scoped(apm_->crit());
+  CriticalSectionScoped crit_scoped(crit_);
   if (level > 31 || level < 0) {
     return apm_->kBadParameterError;
   }
@@ -280,7 +266,7 @@ int GainControlImpl::target_level_dbfs() const {
 }
 
 int GainControlImpl::set_compression_gain_db(int gain) {
-  CriticalSectionScoped crit_scoped(apm_->crit());
+  CriticalSectionScoped crit_scoped(crit_);
   if (gain < 0 || gain > 90) {
     return apm_->kBadParameterError;
   }
@@ -294,7 +280,7 @@ int GainControlImpl::compression_gain_db() const {
 }
 
 int GainControlImpl::enable_limiter(bool enable) {
-  CriticalSectionScoped crit_scoped(apm_->crit());
+  CriticalSectionScoped crit_scoped(crit_);
   limiter_enabled_ = enable;
   return Configure();
 }
@@ -309,11 +295,7 @@ int GainControlImpl::Initialize() {
     return err;
   }
 
-  analog_capture_level_ =
-      (maximum_capture_level_ - minimum_capture_level_) >> 1;
   capture_levels_.assign(num_handles(), analog_capture_level_);
-  was_analog_level_set_ = false;
-
   return apm_->kNoError;
 }
 
@@ -328,8 +310,8 @@ void* GainControlImpl::CreateHandle() const {
   return handle;
 }
 
-int GainControlImpl::DestroyHandle(void* handle) const {
-  return WebRtcAgc_Free(static_cast<Handle*>(handle));
+void GainControlImpl::DestroyHandle(void* handle) const {
+  WebRtcAgc_Free(static_cast<Handle*>(handle));
 }
 
 int GainControlImpl::InitializeHandle(void* handle) const {
@@ -337,18 +319,18 @@ int GainControlImpl::InitializeHandle(void* handle) const {
                           minimum_capture_level_,
                           maximum_capture_level_,
                           MapSetting(mode_),
-                          apm_->sample_rate_hz());
+                          apm_->proc_sample_rate_hz());
 }
 
 int GainControlImpl::ConfigureHandle(void* handle) const {
-  WebRtcAgc_config_t config;
+  WebRtcAgcConfig config;
   // TODO(ajm): Flip the sign here (since AGC expects a positive value) if we
   //            change the interface.
   //assert(target_level_dbfs_ <= 0);
-  //config.targetLevelDbfs = static_cast<WebRtc_Word16>(-target_level_dbfs_);
-  config.targetLevelDbfs = static_cast<WebRtc_Word16>(target_level_dbfs_);
+  //config.targetLevelDbfs = static_cast<int16_t>(-target_level_dbfs_);
+  config.targetLevelDbfs = static_cast<int16_t>(target_level_dbfs_);
   config.compressionGaindB =
-      static_cast<WebRtc_Word16>(compression_gain_db_);
+      static_cast<int16_t>(compression_gain_db_);
   config.limiterEnable = limiter_enabled_;
 
   return WebRtcAgc_set_config(static_cast<Handle*>(handle), config);

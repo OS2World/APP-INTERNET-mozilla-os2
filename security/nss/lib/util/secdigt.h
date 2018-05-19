@@ -1,5 +1,5 @@
 /*
- * secdigt.h - public data structures for digestinfos from the util lib.
+ * secdigt.h - public data structures for digest-info objects
  *
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -17,12 +17,10 @@
 ** A PKCS#1 digest-info object
 */
 struct SGNDigestInfoStr {
-    PLArenaPool *  arena;
+    PLArenaPool* arena;
     SECAlgorithmID digestAlgorithm;
-    SECItem        digest;
+    SECItem digest;
 };
 typedef struct SGNDigestInfoStr SGNDigestInfo;
-
-
 
 #endif /* _SECDIGT_H_ */

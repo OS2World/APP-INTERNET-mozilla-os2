@@ -1,4 +1,5 @@
 /* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
+/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -6,12 +7,14 @@
 #ifndef mozilla_HangMonitor_h
 #define mozilla_HangMonitor_h
 
-namespace mozilla { namespace HangMonitor {
+namespace mozilla {
+namespace HangMonitor {
 
 /**
  * Signifies the type of activity in question
 */
-enum ActivityType {
+enum ActivityType
+{
   /* There is activity and it is known to be UI related activity. */
   kUIActivity,
 
@@ -37,7 +40,7 @@ void Shutdown();
 
 /**
  * Notify the hang monitor of activity which will reset its internal timer.
- * 
+ *
  * @param activityType The type of activity being reported.
  * @see ActivityType
  */
@@ -49,6 +52,7 @@ void NotifyActivity(ActivityType activityType = kGeneralActivity);
  */
 void Suspend();
 
-} } // namespace mozilla::HangMonitor
+} // namespace HangMonitor
+} // namespace mozilla
 
 #endif // mozilla_HangMonitor_h

@@ -101,6 +101,8 @@ MessagePumpForUI::MessagePumpForUI() {
 
 MessagePumpForUI::~MessagePumpForUI() {
   WinDestroyWindow(message_hwnd_);
+  WinDestroyMsgQueue(hmq_);
+  WinTerminate(hab_);
 }
 
 void MessagePumpForUI::ScheduleWork() {
@@ -198,7 +200,7 @@ ULONG MessagePumpForUI::SetTimer(HWND hwnd, MessagePumpForUI *that, int msec) {
 // static
 MessagePumpForUI *MessagePumpForUI::GetTimer(HWND hwnd, ULONG id) {
   AutoLock auto_lock(timer_ids_lock_);
-  TimerID tid = { hwnd, id };
+  TimerID tid = { hwnd, (USHORT)id };
   TimerIDMap::iterator it = timer_ids_.find(tid);
   if (it != timer_ids_.end())
     return it->second;
@@ -209,7 +211,7 @@ MessagePumpForUI *MessagePumpForUI::GetTimer(HWND hwnd, ULONG id) {
 void MessagePumpForUI::KillTimer(HWND hwnd, ULONG id) {
   AutoLock auto_lock(timer_ids_lock_);
   WinStopTimer(0, hwnd, id);
-  TimerID tid = { hwnd, id };
+  TimerID tid = { hwnd, (USHORT)id };
   timer_ids_.erase(tid);
 }
 
@@ -295,14 +297,15 @@ void MessagePumpForUI::DoRunLoop() {
   }
 }
 
-void MessagePumpForUI::InitMessageWnd() {
+void MessagePumpForUI::InitMessageWnd()
+{
   // morph to the PM session (needed to use message queues)
   PPIB ppib;
   DosGetInfoBlocks(NULL,&ppib);
   ppib->pib_ultype = 3;
 
-  HAB hab = WinInitialize(0);
-  hmq_ = WinCreateMsgQueue(hab, 0);
+  hab_ = WinInitialize(0);
+  hmq_ = WinCreateMsgQueue(hab_, 0);
   DCHECK(hmq_);
 
   BOOL rc = WinRegisterClass(0, kWndClass, WndProcThunk, 0, 0);

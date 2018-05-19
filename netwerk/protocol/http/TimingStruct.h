@@ -8,14 +8,34 @@
 
 #include "mozilla/TimeStamp.h"
 
+namespace mozilla { namespace net {
+
 struct TimingStruct {
-  mozilla::TimeStamp domainLookupStart;
-  mozilla::TimeStamp domainLookupEnd;
-  mozilla::TimeStamp connectStart;
-  mozilla::TimeStamp connectEnd;
-  mozilla::TimeStamp requestStart;
-  mozilla::TimeStamp responseStart;
-  mozilla::TimeStamp responseEnd;
+  TimeStamp domainLookupStart;
+  TimeStamp domainLookupEnd;
+  TimeStamp connectStart;
+  TimeStamp connectEnd;
+  TimeStamp requestStart;
+  TimeStamp responseStart;
+  TimeStamp responseEnd;
 };
+
+struct ResourceTimingStruct : TimingStruct {
+  TimeStamp fetchStart;
+  TimeStamp redirectStart;
+  TimeStamp redirectEnd;
+  uint64_t transferSize;
+  uint64_t encodedBodySize;
+  nsCString protocolVersion;
+
+  // Not actually part of resource timing, but not part of the transaction
+  // timings either. These need to be passed to HttpChannelChild along with
+  // the rest of the timings so the timing information in the child is complete.
+  TimeStamp cacheReadStart;
+  TimeStamp cacheReadEnd;
+};
+
+} // namespace net
+} // namespace mozilla
 
 #endif

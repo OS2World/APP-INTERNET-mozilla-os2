@@ -16,7 +16,7 @@
 #define BUFSIZE 2048 // What Xlib uses with XGetErrorDatabaseText
 
 extern "C" {
-static int
+int
 X11Error(Display *display, XErrorEvent *event) {
   // Get an indication of how long ago the request that caused the error was
   // made.
@@ -36,7 +36,7 @@ X11Error(Display *display, XErrorEvent *event) {
     // temporary Display to request extension information.  This assumes on
     // the DISPLAY environment variable has been set and matches what was used
     // to open |display|.
-    Display *tmpDisplay = XOpenDisplay(NULL);
+    Display *tmpDisplay = XOpenDisplay(nullptr);
     if (tmpDisplay) {
       int nExts;
       char** extNames = XListExtensions(tmpDisplay, &nExts);
@@ -58,7 +58,7 @@ X11Error(Display *display, XErrorEvent *event) {
       }
       XCloseDisplay(tmpDisplay);
 
-#ifdef MOZ_WIDGET_GTK2
+#if (MOZ_WIDGET_GTK == 2)
       // GDK2 calls XCloseDevice the devices that it opened on startup, but
       // the XI protocol no longer ensures that the devices will still exist.
       // If they have been removed, then a BadDevice error results.  Ignore
@@ -83,13 +83,13 @@ X11Error(Display *display, XErrorEvent *event) {
   if (buffer[0]) {
     notes.Append(buffer);
   } else {
-    notes.Append("Request ");
+    notes.AppendLiteral("Request ");
     notes.AppendInt(event->request_code);
     notes.Append('.');
     notes.AppendInt(event->minor_code);
   }
 
-  notes.Append(": ");
+  notes.AppendLiteral(": ");
 
   // Get a string to describe the error.
   XGetErrorText(display, event->error_code, buffer, sizeof(buffer));
@@ -109,11 +109,11 @@ X11Error(Display *display, XErrorEvent *event) {
     // XSynchronize call returns the same function after an enable call then
     // synchronization must have already been enabled.
     if (XSynchronize(display, True) == XSynchronize(display, False)) {
-      notes.Append("; sync");
+      notes.AppendLiteral("; sync");
     } else {
-      notes.Append("; ");
+      notes.AppendLiteral("; ");
       notes.AppendInt(uint32_t(age));
-      notes.Append(" requests ago");
+      notes.AppendLiteral(" requests ago");
     }
   }
 
@@ -132,26 +132,16 @@ X11Error(Display *display, XErrorEvent *event) {
 #ifdef DEBUG
   // The resource id is unlikely to be useful in a crash report without
   // context of other ids, but add it to the debug console output.
-  notes.Append("; id=0x");
+  notes.AppendLiteral("; id=0x");
   notes.AppendInt(uint32_t(event->resourceid), 16);
 #ifdef MOZ_X11
   // Actually, for requests where Xlib gets the reply synchronously,
   // MOZ_X_SYNC=1 will not be necessary, but we don't have a table to tell us
   // which requests get a synchronous reply.
   if (!PR_GetEnv("MOZ_X_SYNC")) {
-    notes.Append("\nRe-running with MOZ_X_SYNC=1 in the environment may give a more helpful backtrace.");
+    notes.AppendLiteral("\nRe-running with MOZ_X_SYNC=1 in the environment may give a more helpful backtrace.");
   }
 #endif
-#endif
-
-#ifdef MOZ_WIDGET_QT
-  // We should not abort here if MOZ_X_SYNC is not set
-  // until http://bugreports.qt.nokia.com/browse/QTBUG-4042
-  // not fixed, just print error value
-  if (!PR_GetEnv("MOZ_X_SYNC")) {
-    fprintf(stderr, "XError: %s\n", notes.get());
-    return 0; // temporary workaround for bug 161472
-  }
 #endif
 
   NS_RUNTIMEABORT(notes.get());

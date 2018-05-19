@@ -1,9 +1,8 @@
-/* vim:set ts=2 sw=2 sts=2 expandtab */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-// @see http://mxr.mozilla.org/mozilla-central/source/js/src/xpconnect/loader/mozJSComponentLoader.cpp
+// @see http://dxr.mozilla.org/mozilla-central/source/js/src/xpconnect/loader/mozJSComponentLoader.cpp
 
 'use strict';
 
@@ -27,24 +26,36 @@ const appInfo = Cc["@mozilla.org/xre/app-info;1"].
 const vc = Cc["@mozilla.org/xpcom/version-comparator;1"].
            getService(Ci.nsIVersionComparator);
 
+const { NetUtil } = Cu.import("resource://gre/modules/NetUtil.jsm", {});
+
+const Startup = Cu.import("resource://gre/modules/sdk/system/Startup.js", {}).exports;
+
 
 const REASON = [ 'unknown', 'startup', 'shutdown', 'enable', 'disable',
                  'install', 'uninstall', 'upgrade', 'downgrade' ];
 
 const bind = Function.call.bind(Function.bind);
 
-let loader = null;
-let unload = null;
-let cuddlefishSandbox = null;
-let nukeTimer = null;
+var loader = null;
+var unload = null;
+var cuddlefishSandbox = null;
+var nukeTimer = null;
+
+var resourceDomains = [];
+function setResourceSubstitution(domain, uri) {
+  resourceDomains.push(domain);
+  resourceHandler.setSubstitution(domain, uri);
+}
 
 // Utility function that synchronously reads local resource from the given
 // `uri` and returns content string.
 function readURI(uri) {
-  let ioservice = Cc['@mozilla.org/network/io-service;1'].
-    getService(Ci.nsIIOService);
-  let channel = ioservice.newChannel(uri, 'UTF-8', null);
-  let stream = channel.open();
+  let channel = NetUtil.newChannel({
+    uri: NetUtil.newURI(uri, 'UTF-8'),
+    loadUsingSystemPrincipal: true
+  });
+
+  let stream = channel.open2();
 
   let cstream = Cc['@mozilla.org/intl/converter-input-stream;1'].
     createInstance(Ci.nsIConverterInputStream);
@@ -106,7 +117,7 @@ function startup(data, reasonCode) {
 
     let prefixURI = 'resource://' + domain + '/';
     let resourcesURI = ioService.newURI(rootURI + '/resources/', null, null);
-    resourceHandler.setSubstitution(domain, resourcesURI);
+    setResourceSubstitution(domain, resourcesURI);
 
     // Create path to URLs mapping supported by loader.
     let paths = {
@@ -170,7 +181,7 @@ function startup(data, reasonCode) {
       // failure that happens with file:// URI and be close to production env
       let resourcesURI = ioService.newURI(fileURI, null, null);
       let resName = 'extensions.modules.' + domain + '.commonjs.path' + name;
-      resourceHandler.setSubstitution(resName, resourcesURI);
+      setResourceSubstitution(resName, resourcesURI);
 
       result[path] = 'resource://' + resName + '/';
       return result;
@@ -220,15 +231,18 @@ function startup(data, reasonCode) {
       // options used by system module.
       // File to write 'OK' or 'FAIL' (exit code emulation).
       resultFile: options.resultFile,
-      // File to write stdout.
-      logFile: options.logFile,
       // Arguments passed as --static-args
       staticArgs: options.staticArgs,
+
+      // Option to prevent automatic kill of firefox during tests
+      noQuit: options.no_quit,
+
+      // Add-on preferences branch name
+      preferencesBranch: options.preferencesBranch,
 
       // Arguments related to test runner.
       modules: {
         '@test/options': {
-          allTestModules: options.allTestModules,
           iterations: options.iterations,
           filter: options.filter,
           profileMemory: options.profileMemory,
@@ -242,6 +256,9 @@ function startup(data, reasonCode) {
 
     let module = cuddlefish.Module('sdk/loader/cuddlefish', cuddlefishURI);
     let require = cuddlefish.Require(loader, module);
+
+    // Init the 'sdk/webextension' module from the bootstrap addon parameter.
+    require("sdk/webextension").initFromBootstrapAddonParam(data);
 
     require('sdk/addon/runner').startup(reason, {
       loader: loader,
@@ -281,7 +298,7 @@ function loadSandbox(uri) {
 }
 
 function unloadSandbox(sandbox) {
-  if ("nukeSandbox" in Cu)
+  if (Cu.getClassName(sandbox, true) == "Sandbox")
     Cu.nukeSandbox(sandbox);
 }
 
@@ -306,6 +323,11 @@ function shutdown(data, reasonCode) {
       // We need to keep a reference to the timer, otherwise it is collected
       // and won't ever fire.
       nukeTimer = setTimeout(nukeModules, 1000);
+
+      // Bug 944951 - bootstrap.js must remove the added resource: URIs on unload
+      resourceDomains.forEach(domain => {
+        resourceHandler.setSubstitution(domain, null);
+      })
     }
   }
 };
@@ -324,6 +346,7 @@ function nukeModules() {
     // Bug 775067: From FF17 we can kill all CCW from a given sandbox
     unloadSandbox(sandbox);
   }
+  unloadSandbox(loader.sharedGlobalSandbox);
   loader = null;
 
   // both `toolkit/loader` and `system/xul-app` are loaded as JSM's via
@@ -331,7 +354,6 @@ function nukeModules() {
   // the addon is unload.
 
   unloadSandbox(cuddlefishSandbox.loaderSandbox);
-  unloadSandbox(cuddlefishSandbox.xulappSandbox);
 
   // Bug 764840: We need to unload cuddlefish otherwise it will stay alive
   // and keep a reference to this compartment.

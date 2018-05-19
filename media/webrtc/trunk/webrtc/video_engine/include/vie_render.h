@@ -16,16 +16,18 @@
 #ifndef WEBRTC_VIDEO_ENGINE_INCLUDE_VIE_RENDER_H_
 #define WEBRTC_VIDEO_ENGINE_INCLUDE_VIE_RENDER_H_
 
-#include "common_types.h"
+#include "webrtc/common_types.h"
 
 namespace webrtc {
 
+class I420VideoFrame;
 class VideoEngine;
 class VideoRender;
+class VideoRenderCallback;
 
 // This class declares an abstract interface to be used for external renderers.
 // The user implemented derived class is registered using AddRenderer().
-class WEBRTC_DLLEXPORT ExternalRenderer {
+class ExternalRenderer {
  public:
   // This method will be called when the stream to be rendered changes in
   // resolution or number of streams mixed in the image.
@@ -35,17 +37,29 @@ class WEBRTC_DLLEXPORT ExternalRenderer {
 
   // This method is called when a new frame should be rendered.
   virtual int DeliverFrame(unsigned char* buffer,
-                           int buffer_size,
+                           size_t buffer_size,
                            // RTP timestamp in 90kHz.
-                           uint32_t time_stamp,
-                           // Wallclock render time in miliseconds
-                           int64_t render_time) = 0;
+                           uint32_t timestamp,
+                           // NTP time of the capture time in local timebase
+                           // in milliseconds.
+                           int64_t ntp_time_ms,
+                           // Wallclock render time in milliseconds.
+                           int64_t render_time_ms,
+                           // Handle of the underlying video frame.
+                           void* handle) = 0;
+
+  // Alternative interface for I420 frames.
+  virtual int DeliverI420Frame(const webrtc::I420VideoFrame& webrtc_frame) = 0;
+
+  // Returns true if the renderer supports textures. DeliverFrame can be called
+  // with NULL |buffer| and non-NULL |handle|.
+  virtual bool IsTextureSupported() = 0;
 
  protected:
   virtual ~ExternalRenderer() {}
 };
 
-class WEBRTC_DLLEXPORT ViERender {
+class ViERender {
  public:
   // Factory for the ViERender sub‐API and increases an internal reference
   // counter if successful. Returns NULL if the API is not supported or if
@@ -93,12 +107,6 @@ class WEBRTC_DLLEXPORT ViERender {
                               const float top,
                               const float right,
                               const float bottom) = 0;
-
-  // This function mirrors the rendered stream left and right or up and down.
-  virtual int MirrorRenderStream(const int render_id,
-                                 const bool enable,
-                                 const bool mirror_xaxis,
-                                 const bool mirror_yaxis) = 0;
 
   // External render.
   virtual int AddRenderer(const int render_id,

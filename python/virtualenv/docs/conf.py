@@ -11,31 +11,33 @@
 # All configuration values have a default value; values that are commented out
 # serve to show the default value.
 
+import os
 import sys
 
+on_rtd = os.environ.get('READTHEDOCS', None) == 'True'
+
 # If your extensions are in another directory, add it here.
-#sys.path.append('some/directory')
+sys.path.insert(0, os.path.abspath(os.pardir))
 
 # General configuration
 # ---------------------
 
 # Add any Sphinx extension module names here, as strings. They can be extensions
 # coming with Sphinx (named 'sphinx.ext.*') or your custom ones.
-extensions = ['sphinx.ext.autodoc']
+extensions = ['sphinx.ext.autodoc', 'sphinx.ext.extlinks']
 
 # Add any paths that contain templates here, relative to this directory.
-## FIXME: disabled for now because I haven't figured out how to use this:
 #templates_path = ['_templates']
 
 # The suffix of source filenames.
-source_suffix = '.txt'
+source_suffix = '.rst'
 
 # The master toctree document.
 master_doc = 'index'
 
 # General substitutions.
 project = 'virtualenv'
-copyright = '2007-2012, Ian Bicking, The Open Planning Project, The virtualenv developers'
+copyright = '2007-2014, Ian Bicking, The Open Planning Project, PyPA'
 
 # The default replacements for |version| and |release|, also used in various
 # other places throughout the built documents.
@@ -71,6 +73,11 @@ unused_docs = []
 # The name of the Pygments (syntax highlighting) style to use.
 pygments_style = 'sphinx'
 
+extlinks = {
+    'issue': ('https://github.com/pypa/virtualenv/issues/%s', '#'),
+    'pull': ('https://github.com/pypa/virtualenv/pull/%s', 'PR #'),
+}
+
 
 # Options for HTML output
 # -----------------------
@@ -80,8 +87,15 @@ pygments_style = 'sphinx'
 # given in html_static_path.
 #html_style = 'default.css'
 
-html_theme = 'nature'
-html_theme_path = ['_theme']
+html_theme = 'default'
+if not on_rtd:
+    try:
+        import sphinx_rtd_theme
+        html_theme = 'sphinx_rtd_theme'
+        html_theme_path = [sphinx_rtd_theme.get_html_theme_path()]
+    except ImportError:
+        pass
+
 
 # Add any paths that contain custom static files (such as style sheets) here,
 # relative to this directory. They are copied after the builtin static files,

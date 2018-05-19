@@ -1,14 +1,5 @@
-﻿// ***************************************************************************
-// *
-// * Copyright (C) 2012 International Business Machines
-// * Corporation and others.  All Rights Reserved.
-// * Tool: org.unicode.cldr.icu.NewLdml2IcuConverter
-// * Source File: <path>/common/main/nmg.xml
-// *
-// ***************************************************************************
-/**
- *  ICU <specials> source: <path>/xml/main/nmg.xml
- */
+﻿// © 2016 and later: Unicode, Inc. and others.
+// License & terms of use: http://www.unicode.org/copyright.html#License
 nmg{
     Currencies{
         AED{
@@ -173,7 +164,7 @@ nmg{
         }
         SDP{
             "SDP",
-            "Mɔn Sudan (1957-1998)",
+            "Mɔn Sudan (1957–1998)",
         }
         SHP{
             "SHP",
@@ -225,12 +216,16 @@ nmg{
         }
         ZMK{
             "ZMK",
+            "Mɔn Zambia (1968–2012)",
+        }
+        ZMW{
+            "ZMW",
             "Mɔn Zambia",
         }
         ZWD{
             "ZWD",
-            "Dɔ́llɔ Zimbabwǝ (1980-2008)",
+            "Dɔ́llɔ Zimbabwǝ (1980–2008)",
         }
     }
-    Version{"2.0.77.46"}
+    Version{"2.1.27.40"}
 }

@@ -3,6 +3,8 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+#define INCL_BASE
+#define INCL_PM
 #include <os2.h>
 #include <cairo-os2.h>
 #include "cairo-ft.h" // includes fontconfig.h, too
@@ -10,31 +12,44 @@
 #include "gfxOS2Platform.h"
 #include "gfxOS2Surface.h"
 #include "gfxImageSurface.h"
-#include "gfxOS2Fonts.h"
 #include "nsTArray.h"
 #include "nsServiceManagerUtils.h"
 
+#include "gfxFcPlatformFontList.h"
 #include "gfxFontconfigUtils.h"
-//#include <fontconfig/fontconfig.h>
+#include "gfxFontconfigFonts.h"
+#include "gfx2DGlue.h"
+#include "gfxUserFontSet.h"
+#include "gfxPrefs.h"
 
-/**********************************************************************
- * class gfxOS2Platform
- **********************************************************************/
+#include "mozilla/Preferences.h"
+
+#define GFX_PREF_MAX_GENERIC_SUBSTITUTIONS "gfx.font_rendering.fontconfig.max_generic_substitutions"
+
+using namespace mozilla;
+
 gfxFontconfigUtils *gfxOS2Platform::sFontconfigUtils = nullptr;
+
+bool gfxOS2Platform::sUseFcFontList = false;
 
 gfxOS2Platform::gfxOS2Platform()
 {
     cairo_os2_init();
 
-    if (!sFontconfigUtils) {
+    sUseFcFontList = mozilla::Preferences::GetBool("gfx.font_rendering.fontconfig.fontlist.enabled");
+    if (!sUseFcFontList && !sFontconfigUtils) {
         sFontconfigUtils = gfxFontconfigUtils::GetFontconfigUtils();
     }
+
+    mMaxGenericSubstitutions = UNINITIALIZED_VALUE;
 }
 
 gfxOS2Platform::~gfxOS2Platform()
 {
-    gfxFontconfigUtils::Shutdown();
-    sFontconfigUtils = nullptr;
+    if (!sUseFcFontList) {
+        gfxFontconfigUtils::Shutdown();
+        sFontconfigUtils = nullptr;
+    }
 
     // Clean up cairo_os2 sruff.
     cairo_os2_surface_enable_dive(false, false);
@@ -42,24 +57,22 @@ gfxOS2Platform::~gfxOS2Platform()
 }
 
 already_AddRefed<gfxASurface>
-gfxOS2Platform::CreateOffscreenSurface(const gfxIntSize& aSize,
-                                       gfxASurface::gfxContentType contentType)
+gfxOS2Platform::CreateOffscreenSurface(const IntSize & aSize,
+                                       gfxImageFormat aFormat)
 {
-    gfxASurface::gfxImageFormat format =
-        OptimalFormatForContent(contentType);
     int stride =
-        cairo_format_stride_for_width(static_cast<cairo_format_t>(format),
+        cairo_format_stride_for_width(static_cast<cairo_format_t>(aFormat),
                                       aSize.width);
 
     // To avoid memory fragmentation, return a standard image surface
     // for small images (32x32x4 or 64x64x1).  Their bitmaps will be
     // be allocated from libc's heap rather than system memory.
 
-    nsRefPtr<gfxASurface> surf;
+    RefPtr<gfxASurface> surf;
     if (stride * aSize.height <= 4096) {
-        surf = new gfxImageSurface(aSize, format);
+        surf = new gfxImageSurface(aSize, aFormat);
     } else {
-        surf = new gfxOS2Surface(aSize, format);
+        surf = new gfxOS2Surface(aSize, aFormat);
     }
 
     return surf.forget();
@@ -80,100 +93,152 @@ gfxOS2Platform::GetFontList(nsIAtom *aLangGroup,
            langgroup, family);
     free(family);
 #endif
-    return sFontconfigUtils->GetFontList(aLangGroup, aGenericFamily,
+    if (sUseFcFontList) {
+        gfxPlatformFontList::PlatformFontList()->GetFontList(aLangGroup,
+                                                             aGenericFamily,
+                                                             aListOfFonts);
+        return NS_OK;
+    }
+
+    return sFontconfigUtils->GetFontList(aLangGroup,
+                                         aGenericFamily,
                                          aListOfFonts);
 }
 
 nsresult gfxOS2Platform::UpdateFontList()
 {
-#ifdef DEBUG_thebes
-    printf("gfxOS2Platform::UpdateFontList()\n");
-#endif
-    mCodepointsWithNoFonts.reset();
+    if (sUseFcFontList) {
+        gfxPlatformFontList::PlatformFontList()->UpdateFontList();
+        return NS_OK;
+    }
 
-    nsresult rv = sFontconfigUtils->UpdateFontList();
-
-    // initialize ranges of characters for which system-wide font search should be skipped
-    mCodepointsWithNoFonts.SetRange(0,0x1f);     // C0 controls
-    mCodepointsWithNoFonts.SetRange(0x7f,0x9f);  // C1 controls
-    return rv;
+    return sFontconfigUtils->UpdateFontList();
 }
 
-nsresult
-gfxOS2Platform::ResolveFontName(const nsAString& aFontName,
-                                FontResolverCallback aCallback,
-                                void *aClosure, bool& aAborted)
+gfxPlatformFontList*
+gfxOS2Platform::CreatePlatformFontList()
 {
-#ifdef DEBUG_thebes
-    char *fontname = ToNewCString(aFontName);
-    printf("gfxOS2Platform::ResolveFontName(%s, ...)\n", fontname);
-    free(fontname);
-#endif
-    return sFontconfigUtils->ResolveFontName(aFontName, aCallback, aClosure,
-                                             aAborted);
+    gfxPlatformFontList* list = new gfxFcPlatformFontList();
+    if (NS_SUCCEEDED(list->InitFontList())) {
+        return list;
+    }
+    gfxPlatformFontList::Shutdown();
+    return nullptr;
 }
 
 nsresult
 gfxOS2Platform::GetStandardFamilyName(const nsAString& aFontName, nsAString& aFamilyName)
 {
+    if (sUseFcFontList) {
+        gfxPlatformFontList::PlatformFontList()->
+            GetStandardFamilyName(aFontName, aFamilyName);
+        return NS_OK;
+    }
+
     return sFontconfigUtils->GetStandardFamilyName(aFontName, aFamilyName);
 }
 
 gfxFontGroup *
-gfxOS2Platform::CreateFontGroup(const nsAString &aFamilies,
-                const gfxFontStyle *aStyle,
-                gfxUserFontSet *aUserFontSet)
+gfxOS2Platform::CreateFontGroup(const mozilla::FontFamilyList& aFontFamilyList,
+                                const gfxFontStyle* aStyle,
+                                gfxTextPerfMetrics* aTextPerf,
+                                gfxUserFontSet* aUserFontSet,
+                                gfxFloat aDevToCssSize)
 {
-    return new gfxOS2FontGroup(aFamilies, aStyle, aUserFontSet);
-}
-
-already_AddRefed<gfxOS2Font>
-gfxOS2Platform::FindFontForChar(uint32_t aCh, gfxOS2Font *aFont)
-{
-#ifdef DEBUG_thebes
-    printf("gfxOS2Platform::FindFontForChar(%d, ...)\n", aCh);
-#endif
-
-    // is codepoint with no matching font? return null immediately
-    if (mCodepointsWithNoFonts.test(aCh)) {
-        return nullptr;
+    if (sUseFcFontList) {
+        return new gfxFontGroup(aFontFamilyList, aStyle, aTextPerf,
+                                aUserFontSet, aDevToCssSize);
     }
 
-    // the following is not very clever but it's a quick fix to search all fonts
-    // (one should instead cache the charmaps as done on Mac and Win)
+    return new gfxPangoFontGroup(aFontFamilyList, aStyle,
+                                 aUserFontSet, aDevToCssSize);
+}
 
-    // just continue to append all fonts known to the system
-    nsTArray<nsString> fontList;
-    nsAutoCString generic;
-    nsresult rv = GetFontList(aFont->GetStyle()->language, generic, fontList);
-    if (NS_SUCCEEDED(rv)) {
-        // start at 3 to skip over the generic entries
-        for (uint32_t i = 3; i < fontList.Length(); i++) {
-#ifdef DEBUG_thebes
-            printf("searching in entry i=%d (%s)\n",
-                   i, NS_LossyConvertUTF16toASCII(fontList[i]).get());
-#endif
-            nsRefPtr<gfxOS2Font> font =
-                gfxOS2Font::GetOrMakeFont(fontList[i], aFont->GetStyle());
-            if (!font)
-                continue;
-            FT_Face face = cairo_ft_scaled_font_lock_face(font->CairoScaledFont());
-            if (!face || !face->charmap) {
-                if (face)
-                    cairo_ft_scaled_font_unlock_face(font->CairoScaledFont());
-                continue;
-            }
+gfxFontEntry*
+gfxOS2Platform::LookupLocalFont(const nsAString& aFontName,
+                                uint16_t aWeight,
+                                int16_t aStretch,
+                                uint8_t aStyle)
+{
+    if (sUseFcFontList) {
+        gfxPlatformFontList* pfl = gfxPlatformFontList::PlatformFontList();
+        return pfl->LookupLocalFont(aFontName, aWeight, aStretch,
+                                    aStyle);
+    }
 
-            FT_UInt gid = FT_Get_Char_Index(face, aCh); // find the glyph id
-            if (gid != 0) {
-                // this is the font
-                cairo_ft_scaled_font_unlock_face(font->CairoScaledFont());
-                return font.forget();
-            }
+    return gfxPangoFontGroup::NewFontEntry(aFontName, aWeight,
+                                           aStretch, aStyle);
+}
+
+gfxFontEntry*
+gfxOS2Platform::MakePlatformFont(const nsAString& aFontName,
+                                 uint16_t aWeight,
+                                 int16_t aStretch,
+                                 uint8_t aStyle,
+                                 const uint8_t* aFontData,
+                                 uint32_t aLength)
+{
+    if (sUseFcFontList) {
+        gfxPlatformFontList* pfl = gfxPlatformFontList::PlatformFontList();
+        return pfl->MakePlatformFont(aFontName, aWeight, aStretch,
+                                     aStyle, aFontData, aLength);
+    }
+
+    // passing ownership of the font data to the new font entry
+    return gfxPangoFontGroup::NewFontEntry(aFontName, aWeight,
+                                           aStretch, aStyle,
+                                           aFontData, aLength);
+}
+
+bool
+gfxOS2Platform::IsFontFormatSupported(nsIURI *aFontURI, uint32_t aFormatFlags)
+{
+    // check for strange format flags
+    NS_ASSERTION(!(aFormatFlags & gfxUserFontSet::FLAG_FORMAT_NOT_USED),
+                 "strange font format hint set");
+
+    // accept supported formats
+    // Pango doesn't apply features from AAT TrueType extensions.
+    // Assume that if this is the only SFNT format specified,
+    // then AAT extensions are required for complex script support.
+    if (aFormatFlags & gfxUserFontSet::FLAG_FORMATS_COMMON) {
+        return true;
+    }
+
+    // reject all other formats, known and unknown
+    if (aFormatFlags != 0) {
+        return false;
+    }
+
+    // no format hint set, need to look at data
+    return true;
+}
+
+void gfxOS2Platform::FontsPrefsChanged(const char *aPref)
+{
+    // only checking for generic substitions, pass other changes up
+    if (strcmp(GFX_PREF_MAX_GENERIC_SUBSTITUTIONS, aPref)) {
+        gfxPlatform::FontsPrefsChanged(aPref);
+        return;
+    }
+
+    mMaxGenericSubstitutions = UNINITIALIZED_VALUE;
+    if (sUseFcFontList) {
+        gfxFcPlatformFontList* pfl = gfxFcPlatformFontList::PlatformFontList();
+        pfl->ClearGenericMappings();
+        FlushFontAndWordCaches();
+    }
+}
+
+uint32_t gfxOS2Platform::MaxGenericSubstitions()
+{
+    if (mMaxGenericSubstitutions == UNINITIALIZED_VALUE) {
+        mMaxGenericSubstitutions =
+            Preferences::GetInt(GFX_PREF_MAX_GENERIC_SUBSTITUTIONS, 3);
+        if (mMaxGenericSubstitutions < 0) {
+            mMaxGenericSubstitutions = 3;
         }
     }
 
-    // no match found, so add to the set of non-matching codepoints
-    mCodepointsWithNoFonts.set(aCh);
-    return nullptr;
+    return uint32_t(mMaxGenericSubstitutions);
 }

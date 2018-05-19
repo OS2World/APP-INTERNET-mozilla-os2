@@ -27,7 +27,7 @@ FrameChildListIterator::FrameChildListIterator(const nsIFrame* aFrame)
 #endif
 }
 
-#ifdef DEBUG
+#ifdef DEBUG_FRAME_DUMP
 const char*
 ChildListName(FrameChildListID aListID)
 {
@@ -46,6 +46,7 @@ ChildListName(FrameChildListID aListID)
     case kFloatList: return "FloatList";
     case kBulletList: return "BulletList";
     case kPushedFloatsList: return "PushedFloatsList";
+    case kBackdropList: return "BackdropList";
     case kNoReflowPrincipalList: return "NoReflowPrincipalList";
   }
 

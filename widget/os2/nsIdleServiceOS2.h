@@ -7,10 +7,11 @@
 #ifndef nsIdleServiceOS2_h__
 #define nsIdleServiceOS2_h__
 
-#include "nsIdleService.h"
-#define INCL_DOSMODULEMGR
-#define INCL_DOSERRORS
+#define INCL_BASE
+#define INCL_PM
 #include <os2.h>
+
+#include "nsIdleService.h"
 
 class nsIdleServiceOS2 : public nsIdleService
 {
@@ -22,8 +23,8 @@ public:
 
   static already_AddRefed<nsIdleServiceOS2> GetInstance()
   {
-    nsRefPtr<nsIdleServiceOS2> idleService =
-      static_cast<nsIdleServiceOS2*>(nsIdleService::GetInstance().get());
+    RefPtr<nsIdleServiceOS2> idleService =
+      nsIdleService::GetInstance().downcast<nsIdleServiceOS2>();
     if (!idleService) {
       idleService = new nsIdleServiceOS2();
       NS_ADDREF(idleService);

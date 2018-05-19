@@ -1,7 +1,8 @@
 /* Any copyright is dedicated to the Public Domain.
    http://creativecommons.org/publicdomain/zero/1.0/ */
 
-Cu.import("resource://services-common/log4moz.js");
+Cu.import("resource://gre/modules/PlacesUtils.jsm");
+Cu.import("resource://gre/modules/Log.jsm");
 Cu.import("resource://services-sync/constants.js");
 Cu.import("resource://services-sync/engines.js");
 Cu.import("resource://services-sync/engines/tabs.js");
@@ -13,7 +14,7 @@ Cu.import("resource://services-sync/util.js");
 Cu.import("resource://testing-common/services/sync/utils.js");
 Cu.import("resource://gre/modules/Promise.jsm");
 
-add_task(function test_locally_changed_keys() {
+add_task(function* test_locally_changed_keys() {
   let passphrase = "abcdeabcdeabcdeabcdeabcdea";
 
   let hmacErrorCount = 0;
@@ -46,20 +47,19 @@ add_task(function test_locally_changed_keys() {
                           }],
                           attributes: {
                             image: "image"
-                          },
-                          extData: {
-                            weaveLastUsed: 1
-                          }}]}]};
+                          }
+                          }]}]};
     delete Svc.Session;
     Svc.Session = {
-      getBrowserState: function () JSON.stringify(myTabs)
+      getBrowserState: () => JSON.stringify(myTabs)
     };
 
     setBasicCredentials("johndoe", "password", passphrase);
-    Service.serverURL = TEST_SERVER_URL;
-    Service.clusterURL = TEST_CLUSTER_URL;
+    Service.serverURL = server.baseURI;
+    Service.clusterURL = server.baseURI;
 
     Service.engineManager.register(HistoryEngine);
+    Service.engineManager.unregister("addons");
 
     function corrupt_local_keys() {
       Service.collectionKeys._default.keyPair = [Svc.Crypto.generateRandomKey(),
@@ -87,7 +87,7 @@ add_task(function test_locally_changed_keys() {
     do_check_true(Service.isLoggedIn);
 
     // Sync should upload records.
-    Service.sync();
+    yield sync_and_validate_telem();
 
     // Tabs exist.
     _("Tabs modified: " + johndoe.modified("tabs"));
@@ -140,7 +140,9 @@ add_task(function test_locally_changed_keys() {
 
     _("HMAC error count: " + hmacErrorCount);
     // Now syncing should succeed, after one HMAC error.
-    Service.sync();
+    let ping = yield wait_for_ping(() => Service.sync(), true);
+    equal(ping.engines.find(e => e.name == "history").incoming.applied, 5);
+
     do_check_eq(hmacErrorCount, 1);
     _("Keys now: " + Service.collectionKeys.keyForCollection("history").keyPair);
 
@@ -184,7 +186,9 @@ add_task(function test_locally_changed_keys() {
     Service.lastHMACEvent = 0;
 
     _("Syncing...");
-    Service.sync();
+    ping = yield sync_and_validate_telem(true);
+
+    do_check_eq(ping.engines.find(e => e.name == "history").incoming.failed, 5);
     _("Keys now: " + Service.collectionKeys.keyForCollection("history").keyPair);
     _("Server keys have been updated, and we skipped over 5 more HMAC errors without adjusting history.");
     do_check_true(johndoe.modified("crypto") > old_key_time);
@@ -203,8 +207,11 @@ add_task(function test_locally_changed_keys() {
 });
 
 function run_test() {
-  let logger = Log4Moz.repository.rootLogger;
-  Log4Moz.repository.rootLogger.addAppender(new Log4Moz.DumpAppender());
+  let logger = Log.repository.rootLogger;
+  Log.repository.rootLogger.addAppender(new Log.DumpAppender());
+  validate_all_future_pings();
+
+  ensureLegacyIdentityManager();
 
   run_next_test();
 }

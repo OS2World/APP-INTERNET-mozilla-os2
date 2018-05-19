@@ -9,37 +9,53 @@
 
 
 #include "nsISupports.idl"
-#include "nsIProgrammingLanguage.idl"
 
-// XXX - most "string"s in this file should probably move to Unicode
-//       so may as well use AStrings...
-
-
-[scriptable, uuid(91d82105-7c62-4f8b-9779-154277c0ee90)]
+[scriptable, builtinclass, uuid(28bfb2a2-5ea6-4738-918b-049dc4d51f0b)]
 interface nsIStackFrame : nsISupports
 {
     // see nsIProgrammingLanguage for list of language consts
     readonly attribute uint32_t                language;
-    readonly attribute string                  languageName;
-    readonly attribute string                  filename;
-    readonly attribute string                  name;
+    readonly attribute AUTF8String             languageName;
+    [implicit_jscontext]
+    readonly attribute AString                 filename;
+    [implicit_jscontext]
+    readonly attribute AString                 name;
     // Valid line numbers begin at '1'. '0' indicates unknown.
+    [implicit_jscontext]
     readonly attribute int32_t                 lineNumber;
-    readonly attribute string                  sourceLine;
+    [implicit_jscontext]
+    readonly attribute int32_t                 columnNumber;
+    readonly attribute AUTF8String             sourceLine;
+    [implicit_jscontext]
+    readonly attribute AString                 asyncCause;
+    [implicit_jscontext]
+    readonly attribute nsIStackFrame           asyncCaller;
+    [implicit_jscontext]
     readonly attribute nsIStackFrame           caller;
 
-    string toString();
+    // Returns a formatted stack string that looks like the sort of
+    // string that would be returned by .stack on JS Error objects.
+    // Only works on JS-language stack frames.
+    [implicit_jscontext]
+    readonly attribute AString                 formattedStack;
+
+    // Returns the underlying SavedFrame object for native JavaScript stacks,
+    // or null if this is not a native JavaScript stack frame.
+    readonly attribute jsval                   nativeSavedFrame;
+
+    [implicit_jscontext]
+    AUTF8String toString();
 };
 
-[scriptable, uuid(F3A8D3B4-C424-4edc-8BF6-8974C983BA78)]
+[scriptable, builtinclass, uuid(4371b5bf-6845-487f-8d9d-3f1e4a9badd2)]
 interface nsIException : nsISupports
 {
     // A custom message set by the thrower.
-    [binaryname(MessageMoz)] readonly attribute string message;
+    [binaryname(MessageMoz)] readonly attribute AUTF8String message;
     // The nsresult associated with this exception.
     readonly attribute nsresult                result;
     // The name of the error code (ie, a string repr of |result|)
-    readonly attribute string                  name;
+    readonly attribute AUTF8String             name;
 
     // Filename location.  This is the location that caused the
     // error, which may or may not be a source file location.
@@ -49,21 +65,22 @@ interface nsIException : nsISupports
     // etc.
 
     // null indicates "no data"
-    readonly attribute string                  filename;
+    [implicit_jscontext]
+    readonly attribute AString                 filename;
     // Valid line numbers begin at '1'. '0' indicates unknown.
+    [implicit_jscontext]
     readonly attribute uint32_t                lineNumber;
-    // Valid column numbers begin at 0. 
+    // Valid column numbers begin at 0.
     // We don't have an unambiguous indicator for unknown.
     readonly attribute uint32_t                columnNumber;
 
     // A stack trace, if available.
     readonly attribute nsIStackFrame           location;
-    // An inner exception that triggered this, if available.
-    readonly attribute nsIException            inner;
 
     // Arbitary data for the implementation.
     readonly attribute nsISupports             data;
 
     // A generic formatter - make it suitable to print, etc.
-    string toString();
+    [implicit_jscontext]
+    AUTF8String toString();
 };

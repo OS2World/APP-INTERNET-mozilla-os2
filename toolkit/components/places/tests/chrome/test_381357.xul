@@ -18,9 +18,9 @@
  */
 SimpleTest.waitForExplicitFinish();
 
-const Cc = Components.classes;
-const Ci = Components.interfaces;
-const Cr = Components.results;
+var Cc = Components.classes;
+var Ci = Components.interfaces;
+var Cr = Components.results;
 
 Components.utils.import("resource://gre/modules/XPCOMUtils.jsm");
 Components.utils.import("resource://gre/modules/NetUtil.jsm");
@@ -31,24 +31,24 @@ function runTest() {
 
   PlacesUtils.livemarks.addLivemark(
     { title: "foo"
-    , parentId: PlacesUtils.toolbarFolderId
-    , index: PlacesUtils.bookmarks.DEFAULT_INDEX
+    , parentGuid: PlacesUtils.bookmarks.toolbarGuid
     , feedURI: NetUtil.newURI(FEEDSPEC)
     , siteURI: NetUtil.newURI("http:/mochi.test/")
-    },
-    function (aStatus, aLivemark) {
-      ok(Components.isSuccessCode(aStatus), "Get livemark");
-
+    })
+    .then(function (aLivemark) {
       waitForLivemarkLoad(aLivemark, function (aLivemark) {
         let nodes = aLivemark.getNodesForContainer({});
-        ok(Components.isSuccessCode(aStatus), "Get livemark entries");
 
         is(nodes[0].title, "The First Title",
            "livemark site URI set to value in feed");
 
-        PlacesUtils.bookmarks.removeItem(aLivemark.id);
-        SimpleTest.finish();
+        PlacesUtils.livemarks.removeLivemark(aLivemark).then(() => {
+          SimpleTest.finish();
+        });
       });
+    }, function () {
+      is(true, false, "Should not fail adding a livemark");
+      SimpleTest.finish();
     }
   );
 }

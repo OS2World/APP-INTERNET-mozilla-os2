@@ -1,21 +1,19 @@
-const Cc = Components.classes;
-const Ci = Components.interfaces;
-const Cu = Components.utils;
-const Cr = Components.results;
-
 Cu.import("resource://testing-common/httpd.js");
+Cu.import("resource://gre/modules/Services.jsm");
+Cu.import("resource://gre/modules/NetUtil.jsm");
 
 var httpServer = null;
 // Need to randomize, because apparently no one clears our cache
 var randomPath = "/redirect/" + Math.random();
-var randomURI = "http://localhost:4444" + randomPath;
+
+XPCOMUtils.defineLazyGetter(this, "randomURI", function() {
+  return "http://localhost:" + httpServer.identity.primaryPort + randomPath;
+});
 
 var cacheUpdateObserver = null;
 
 function make_channel(url, callback, ctx) {
-  var ios = Cc["@mozilla.org/network/io-service;1"].
-            getService(Ci.nsIIOService);
-  return ios.newChannel(url, "", null);
+  return NetUtil.newChannel({uri: url, loadUsingSystemPrincipal: true});
 }
 
 function make_uri(url) {
@@ -62,14 +60,14 @@ function run_test()
   httpServer.registerPathHandler("/masterEntry", masterEntryHandler);
   httpServer.registerPathHandler("/manifest", manifestHandler);
   httpServer.registerPathHandler("/content", contentHandler);
-  httpServer.start(4444);
+  httpServer.start(-1);
 
   var pm = Cc["@mozilla.org/permissionmanager;1"]
     .getService(Ci.nsIPermissionManager);
-  var uri = make_uri("http://localhost:4444");
-  var principal = Components.classes["@mozilla.org/scriptsecuritymanager;1"]
-                    .getService(Ci.nsIScriptSecurityManager)
-                    .getNoAppCodebasePrincipal(uri);
+  var ssm = Cc["@mozilla.org/scriptsecuritymanager;1"]
+              .getService(Ci.nsIScriptSecurityManager);
+  var uri = make_uri("http://localhost:" + httpServer.identity.primaryPort);
+  var principal = ssm.createCodebasePrincipal(uri, {});
 
   if (pm.testPermissionFromPrincipal(principal, "offline-app") != 0) {
     dump("Previous test failed to clear offline-app permission!  Expect failures.\n");
@@ -92,7 +90,7 @@ function run_test()
                       Ci.nsICachingChannel.LOAD_ONLY_FROM_CACHE);
     var chanac = chan.QueryInterface(Ci.nsIApplicationCacheChannel);
     chanac.chooseApplicationCache = true;
-    chan.asyncOpen(new ChannelListener(finish_test), null);
+    chan.asyncOpen2(new ChannelListener(finish_test));
   }}
 
   var os = Cc["@mozilla.org/observer-service;1"].
@@ -101,8 +99,11 @@ function run_test()
 
   var us = Cc["@mozilla.org/offlinecacheupdate-service;1"].
            getService(Ci.nsIOfflineCacheUpdateService);
-  us.scheduleUpdate(make_uri("http://localhost:4444/manifest"),
-                    make_uri("http://localhost:4444/masterEntry"),
+  us.scheduleUpdate(make_uri("http://localhost:" +
+                             httpServer.identity.primaryPort + "/manifest"),
+                    make_uri("http://localhost:" +
+                             httpServer.identity.primaryPort + "/masterEntry"),
+                    Services.scriptSecurityManager.getSystemPrincipal(),
                     null);
 
   do_test_pending();

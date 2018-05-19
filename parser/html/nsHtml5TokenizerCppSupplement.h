@@ -4,6 +4,61 @@
 
 #include "mozilla/Likely.h"
 
+// INT32_MAX is (2^31)-1. Therefore, the highest power-of-two that fits
+// is 2^30. Note that this is counting char16_t units. The underlying
+// bytes will be twice that, but they fit even in 32-bit size_t even
+// if a contiguous chunk of memory of that size is pretty unlikely to
+// be available on a 32-bit system.
+#define MAX_POWER_OF_TWO_IN_INT32 0x40000000
+
+bool
+nsHtml5Tokenizer::EnsureBufferSpace(int32_t aLength)
+{
+  MOZ_RELEASE_ASSERT(aLength >= 0, "Negative length.");
+  if (aLength > MAX_POWER_OF_TWO_IN_INT32) {
+    // Can't happen when loading from network.
+    return false;
+  }
+  CheckedInt<int32_t> worstCase(strBufLen);
+  worstCase += aLength;
+  worstCase += charRefBufLen;
+  // Add 2 to account for emissions of LT_GT, LT_SOLIDUS and RSQB_RSQB.
+  // Adding to the general worst case instead of only the
+  // TreeBuilder-exposed worst case to avoid re-introducing a bug when
+  // unifying the tokenizer and tree builder buffers in the future.
+  worstCase += 2;
+  if (!worstCase.isValid()) {
+    return false;
+  }
+  if (worstCase.value() > MAX_POWER_OF_TWO_IN_INT32) {
+    return false;
+  }
+  // TODO: Unify nsHtml5Tokenizer::strBuf and nsHtml5TreeBuilder::charBuffer
+  // so that the call below becomes unnecessary.
+  if (!tokenHandler->EnsureBufferSpace(worstCase.value())) {
+    return false;
+  }
+  if (!strBuf) {
+    if (worstCase.value() < MAX_POWER_OF_TWO_IN_INT32) {
+      // Add one to round to the next power of two to avoid immediate
+      // reallocation once there are a few characters in the buffer.
+      worstCase += 1;
+    }
+    strBuf = jArray<char16_t,int32_t>::newFallibleJArray(mozilla::RoundUpPow2(worstCase.value()));
+    if (!strBuf) {
+      return false;
+    }
+  } else if (worstCase.value() > strBuf.length) {
+    jArray<char16_t,int32_t> newBuf = jArray<char16_t,int32_t>::newFallibleJArray(mozilla::RoundUpPow2(worstCase.value()));
+    if (!newBuf) {
+      return false;
+    }
+    memcpy(newBuf, strBuf, sizeof(char16_t) * size_t(strBufLen));
+    strBuf = newBuf;
+  }
+  return true;
+}
+
 void
 nsHtml5Tokenizer::StartPlainText()
 {
@@ -42,7 +97,7 @@ nsHtml5Tokenizer::errWarnLtSlashInRcdata()
 // The null checks below annotated MOZ_LIKELY are not actually necessary.
 
 void
-nsHtml5Tokenizer::errUnquotedAttributeValOrNull(PRUnichar c)
+nsHtml5Tokenizer::errUnquotedAttributeValOrNull(char16_t c)
 {
   if (MOZ_LIKELY(mViewSource)) {
     switch (c) {
@@ -64,7 +119,7 @@ nsHtml5Tokenizer::errUnquotedAttributeValOrNull(PRUnichar c)
 }
 
 void
-nsHtml5Tokenizer::errLtOrEqualsOrGraveInUnquotedAttributeOrNull(PRUnichar c)
+nsHtml5Tokenizer::errLtOrEqualsOrGraveInUnquotedAttributeOrNull(char16_t c)
 {
   if (MOZ_LIKELY(mViewSource)) {
     switch (c) {
@@ -82,7 +137,7 @@ nsHtml5Tokenizer::errLtOrEqualsOrGraveInUnquotedAttributeOrNull(PRUnichar c)
 }
 
 void
-nsHtml5Tokenizer::errBadCharBeforeAttributeNameOrNull(PRUnichar c)
+nsHtml5Tokenizer::errBadCharBeforeAttributeNameOrNull(char16_t c)
 {
   if (MOZ_LIKELY(mViewSource)) {
     if (c == '<') {
@@ -96,7 +151,7 @@ nsHtml5Tokenizer::errBadCharBeforeAttributeNameOrNull(PRUnichar c)
 }
 
 void
-nsHtml5Tokenizer::errBadCharAfterLt(PRUnichar c)
+nsHtml5Tokenizer::errBadCharAfterLt(char16_t c)
 {
   if (MOZ_LIKELY(mViewSource)) {
     mViewSource->AddErrorToCurrentNode("errBadCharAfterLt");
@@ -104,7 +159,7 @@ nsHtml5Tokenizer::errBadCharAfterLt(PRUnichar c)
 }
 
 void
-nsHtml5Tokenizer::errQuoteOrLtInAttributeNameOrNull(PRUnichar c)
+nsHtml5Tokenizer::errQuoteOrLtInAttributeNameOrNull(char16_t c)
 {
   if (MOZ_LIKELY(mViewSource)) {
     if (c == '<') {
@@ -135,8 +190,8 @@ nsHtml5Tokenizer::maybeErrSlashInEndTag(bool selfClosing)
   }
 }
 
-PRUnichar
-nsHtml5Tokenizer::errNcrNonCharacter(PRUnichar ch)
+char16_t
+nsHtml5Tokenizer::errNcrNonCharacter(char16_t ch)
 {
   if (MOZ_UNLIKELY(mViewSource)) {
     mViewSource->AddErrorToCurrentNode("errNcrNonCharacter");
@@ -152,8 +207,8 @@ nsHtml5Tokenizer::errAstralNonCharacter(int32_t ch)
   }
 }
 
-PRUnichar
-nsHtml5Tokenizer::errNcrControlChar(PRUnichar ch)
+char16_t
+nsHtml5Tokenizer::errNcrControlChar(char16_t ch)
 {
   if (MOZ_UNLIKELY(mViewSource)) {
     mViewSource->AddErrorToCurrentNode("errNcrControlChar");
@@ -314,7 +369,7 @@ nsHtml5Tokenizer::errNoNamedCharacterMatch()
 }
 
 void
-nsHtml5Tokenizer::errQuoteBeforeAttributeName(PRUnichar c)
+nsHtml5Tokenizer::errQuoteBeforeAttributeName(char16_t c)
 {
   if (MOZ_LIKELY(mViewSource)) {
     mViewSource->AddErrorToCurrentNode("errQuoteBeforeAttributeName");

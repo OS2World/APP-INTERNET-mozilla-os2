@@ -12,12 +12,13 @@
 
 /******************************** Declarations *******************************/
 
+interface mozIDOMWindow;
 interface nsIDocShell;
 
 
 /****************************** nsTypeAheadFind ******************************/
 
-[scriptable, uuid(0749a445-19d3-4eb9-9d66-78eca8c6f604)]
+[scriptable, uuid(ae501e28-c57f-4692-ac74-410e1bed98b7)]
 interface nsITypeAheadFind : nsISupports
 {
   /****************************** Initializer ******************************/
@@ -37,6 +38,9 @@ interface nsITypeAheadFind : nsISupports
   /* Find another match in the page. */
   unsigned short findAgain(in boolean findBackwards, in boolean aLinksOnly);
 
+  /* Return the range of the most recent match. */
+  nsIDOMRange getFoundRange();
+
 
   /**************************** Helper functions ***************************/
 
@@ -53,17 +57,20 @@ interface nsITypeAheadFind : nsISupports
    * necessarily happen automatically. */
   void collapseSelection();
 
+  /* Check if a range is visible */
+  boolean isRangeVisible(in nsIDOMRange aRange, in boolean aMustBeInViewPort);
 
   /******************************* Attributes ******************************/
 
   readonly attribute AString searchString;
                                         // Most recent search string
   attribute boolean caseSensitive;      // Searches are case sensitive
+  attribute boolean entireWord;         // Search for whole words only
   readonly attribute nsIDOMElement foundLink;
                                         // Most recent elem found, if a link
   readonly attribute nsIDOMElement foundEditable;
                                         // Most recent elem found, if editable
-  readonly attribute nsIDOMWindow currentWindow;
+  readonly attribute mozIDOMWindow currentWindow;
                                         // Window of most recent match
 
 

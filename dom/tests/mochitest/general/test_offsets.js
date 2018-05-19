@@ -110,7 +110,7 @@ function testElement(element)
      element.id + " bounding rect bottom");
 
   var rects = element.getClientRects();
-  if (element.id == "input-displaynone" || element.id == "nonappended") {
+  if (element.id == "div-displaynone" || element.id == "nonappended") {
     is(rects.length, 0, element.id + " getClientRects empty");
   }
   else {
@@ -181,12 +181,25 @@ function checkCoord(element, type, val, testname)
     is(element[type], Math.round(val), testname + " " + type);
 }
 
+function checkCoordFuzzy(element, type, val, fuzz, testname)
+{
+  if (val != -10000)
+    ok(Math.abs(element[type] - Math.round(val)) <= fuzz, testname + " " + type);
+}
+
 function checkCoords(element, type, left, top, width, height, testname)
 {
   checkCoord(element, type + "Left", left, testname);
   checkCoord(element, type + "Top", top, testname);
-  checkCoord(element, type + "Width", width, testname);
-  checkCoord(element, type + "Height", height, testname);
+
+  if (type == "scroll") {
+    // scrollWidth and scrollHeight can deviate by 1 pixel due to snapping.
+    checkCoordFuzzy(element, type + "Width", width, 1, testname);
+    checkCoordFuzzy(element, type + "Height", height, 1, testname);
+  } else {
+    checkCoord(element, type + "Width", width, testname);
+    checkCoord(element, type + "Height", height, testname);
+  }
 
   if (element instanceof SVGElement)
     return;
@@ -194,12 +207,9 @@ function checkCoords(element, type, left, top, width, height, testname)
   if (element.id == "outerpopup" && !element.parentNode.open) // closed popup
     return;
 
-  if (element.id == "input-displaynone" || element.id == "nonappended") // hidden elements
+  if (element.id == "div-displaynone" || element.id == "nonappended") // hidden elements
     ok(element[type + "Width"] == 0 && element[type + "Height"] == 0,
        element.id + " has zero " + type + " width and height");
-  else if (element.id != "input-nosize") // for some reason, this element has a width of 2
-    ok(element[type + "Width"] > 0 && element[type + "Height"] > 0,
-       element.id + " has non-zero " + type + " width and height");
 }
 
 function gcs(element, prop)

@@ -1,4 +1,5 @@
-/* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 4 -*- */
+/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
+/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -33,23 +34,16 @@
 
 #ifdef MOZ_X11
 #include <gdk/gdkx.h>
-#include <X11/Xatom.h>
+#include <X11/ICE/ICElib.h>
+#include <X11/SM/SMlib.h>
+#include <fcntl.h>
+#include "nsThreadUtils.h"
+
+#include <pwd.h>
 #endif
 
-#if (MOZ_PLATFORM_MAEMO == 5)
-struct DBusMessage;  /* libosso.h references internals of dbus */
-
+#ifdef MOZ_ENABLE_DBUS
 #include <dbus/dbus.h>
-#include <dbus/dbus-protocol.h>
-#include <libosso.h>
-
-// These come from <mce/dbus-names.h> (maemo sdk 5+)
-#define MCE_SERVICE "com.nokia.mce"
-#define MCE_REQUEST_IF "com.nokia.mce.request"
-#define MCE_REQUEST_PATH "/com/nokia/mce/request"
-#define MCE_SIGNAL_IF "com.nokia.mce.signal"
-#define MCE_DEVICE_ORIENTATION_SIG "sig_device_orientation_ind"
-#define MCE_MATCH_RULE "type='signal',interface='" MCE_SIGNAL_IF "',member='" MCE_DEVICE_ORIENTATION_SIG "'"
 #endif
 
 #define MIN_GTK_MAJOR_VERSION 2
@@ -58,351 +52,415 @@ struct DBusMessage;  /* libosso.h references internals of dbus */
 You have GTK+ %d.%d.\nThis application requires GTK+ %d.%d or newer.\n\n\
 Please upgrade your GTK+ library if you wish to use this application."
 
-typedef struct _GnomeProgram GnomeProgram;
-typedef struct _GnomeModuleInfo GnomeModuleInfo;
-typedef struct _GnomeClient GnomeClient;
+#if MOZ_X11
+#undef IceSetIOErrorHandler
+#undef IceAddConnectionWatch
+#undef IceConnectionNumber
+#undef IceProcessMessages
+#undef IceGetConnectionContext
+#undef SmcInteractDone
+#undef SmcSaveYourselfDone
+#undef SmcInteractRequest
+#undef SmcCloseConnection
+#undef SmcOpenConnection
+#undef SmcSetProperties
 
-typedef enum {
-  GNOME_SAVE_GLOBAL,
-  GNOME_SAVE_LOCAL,
-  GNOME_SAVE_BOTH
-} GnomeSaveStyle;
+typedef IceIOErrorHandler (*IceSetIOErrorHandlerFn) (IceIOErrorHandler);
+typedef int (*IceAddConnectionWatchFn) (IceWatchProc, IcePointer);
+typedef int (*IceConnectionNumberFn) (IceConn);
+typedef IceProcessMessagesStatus (*IceProcessMessagesFn) (IceConn, IceReplyWaitInfo*, Bool*);
+typedef IcePointer (*IceGetConnectionContextFn) (IceConn);
 
-typedef enum {
-  GNOME_INTERACT_NONE,
-  GNOME_INTERACT_ERRORS,
-  GNOME_INTERACT_ANY
-} GnomeInteractStyle;
+typedef void (*SmcInteractDoneFn) (SmcConn, Bool);
+typedef void (*SmcSaveYourselfDoneFn) (SmcConn, Bool);
+typedef int (*SmcInteractRequestFn) (SmcConn, int, SmcInteractProc, SmPointer);
+typedef SmcCloseStatus (*SmcCloseConnectionFn) (SmcConn, int, char**);
+typedef SmcConn (*SmcOpenConnectionFn) (char*, SmPointer, int, int,
+                                        unsigned long, SmcCallbacks*,
+                                        const char*, char**, int, char*);
+typedef void (*SmcSetPropertiesFn) (SmcConn, int, SmProp**);
 
-typedef enum {
-  GNOME_DIALOG_ERROR,
-  GNOME_DIALOG_NORMAL
-} GnomeDialogType;
+static IceSetIOErrorHandlerFn IceSetIOErrorHandlerPtr;
+static IceAddConnectionWatchFn IceAddConnectionWatchPtr;
+static IceConnectionNumberFn IceConnectionNumberPtr;
+static IceProcessMessagesFn IceProcessMessagesPtr;
+static IceGetConnectionContextFn IceGetConnectionContextPtr;
+static SmcInteractDoneFn SmcInteractDonePtr;
+static SmcSaveYourselfDoneFn SmcSaveYourselfDonePtr;
+static SmcInteractRequestFn SmcInteractRequestPtr;
+static SmcCloseConnectionFn SmcCloseConnectionPtr;
+static SmcOpenConnectionFn SmcOpenConnectionPtr;
+static SmcSetPropertiesFn SmcSetPropertiesPtr;
 
-typedef GnomeProgram * (*_gnome_program_init_fn)(const char *, const char *,
-                                                 const GnomeModuleInfo *, int,
-                                                 char **, const char *, ...);
-typedef GnomeProgram * (*_gnome_program_get_fn)(void);
-typedef const GnomeModuleInfo * (*_libgnomeui_module_info_get_fn)();
-typedef GnomeClient * (*_gnome_master_client_fn)(void);
-typedef void (*_gnome_client_set_restart_command_fn)(GnomeClient*, gint, gchar*[]);
+#define IceSetIOErrorHandler IceSetIOErrorHandlerPtr
+#define IceAddConnectionWatch IceAddConnectionWatchPtr
+#define IceConnectionNumber IceConnectionNumberPtr
+#define IceProcessMessages IceProcessMessagesPtr
+#define IceGetConnectionContext IceGetConnectionContextPtr
+#define SmcInteractDone SmcInteractDonePtr
+#define SmcSaveYourselfDone SmcSaveYourselfDonePtr
+#define SmcInteractRequest SmcInteractRequestPtr
+#define SmcCloseConnection SmcCloseConnectionPtr
+#define SmcOpenConnection SmcOpenConnectionPtr
+#define SmcSetProperties SmcSetPropertiesPtr
 
-static _gnome_client_set_restart_command_fn gnome_client_set_restart_command;
+enum ClientState {
+  STATE_DISCONNECTED,
+  STATE_REGISTERING,
+  STATE_IDLE,
+  STATE_INTERACTING,
+  STATE_SHUTDOWN_CANCELLED
+};
 
-gboolean save_yourself_cb(GnomeClient *client, gint phase,
-                          GnomeSaveStyle style, gboolean shutdown,
-                          GnomeInteractStyle interact, gboolean fast,
-                          gpointer user_data)
-{
-  nsCOMPtr<nsIObserverService> obsServ =
-    mozilla::services::GetObserverService();
+static const char *gClientStateTable[] = {
+  "DISCONNECTED",
+  "REGISTERING",
+  "IDLE",
+  "INTERACTING",
+  "SHUTDOWN_CANCELLED"
+};
 
-  nsCOMPtr<nsISupportsPRBool> didSaveSession =
-    do_CreateInstance(NS_SUPPORTS_PRBOOL_CONTRACTID);
-
-  if (!obsServ || !didSaveSession)
-    return TRUE; // OOM
-
-  // Notify observers to save the session state
-  didSaveSession->SetData(false);
-  obsServ->NotifyObservers(didSaveSession, "session-save", nullptr);
-
-  bool status;
-  didSaveSession->GetData(&status);
-
-  // If there was no session saved and the save_yourself request is
-  // caused by upcoming shutdown we like to prepare for it
-  if (!status && shutdown) {
-    nsCOMPtr<nsISupportsPRBool> cancelQuit =
-      do_CreateInstance(NS_SUPPORTS_PRBOOL_CONTRACTID);
-
-    cancelQuit->SetData(false);
-    obsServ->NotifyObservers(cancelQuit, "quit-application-requested", nullptr);
-
-    bool abortQuit;
-    cancelQuit->GetData(&abortQuit);
-  }
-
-  return TRUE;
-}
-
-void die_cb(GnomeClient *client, gpointer user_data)
-{
-  nsCOMPtr<nsIAppStartup> appService =
-    do_GetService("@mozilla.org/toolkit/app-startup;1");
-
-  if (appService)
-    appService->Quit(nsIAppStartup::eForceQuit);
-}
+static LazyLogModule sMozSMLog("MozSM");
+#endif /* MOZ_X11 */
 
 class nsNativeAppSupportUnix : public nsNativeAppSupportBase
 {
 public:
+#if MOZ_X11
+  nsNativeAppSupportUnix(): mSessionConnection(nullptr),
+                            mClientState(STATE_DISCONNECTED) {};
+  ~nsNativeAppSupportUnix()
+  {
+    // this goes out of scope after "web-workers-shutdown" async shutdown phase
+    // so it's safe to disconnect here (i.e. the application won't lose data)
+    DisconnectFromSM();
+  };
+
+  void DisconnectFromSM();
+#endif
   NS_IMETHOD Start(bool* aRetVal);
   NS_IMETHOD Stop(bool *aResult);
   NS_IMETHOD Enable();
 
 private:
-#if (MOZ_PLATFORM_MAEMO == 5)
-  osso_context_t *m_osso_context;    
-  /* A note about why we need to have m_hw_state:
-     the osso hardware callback does not tell us what changed, just
-     that something has changed.  We need to keep track of state so
-     that we can determine what has changed.
-  */  
-  osso_hw_state_t m_hw_state;
+#if MOZ_X11
+  static void SaveYourselfCB(SmcConn smc_conn, SmPointer client_data,
+                             int save_style, Bool shutdown, int interact_style,
+                             Bool fast);
+  static void DieCB(SmcConn smc_conn, SmPointer client_data);
+  static void InteractCB(SmcConn smc_conn, SmPointer client_data);
+  static void SaveCompleteCB(SmcConn smc_conn, SmPointer client_data) {};
+  static void ShutdownCancelledCB(SmcConn smc_conn, SmPointer client_data);
+  void DoInteract();
+  void SetClientState(ClientState aState)
+  {
+    mClientState = aState;
+    MOZ_LOG(sMozSMLog, LogLevel::Debug, ("New state = %s\n", gClientStateTable[aState]));
+  }
+
+  SmcConn mSessionConnection;
+  ClientState mClientState;
 #endif
 };
 
-#if (MOZ_PLATFORM_MAEMO == 5)
-static nsresult
-GetMostRecentWindow(const PRUnichar* aType, nsIDOMWindow** aWindow)
+#if MOZ_X11
+static gboolean
+process_ice_messages(IceConn connection)
 {
-  nsCOMPtr<nsIWindowMediator> wm = do_GetService("@mozilla.org/appshell/window-mediator;1");
-  if (wm)
-    return wm->GetMostRecentWindow(aType, aWindow);
-  return NS_ERROR_FAILURE;
+  IceProcessMessagesStatus status;
+
+  status = IceProcessMessages(connection, nullptr, nullptr);
+
+  switch (status) {
+  case IceProcessMessagesSuccess:
+    return TRUE;
+
+  case IceProcessMessagesIOError: {
+      nsNativeAppSupportUnix *native =
+        static_cast<nsNativeAppSupportUnix *>(IceGetConnectionContext(connection));
+      native->DisconnectFromSM();
+    }
+    return FALSE;
+
+  case IceProcessMessagesConnectionClosed:
+    return FALSE;
+
+  default:
+    g_assert_not_reached ();
+  }
 }
 
-static GtkWidget*
-WidgetForDOMWindow(nsISupports *aWindow)
+static gboolean
+ice_iochannel_watch(GIOChannel *channel, GIOCondition condition,
+                    gpointer client_data)
 {
-  nsCOMPtr<nsPIDOMWindow> domWindow(do_QueryInterface(aWindow));
-  if (!domWindow)
-    return NULL;
-
-  nsCOMPtr<nsIBaseWindow> baseWindow = do_QueryInterface(domWindow->GetDocShell());
-  if (!baseWindow)
-    return NULL;
-
-  nsCOMPtr<nsIWidget> widget;
-  baseWindow->GetMainWidget(getter_AddRefs(widget));
-  if (!widget)
-    return NULL;
-
-  return (GtkWidget*)(widget->GetNativeData(NS_NATIVE_SHELLWIDGET));
+  return process_ice_messages(static_cast<IceConn>(client_data));
 }
 
 static void
-OssoSetWindowOrientation(bool aPortrait)
+ice_connection_watch(IceConn connection, IcePointer  client_data,
+                     Bool opening, IcePointer *watch_data)
 {
-  // If we locked the screen, ignore any orientation changes
-  bool lockScreen = false;
-  nsCOMPtr<nsIPrefBranch> prefs = do_GetService(NS_PREFSERVICE_CONTRACTID);
-  if (prefs)
-    prefs->GetBoolPref("toolkit.screen.lock", &lockScreen);
+  guint watch_id;
 
-  if (lockScreen)
-    return;
+  if (opening) {
+    GIOChannel *channel;
+    int fd = IceConnectionNumber(connection);
 
-  // Tell Hildon desktop to force our window to be either portrait or landscape,
-  // depending on the current rotation
-  // NOTE: We only update the most recent top-level window so this is only
-  //       suitable for apps with only one window.
-  nsCOMPtr<nsIDOMWindow> window;
-  GetMostRecentWindow(EmptyString().get(), getter_AddRefs(window));
-  GtkWidget* widget = WidgetForDOMWindow(window);
-  if (widget && widget->window) {
-    GdkWindow *gdk = widget->window;
-    GdkAtom request = gdk_atom_intern("_HILDON_PORTRAIT_MODE_REQUEST", FALSE);
+    fcntl(fd, F_SETFD, fcntl(fd, F_GETFD, 0) | FD_CLOEXEC);
+    channel = g_io_channel_unix_new(fd);
+    watch_id = g_io_add_watch(channel,
+                              static_cast<GIOCondition>(G_IO_IN | G_IO_ERR),
+                              ice_iochannel_watch, connection);
+    g_io_channel_unref(channel);
 
-    if (aPortrait) {
-      gulong portrait_set = 1;
-      gdk_property_change(gdk, request, gdk_x11_xatom_to_atom(XA_CARDINAL),
-                          32, GDK_PROP_MODE_REPLACE, (const guchar *) &portrait_set, 1);
-    }
-    else {
-      gdk_property_delete(gdk, request);
-    }
-  }
-
-  // Update the system info property
-  nsCOMPtr<nsIWritablePropertyBag2> info = do_GetService("@mozilla.org/system-info;1");
-  if (info) {
-    info->SetPropertyAsAString(NS_LITERAL_STRING("screen-orientation"),
-                               aPortrait ? NS_LITERAL_STRING("portrait") : NS_LITERAL_STRING("landscape"));
-  }
-}
-
-static bool OssoIsScreenOn(osso_context_t* ctx)
-{
-  osso_return_t rv;
-  osso_rpc_t ret;
-  bool result = false;
-
-  rv = osso_rpc_run_system(ctx, MCE_SERVICE, MCE_REQUEST_PATH, MCE_REQUEST_IF,
-                           "get_display_status", &ret, DBUS_TYPE_INVALID);
-  if (rv == OSSO_OK) {
-      if (strcmp(ret.value.s, "on") == 0)
-          result = true;
-
-      osso_rpc_free_val(&ret);
-  }
-  return result;
-}
-
-static void OssoRequestAccelerometer(osso_context_t *ctx, bool aEnabled)
-{
-  osso_return_t rv;
-  osso_rpc_t ret;
-
-  rv = osso_rpc_run_system(ctx, 
-                           MCE_SERVICE,
-                           MCE_REQUEST_PATH, MCE_REQUEST_IF,
-                           aEnabled ? "req_accelerometer_enable" : "req_accelerometer_disable",
-                           aEnabled ? &ret : NULL,
-                           DBUS_TYPE_INVALID);
-
-  // Orientation might changed while the accelerometer was off, so let's update
-  // the window's orientation
-  if (rv == OSSO_OK && aEnabled) {    
-      OssoSetWindowOrientation(strcmp(ret.value.s, "portrait") == 0);
-      osso_rpc_free_val(&ret);
-  }
-}
-
-static void OssoDisplayCallback(osso_display_state_t state, gpointer data)
-{
-  nsCOMPtr<nsIObserverService> os = mozilla::services::GetObserverService();
-  if (!os)
-      return;
-
-  osso_context_t* context = (osso_context_t*) data;
-
-  if (state == OSSO_DISPLAY_ON) {
-      os->NotifyObservers(nullptr, "system-display-on", nullptr);
-      OssoRequestAccelerometer(context, true);
+    *watch_data = GUINT_TO_POINTER(watch_id);
   } else {
-      os->NotifyObservers(nullptr, "system-display-dimmed-or-off", nullptr);
-      OssoRequestAccelerometer(context, false);
+    watch_id = GPOINTER_TO_UINT(*watch_data);
+    g_source_remove(watch_id);
   }
 }
 
-static void OssoHardwareCallback(osso_hw_state_t *state, gpointer data)
+static void
+ice_io_error_handler(IceConn connection)
 {
-  NS_ASSERTION(state, "osso_hw_state_t must not be null.");
-  NS_ASSERTION(data, "data must not be null.");
+  // override the default handler which would exit the application;
+  // do nothing and let ICELib handle the failure of the connection gracefully.
+}
 
-  osso_hw_state_t* ourState = (osso_hw_state_t*) data;
+static void
+ice_init(void)
+{
+  static bool initted = false;
 
-  if (state->shutdown_ind) {
-    nsCOMPtr<nsIAppStartup> appService = do_GetService("@mozilla.org/toolkit/app-startup;1");
-    if (appService)
-      appService->Quit(nsIAppStartup::eForceQuit);
+  if (!initted) {
+    IceSetIOErrorHandler(ice_io_error_handler);
+    IceAddConnectionWatch(ice_connection_watch, nullptr);
+    initted = true;
+  }
+}
+
+void
+nsNativeAppSupportUnix::InteractCB(SmcConn smc_conn, SmPointer client_data)
+{
+  nsNativeAppSupportUnix *self =
+    static_cast<nsNativeAppSupportUnix *>(client_data);
+
+  self->SetClientState(STATE_INTERACTING);
+
+  // We do this asynchronously, as we spin the event loop recursively if
+  // a dialog is displayed. If we do this synchronously, we don't finish
+  // processing the current ICE event whilst the dialog is displayed, which
+  // means we won't process any more. libsm hates us if we do the InteractDone
+  // with a pending ShutdownCancelled, and we would certainly like to handle Die
+  // whilst a dialog is displayed
+  NS_DispatchToCurrentThread(NewRunnableMethod(self, &nsNativeAppSupportUnix::DoInteract));
+}
+
+void
+nsNativeAppSupportUnix::DoInteract()
+{
+  nsCOMPtr<nsIObserverService> obsServ =
+    mozilla::services::GetObserverService();
+  if (!obsServ) {
+    SmcInteractDone(mSessionConnection, False);
+    SmcSaveYourselfDone(mSessionConnection, True);
+    SetClientState(STATE_IDLE);
     return;
   }
 
-  if (state->memory_low_ind && !ourState->memory_low_ind) {
-    nsCOMPtr<nsIObserverService> os = mozilla::services::GetObserverService();
-    if (os)
-      os->NotifyObservers(nullptr, "memory-pressure", NS_LITERAL_STRING("low-memory").get());
-  }
-  
-  if (state->system_inactivity_ind != ourState->system_inactivity_ind) {
-      nsCOMPtr<nsIObserverService> os = mozilla::services::GetObserverService();
-      if (!os)
-        return;
- 
-      if (state->system_inactivity_ind)
-          os->NotifyObservers(nullptr, "system-idle", nullptr);
-      else
-          os->NotifyObservers(nullptr, "system-active", nullptr);
+  nsCOMPtr<nsISupportsPRBool> cancelQuit =
+    do_CreateInstance(NS_SUPPORTS_PRBOOL_CONTRACTID);
+
+  bool abortQuit = false;
+  if (cancelQuit) {
+    cancelQuit->SetData(false);
+    obsServ->NotifyObservers(cancelQuit, "quit-application-requested", nullptr);
+
+    cancelQuit->GetData(&abortQuit);
   }
 
-  memcpy(ourState, state, sizeof(osso_hw_state_t));
-}
+  if (!abortQuit && mClientState == STATE_DISCONNECTED) {
+    // The session manager disappeared, whilst we were interacting, so
+    // quit now
+    nsCOMPtr<nsIAppStartup> appService =
+      do_GetService("@mozilla.org/toolkit/app-startup;1");
 
-static gint
-OssoDbusCallback(const gchar *interface, const gchar *method,
-                 GArray *arguments, gpointer data, osso_rpc_t *retval)
-{
-  retval->type = DBUS_TYPE_INVALID;
-
-  // The "top_application" method just wants us to focus the top-most window.
-  if (!strcmp("top_application", method)) {
-    nsCOMPtr<nsIDOMWindow> window;
-    GetMostRecentWindow(NS_LITERAL_STRING("").get(), getter_AddRefs(window));
-    if (window)
-      window->Focus();
-
-    return OSSO_OK;
-  }
-
-  if (!strcmp("quit", method)) {
-    nsCOMPtr<nsIAppStartup> appService = do_GetService("@mozilla.org/toolkit/app-startup;1");
-    if (appService)
+    if (appService) {
       appService->Quit(nsIAppStartup::eForceQuit);
-
-    return OSSO_OK;
-  }
-
-  // Other methods can have arguments, which we convert and send to commandline
-  // handlers.
-  nsCOMPtr<nsICommandLineRunner> cmdLine
-    (do_CreateInstance("@mozilla.org/toolkit/command-line;1"));
-
-  nsCOMPtr<nsIFile> workingDir;
-  NS_GetSpecialDirectory(NS_XPCOM_CURRENT_PROCESS_DIR,
-                         getter_AddRefs(workingDir));
-
-  char** argv = 0;
-  int argc = 0;
-
-  // Not all DBus methods pass arguments
-  if (arguments && arguments->len > 0) {
-    // Create argument list with a dummy argv[0]
-    argc = arguments->len + 1;
-    argv = (char**)calloc(1, argc * sizeof(*argv));
-
-    // Start at 1 to skip the dummy argv[0]
-    for (int i = 1; i < argc; i++) {
-      osso_rpc_t* entry = (osso_rpc_t*)&g_array_index(arguments, osso_rpc_t, i - 1);
-      if (entry->type != DBUS_TYPE_STRING)
-        continue;
-
-      argv[i] = strdup(entry->value.s);
     }
+  } else {
+    if (mClientState != STATE_SHUTDOWN_CANCELLED) {
+      // Only do this if the shutdown wasn't cancelled
+      SmcInteractDone(mSessionConnection, !!abortQuit);
+      SmcSaveYourselfDone(mSessionConnection, !abortQuit);
+    }
+
+    SetClientState(STATE_IDLE);
   }
-
-  cmdLine->Init(argc, argv, workingDir, nsICommandLine::STATE_REMOTE_AUTO);
-
-  // Cleanup argument list
-  while (argc) {
-    free(argv[--argc]);
-  }
-  free(argv);
-
-  cmdLine->Run();
-
-  return OSSO_OK;
 }
 
-static DBusHandlerResult
-OssoModeControlCallback(DBusConnection *con, DBusMessage *msg, gpointer data)
+void
+nsNativeAppSupportUnix::SaveYourselfCB(SmcConn smc_conn, SmPointer client_data,
+                                       int save_style, Bool shutdown,
+                                       int interact_style, Bool fast)
 {
-  if (dbus_message_is_signal(msg, MCE_SIGNAL_IF, MCE_DEVICE_ORIENTATION_SIG)) {
-    DBusMessageIter iter;
-    if (dbus_message_iter_init(msg, &iter)) {
-      const gchar *mode = NULL;
-      dbus_message_iter_get_basic(&iter, &mode);
+  nsNativeAppSupportUnix *self =
+    static_cast<nsNativeAppSupportUnix *>(client_data);
 
-      OssoSetWindowOrientation(strcmp(mode, "portrait") == 0);
+  // Expect a SaveYourselfCB if we're registering a new client.
+  // All properties are already set in Start() so just reply with
+  // SmcSaveYourselfDone if the callback matches the expected signature.
+  //
+  // Ancient versions (?) of xsm do not follow such an early SaveYourself with
+  // SaveComplete. This is a problem if the application freezes interaction
+  // while waiting for a response to SmcSaveYourselfDone. So never freeze
+  // interaction when in STATE_REGISTERING.
+  //
+  // That aside, we could treat each combination of flags appropriately and not
+  // special-case this.
+  if (self->mClientState == STATE_REGISTERING) {
+    self->SetClientState(STATE_IDLE);
+
+    if (save_style == SmSaveLocal && interact_style == SmInteractStyleNone &&
+        !shutdown && !fast) {
+      SmcSaveYourselfDone(self->mSessionConnection, True);
+      return;
     }
   }
-  return DBUS_HANDLER_RESULT_NOT_YET_HANDLED;
+
+  if (self->mClientState == STATE_SHUTDOWN_CANCELLED) {
+    // The last shutdown request was cancelled whilst we were interacting,
+    // and we haven't finished interacting yet. Switch the state back again
+    self->SetClientState(STATE_INTERACTING);
+  }
+
+  nsCOMPtr<nsIObserverService> obsServ =
+    mozilla::services::GetObserverService();
+  if (!obsServ) {
+    SmcSaveYourselfDone(smc_conn, True);
+    return;
+  }
+
+  bool status = false;
+  if (save_style != SmSaveGlobal) {
+    nsCOMPtr<nsISupportsPRBool> didSaveSession =
+      do_CreateInstance(NS_SUPPORTS_PRBOOL_CONTRACTID);
+
+    if (!didSaveSession) {
+      SmcSaveYourselfDone(smc_conn, True);
+      return;
+    }
+
+    // Notify observers to save the session state
+    didSaveSession->SetData(false);
+    obsServ->NotifyObservers(didSaveSession, "session-save", nullptr);
+
+    didSaveSession->GetData(&status);
+  }
+
+  // If the interact style permits us to, we are shutting down and we didn't
+  // manage to (or weren't asked to) save the local state, then notify the user
+  // in advance that we are doing to quit (assuming that we aren't already
+  // doing so)
+  if (!status && shutdown && interact_style != SmInteractStyleNone) {
+    if (self->mClientState != STATE_INTERACTING) {
+      SmcInteractRequest(smc_conn, SmDialogNormal,
+                         nsNativeAppSupportUnix::InteractCB, client_data);
+    }
+  } else {
+    SmcSaveYourselfDone(smc_conn, True);
+  }
 }
 
-#endif
+void
+nsNativeAppSupportUnix::DieCB(SmcConn smc_conn, SmPointer client_data)
+{
+  nsCOMPtr<nsIAppStartup> appService =
+    do_GetService("@mozilla.org/toolkit/app-startup;1");
+
+  if (appService) {
+    appService->Quit(nsIAppStartup::eForceQuit);
+  }
+  // Quit causes the shutdown to begin but the shutdown process is asynchronous
+  // so we can't DisconnectFromSM() yet
+}
+
+void
+nsNativeAppSupportUnix::ShutdownCancelledCB(SmcConn smc_conn,
+                                            SmPointer client_data)
+{
+  nsNativeAppSupportUnix *self =
+    static_cast<nsNativeAppSupportUnix *>(client_data);
+
+  // Interacting is the only time when we wouldn't already have called
+  // SmcSaveYourselfDone. Do that now, then set the state to make sure we
+  // don't send it again after finishing interacting
+  if (self->mClientState == STATE_INTERACTING) {
+    SmcSaveYourselfDone(smc_conn, False);
+    self->SetClientState(STATE_SHUTDOWN_CANCELLED);
+  }
+}
+
+void
+nsNativeAppSupportUnix::DisconnectFromSM()
+{
+  // the SM is free to exit any time after we disconnect, so callers must be
+  // sure to have reached a sufficiently advanced phase of shutdown that there
+  // is no risk of data loss:
+  // e.g. all async writes are complete by the end of "profile-before-change"
+  if (mSessionConnection) {
+    SetClientState(STATE_DISCONNECTED);
+    SmcCloseConnection(mSessionConnection, 0, nullptr);
+    mSessionConnection = nullptr;
+    gdk_x11_set_sm_client_id(nullptr);  // follow gnome-client behaviour
+  }
+}
+
+static void
+SetSMValue(SmPropValue& val, const nsCString& data)
+{
+  val.value = static_cast<SmPointer>(const_cast<char*>(data.get()));
+  val.length = data.Length();
+}
+
+static void
+SetSMProperty(SmProp& prop, const char* name, const char* type, int numVals,
+              SmPropValue vals[])
+{
+  prop.name = const_cast<char*>(name);
+  prop.type = const_cast<char*>(type);
+  prop.num_vals = numVals;
+  prop.vals = vals;
+}
+#endif /* MOZ_X11 */
+
+static void RemoveArg(char **argv)
+{
+  do {
+    *argv = *(argv + 1);
+    ++argv;
+  } while (*argv);
+
+  --gArgc;
+}
 
 NS_IMETHODIMP
 nsNativeAppSupportUnix::Start(bool *aRetVal)
 {
   NS_ASSERTION(gAppData, "gAppData must not be null.");
 
+// The dbus library is used by both nsWifiScannerDBus and BluetoothDBusService,
+// from diffrent threads. This could lead to race conditions if the dbus is not
+// initialized before making any other library calls.
+#ifdef MOZ_ENABLE_DBUS
+  dbus_threads_init_default();
+#endif
+
 #if (MOZ_WIDGET_GTK == 2)
   if (gtk_major_version < MIN_GTK_MAJOR_VERSION ||
       (gtk_major_version == MIN_GTK_MAJOR_VERSION && gtk_minor_version < MIN_GTK_MINOR_VERSION)) {
-    GtkWidget* versionErrDialog = gtk_message_dialog_new(NULL,
+    GtkWidget* versionErrDialog = gtk_message_dialog_new(nullptr,
                      GtkDialogFlags(GTK_DIALOG_MODAL |
                                     GTK_DIALOG_DESTROY_WITH_PARENT),
                      GTK_MESSAGE_ERROR,
@@ -414,125 +472,139 @@ nsNativeAppSupportUnix::Start(bool *aRetVal)
                      MIN_GTK_MINOR_VERSION);
     gtk_dialog_run(GTK_DIALOG(versionErrDialog));
     gtk_widget_destroy(versionErrDialog);
+    MozExpectedExit();
     exit(0);
   }
 #endif
 
-#if (MOZ_PLATFORM_MAEMO == 5)
-  /* zero state out. */
-  memset(&m_hw_state, 0, sizeof(osso_hw_state_t));
-
-  /* Initialize maemo application
-     
-     The initalization name will be of the form "Vendor.Name".
-     If a Vendor isn't given, then we will just use "Name".
-     
-     Note that this value must match your X-Osso-Service name
-     defined in your desktop file.  If it doesn't, the OSSO
-     system will happily kill your process.
-  */
-  nsAutoCString applicationName;
-  if (gAppData->vendor) {
-      applicationName.Append(gAppData->vendor);
-      applicationName.Append(".");
-  }
-  applicationName.Append(gAppData->name);
-  ToLowerCase(applicationName);
-
-  m_osso_context = osso_initialize(applicationName.get(), 
-                                   gAppData->version ? gAppData->version : "1.0",
-                                   true,
-                                   nullptr);
-
-  /* Check that initilialization was ok */
-  if (m_osso_context == nullptr) {
-      return NS_ERROR_FAILURE;
-  }
-
-  osso_hw_set_event_cb(m_osso_context, nullptr, OssoHardwareCallback, &m_hw_state);
-  osso_hw_set_display_event_cb(m_osso_context, OssoDisplayCallback, m_osso_context);
-  osso_rpc_set_default_cb_f(m_osso_context, OssoDbusCallback, nullptr);
-
-  // Setup an MCE callback to monitor orientation
-  DBusConnection *connnection = (DBusConnection*)osso_get_sys_dbus_connection(m_osso_context);
-  dbus_bus_add_match(connnection, MCE_MATCH_RULE, nullptr);
-  dbus_connection_add_filter(connnection, OssoModeControlCallback, nullptr, nullptr);
-#endif
-
   *aRetVal = true;
 
-#if defined(MOZ_X11) && (MOZ_WIDGET_GTK == 2)
+#ifdef MOZ_X11
+  gboolean sm_disable = FALSE;
+  if (!getenv("SESSION_MANAGER")) {
+    sm_disable = TRUE;
+  }
 
-  PRLibrary *gnomeuiLib = PR_LoadLibrary("libgnomeui-2.so.0");
-  if (!gnomeuiLib)
-    return NS_OK;
+  nsAutoCString prev_client_id;
 
-  PRLibrary *gnomeLib = PR_LoadLibrary("libgnome-2.so.0");
-  if (!gnomeLib) {
-    PR_UnloadLibrary(gnomeuiLib);
+  char **curarg = gArgv + 1;
+  while (*curarg) {
+    char *arg = *curarg;
+    if (arg[0] == '-' && arg[1] == '-') {
+      arg += 2;
+      if (!strcmp(arg, "sm-disable")) {
+        RemoveArg(curarg);
+        sm_disable = TRUE;
+        continue;
+      } else if (!strcmp(arg, "sm-client-id")) {
+        RemoveArg(curarg);
+        if (*curarg[0] != '-') {
+          prev_client_id = *curarg;
+          RemoveArg(curarg);
+        }
+        continue;
+      }
+    }
+
+    ++curarg;
+  }
+
+  if (prev_client_id.IsEmpty()) {
+    prev_client_id = getenv("DESKTOP_AUTOSTART_ID");
+  }
+
+  // We don't want child processes to use the same ID
+  unsetenv("DESKTOP_AUTOSTART_ID");
+
+  char *client_id = nullptr;
+  if (!sm_disable) {
+    PRLibrary *iceLib = PR_LoadLibrary("libICE.so.6");
+    if (!iceLib) {
+      return NS_OK;
+    }
+
+    PRLibrary *smLib = PR_LoadLibrary("libSM.so.6");
+    if (!smLib) {
+      PR_UnloadLibrary(iceLib);
+      return NS_OK;
+    }
+
+    IceSetIOErrorHandler = (IceSetIOErrorHandlerFn)PR_FindFunctionSymbol(iceLib, "IceSetIOErrorHandler");
+    IceAddConnectionWatch = (IceAddConnectionWatchFn)PR_FindFunctionSymbol(iceLib, "IceAddConnectionWatch");
+    IceConnectionNumber = (IceConnectionNumberFn)PR_FindFunctionSymbol(iceLib, "IceConnectionNumber");
+    IceProcessMessages = (IceProcessMessagesFn)PR_FindFunctionSymbol(iceLib, "IceProcessMessages");
+    IceGetConnectionContext = (IceGetConnectionContextFn)PR_FindFunctionSymbol(iceLib, "IceGetConnectionContext");
+    if (!IceSetIOErrorHandler || !IceAddConnectionWatch ||
+	!IceConnectionNumber  || !IceProcessMessages || !IceGetConnectionContext) {
+      PR_UnloadLibrary(iceLib);
+      PR_UnloadLibrary(smLib);
+      return NS_OK;
+    }
+
+    SmcInteractDone = (SmcInteractDoneFn)PR_FindFunctionSymbol(smLib, "SmcInteractDone");
+    SmcSaveYourselfDone = (SmcSaveYourselfDoneFn)PR_FindFunctionSymbol(smLib, "SmcSaveYourselfDone");
+    SmcInteractRequest = (SmcInteractRequestFn)PR_FindFunctionSymbol(smLib, "SmcInteractRequest");
+    SmcCloseConnection = (SmcCloseConnectionFn)PR_FindFunctionSymbol(smLib, "SmcCloseConnection");
+    SmcOpenConnection = (SmcOpenConnectionFn)PR_FindFunctionSymbol(smLib, "SmcOpenConnection");
+    SmcSetProperties = (SmcSetPropertiesFn)PR_FindFunctionSymbol(smLib, "SmcSetProperties");
+    if (!SmcInteractDone || !SmcSaveYourselfDone || !SmcInteractRequest ||
+        !SmcCloseConnection || !SmcOpenConnection || !SmcSetProperties) {
+      PR_UnloadLibrary(iceLib);
+      PR_UnloadLibrary(smLib);
+      return NS_OK;
+    }
+
+    ice_init();
+
+    // all callbacks are mandatory in libSM 1.0, so listen even if we don't care.
+    unsigned long mask = SmcSaveYourselfProcMask | SmcDieProcMask |
+                         SmcSaveCompleteProcMask | SmcShutdownCancelledProcMask;
+
+    SmcCallbacks callbacks;
+    callbacks.save_yourself.callback = nsNativeAppSupportUnix::SaveYourselfCB;
+    callbacks.save_yourself.client_data = static_cast<SmPointer>(this);
+
+    callbacks.die.callback = nsNativeAppSupportUnix::DieCB;
+    callbacks.die.client_data = static_cast<SmPointer>(this);
+
+    callbacks.save_complete.callback = nsNativeAppSupportUnix::SaveCompleteCB;
+    callbacks.save_complete.client_data = nullptr;
+
+    callbacks.shutdown_cancelled.callback =
+      nsNativeAppSupportUnix::ShutdownCancelledCB;
+    callbacks.shutdown_cancelled.client_data = static_cast<SmPointer>(this);
+
+    char errbuf[256];
+    mSessionConnection = SmcOpenConnection(nullptr, this, SmProtoMajor,
+                                           SmProtoMinor, mask, &callbacks,
+                                           prev_client_id.get(), &client_id,
+                                           sizeof(errbuf), errbuf);
+  }
+
+  if (!mSessionConnection) {
     return NS_OK;
   }
 
-  _gnome_program_init_fn gnome_program_init =
-    (_gnome_program_init_fn)PR_FindFunctionSymbol(gnomeLib, "gnome_program_init");
-  _gnome_program_get_fn gnome_program_get =
-    (_gnome_program_get_fn)PR_FindFunctionSymbol(gnomeLib, "gnome_program_get"); 
- _libgnomeui_module_info_get_fn libgnomeui_module_info_get = (_libgnomeui_module_info_get_fn)PR_FindFunctionSymbol(gnomeuiLib, "libgnomeui_module_info_get");
-  if (!gnome_program_init || !gnome_program_get || !libgnomeui_module_info_get) {
-    PR_UnloadLibrary(gnomeuiLib);
-    PR_UnloadLibrary(gnomeLib);
-    return NS_OK;
-  }
-
-#endif /* MOZ_X11 && (MOZ_WIDGET_GTK == 2) */
-
-#ifdef ACCESSIBILITY
-  // We will load gail, atk-bridge by ourself later
-  // We can't run atk-bridge init here, because gail get the control
-  // Set GNOME_ACCESSIBILITY to 0 can avoid this
-  static const char *accEnv = "GNOME_ACCESSIBILITY";
-  const char *accOldValue = getenv(accEnv);
-  setenv(accEnv, "0", 1);
-#endif
-
-#if defined(MOZ_X11) && (MOZ_WIDGET_GTK == 2)
-  if (!gnome_program_get()) {
-    gnome_program_init("Gecko", "1.0", libgnomeui_module_info_get(), gArgc, gArgv, NULL);
-  }
-#endif /* MOZ_X11 && (MOZ_WIDGET_GTK == 2) */
-
-#ifdef ACCESSIBILITY
-  if (accOldValue) { 
-    setenv(accEnv, accOldValue, 1);
+  LogModule::Init();  // need to make sure initialized before SetClientState
+  if (prev_client_id.IsEmpty() ||
+      (client_id && !prev_client_id.Equals(client_id))) {
+    SetClientState(STATE_REGISTERING);
   } else {
-    unsetenv(accEnv);
+    SetClientState(STATE_IDLE);
   }
-#endif
 
-  // Careful! These libraries cannot be unloaded after this point because
-  // gnome_program_init causes atexit handlers to be registered. Strange
-  // crashes will occur if these libraries are unloaded.
+  gdk_x11_set_sm_client_id(client_id);
 
-  // TODO GTK3 - see Bug 694570 - Stop using libgnome and libgnomeui on Linux
-#if defined(MOZ_X11) && (MOZ_WIDGET_GTK == 2)
-  gnome_client_set_restart_command = (_gnome_client_set_restart_command_fn)
-    PR_FindFunctionSymbol(gnomeuiLib, "gnome_client_set_restart_command");
+  // Set SM Properties
+  // SmCloneCommand, SmProgram, SmRestartCommand, SmUserID are required
+  // properties so must be set, and must have a sensible fallback value.
 
-  _gnome_master_client_fn gnome_master_client = (_gnome_master_client_fn)
-    PR_FindFunctionSymbol(gnomeuiLib, "gnome_master_client");
-
-  GnomeClient *client = gnome_master_client();
-  g_signal_connect(client, "save-yourself", G_CALLBACK(save_yourself_cb), NULL);
-  g_signal_connect(client, "die", G_CALLBACK(die_cb), NULL);
-
-  // Set the correct/requested restart command in any case.
+  // Determine executable path to use for XSMP session restore
 
   // Is there a request to suppress default binary launcher?
-  nsAutoCString path;
-  char* argv1 = getenv("MOZ_APP_LAUNCHER");
+  nsAutoCString path(getenv("MOZ_APP_LAUNCHER"));
 
-  if(!argv1) {
-    // Tell the desktop the command for restarting us so that we can be part of XSMP session restore
+  if (path.IsEmpty()) {
     NS_ASSERTION(gDirServiceProvider, "gDirServiceProvider is NULL! This shouldn't happen!");
     nsCOMPtr<nsIFile> executablePath;
     nsresult rv;
@@ -550,14 +622,60 @@ nsNativeAppSupportUnix::Start(bool *aRetVal)
       }
 
       executablePath->GetNativePath(path);
-      argv1 = (char*)(path.get());
     }
   }
 
-  if (argv1) {
-    gnome_client_set_restart_command(client, 1, &argv1);
+  if (path.IsEmpty()) {
+    // can't determine executable path. Best fallback is name from
+    // application.ini but it might not resolve to the same executable at
+    // launch time.
+    path = gAppData->name;  // will always be set
+    ToLowerCase(path);
+    MOZ_LOG(sMozSMLog, LogLevel::Warning,
+        ("Could not determine executable path. Falling back to %s.", path.get()));
   }
-#endif /* MOZ_X11 && (MOZ_WIDGET_GTK == 2) */
+
+  SmProp propRestart, propClone, propProgram, propUser, *props[4];
+  SmPropValue valsRestart[3], valsClone[1], valsProgram[1], valsUser[1];
+  int n = 0;
+
+  NS_NAMED_LITERAL_CSTRING(kClientIDParam, "--sm-client-id");
+
+  SetSMValue(valsRestart[0], path);
+  SetSMValue(valsRestart[1], kClientIDParam);
+  SetSMValue(valsRestart[2], nsDependentCString(client_id));
+  SetSMProperty(propRestart, SmRestartCommand, SmLISTofARRAY8, 3, valsRestart);
+  props[n++] = &propRestart;
+
+  SetSMValue(valsClone[0], path);
+  SetSMProperty(propClone, SmCloneCommand, SmLISTofARRAY8, 1, valsClone);
+  props[n++] = &propClone;
+
+  nsAutoCString appName(gAppData->name);  // will always be set
+  ToLowerCase(appName);
+
+  SetSMValue(valsProgram[0], appName);
+  SetSMProperty(propProgram, SmProgram, SmARRAY8, 1, valsProgram);
+  props[n++] = &propProgram;
+
+  nsAutoCString userName;  // username that started the program
+  struct passwd* pw = getpwuid(getuid());
+  if (pw && pw->pw_name) {
+    userName = pw->pw_name;
+  } else {
+    userName = NS_LITERAL_CSTRING("nobody");
+    MOZ_LOG(sMozSMLog, LogLevel::Warning,
+        ("Could not determine user-name. Falling back to %s.", userName.get()));
+  }
+
+  SetSMValue(valsUser[0], userName);
+  SetSMProperty(propUser, SmUserID, SmARRAY8, 1, valsUser);
+  props[n++] = &propUser;
+
+  SmcSetProperties(mSessionConnection, n, props);
+
+  g_free(client_id);
+#endif /* MOZ_X11 */
 
   return NS_OK;
 }
@@ -567,33 +685,12 @@ nsNativeAppSupportUnix::Stop(bool *aResult)
 {
   NS_ENSURE_ARG(aResult);
   *aResult = true;
-
-#if (MOZ_PLATFORM_MAEMO == 5)
-  if (m_osso_context) {
-    // Disable the accelerometer when closing
-    OssoRequestAccelerometer(m_osso_context, false);
-
-    // Remove the MCE callback filter
-    DBusConnection *connnection = (DBusConnection*)osso_get_sys_dbus_connection(m_osso_context);
-    dbus_connection_remove_filter(connnection, OssoModeControlCallback, nullptr);
-
-    osso_hw_unset_event_cb(m_osso_context, nullptr);
-    osso_rpc_unset_default_cb_f(m_osso_context, OssoDbusCallback, nullptr);
-    osso_deinitialize(m_osso_context);
-    m_osso_context = nullptr;
-  }
-#endif
   return NS_OK;
 }
 
 NS_IMETHODIMP
 nsNativeAppSupportUnix::Enable()
 {
-#if (MOZ_PLATFORM_MAEMO == 5)
-  // Enable the accelerometer for orientation support
-  if (OssoIsScreenOn(m_osso_context))
-      OssoRequestAccelerometer(m_osso_context, true);
-#endif
   return NS_OK;
 }
 

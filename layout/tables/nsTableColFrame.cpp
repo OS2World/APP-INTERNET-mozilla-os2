@@ -13,11 +13,15 @@
 #include "nsCSSRendering.h"
 #include "nsIContent.h"
 
+using namespace mozilla;
+
 #define COL_TYPE_BITS                 (NS_FRAME_STATE_BIT(28) | \
                                        NS_FRAME_STATE_BIT(29) | \
                                        NS_FRAME_STATE_BIT(30) | \
                                        NS_FRAME_STATE_BIT(31))
 #define COL_TYPE_OFFSET               28
+
+using namespace mozilla;
 
 nsTableColFrame::nsTableColFrame(nsStyleContext* aContext) :
   nsSplittableFrame(aContext)
@@ -25,21 +29,21 @@ nsTableColFrame::nsTableColFrame(nsStyleContext* aContext) :
   SetColType(eColContent);
   ResetIntrinsics();
   ResetSpanIntrinsics();
-  ResetFinalWidth();
+  ResetFinalISize();
 }
 
 nsTableColFrame::~nsTableColFrame()
 {
 }
 
-nsTableColType 
-nsTableColFrame::GetColType() const 
+nsTableColType
+nsTableColFrame::GetColType() const
 {
   return (nsTableColType)((mState & COL_TYPE_BITS) >> COL_TYPE_OFFSET);
 }
 
-void 
-nsTableColFrame::SetColType(nsTableColType aType) 
+void
+nsTableColFrame::SetColType(nsTableColType aType)
 {
   NS_ASSERTION(aType != eColAnonymousCol ||
                (GetPrevContinuation() &&
@@ -47,7 +51,8 @@ nsTableColFrame::SetColType(nsTableColType aType)
                 GetPrevContinuation()->GetNextSibling() == this),
                "spanned content cols must be continuations");
   uint32_t type = aType - eColContent;
-  mState |= (type << COL_TYPE_OFFSET);
+  RemoveStateBits(COL_TYPE_BITS);
+  AddStateBits(nsFrameState(type << COL_TYPE_OFFSET));
 }
 
 /* virtual */ void
@@ -57,51 +62,50 @@ nsTableColFrame::DidSetStyleContext(nsStyleContext* aOldStyleContext)
 
   if (!aOldStyleContext) //avoid this on init
     return;
-     
-  nsTableFrame* tableFrame = nsTableFrame::GetTableFrame(this);
+
+  nsTableFrame* tableFrame = GetTableFrame();
   if (tableFrame->IsBorderCollapse() &&
       tableFrame->BCRecalcNeeded(aOldStyleContext, StyleContext())) {
-    nsIntRect damageArea(GetColIndex(), 0, 1, tableFrame->GetRowCount());
+    TableArea damageArea(GetColIndex(), 0, 1, tableFrame->GetRowCount());
     tableFrame->AddBCDamageArea(damageArea);
   }
 }
 
-void nsTableColFrame::SetContinuousBCBorderWidth(uint8_t     aForSide,
+void nsTableColFrame::SetContinuousBCBorderWidth(LogicalSide aForSide,
                                                  BCPixelSize aPixelValue)
 {
   switch (aForSide) {
-    case NS_SIDE_TOP:
-      mTopContBorderWidth = aPixelValue;
+    case eLogicalSideBStart:
+      mBStartContBorderWidth = aPixelValue;
       return;
-    case NS_SIDE_RIGHT:
-      mRightContBorderWidth = aPixelValue;
+    case eLogicalSideIEnd:
+      mIEndContBorderWidth = aPixelValue;
       return;
-    case NS_SIDE_BOTTOM:
-      mBottomContBorderWidth = aPixelValue;
+    case eLogicalSideBEnd:
+      mBEndContBorderWidth = aPixelValue;
       return;
     default:
       NS_ERROR("invalid side arg");
   }
 }
 
-NS_METHOD nsTableColFrame::Reflow(nsPresContext*          aPresContext,
-                                  nsHTMLReflowMetrics&     aDesiredSize,
-                                  const nsHTMLReflowState& aReflowState,
+void
+nsTableColFrame::Reflow(nsPresContext*          aPresContext,
+                                  ReflowOutput&     aDesiredSize,
+                                  const ReflowInput& aReflowInput,
                                   nsReflowStatus&          aStatus)
 {
+  MarkInReflow();
   DO_GLOBAL_REFLOW_COUNT("nsTableColFrame");
-  DISPLAY_REFLOW(aPresContext, this, aReflowState, aDesiredSize, aStatus);
-  aDesiredSize.width=0;
-  aDesiredSize.height=0;
+  DISPLAY_REFLOW(aPresContext, this, aReflowInput, aDesiredSize, aStatus);
+  aDesiredSize.ClearSize();
   const nsStyleVisibility* colVis = StyleVisibility();
   bool collapseCol = (NS_STYLE_VISIBILITY_COLLAPSE == colVis->mVisible);
   if (collapseCol) {
-    nsTableFrame* tableFrame = nsTableFrame::GetTableFrame(this);
-    tableFrame->SetNeedToCollapse(true);
+    GetTableFrame()->SetNeedToCollapse(true);
   }
   aStatus = NS_FRAME_COMPLETE;
-  NS_FRAME_SET_TRUNCATION(aStatus, aReflowState, aDesiredSize);
-  return NS_OK;
+  NS_FRAME_SET_TRUNCATION(aStatus, aReflowInput, aDesiredSize);
 }
 
 int32_t nsTableColFrame::GetSpan()
@@ -126,13 +130,13 @@ void nsTableColFrame::Dump(int32_t aIndent)
   case eColContent:
     printf(" content ");
     break;
-  case eColAnonymousCol: 
+  case eColAnonymousCol:
     printf(" anonymous-column ");
     break;
   case eColAnonymousColGroup:
     printf(" anonymous-colgroup ");
     break;
-  case eColAnonymousCell: 
+  case eColAnonymousCell:
     printf(" anonymous-cell ");
     break;
   }
@@ -141,14 +145,14 @@ void nsTableColFrame::Dump(int32_t aIndent)
          mHasSpecifiedCoord ? 's' : 'u', mPrefPercent,
          int32_t(mSpanMinCoord), int32_t(mSpanPrefCoord),
          mSpanPrefPercent,
-         int32_t(GetFinalWidth()));
+         int32_t(GetFinalISize()));
   printf("\n%s**END COL DUMP** ", indent);
   delete [] indent;
 }
 #endif
 /* ----- global methods ----- */
 
-nsTableColFrame* 
+nsTableColFrame*
 NS_NewTableColFrame(nsIPresShell* aPresShell, nsStyleContext* aContext)
 {
   return new (aPresShell) nsTableColFrame(aContext);
@@ -156,7 +160,7 @@ NS_NewTableColFrame(nsIPresShell* aPresShell, nsStyleContext* aContext)
 
 NS_IMPL_FRAMEARENA_HELPERS(nsTableColFrame)
 
-nsTableColFrame*  
+nsTableColFrame*
 nsTableColFrame::GetNextCol() const
 {
   nsIFrame* childFrame = GetNextSibling();
@@ -175,8 +179,8 @@ nsTableColFrame::GetType() const
   return nsGkAtoms::tableColFrame;
 }
 
-#ifdef DEBUG
-NS_IMETHODIMP
+#ifdef DEBUG_FRAME_DUMP
+nsresult
 nsTableColFrame::GetFrameName(nsAString& aResult) const
 {
   return MakeFrameName(NS_LITERAL_STRING("TableCol"), aResult);

@@ -40,13 +40,13 @@
  *---------------------------------------------------------------*/
 
 short encode(                         /* (o) Number of bytes encoded */
-    iLBC_Enc_Inst_t *iLBCenc_inst,    /* (i/o) Encoder instance */
-    WebRtc_Word16 *encoded_data,      /* (o) The encoded bytes */
-    WebRtc_Word16 *data               /* (i) The signal block to encode */
+    IlbcEncoder *iLBCenc_inst,    /* (i/o) Encoder instance */
+    int16_t *encoded_data,      /* (o) The encoded bytes */
+    int16_t *data               /* (i) The signal block to encode */
                                                         ){
 
   /* do the actual encoding */
-  WebRtcIlbcfix_Encode((WebRtc_UWord16 *)encoded_data, data, iLBCenc_inst);
+  WebRtcIlbcfix_Encode((uint16_t *)encoded_data, data, iLBCenc_inst);
 
   return (iLBCenc_inst->no_of_bytes);
 }
@@ -56,7 +56,7 @@ short encode(                         /* (o) Number of bytes encoded */
  *---------------------------------------------------------------*/
 
 short decode( /* (o) Number of decoded samples */
-    iLBC_Dec_Inst_t *iLBCdec_inst, /* (i/o) Decoder instance */
+    IlbcDecoder *iLBCdec_inst, /* (i/o) Decoder instance */
     short *decoded_data, /* (o) Decoded signal block */
     short *encoded_data, /* (i) Encoded bytes */
     short mode           /* (i) 0=PL, 1=Normal */
@@ -69,7 +69,7 @@ short decode( /* (o) Number of decoded samples */
 
   /* do actual decoding of block */
 
-  WebRtcIlbcfix_Decode(decoded_data, (WebRtc_UWord16 *)encoded_data,
+  WebRtcIlbcfix_Decode(decoded_data, (uint16_t *)encoded_data,
                        iLBCdec_inst, mode);
 
   return (iLBCdec_inst->blockl);
@@ -100,8 +100,8 @@ int main(int argc, char* argv[])
   short *channeldata;
   int blockcount = 0, noOfBlocks=0, i, noOfLostBlocks=0;
   short mode;
-  iLBC_Enc_Inst_t Enc_Inst;
-  iLBC_Dec_Inst_t Dec_Inst;
+  IlbcEncoder Enc_Inst;
+  IlbcDecoder Dec_Inst;
 
   short frameLen;
   short count;
@@ -213,7 +213,7 @@ int main(int argc, char* argv[])
   frameLen = Enc_Inst.blockl;
 
   while( fread(&inputdata[noOfBlocks*Enc_Inst.blockl],sizeof(short),
-               Enc_Inst.blockl,ifileid)==(WebRtc_UWord16)Enc_Inst.blockl){
+               Enc_Inst.blockl,ifileid)==(uint16_t)Enc_Inst.blockl){
     noOfBlocks++;
   }
 #endif

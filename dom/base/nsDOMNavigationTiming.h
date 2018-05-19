@@ -1,4 +1,5 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
+/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
+/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -6,76 +7,87 @@
 #ifndef nsDOMNavigationTiming_h___
 #define nsDOMNavigationTiming_h___
 
-#include "nscore.h"
 #include "nsCOMPtr.h"
 #include "nsCOMArray.h"
 #include "mozilla/TimeStamp.h"
-#include "nsIURI.h"
 
-class nsDOMNavigationTimingClock;
+class nsIURI;
 
 typedef unsigned long long DOMTimeMilliSec;
 typedef double DOMHighResTimeStamp;
-typedef unsigned short nsDOMPerformanceNavigationType;
 
-namespace mozilla {
-namespace dom {
-namespace PerformanceNavigation {
-static const nsDOMPerformanceNavigationType TYPE_NAVIGATE = 0;
-static const nsDOMPerformanceNavigationType TYPE_RELOAD = 1;
-static const nsDOMPerformanceNavigationType TYPE_BACK_FORWARD = 2;
-static const nsDOMPerformanceNavigationType TYPE_RESERVED = 255;
-}
-}
-}
-
-class nsDOMNavigationTiming
+class nsDOMNavigationTiming final
 {
 public:
+  enum Type {
+    TYPE_NAVIGATE = 0,
+    TYPE_RELOAD = 1,
+    TYPE_BACK_FORWARD = 2,
+    TYPE_RESERVED = 255,
+  };
+
   nsDOMNavigationTiming();
 
   NS_INLINE_DECL_REFCOUNTING(nsDOMNavigationTiming)
 
-  nsDOMPerformanceNavigationType GetType() const {
+  Type GetType() const
+  {
     return mNavigationType;
   }
-  uint16_t GetRedirectCount();
 
-  DOMTimeMilliSec GetRedirectStart();
-  DOMTimeMilliSec GetRedirectEnd();
-  DOMTimeMilliSec GetNavigationStart() const {
-    return mNavigationStart;
+  inline DOMHighResTimeStamp GetNavigationStartHighRes() const
+  {
+    return mNavigationStartHighRes;
   }
+
+  DOMTimeMilliSec GetNavigationStart() const
+  {
+    return static_cast<int64_t>(GetNavigationStartHighRes());
+  }
+
+  mozilla::TimeStamp GetNavigationStartTimeStamp() const
+  {
+    return mNavigationStartTimeStamp;
+  }
+
   DOMTimeMilliSec GetUnloadEventStart();
   DOMTimeMilliSec GetUnloadEventEnd();
-  DOMTimeMilliSec GetFetchStart() const {
-    return mFetchStart;
-  }
-  DOMTimeMilliSec GetDomLoading() const {
+  DOMTimeMilliSec GetDomLoading() const
+  {
     return mDOMLoading;
   }
-  DOMTimeMilliSec GetDomInteractive() const {
+  DOMTimeMilliSec GetDomInteractive() const
+  {
     return mDOMInteractive;
   }
-  DOMTimeMilliSec GetDomContentLoadedEventStart() const {
+  DOMTimeMilliSec GetDomContentLoadedEventStart() const
+  {
     return mDOMContentLoadedEventStart;
   }
-  DOMTimeMilliSec GetDomContentLoadedEventEnd() const {
+  DOMTimeMilliSec GetDomContentLoadedEventEnd() const
+  {
     return mDOMContentLoadedEventEnd;
   }
-  DOMTimeMilliSec GetDomComplete() const {
+  DOMTimeMilliSec GetDomComplete() const
+  {
     return mDOMComplete;
   }
-  DOMTimeMilliSec GetLoadEventStart() const {
+  DOMTimeMilliSec GetLoadEventStart() const
+  {
     return mLoadEventStart;
   }
-  DOMTimeMilliSec GetLoadEventEnd() const {
+  DOMTimeMilliSec GetLoadEventEnd() const
+  {
     return mLoadEventEnd;
   }
 
-  void NotifyNavigationStart();
-  void NotifyFetchStart(nsIURI* aURI, nsDOMPerformanceNavigationType aNavigationType);
-  void NotifyRedirect(nsIURI* aOldURI, nsIURI* aNewURI);
+  enum class DocShellState : uint8_t {
+    eActive,
+    eInactive
+  };
+
+  void NotifyNavigationStart(DocShellState aDocShellState);
+  void NotifyFetchStart(nsIURI* aURI, Type aNavigationType);
   void NotifyBeforeUnload();
   void NotifyUnloadAccepted(nsIURI* aOldURI);
   void NotifyUnloadEventStart();
@@ -90,8 +102,11 @@ public:
   void NotifyDOMComplete(nsIURI* aURI);
   void NotifyDOMContentLoadedStart(nsIURI* aURI);
   void NotifyDOMContentLoadedEnd(nsIURI* aURI);
+
+  void NotifyNonBlankPaintForRootContentDocument();
+  void NotifyDocShellStateChanged(DocShellState aDocShellState);
+
   DOMTimeMilliSec TimeStampToDOM(mozilla::TimeStamp aStamp) const;
-  DOMTimeMilliSec TimeStampToDOMOrFetchStart(mozilla::TimeStamp aStamp) const;
 
   inline DOMHighResTimeStamp TimeStampToDOMHighRes(mozilla::TimeStamp aStamp)
   {
@@ -100,31 +115,20 @@ public:
   }
 
 private:
-  nsDOMNavigationTiming(const nsDOMNavigationTiming &){};
+  nsDOMNavigationTiming(const nsDOMNavigationTiming &) = delete;
   ~nsDOMNavigationTiming();
 
   void Clear();
-  bool ReportRedirects();
 
   nsCOMPtr<nsIURI> mUnloadedURI;
   nsCOMPtr<nsIURI> mLoadedURI;
-  nsCOMArray<nsIURI> mRedirects;
 
-  typedef enum { NOT_CHECKED,
-                 CHECK_PASSED,
-                 NO_REDIRECTS,
-                 CHECK_FAILED} RedirectCheckState;
-  RedirectCheckState mRedirectCheck;
-  int16_t mRedirectCount;
-
-  nsDOMPerformanceNavigationType mNavigationType;
-  DOMTimeMilliSec mNavigationStart;
+  Type mNavigationType;
+  DOMHighResTimeStamp mNavigationStartHighRes;
   mozilla::TimeStamp mNavigationStartTimeStamp;
+  mozilla::TimeStamp mNonBlankPaintTimeStamp;
   DOMTimeMilliSec DurationFromStart();
 
-  DOMTimeMilliSec mFetchStart;
-  DOMTimeMilliSec mRedirectStart;
-  DOMTimeMilliSec mRedirectEnd;
   DOMTimeMilliSec mBeforeUnloadStart;
   DOMTimeMilliSec mUnloadStart;
   DOMTimeMilliSec mUnloadEnd;
@@ -147,6 +151,7 @@ private:
   bool mDOMContentLoadedEventStartSet : 1;
   bool mDOMContentLoadedEventEndSet : 1;
   bool mDOMCompleteSet : 1;
+  bool mDocShellHasBeenActiveSinceNavigationStart : 1;
 };
 
 #endif /* nsDOMNavigationTiming_h___ */

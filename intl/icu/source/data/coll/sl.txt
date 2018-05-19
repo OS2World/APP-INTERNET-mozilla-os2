@@ -1,20 +1,16 @@
-﻿// ***************************************************************************
-// *
-// * Copyright (C) 2012 International Business Machines
-// * Corporation and others.  All Rights Reserved.
-// * Tool: com.ibm.icu.dev.tool.cldr.LDML2ICUConverter.java
-// * Source File:<path>/common/collation/sl.xml
-// *
-// ***************************************************************************
-/**
- *  ICU <specials> source: <path>/xml/collation/sl.xml
- */
+﻿// © 2016 and later: Unicode, Inc. and others.
+// License & terms of use: http://www.unicode.org/copyright.html#License
 sl{
-    Version{"2.0.50.22"}
+    Version{"2.1.19.14"}
     collations{
         standard{
-            Sequence{"&C<č<<<Č<ć<<<Ć&D<đ<<<Đ&S<š<<<Š&Z<ž<<<Ž"}
-            Version{"22.1.1"}
+            Sequence{
+                "&C<č<<<Č<ć<<<Ć"
+                "&D<đ<<<Đ"
+                "&S<š<<<Š"
+                "&Z<ž<<<Ž"
+            }
+            Version{"30.0.3"}
         }
     }
 }

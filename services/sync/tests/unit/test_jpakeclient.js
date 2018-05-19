@@ -1,4 +1,4 @@
-Cu.import("resource://services-common/log4moz.js");
+Cu.import("resource://gre/modules/Log.jsm");
 Cu.import("resource://services-sync/identity.js");
 Cu.import("resource://services-sync/jpakeclient.js");
 Cu.import("resource://services-sync/constants.js");
@@ -38,8 +38,8 @@ function new_channel() {
   return cid;
 }
 
-let server;
-let channels = {};  // Map channel -> ServerChannel object
+var server;
+var channels = {};  // Map channel -> ServerChannel object
 function server_new_channel(request, response) {
   check_headers(request);
   let cid = new_channel();
@@ -48,7 +48,7 @@ function server_new_channel(request, response) {
   response.bodyOutputStream.write(body, body.length);
 }
 
-let error_report;
+var error_report;
 function server_report(request, response) {
   check_headers(request);
 
@@ -68,7 +68,7 @@ function server_report(request, response) {
 }
 
 // Hook for test code.
-let hooks = {};
+var hooks = {};
 function initHooks() {
   hooks.onGET = function onGET(request) {};
 }
@@ -146,7 +146,7 @@ ServerChannel.prototype = {
 /**
  * Controller that throws for everything.
  */
-let BaseController = {
+var BaseController = {
   displayPIN: function displayPIN() {
     do_throw("displayPIN() shouldn't have been called!");
   },
@@ -169,7 +169,9 @@ const DATA = {"msg": "eggstreamly sekrit"};
 const POLLINTERVAL = 50;
 
 function run_test() {
-  Svc.Prefs.set("jpake.serverURL", TEST_SERVER_URL);
+  server = httpd_setup({"/new_channel": server_new_channel,
+                        "/report":      server_report});
+  Svc.Prefs.set("jpake.serverURL", server.baseURI + "/");
   Svc.Prefs.set("jpake.pollInterval", POLLINTERVAL);
   Svc.Prefs.set("jpake.maxTries", 2);
   Svc.Prefs.set("jpake.firstMsgMaxTries", 5);
@@ -184,15 +186,13 @@ function run_test() {
 
   // Simulate Sync setup with credentials in place. We want to make
   // sure the J-PAKE requests don't include those data.
+  ensureLegacyIdentityManager();
   setBasicCredentials("johndoe", "ilovejane");
 
-  server = httpd_setup({"/new_channel": server_new_channel,
-                        "/report":      server_report});
-
   initTestLogging("Trace");
-  Log4Moz.repository.getLogger("Sync.JPAKEClient").level = Log4Moz.Level.Trace;
-  Log4Moz.repository.getLogger("Common.RESTRequest").level =
-    Log4Moz.Level.Trace;
+  Log.repository.getLogger("Sync.JPAKEClient").level = Log.Level.Trace;
+  Log.repository.getLogger("Common.RESTRequest").level =
+    Log.Level.Trace;
   run_next_test();
 }
 
@@ -369,7 +369,7 @@ add_test(function test_wrongPIN() {
     displayPIN: function displayPIN(pin) {
       this.cid = pin.slice(JPAKE_LENGTH_SECRET);
       let secret = pin.slice(0, JPAKE_LENGTH_SECRET);
-      secret = [char for each (char in secret)].reverse().join("");
+      secret = Array.prototype.slice.call(secret).reverse().join("");
       let new_pin = secret + this.cid;
       _("Received PIN " + pin + ", but I'm entering " + new_pin);
 

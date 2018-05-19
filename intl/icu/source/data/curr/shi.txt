@@ -1,14 +1,5 @@
-﻿// ***************************************************************************
-// *
-// * Copyright (C) 2012 International Business Machines
-// * Corporation and others.  All Rights Reserved.
-// * Tool: org.unicode.cldr.icu.NewLdml2IcuConverter
-// * Source File: <path>/common/main/shi.xml
-// *
-// ***************************************************************************
-/**
- *  ICU <specials> source: <path>/xml/main/shi.xml
- */
+﻿// © 2016 and later: Unicode, Inc. and others.
+// License & terms of use: http://www.unicode.org/copyright.html#License
 shi{
     Currencies{
         AED{
@@ -225,6 +216,10 @@ shi{
         }
         ZMK{
             "ZMK",
+            "ⴰⴽⵡⴰⵛⴰ ⵏ ⵣⴰⵎⴱⵢⴰ (1968–2012)",
+        }
+        ZMW{
+            "ZMW",
             "ⴰⴽⵡⴰⵛⴰ ⵏ ⵣⴰⵎⴱⵢⴰ",
         }
         ZWD{
@@ -232,5 +227,5 @@ shi{
             "ⴰⴷⵓⵍⴰⵔ ⵏ ⵣⵉⵎⴱⴰⴱⵡⵉ",
         }
     }
-    Version{"2.0.78.30"}
+    Version{"2.1.27.40"}
 }

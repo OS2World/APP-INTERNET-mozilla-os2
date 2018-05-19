@@ -2,12 +2,6 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#if defined(MOZ_UPDATER)
-# if !defined(MOZ_WIDGET_ANDROID)
-#  define USE_MOZ_UPDATER
-# endif
-#endif
-
 #define NS_ALERTSERVICE_CONTRACTID \
   "@mozilla.org/alerts-service;1"
 
@@ -30,6 +24,9 @@
 #define NS_DOWNLOADMANAGER_CONTRACTID \
   "@mozilla.org/download-manager;1"
 
+#define NS_DOWNLOADPLATFORM_CONTRACTID \
+  "@mozilla.org/toolkit/download-platform;1"
+
 #define NS_FORMHISTORY_CONTRACTID \
   "@mozilla.org/satchel/form-history;1"
 
@@ -41,9 +38,6 @@
 
 #define NS_GLOBALHISTORY_DATASOURCE_CONTRACTID \
   "@mozilla.org/rdf/datasource;1?name=history"
-
-#define NS_GLOBALHISTORY_AUTOCOMPLETE_CONTRACTID \
-    "@mozilla.org/autocomplete/search;1?name=history"
 
 #define NS_TYPEAHEADFIND_CONTRACTID \
     "@mozilla.org/typeaheadfind;1"
@@ -87,12 +81,21 @@
 #define NS_APPSTARTUP_CONTRACTID \
   "@mozilla.org/toolkit/app-startup;1"
 
-#if defined(USE_MOZ_UPDATER)
+#if defined(MOZ_UPDATER) && !defined(MOZ_WIDGET_ANDROID)
 #define NS_UPDATEPROCESSOR_CONTRACTID \
   "@mozilla.org/updates/update-processor;1"
 #endif
 
+#define NS_ADDONCONTENTPOLICY_CONTRACTID \
+  "@mozilla.org/addons/content-policy;1"
+
+#define NS_ADDONPATHSERVICE_CONTRACTID \
+    "@mozilla.org/addon-path-service;1"
+
 /////////////////////////////////////////////////////////////////////////////
+
+#define ALERT_NOTIFICATION_CID \
+{ 0x9a7b7a41, 0x0b47, 0x47f7, { 0xb6, 0x1b, 0x15, 0xa2, 0x10, 0xd6, 0xf0, 0x20 } }
 
 // {A0CCAAF8-09DA-44D8-B250-9AC3E93C8117}
 #define NS_ALERTSSERVICE_CID \
@@ -117,6 +120,9 @@
 #define NS_DOWNLOADMANAGER_CID \
     { 0xedb0490e, 0x1dd1, 0x11b2, { 0x83, 0xb8, 0xdb, 0xf8, 0xd8, 0x59, 0x06, 0xa6 } }
 
+#define NS_DOWNLOADPLATFORM_CID \
+    { 0x649a14c9, 0xfe5c, 0x48ec, { 0x9c, 0x85, 0x00, 0xca, 0xd9, 0xcc, 0xf3, 0x2e } }
+
 // {895DB6C7-DBDF-40ea-9F64-B175033243DC}
 #define NS_FORMFILLCONTROLLER_CID \
 { 0x895db6c7, 0xdbdf, 0x40ea, { 0x9f, 0x64, 0xb1, 0x75, 0x3, 0x32, 0x43, 0xdc } }
@@ -137,13 +143,13 @@
  #define NS_URLCLASSIFIERPREFIXSET_CID \
 { 0x3d8579f0, 0x75fa, 0x4e00, { 0xba, 0x41, 0x38, 0x66, 0x1d, 0x5b, 0x5d, 0x17} }
 
-// {5eb7c3c1-ec1f-4007-87cc-eefb37d68ce6}
+// {7a258022-6765-11e5-b379-b37b1f2354be}
 #define NS_URLCLASSIFIERDBSERVICE_CID \
-{ 0x5eb7c3c1, 0xec1f, 0x4007, { 0x87, 0xcc, 0xee, 0xfb, 0x37, 0xd6, 0x8c, 0xe6} }
+{ 0x7a258022, 0x6765, 0x11e5, { 0xb3, 0x79, 0xb3, 0x7b, 0x1f, 0x23, 0x54, 0xbe} }
 
-// {c2be6dc0-ef1e-4abd-86a2-4f864ddc57f6}
+// e1797597-f4d6-4dd3-a1e1-745ad352cd80
 #define NS_URLCLASSIFIERSTREAMUPDATER_CID \
-{ 0xc2be6dc0, 0xef1e, 0x4abd, { 0x86, 0xa2, 0x4f, 0x86, 0x4d, 0xdc, 0x57, 0xf6} }
+{ 0xe1797597, 0xf4d6, 0x4dd3, { 0xa1, 0xe1, 0x74, 0x5a, 0xd3, 0x52, 0xcd, 0x80 }}
 
 // {b7b2ccec-7912-4ea6-a548-b038447004bd}
 #define NS_URLCLASSIFIERUTILS_CID \
@@ -164,7 +170,19 @@
 #define NS_FAVICONSERVICE_CID \
 { 0x984e3259, 0x9266, 0x49cf, { 0xb6, 0x05, 0x60, 0xb0, 0x22, 0xa0, 0x07, 0x56 } }
 
-#if defined(USE_MOZ_UPDATER)
+#if defined(MOZ_UPDATER) && !defined(MOZ_WIDGET_ANDROID)
 #define NS_UPDATEPROCESSOR_CID \
 { 0xf3dcf644, 0x79e8, 0x4f59, { 0xa1, 0xbb, 0x87, 0x84, 0x54, 0x48, 0x8e, 0xf9 } }
 #endif
+
+#define NS_APPLICATION_REPUTATION_SERVICE_CONTRACTID \
+  "@mozilla.org/downloads/application-reputation-service;1"
+
+#define NS_APPLICATION_REPUTATION_SERVICE_CID \
+{ 0x8576c950, 0xf4a2, 0x11e2, { 0xb7, 0x78, 0x08, 0x00, 0x20, 0x0c, 0x9a, 0x66 } }
+
+#define NS_ADDONCONTENTPOLICY_CID \
+{ 0xc26a8241, 0xecf4, 0x4aed, { 0x9f, 0x3c, 0xf1, 0xf5, 0xc7, 0x13, 0xb9, 0xa5 } }
+
+#define NS_ADDON_PATH_SERVICE_CID \
+{ 0xa39f39d0, 0xdfb6, 0x11e3, { 0x8b, 0x68, 0x08, 0x00, 0x20, 0x0c, 0x9a, 0x66 } }

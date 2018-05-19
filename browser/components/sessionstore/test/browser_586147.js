@@ -12,7 +12,6 @@ function observeOneRestore(callback) {
 
 function test() {
   waitForExplicitFinish();
-  ignoreAllUncaughtExceptions();
 
   // There should be one tab when we start the test
   let [origTab] = gBrowser.visibleTabs;
@@ -46,6 +45,7 @@ function test() {
     // Restore the original state and clean up now that we're done
     gBrowser.removeTab(hiddenTab);
     gBrowser.removeTab(extraTab);
+
     finish();
   });
   ss.setBrowserState(JSON.stringify(stateObj));

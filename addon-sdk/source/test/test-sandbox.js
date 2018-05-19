@@ -2,10 +2,15 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-const { sandbox, load, evaluate } = require('sdk/loader/sandbox');
+const { sandbox, load, evaluate, nuke } = require('sdk/loader/sandbox');
 const xulApp = require("sdk/system/xul-app");
 const fixturesURI = module.uri.split('test-sandbox.js')[0] + 'fixtures/';
 
+// The following adds Debugger constructor to the global namespace.
+const { Cu } = require('chrome');
+const { addDebuggerToGlobal } =
+  Cu.import('resource://gre/modules/jsdebugger.jsm', {});
+addDebuggerToGlobal(this);
 
 exports['test basics'] = function(assert) {
   let fixture = sandbox('http://example.com');
@@ -38,7 +43,7 @@ exports['test non-privileged'] = function(assert) {
 
 exports['test injection'] = function(assert) {
   let fixture = sandbox();
-  fixture.hi = function(name) 'Hi ' + name
+  fixture.hi = name => 'Hi ' + name;
   assert.equal(evaluate(fixture, 'hi("sandbox");'), 'Hi sandbox',
                 'injected functions are callable');
 };
@@ -52,7 +57,7 @@ exports['test exceptions'] = function(assert) {
     } + '();');
   }
   catch (error) {
-    assert.equal(error.fileName, '', 'no fileName reported');
+    assert.equal(error.fileName, '[System Principal]', 'No specific fileName reported');
     assert.equal(error.lineNumber, 3, 'reports correct line number');
   }
 
@@ -79,13 +84,6 @@ exports['test exceptions'] = function(assert) {
   }
 };
 
-exports['test opt version'] = function(assert) {
-  let fixture = sandbox();
-  assert.throws(function() {
-    evaluate(fixture, 'let a = 2;', 'test.js', 1, '1.5');
-  }, 'No let in js 1.5');
-};
-
 exports['test load'] = function(assert) {
   let fixture = sandbox();
   load(fixture, fixturesURI + 'sandbox-normal.js');
@@ -95,7 +93,7 @@ exports['test load'] = function(assert) {
 };
 
 exports['test load with data: URL'] = function(assert) {
-  let code = "var a = 1; this.b = 2; function f() 4";
+  let code = "var a = 1; this.b = 2; function f() { return 4; }";
   let fixture = sandbox();
   load(fixture, "data:," + encodeURIComponent(code));
 
@@ -118,4 +116,46 @@ exports['test load script with data: URL and complex char'] = function(assert) {
   assert.equal(fixture.chars, 'გამარჯობა', 'complex chars were loaded correctly');
 };
 
-require('test').run(exports);
+exports['test metadata']  = function(assert) {
+  let self = require('sdk/self');
+
+  let dbg = new Debugger();
+  dbg.onNewGlobalObject = function(global) {
+    let metadata = Cu.getSandboxMetadata(global.unsafeDereference());
+    assert.ok(metadata, 'this global has attached metadata');
+    assert.equal(metadata.addonID, self.id, 'addon ID is set');
+
+    dbg.onNewGlobalObject = undefined;
+  }
+
+  let fixture = sandbox();
+  assert.equal(dbg.onNewGlobalObject, undefined, 'Should have reset the handler');
+}
+
+exports['test nuke sandbox'] = function(assert) {
+
+  let fixture = sandbox('http://example.com');
+  fixture.foo = 'foo';
+
+  let ref = evaluate(fixture, 'let a = {bar: "bar"}; a');
+
+  nuke(fixture);
+
+  assert.ok(Cu.isDeadWrapper(fixture), 'sandbox should be dead');
+
+  assert.throws(
+    () => fixture.foo,
+    /can't access dead object/,
+    'property of nuked sandbox should not be accessible'
+  );
+
+  assert.ok(Cu.isDeadWrapper(ref), 'ref to object from sandbox should be dead');
+
+  assert.throws(
+    () => ref.bar,
+    /can't access dead object/,
+    'object from nuked sandbox should not be alive'
+  );
+}
+
+require('sdk/test').run(exports);

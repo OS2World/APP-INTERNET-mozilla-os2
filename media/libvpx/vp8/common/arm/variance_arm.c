@@ -9,10 +9,15 @@
  */
 
 #include "vpx_config.h"
+#include "./vp8_rtcd.h"
+#include "./vpx_dsp_rtcd.h"
 #include "vp8/common/variance.h"
 #include "vp8/common/filter.h"
 
-#if HAVE_ARMV6
+// TODO(johannkoenig): Move this to vpx_dsp or vp8/encoder
+#if CONFIG_VP8_ENCODER
+
+#if HAVE_MEDIA
 #include "vp8/common/arm/bilinearfilter_arm.h"
 
 unsigned int vp8_sub_pixel_variance8x8_armv6
@@ -39,8 +44,8 @@ unsigned int vp8_sub_pixel_variance8x8_armv6
     vp8_filter_block2d_bil_second_pass_armv6(first_pass, second_pass,
                                              8, 8, 8, VFilter);
 
-    return vp8_variance8x8_armv6(second_pass, 8, dst_ptr,
-                                   dst_pixels_per_line, sse);
+    return vpx_variance8x8_media(second_pass, 8, dst_ptr,
+                                 dst_pixels_per_line, sse);
 }
 
 unsigned int vp8_sub_pixel_variance16x16_armv6
@@ -85,16 +90,27 @@ unsigned int vp8_sub_pixel_variance16x16_armv6
         vp8_filter_block2d_bil_second_pass_armv6(first_pass, second_pass,
                                                  16, 16, 16, VFilter);
 
-        var = vp8_variance16x16_armv6(second_pass, 16, dst_ptr,
-                                       dst_pixels_per_line, sse);
+        var = vpx_variance16x16_media(second_pass, 16, dst_ptr,
+                                      dst_pixels_per_line, sse);
     }
     return var;
 }
 
-#endif /* HAVE_ARMV6 */
+#endif  // HAVE_MEDIA
 
 
-#if HAVE_ARMV7
+#if HAVE_NEON
+
+extern unsigned int vp8_sub_pixel_variance16x16_neon_func
+(
+    const unsigned char  *src_ptr,
+    int  src_pixels_per_line,
+    int  xoffset,
+    int  yoffset,
+    const unsigned char *dst_ptr,
+    int dst_pixels_per_line,
+    unsigned int *sse
+);
 
 unsigned int vp8_sub_pixel_variance16x16_neon
 (
@@ -117,4 +133,5 @@ unsigned int vp8_sub_pixel_variance16x16_neon
     return vp8_sub_pixel_variance16x16_neon_func(src_ptr, src_pixels_per_line, xoffset, yoffset, dst_ptr, dst_pixels_per_line, sse);
 }
 
-#endif
+#endif  // HAVE_NEON
+#endif  // CONFIG_VP8_ENCODER

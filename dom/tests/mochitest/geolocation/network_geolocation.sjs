@@ -18,7 +18,7 @@ function parseQueryString(str)
 }
 
 function getPosition(action)
-{  
+{
   var response = {
     status: "OK",
     location: {
@@ -27,7 +27,7 @@ function getPosition(action)
     },
     accuracy: (action == "worse-accuracy") ? 100 : 42,
   };
-  
+
   return JSON.stringify(response);
 }
 
@@ -37,6 +37,7 @@ function handleRequest(request, response)
   var params = parseQueryString(request.queryString);
 
   if (params.action == "stop-responding") {
+      response.processAsync();
       return;
   }
 
@@ -63,6 +64,10 @@ function handleRequest(request, response)
   var delay = 0;
   if ('delay' in params) {
     delay = params.delay;
+  }
+  if (params.action === "send404") {
+    response.setStatusLine("1.0", 404, "Not Found");
+    position = '';
   }
   timer = Components.classes["@mozilla.org/timer;1"].createInstance(Components.interfaces.nsITimer);
   timer.initWithCallback(function() {

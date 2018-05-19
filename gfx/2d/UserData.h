@@ -45,7 +45,7 @@ public:
     entries = static_cast<Entry*>(realloc(entries, sizeof(Entry)*(count+1)));
 
     if (!entries) {
-      MOZ_CRASH();
+      MOZ_CRASH("GFX: UserData::Add");
     }
 
     entries[count].key      = key;
@@ -73,7 +73,7 @@ public:
   }
 
   /* Retrives the userData for the associated key */
-  void *Get(UserDataKey *key)
+  void *Get(UserDataKey *key) const
   {
     for (int i=0; i<count; i++) {
       if (key == entries[i].key) {
@@ -122,7 +122,7 @@ private:
 
 };
 
-}
-}
+} // namespace gfx
+} // namespace mozilla
 
 #endif /* MOZILLA_GFX_USERDATA_H_ */

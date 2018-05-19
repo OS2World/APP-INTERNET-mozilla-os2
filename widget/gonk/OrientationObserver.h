@@ -20,8 +20,10 @@
 
 #include "mozilla/Observer.h"
 #include "mozilla/dom/ScreenOrientation.h"
+#include "mozilla/UniquePtr.h"
 
 namespace mozilla {
+class ProcessOrientation;
 namespace hal {
 class SensorData;
 typedef mozilla::Observer<SensorData> ISensorObserver;
@@ -30,7 +32,7 @@ typedef mozilla::Observer<SensorData> ISensorObserver;
 
 using mozilla::hal::ISensorObserver;
 using mozilla::hal::SensorData;
-using mozilla::dom::ScreenOrientation;
+using mozilla::dom::ScreenOrientationInternal;
 
 class OrientationObserver : public ISensorObserver {
 public:
@@ -49,18 +51,16 @@ public:
   void DisableAutoOrientation();
 
   // Methods called by methods in hal_impl namespace.
-  bool LockScreenOrientation(ScreenOrientation aOrientation);
+  bool LockScreenOrientation(ScreenOrientationInternal aOrientation);
   void UnlockScreenOrientation();
 
   static OrientationObserver* GetInstance();
 
 private:
   bool mAutoOrientationEnabled;
-  PRTime mLastUpdate;
   uint32_t mAllowedOrientations;
+  mozilla::UniquePtr<mozilla::ProcessOrientation> mOrientation;
 
-  // 200 ms, the latency which is barely perceptible by human.
-  static const PRTime sMinUpdateInterval = 200 * PR_USEC_PER_MSEC;
   static const uint32_t sDefaultOrientations =
       mozilla::dom::eScreenOrientation_PortraitPrimary |
       mozilla::dom::eScreenOrientation_PortraitSecondary |

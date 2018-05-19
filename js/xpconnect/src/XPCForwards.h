@@ -1,6 +1,6 @@
-/* -*- Mode: C; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 4 -*-
- *
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 4 -*- */
+/* vim: set ts=8 sts=4 et sw=4 tw=99: */
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
@@ -12,12 +12,11 @@
 // forward declarations of interally used classes...
 
 class nsXPConnect;
-class XPCJSRuntime;
+class XPCJSContext;
 class XPCContext;
 class XPCCallContext;
 
 class XPCJSThrower;
-class XPCJSStack;
 
 class nsXPCWrappedJS;
 class nsXPCWrappedJSClass;
@@ -29,7 +28,6 @@ class XPCNativeSet;
 class XPCWrappedNative;
 class XPCWrappedNativeProto;
 class XPCWrappedNativeTearOff;
-class XPCNativeScriptableShared;
 class XPCNativeScriptableInfo;
 class XPCNativeScriptableCreateInfo;
 
@@ -44,7 +42,6 @@ class ClassInfo2NativeSetMap;
 class ClassInfo2WrappedNativeProtoMap;
 class NativeSetMap;
 class IID2ThisTranslatorMap;
-class XPCNativeScriptableSharedMap;
 class XPCWrappedNativeProtoMap;
 class JSObject2JSObjectMap;
 

@@ -1,5 +1,6 @@
 #include "TestCrashCleanup.h"
 
+#include "base/task.h"
 #include "mozilla/CondVar.h"
 #include "mozilla/Mutex.h"
 
@@ -26,7 +27,7 @@ void DeleteSubprocess(Mutex* mutex, CondVar* cvar)
     MutexAutoLock lock(*mutex);
 
     delete gSubprocess;
-    gSubprocess = NULL;
+    gSubprocess = nullptr;
 
     cvar->Notify();
 }
@@ -34,7 +35,7 @@ void DeleteSubprocess(Mutex* mutex, CondVar* cvar)
 void DeleteTheWorld()
 {
     delete static_cast<TestCrashCleanupParent*>(gParentActor);
-    gParentActor = NULL;
+    gParentActor = nullptr;
 
     // needs to be synchronous to avoid affecting event ordering on
     // the main thread
@@ -44,7 +45,6 @@ void DeleteTheWorld()
     MutexAutoLock lock(mutex);
 
     XRE_GetIOMessageLoop()->PostTask(
-      FROM_HERE,
       NewRunnableFunction(DeleteSubprocess, &mutex, &cvar));
 
     cvar.Wait();
@@ -79,14 +79,14 @@ TestCrashCleanupParent::Main()
 {
     // NB: has to be enqueued before IO thread's error notification
     MessageLoop::current()->PostTask(
-        FROM_HERE, NewRunnableFunction(DeleteTheWorld));
+        NewRunnableFunction(DeleteTheWorld));
 
     if (CallDIEDIEDIE())
         fail("expected an error!");
 
     Close();
 
-    MessageLoop::current()->PostTask(FROM_HERE, NewRunnableFunction(Done));
+    MessageLoop::current()->PostTask(NewRunnableFunction(Done));
 }
 
 

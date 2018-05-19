@@ -47,15 +47,15 @@
 #ifndef _nswindow_h
 #define _nswindow_h
 
-#include "nsBaseWidget.h"
-#include "gfxASurface.h"
-
-#define INCL_DOS
-#define INCL_WIN
+#define INCL_BASE
+#define INCL_PM
+// too pity the above two don't include this one (looks like a bug):
 #define INCL_NLS
-#define INCL_GPI
 #include <os2.h>
 #include <os2im.h>
+
+#include "nsBaseWidget.h"
+#include "mozilla/MouseEvents.h"
 
 //-----------------------------------------------------------------------------
 // Items that may not be in the OS/2 Toolkit headers
@@ -87,7 +87,7 @@ extern "C" {
 
 // nsWindow's PM window class name
 #define kWindowClassName            "MozillaWindowClass"
-#define QWL_NSWINDOWPTR             (QWL_USER+4)
+#define QWL_NSWINDOWPTR             (QWL_USER)
 
 // Miscellaneous global flags stored in gOS2Flags
 #define kIsInitialized              0x0001
@@ -111,6 +111,7 @@ extern "C" {
 // Forward declarations
 
 class imgIContainer;
+class gfxASurface;
 class gfxOS2Surface;
 class os2FrameWindow;
 
@@ -125,13 +126,11 @@ class nsWindow : public nsBaseWidget
 {
 public:
   nsWindow();
-  virtual ~nsWindow();
 
   // from nsIWidget
   NS_IMETHOD            Create(nsIWidget* aParent,
                                nsNativeWidget aNativeParent,
-                               const nsIntRect& aRect,
-                               nsDeviceContext* aContext,
+                               const LayoutDeviceIntRect& aRect,
                                nsWidgetInitData* aInitData = nullptr);
   NS_IMETHOD            Destroy();
   virtual nsIWidget*    GetParent();
@@ -141,15 +140,16 @@ public:
   NS_IMETHOD            Show(bool aState);
   virtual bool          IsVisible() const;
   NS_IMETHOD            SetFocus(bool aRaise);
-  NS_IMETHOD            Invalidate(const nsIntRect& aRect);
+  NS_IMETHOD            Invalidate(const LayoutDeviceIntRect& aRect);
   gfxASurface*          GetThebesSurface();
   virtual void*         GetNativeData(uint32_t aDataType);
+  void                  SetNativeData(uint32_t aDataType, uintptr_t aVal) override;
   virtual void          FreeNativeData(void* aDatum, uint32_t aDataType);
   NS_IMETHOD            CaptureMouse(bool aCapture);
   virtual bool          HasPendingInputEvent();
-  NS_IMETHOD            GetBounds(nsIntRect& aRect);
-  NS_IMETHOD            GetClientBounds(nsIntRect& aRect);
-  virtual nsIntPoint    WidgetToScreenOffset();
+  NS_IMETHOD            GetBounds(LayoutDeviceIntRect& aRect);
+  NS_IMETHOD            GetClientBounds(LayoutDeviceIntRect& aRect);
+  virtual mozilla::LayoutDeviceIntPoint WidgetToScreenOffset();
   NS_IMETHOD            Move(double aX, double aY);
   NS_IMETHOD            Resize(double aWidth, double aHeight,
                                bool    aRepaint);
@@ -158,9 +158,10 @@ public:
                                bool    aRepaint);
   NS_IMETHOD            PlaceBehind(nsTopLevelWidgetZPlacement aPlacement,
                                     nsIWidget* aWidget, bool aActivate);
-  NS_IMETHOD            SetZIndex(int32_t aZIndex);
+  void                  SetZIndex(int32_t aZIndex);
   virtual nsresult      ConfigureChildren(const nsTArray<Configuration>& aConfigurations);
-  NS_IMETHOD            SetSizeMode(int32_t aMode);
+  NS_IMETHOD            SetSizeMode(nsSizeMode aMode);
+  NS_IMETHOD            MakeFullScreen(bool aFullScreen, nsIScreen* aScreen = nullptr);
   NS_IMETHOD            HideWindowChrome(bool aShouldHide);
   NS_IMETHOD            SetTitle(const nsAString& aTitle);
   NS_IMETHOD            SetIcon(const nsAString& aIconSpec);
@@ -173,7 +174,7 @@ public:
                                             bool aDoCapture);
   NS_IMETHOD            GetToggledKeyState(uint32_t aKeyCode,
                                            bool* aLEDState);
-  NS_IMETHOD            DispatchEvent(nsGUIEvent* event,
+  NS_IMETHOD            DispatchEvent(mozilla::WidgetGUIEvent* event,
                                       nsEventStatus& aStatus);
   NS_IMETHOD            ReparentNativeWidget(nsIWidget* aNewParent);
 
@@ -187,6 +188,8 @@ public:
   // nsWindow
   static void           ReleaseGlobals();
 protected:
+  virtual ~nsWindow();
+
   // from nsBaseWidget
   virtual void          OnDestroy();
 
@@ -194,7 +197,7 @@ protected:
   static void           InitGlobals();
   nsresult              CreateWindow(nsWindow* aParent,
                                      HWND aParentWnd,
-                                     const nsIntRect& aRect,
+                                     const LayoutDeviceIntRect& aRect,
                                      nsWidgetInitData* aInitData);
   gfxASurface*          ConfirmThebesSurface();
   HWND                  GetMainWindow() const;
@@ -211,7 +214,7 @@ protected:
                                      uint32_t aHeight, uint32_t aDepth);
   HBITMAP               CreateBitmapRGB(uint8_t* aImageData,
                                         uint32_t aWidth, uint32_t aHeight);
-  HBITMAP               CreateTransparencyMask(gfxASurface::gfxImageFormat format,
+  HBITMAP               CreateTransparencyMask(mozilla::gfx::SurfaceFormat format,
                                                uint8_t* aImageData,
                                                uint32_t aWidth, uint32_t aHeight);
   static bool           EventIsInsideWindow(nsWindow* aWindow);
@@ -219,6 +222,7 @@ protected:
   static void           RollupOnFocusLost(HWND aFocus);
   MRESULT               ProcessMessage(ULONG msg, MPARAM mp1, MPARAM mp2);
   bool                  OnReposition(PSWP pNewSwp);
+  nsIWidgetListener*    GetPaintListener();
   bool                  OnPaint();
   bool                  OnMouseChord(MPARAM mp1, MPARAM mp2);
   bool                  OnDragDropMsg(ULONG msg, MPARAM mp1, MPARAM mp2,
@@ -231,19 +235,19 @@ protected:
   bool                  ImeConversionString(HIMI himi);
   bool                  OnImeRequest(MPARAM mp1, MPARAM mp2);
   bool                  DispatchKeyEvent(MPARAM mp1, MPARAM mp2);
-  void                  InitEvent(nsGUIEvent& event, nsIntPoint* pt = 0);
-  bool                  DispatchWindowEvent(nsGUIEvent* event);
-  bool                  DispatchWindowEvent(nsGUIEvent* event,
+  void                  InitEvent(mozilla::WidgetGUIEvent& event, nsIntPoint* pt = 0);
+  bool                  DispatchWindowEvent(mozilla::WidgetGUIEvent* event);
+  bool                  DispatchWindowEvent(mozilla::WidgetGUIEvent* event,
                                             nsEventStatus& aStatus);
   bool                  DispatchCommandEvent(uint32_t aEventCommand);
-  bool                  DispatchDragDropEvent(uint32_t aMsg);
+  bool                  DispatchDragDropEvent(mozilla::EventMessage aMsg);
   bool                  DispatchMoveEvent(int32_t aX, int32_t aY);
   bool                  DispatchResizeEvent(int32_t aClientX,
                                             int32_t aClientY);
-  bool                  DispatchMouseEvent(uint32_t aEventType,
+  bool                  DispatchMouseEvent(mozilla::EventMessage aEventType,
                                            MPARAM mp1, MPARAM mp2,
                                            bool aIsContextMenuKey = false,
-                                           int16_t aButton = nsMouseEvent::eLeftButton);
+                                           int16_t aButton = mozilla::WidgetMouseEvent::eLeftButton);
   void                  DispatchActivationEvent(bool aIsActivate);
   bool                  DispatchPluginActivationEvent();
   bool                  DispatchScrollEvent(ULONG msg, MPARAM mp1, MPARAM mp2);
@@ -266,9 +270,8 @@ protected:
   HWND          mClipWnd;           // used to clip plugin windows
   HPOINTER      mCssCursorHPtr;     // created by SetCursor(imgIContainer*)
   nsCOMPtr<imgIContainer> mCssCursorImg;// saved by SetCursor(imgIContainer*)
-  nsRefPtr<gfxOS2Surface> mThebesSurface;
+  RefPtr<gfxOS2Surface> mThebesSurface;
   bool          mIsComposing;
-  nsString      mLastDispatchedCompositionString;
 #ifdef DEBUG_FOCUS
   int           mWindowIdentifier;  // a serial number for each new window
 #endif

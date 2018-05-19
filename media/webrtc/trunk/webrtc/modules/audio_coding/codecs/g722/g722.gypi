@@ -9,16 +9,23 @@
   'targets': [
     {
       'target_name': 'G722',
-      'type': '<(library)',
+      'type': 'static_library',
+      'dependencies': [
+        'audio_encoder_interface',
+      ],
       'include_dirs': [
         'include',
+        '<(webrtc_root)',
       ],
       'direct_dependent_settings': {
         'include_dirs': [
           'include',
+          '<(webrtc_root)',
         ],
       },
       'sources': [
+        'audio_encoder_g722.cc',
+        'include/audio_encoder_g722.h',
         'include/g722_interface.h',
         'g722_interface.c',
         'g722_encode.c',
@@ -44,9 +51,3 @@
     }], # include_tests
   ], # conditions
 }
-
-# Local Variables:
-# tab-width:2
-# indent-tabs-mode:nil
-# End:
-# vim: set expandtab tabstop=2 shiftwidth=2:

@@ -6,49 +6,46 @@
 #ifndef GFX_BASICCANVASLAYER_H
 #define GFX_BASICCANVASLAYER_H
 
-#include "BasicLayersImpl.h"
-#include "nsXULAppAPI.h"
-#include "BasicLayers.h"
-#include "BasicImplData.h"
-#include "mozilla/layers/CanvasClient.h"
-#include "mozilla/Preferences.h"
-#include "CopyableCanvasLayer.h"
-
-#include "gfxPlatform.h"
-
-using namespace mozilla::gfx;
+#include "BasicImplData.h"              // for BasicImplData
+#include "BasicLayers.h"                // for BasicLayerManager
+#include "CopyableCanvasLayer.h"        // for CopyableCanvasLayer
+#include "Layers.h"                     // for CanvasLayer, etc
+#include "nsDebug.h"                    // for NS_ASSERTION
+#include "nsRegion.h"                   // for nsIntRegion
 
 namespace mozilla {
 namespace layers {
-
-class CanvasClient2D;
-class CanvasClientWebGL;
 
 class BasicCanvasLayer : public CopyableCanvasLayer,
                          public BasicImplData
 {
 public:
-  BasicCanvasLayer(BasicLayerManager* aLayerManager) :
+  explicit BasicCanvasLayer(BasicLayerManager* aLayerManager) :
     CopyableCanvasLayer(aLayerManager, static_cast<BasicImplData*>(this))
   { }
-  
-  virtual void SetVisibleRegion(const nsIntRegion& aRegion)
+
+  virtual void SetVisibleRegion(const LayerIntRegion& aRegion) override
   {
     NS_ASSERTION(BasicManager()->InConstruction(),
                  "Can only set properties in construction phase");
     CanvasLayer::SetVisibleRegion(aRegion);
   }
-  
-  virtual void Paint(gfxContext* aContext, Layer* aMaskLayer);
- 
+
+  virtual void Paint(gfx::DrawTarget* aDT,
+                     const gfx::Point& aDeviceOffset,
+                     Layer* aMaskLayer) override;
+
 protected:
+
+  already_AddRefed<gfx::SourceSurface> UpdateSurface();
+
   BasicLayerManager* BasicManager()
   {
     return static_cast<BasicLayerManager*>(mManager);
   }
 };
 
-}
-}
+} // namespace layers
+} // namespace mozilla
 
 #endif

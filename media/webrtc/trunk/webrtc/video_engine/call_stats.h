@@ -13,23 +13,15 @@
 
 #include <list>
 
+#include "webrtc/base/constructormagic.h"
+#include "webrtc/base/scoped_ptr.h"
 #include "webrtc/modules/interface/module.h"
-#include "webrtc/system_wrappers/interface/constructor_magic.h"
-#include "webrtc/system_wrappers/interface/scoped_ptr.h"
 
 namespace webrtc {
 
+class CallStatsObserver;
 class CriticalSectionWrapper;
-class RtcpRttObserver;
-
-// Interface used to distribute call statistics. Callbacks will be triggered as
-// soon as the class has been registered using RegisterStatsObserver.
-class StatsObserver {
- public:
-  virtual void OnRttUpdate(uint32_t rtt) = 0;
-
-  virtual ~StatsObserver() {}
-};
+class RtcpRttStats;
 
 // CallStats keeps track of statistics for a call.
 class CallStats : public Module {
@@ -40,41 +32,46 @@ class CallStats : public Module {
   ~CallStats();
 
   // Implements Module, to use the process thread.
-  virtual int32_t TimeUntilNextProcess();
-  virtual int32_t Process();
+  int64_t TimeUntilNextProcess() override;
+  int32_t Process() override;
 
-  // Returns a RtcpRttObserver to register at a statistics provider. The object
+  // Returns a RtcpRttStats to register at a statistics provider. The object
   // has the same lifetime as the CallStats instance.
-  RtcpRttObserver* rtcp_rtt_observer() const;
+  RtcpRttStats* rtcp_rtt_stats() const;
 
   // Registers/deregisters a new observer to receive statistics updates.
-  void RegisterStatsObserver(StatsObserver* observer);
-  void DeregisterStatsObserver(StatsObserver* observer);
+  void RegisterStatsObserver(CallStatsObserver* observer);
+  void DeregisterStatsObserver(CallStatsObserver* observer);
 
- protected:
-  void OnRttUpdate(uint32_t rtt);
-
- private:
   // Helper struct keeping track of the time a rtt value is reported.
   struct RttTime {
-    RttTime(uint32_t new_rtt, int64_t rtt_time)
+    RttTime(int64_t new_rtt, int64_t rtt_time)
         : rtt(new_rtt), time(rtt_time) {}
-    const uint32_t rtt;
+    const int64_t rtt;
     const int64_t time;
   };
 
+ protected:
+  void OnRttUpdate(int64_t rtt);
+
+  int64_t avg_rtt_ms() const;
+
+ private:
   // Protecting all members.
-  scoped_ptr<CriticalSectionWrapper> crit_;
+  rtc::scoped_ptr<CriticalSectionWrapper> crit_;
   // Observer receiving statistics updates.
-  scoped_ptr<RtcpRttObserver> rtcp_rtt_observer_;
+  rtc::scoped_ptr<RtcpRttStats> rtcp_rtt_stats_;
   // The last time 'Process' resulted in statistic update.
   int64_t last_process_time_;
+  // The last RTT in the statistics update (zero if there is no valid estimate).
+  int64_t max_rtt_ms_;
+  int64_t avg_rtt_ms_;
 
   // All Rtt reports within valid time interval, oldest first.
   std::list<RttTime> reports_;
 
   // Observers getting stats reports.
-  std::list<StatsObserver*> observers_;
+  std::list<CallStatsObserver*> observers_;
 
   DISALLOW_COPY_AND_ASSIGN(CallStats);
 };

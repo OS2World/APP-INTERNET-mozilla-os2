@@ -12,7 +12,6 @@
 #include "gfxXlibNativeRenderer.h"
 #endif
 
-class gfxASurface;
 class gfxContext;
 
 /**
@@ -69,16 +68,16 @@ public:
      * @param dpy a display to use for the drawing if ctx doesn't have one
      */
 #if (MOZ_WIDGET_GTK == 2)
-    void Draw(gfxContext* ctx, nsIntSize size,
+    void Draw(gfxContext* ctx, mozilla::gfx::IntSize size,
               uint32_t flags, GdkColormap* colormap);
 #endif
 
 private:
 #ifdef MOZ_X11
     // for gfxXlibNativeRenderer:
-    virtual nsresult DrawWithXlib(gfxXlibSurface* surface,
+    virtual nsresult DrawWithXlib(cairo_surface_t* surface,
                                   nsIntPoint offset,
-                                  nsIntRect* clipRects, uint32_t numClipRects);
+                                  mozilla::gfx::IntRect* clipRects, uint32_t numClipRects) override;
 
 #if (MOZ_WIDGET_GTK == 2)
     GdkColormap *mColormap;

@@ -12,8 +12,6 @@ namespace gfx {
 
 static const cairo_user_data_key_t SHAREDDIB_KEY = {0};
 
-static const long kBytesPerPixel = 4;
-
 #if defined(XP_OS2)
 bool
 SharedDIBSurface::Create(HPS aps, uint32_t aWidth, uint32_t aHeight,
@@ -56,26 +54,26 @@ void
 SharedDIBSurface::InitSurface(uint32_t aWidth, uint32_t aHeight,
                               bool aTransparent)
 {
-  long stride = long(aWidth * kBytesPerPixel);
+  long stride = long(aWidth * SharedDIB::kBytesPerPixel);
   unsigned char* data = reinterpret_cast<unsigned char*>(mSharedDIB.GetBits());
 
 #if defined(XP_OS2)
-  gfxImageFormat format = ImageFormatRGB24;
+  gfxImageFormat format = SurfaceFormat::X8R8G8B8_UINT32;
 #else
-  gfxImageFormat format = aTransparent ? ImageFormatARGB32 : ImageFormatRGB24;
+  gfxImageFormat format = aTransparent ? SurfaceFormat::A8R8G8B8_UINT32 : SurfaceFormat::X8R8G8B8_UINT32;
 #endif
 
-  gfxImageSurface::InitWithData(data, gfxIntSize(aWidth, aHeight),
+  gfxImageSurface::InitWithData(data, IntSize(aWidth, aHeight),
                                 stride, format);
 
-  cairo_surface_set_user_data(mSurface, &SHAREDDIB_KEY, this, NULL);
+  cairo_surface_set_user_data(mSurface, &SHAREDDIB_KEY, this, nullptr);
 }
 
 bool
 SharedDIBSurface::IsSharedDIBSurface(gfxASurface* aSurface)
 {
   return aSurface &&
-    aSurface->GetType() == gfxASurface::SurfaceTypeImage &&
+    aSurface->GetType() == gfxSurfaceType::Image &&
     aSurface->GetData(&SHAREDDIB_KEY);
 }
 

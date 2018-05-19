@@ -3,12 +3,14 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#include "mozilla/Util.h"
+#include "mozilla/ArrayUtils.h"
 
 #include "nsPrintDialogX.h"
 #include "nsIPrintSettings.h"
+#include "nsIPrintSettingsService.h"
 #include "nsPrintSettingsX.h"
 #include "nsCOMPtr.h"
+#include "nsQueryObject.h"
 #include "nsServiceManagerUtils.h"
 #include "nsIWebProgressListener.h"
 #include "nsIStringBundle.h"
@@ -20,7 +22,7 @@
 
 using namespace mozilla;
 
-NS_IMPL_ISUPPORTS1(nsPrintDialogServiceX, nsIPrintDialogService)
+NS_IMPL_ISUPPORTS(nsPrintDialogServiceX, nsIPrintDialogService)
 
 nsPrintDialogServiceX::nsPrintDialogServiceX()
 {
@@ -37,35 +39,42 @@ nsPrintDialogServiceX::Init()
 }
 
 NS_IMETHODIMP
-nsPrintDialogServiceX::Show(nsIDOMWindow *aParent, nsIPrintSettings *aSettings,
+nsPrintDialogServiceX::Show(nsPIDOMWindowOuter *aParent, nsIPrintSettings *aSettings,
                             nsIWebBrowserPrint *aWebBrowserPrint)
 {
   NS_OBJC_BEGIN_TRY_ABORT_BLOCK_NSRESULT;
 
   NS_PRECONDITION(aSettings, "aSettings must not be null");
 
-  nsCOMPtr<nsPrintSettingsX> settingsX(do_QueryInterface(aSettings));
+  RefPtr<nsPrintSettingsX> settingsX(do_QueryObject(aSettings));
   if (!settingsX)
     return NS_ERROR_FAILURE;
 
+  nsCOMPtr<nsIPrintSettingsService> printSettingsSvc
+    = do_GetService("@mozilla.org/gfx/printsettings-service;1");
+
   // Set the print job title
-  PRUnichar** docTitles;
+  char16_t** docTitles;
   uint32_t titleCount;
   nsresult rv = aWebBrowserPrint->EnumerateDocumentNames(&titleCount, &docTitles);
   if (NS_SUCCEEDED(rv) && titleCount > 0) {
-    CFStringRef cfTitleString = CFStringCreateWithCharacters(NULL, docTitles[0], NS_strlen(docTitles[0]));
+    CFStringRef cfTitleString = CFStringCreateWithCharacters(NULL, reinterpret_cast<const UniChar*>(docTitles[0]),
+                                                             NS_strlen(docTitles[0]));
     if (cfTitleString) {
       ::PMPrintSettingsSetJobName(settingsX->GetPMPrintSettings(), cfTitleString);
       CFRelease(cfTitleString);
     }
     for (int32_t i = titleCount - 1; i >= 0; i--) {
-      NS_Free(docTitles[i]);
+      free(docTitles[i]);
     }
-    NS_Free(docTitles);
+    free(docTitles);
     docTitles = NULL;
     titleCount = 0;
   }
 
+  // Read default print settings from prefs
+  printSettingsSvc->InitPrintSettingsFromPrefs(settingsX, true,
+    nsIPrintSettings::kInitSaveNativeData);
   NSPrintInfo* printInfo = settingsX->GetCocoaPrintInfo();
 
   // Put the print info into the current print operation, since that's where
@@ -76,6 +85,11 @@ nsPrintDialogServiceX::Show(nsIDOMWindow *aParent, nsIPrintSettings *aSettings,
   [NSPrintOperation setCurrentOperation:printOperation];
 
   NSPrintPanel* panel = [NSPrintPanel printPanel];
+  [panel setOptions:NSPrintPanelShowsCopies
+    | NSPrintPanelShowsPageRange
+    | NSPrintPanelShowsPaperSize
+    | NSPrintPanelShowsOrientation
+    | NSPrintPanelShowsScaling ];
   PrintPanelAccessoryController* viewController =
     [[PrintPanelAccessoryController alloc] initWithSettings:aSettings];
   [panel addAccessoryController:viewController];
@@ -86,16 +100,64 @@ nsPrintDialogServiceX::Show(nsIDOMWindow *aParent, nsIPrintSettings *aSettings,
   int button = [panel runModal];
   nsCocoaUtils::CleanUpAfterNativeAppModalDialog();
 
-  settingsX->SetCocoaPrintInfo([[[NSPrintOperation currentOperation] printInfo] copy]);
+  NSPrintInfo* copy = [[[NSPrintOperation currentOperation] printInfo] copy];
+  if (!copy) {
+    return NS_ERROR_OUT_OF_MEMORY;
+  }
+
   [NSPrintOperation setCurrentOperation:nil];
-  [printInfo release];
   [tmpView release];
 
-  if (button != NSOKButton)
+  if (button != NSFileHandlingPanelOKButton)
     return NS_ERROR_ABORT;
+
+  settingsX->SetCocoaPrintInfo(copy);
+  settingsX->InitUnwriteableMargin();
+
+  // Save settings unless saving is pref'd off
+  if (Preferences::GetBool("print.save_print_settings", false)) {
+    printSettingsSvc->SavePrintSettingsToPrefs(settingsX, true,
+      nsIPrintSettings::kInitSaveNativeData);
+  }
+
+  // Get coordinate space resolution for converting paper size units to inches
+  NSWindow *win = [[NSApplication sharedApplication] mainWindow];
+  if (win) {
+    NSDictionary *devDesc = [win deviceDescription];
+    if (devDesc) {
+      NSSize res = [[devDesc objectForKey: NSDeviceResolution] sizeValue];
+      float scale = [win backingScaleFactor];
+      if (scale > 0) {
+        settingsX->SetInchesScale(res.width / scale, res.height / scale);
+      }
+    }
+  }
 
   // Export settings.
   [viewController exportSettings];
+
+  // If "ignore scaling" is checked, overwrite scaling factor with 1.
+  bool isShrinkToFitChecked;
+  settingsX->GetShrinkToFit(&isShrinkToFitChecked);
+  if (isShrinkToFitChecked) {
+    NSMutableDictionary* dict = [copy dictionary];
+    if (dict) {
+      [dict setObject: [NSNumber numberWithFloat: 1]
+               forKey: NSPrintScalingFactor];
+    }
+    // Set the scaling factor to 100% in the NSPrintInfo
+    // object so that it will not affect the paper size
+    // retrieved from the PMPageFormat routines.
+    [copy setScalingFactor:1.0];
+  } else {
+    aSettings->SetScaling([copy scalingFactor]);
+  }
+
+  // Set the adjusted paper size now that we've updated
+  // the scaling factor.
+  settingsX->InitAdjustedPaperSize();
+
+  [copy release];
 
   int16_t pageRange;
   aSettings->GetPrintRange(&pageRange);
@@ -119,14 +181,14 @@ nsPrintDialogServiceX::Show(nsIDOMWindow *aParent, nsIPrintSettings *aSettings,
 }
 
 NS_IMETHODIMP
-nsPrintDialogServiceX::ShowPageSetup(nsIDOMWindow *aParent,
+nsPrintDialogServiceX::ShowPageSetup(nsPIDOMWindowOuter *aParent,
                                      nsIPrintSettings *aNSSettings)
 {
   NS_PRECONDITION(aParent, "aParent must not be null");
   NS_PRECONDITION(aNSSettings, "aSettings must not be null");
   NS_ENSURE_TRUE(aNSSettings, NS_ERROR_FAILURE);
 
-  nsCOMPtr<nsPrintSettingsX> settingsX(do_QueryInterface(aNSSettings));
+  RefPtr<nsPrintSettingsX> settingsX(do_QueryObject(aNSSettings));
   if (!settingsX)
     return NS_ERROR_FAILURE;
 
@@ -136,7 +198,7 @@ nsPrintDialogServiceX::ShowPageSetup(nsIDOMWindow *aParent,
   int button = [pageLayout runModalWithPrintInfo:printInfo];
   nsCocoaUtils::CleanUpAfterNativeAppModalDialog();
 
-  return button == NSOKButton ? NS_OK : NS_ERROR_ABORT;
+  return button == NSFileHandlingPanelOKButton ? NS_OK : NS_ERROR_ABORT;
 }
 
 // Accessory view
@@ -168,7 +230,7 @@ nsPrintDialogServiceX::ShowPageSetup(nsIDOMWindow *aParent,
 - (NSButton*)checkboxWithLabel:(const char*)aLabel andFrame:(NSRect)aRect;
 
 - (NSPopUpButton*)headerFooterItemListWithFrame:(NSRect)aRect
-                                   selectedItem:(const PRUnichar*)aCurrentString;
+                                   selectedItem:(const char16_t*)aCurrentString;
 
 - (void)addOptionsSection;
 
@@ -297,7 +359,7 @@ static const char sHeaderFooterTags[][4] =  {"", "&T", "&U", "&D", "&P", "&PT"};
 }
 
 - (NSPopUpButton*)headerFooterItemListWithFrame:(NSRect)aRect
-                                   selectedItem:(const PRUnichar*)aCurrentString
+                                   selectedItem:(const char16_t*)aCurrentString
 {
   NSPopUpButton* list = [[[NSPopUpButton alloc] initWithFrame:aRect pullsDown:NO] autorelease];
   [list setFont:[NSFont systemFontOfSize:[NSFont smallSystemFontSize]]];

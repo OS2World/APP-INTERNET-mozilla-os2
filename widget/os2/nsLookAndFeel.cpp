@@ -3,12 +3,13 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#define INCL_WIN
-#define INCL_WINWINDOWMGR
-#define INCL_WINSHELLDATA
-#define INCL_DOSNLS
-#define INCL_DOSERRORS
+#define INCL_BASE
+#define INCL_PM
 #include <os2.h>
+#ifdef BYTE_ORDER
+#undef BYTE_ORDER // pmord.h def conflicts with machine/endian.h
+#endif
+
 #include <stdlib.h>
 
 #include "nsLookAndFeel.h"
@@ -16,6 +17,7 @@
 #include "nsSize.h"
 #include "nsStyleConsts.h"
 #include "gfxFont.h"
+#include "gfxFontConstants.h"
 
 static bool bIsDBCS;
 static bool bIsDBCSSet = false;
@@ -312,7 +314,6 @@ nsLookAndFeel::GetIntImpl(IntID aID, int32_t &aResult)
         break;
     case eIntID_MacGraphiteTheme:
     case eIntID_MacLionTheme:
-    case eIntID_MaemoClassic:
         aResult = 0;
         res = NS_ERROR_NOT_IMPLEMENTED;
         break;

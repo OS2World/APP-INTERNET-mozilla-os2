@@ -21,7 +21,7 @@ function run_test() {
   for (var i = 0; i < 8; ++i)
     new Uint8Array(sb.ab)[i] = i * 10;
   sb.ta = [];
-  TypedArrays.forEach(function(f) sb.ta.push(new f(sb.ab)));
+  TypedArrays.forEach(f => sb.ta.push(new f(sb.ab)));
   sb.dv = new DataView(sb.ab);
 
   /* Things that should throw. */
@@ -36,23 +36,21 @@ function run_test() {
   checkThrows("ArrayBuffer.prototype.slice.call(ab, 0);", sb);
   checkThrows("DataView.prototype.getInt8.call(dv, 0);", sb);
 
-  /* Things we explicitly allow in ExposedPropertiesOnly::allowNativeCall. */
-
-  /* Date */
-  do_check_eq(Cu.evalInSandbox("Date.prototype.getYear.call(d)", sb), sb.d.getYear());
-  do_check_eq(Cu.evalInSandbox("Date.prototype.valueOf.call(d)", sb), sb.d.valueOf());
-  do_check_eq(Cu.evalInSandbox("d.valueOf()", sb), sb.d.valueOf());
-  do_check_eq(Cu.evalInSandbox("Date.prototype.toString.call(d)", sb), sb.d.toString());
-  do_check_eq(Cu.evalInSandbox("d.toString()", sb), sb.d.toString());
+  /* Now that Date is on Xrays, these should all throw. */
+  checkThrows("Date.prototype.getYear.call(d)", sb);
+  checkThrows("Date.prototype.valueOf.call(d)", sb);
+  checkThrows("d.valueOf()", sb);
+  checkThrows("d.toString()", sb);
 
   /* Typed arrays. */
   function testForTypedArray(t) {
     sb.curr = t;
-    do_check_eq(Cu.evalInSandbox("this[curr.constructor.name].prototype.subarray.call(curr, 0)[0]", sb), t[0]);
-    do_check_eq(Cu.evalInSandbox("(new this[curr.constructor.name]).__lookupGetter__('length').call(curr)", sb), t.length);
-    do_check_eq(Cu.evalInSandbox("(new this[curr.constructor.name]).__lookupGetter__('buffer').call(curr)", sb), sb.ab);
-    do_check_eq(Cu.evalInSandbox("(new this[curr.constructor.name]).__lookupGetter__('byteOffset').call(curr)", sb), t.byteOffset);
-    do_check_eq(Cu.evalInSandbox("(new this[curr.constructor.name]).__lookupGetter__('byteLength').call(curr)", sb), t.byteLength);
+    sb.currName = t.constructor.name;
+    checkThrows("this[currName].prototype.subarray.call(curr, 0)[0]", sb);
+    checkThrows("(new this[currName]).__lookupGetter__('length').call(curr)", sb);
+    checkThrows("(new this[currName]).__lookupGetter__('buffer').call(curr)", sb);
+    checkThrows("(new this[currName]).__lookupGetter__('byteOffset').call(curr)", sb);
+    checkThrows("(new this[currName]).__lookupGetter__('byteLength').call(curr)", sb);
   }
   sb.ta.forEach(testForTypedArray);
 }

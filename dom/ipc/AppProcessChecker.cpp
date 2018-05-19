@@ -1,90 +1,95 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * vim: sw=2 ts=8 et :
- */
+/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
+/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "AppProcessChecker.h"
-#include "ContentParent.h"
-#include "mozIApplication.h"
-#include "mozilla/hal_sandbox/PHalParent.h"
-#include "nsIDOMApplicationRegistry.h"
-#include "TabParent.h"
+#include "nsIPermissionManager.h"
 
-using namespace mozilla::dom;
-using namespace mozilla::hal_sandbox;
-using namespace mozilla::services;
+namespace mozilla {
+namespace dom {
+class PContentParent;
+} // namespace dom
+} // namespace mozilla
+
+class nsIPrincipal;
 
 namespace mozilla {
 
+#if DEBUG
+  #define LOG(...) printf_stderr(__VA_ARGS__)
+#else
+  #define LOG(...)
+#endif
+
 bool
-AssertAppProcess(PBrowserParent* aActor,
+AssertAppProcess(mozilla::dom::PBrowserParent* aActor,
                  AssertAppProcessType aType,
                  const char* aCapability)
 {
-  if (!aActor) {
-    NS_WARNING("Testing process capability for null actor");
-    return false;
-  }
-
-  TabParent* tab = static_cast<TabParent*>(aActor);
-  nsCOMPtr<mozIApplication> app = tab->GetOwnOrContainingApp();
-  bool aValid = false;
-
-  // isBrowser frames inherit their app descriptor to identify their
-  // data storage, but they don't inherit the capability associated
-  // with that descriptor.
-  if (app && (aType == ASSERT_APP_HAS_PERMISSION || !tab->IsBrowserElement())) {
-    switch (aType) {
-      case ASSERT_APP_HAS_PERMISSION:
-      case ASSERT_APP_PROCESS_PERMISSION:
-        if (!NS_SUCCEEDED(app->HasPermission(aCapability, &aValid))) {
-          aValid = false;
-        }
-        break;
-      case ASSERT_APP_PROCESS_MANIFEST_URL: {
-        nsAutoString manifestURL;
-        if (NS_SUCCEEDED(app->GetManifestURL(manifestURL)) &&
-            manifestURL.EqualsASCII(aCapability)) {
-          aValid = true;
-        }
-        break;
-      }
-      default:
-        break;
-    }
-  }
-
-  if (!aValid) {
-    printf_stderr("Security problem: Content process does not have `%s'.  It will be killed.\n", aCapability);
-    ContentParent* process = static_cast<ContentParent*>(aActor->Manager());
-    process->KillHard();
-  }
-  return aValid;
+  return true;
 }
 
 bool
-AssertAppProcess(PContentParent* aActor,
-                 AssertAppProcessType aType,
-                 const char* aCapability)
+AssertAppStatus(mozilla::dom::PBrowserParent* aActor,
+                unsigned short aStatus)
 {
-  const InfallibleTArray<PBrowserParent*>& browsers =
-    aActor->ManagedPBrowserParent();
-  for (uint32_t i = 0; i < browsers.Length(); ++i) {
-    if (AssertAppProcess(browsers[i], aType, aCapability)) {
-      return true;
-    }
-  }
-  return false;
+  return true;
 }
 
 bool
-AssertAppProcess(PHalParent* aActor,
+AssertAppProcess(const mozilla::dom::TabContext& aContext,
                  AssertAppProcessType aType,
                  const char* aCapability)
 {
-  return AssertAppProcess(aActor->Manager(), aType, aCapability);
+  return true;
+}
+
+bool
+AssertAppStatus(const mozilla::dom::TabContext& aContext,
+                unsigned short aStatus)
+{
+  return true;
+}
+
+
+bool
+AssertAppProcess(mozilla::dom::PContentParent* aActor,
+                 AssertAppProcessType aType,
+                 const char* aCapability)
+{
+  return true;
+}
+
+bool
+AssertAppStatus(mozilla::dom::PContentParent* aActor,
+                unsigned short aStatus)
+{
+  return true;
+}
+
+bool
+AssertAppProcess(mozilla::hal_sandbox::PHalParent* aActor,
+                 AssertAppProcessType aType,
+                 const char* aCapability)
+{
+  return true;
+}
+
+bool
+AssertAppPrincipal(mozilla::dom::PContentParent* aActor,
+                   nsIPrincipal* aPrincipal)
+{
+  return true;
+}
+
+uint32_t
+CheckPermission(mozilla::dom::PContentParent* aActor,
+                nsIPrincipal* aPrincipal,
+                const char* aPermission)
+{
+  return nsIPermissionManager::ALLOW_ACTION;
 }
 
 } // namespace mozilla

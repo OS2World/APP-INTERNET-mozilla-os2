@@ -22,7 +22,7 @@ interface HTMLMediaElement : HTMLElement {
   readonly attribute DOMString currentSrc;
 
   [SetterThrows]
-           attribute DOMString crossOrigin;
+           attribute DOMString? crossOrigin;
   const unsigned short NETWORK_EMPTY = 0;
   const unsigned short NETWORK_IDLE = 1;
   const unsigned short NETWORK_LOADING = 2;
@@ -30,7 +30,7 @@ interface HTMLMediaElement : HTMLElement {
   readonly attribute unsigned short networkState;
   [SetterThrows]
            attribute DOMString preload;
-  [Creator]
+  [NewObject]
   readonly attribute TimeRanges buffered;
   void load();
   DOMString canPlayType(DOMString type);
@@ -47,17 +47,20 @@ interface HTMLMediaElement : HTMLElement {
   // playback state
   [SetterThrows]
            attribute double currentTime;
-  // TODO: Bug 847375 - void fastSeek(double time);
+  [Throws]
+  void fastSeek(double time);
   readonly attribute unrestricted double duration;
+  [ChromeOnly]
+  readonly attribute boolean isEncrypted;
   // TODO: Bug 847376 - readonly attribute any startDate;
   readonly attribute boolean paused;
   [SetterThrows]
            attribute double defaultPlaybackRate;
   [SetterThrows]
            attribute double playbackRate;
-  [Creator]
+  [NewObject]
   readonly attribute TimeRanges played;
-  [Creator]
+  [NewObject]
   readonly attribute TimeRanges seekable;
   readonly attribute boolean ended;
   [SetterThrows]
@@ -85,11 +88,11 @@ interface HTMLMediaElement : HTMLElement {
 
   // TODO: Bug 847379
   // tracks
-  //readonly attribute AudioTrackList audioTracks;
-  //readonly attribute VideoTrackList videoTracks;
-  [Pref="media.webvtt.enabled"]
-  readonly attribute TextTrackList textTracks;
-  [Pref="media.webvtt.enabled"]
+  [Pref="media.track.enabled"]
+  readonly attribute AudioTrackList audioTracks;
+  [Pref="media.track.enabled"]
+  readonly attribute VideoTrackList videoTracks;
+  readonly attribute TextTrackList? textTracks;
   TextTrack addTextTrack(TextTrackKind kind,
                          optional DOMString label = "",
                          optional DOMString language = "");
@@ -97,29 +100,31 @@ interface HTMLMediaElement : HTMLElement {
 
 // Mozilla extensions:
 partial interface HTMLMediaElement {
+  [ChromeOnly]
+  readonly attribute MediaSource? mozMediaSourceObject;
+  [ChromeOnly]
+  readonly attribute DOMString mozDebugReaderData;
+
+  [Pref="media.test.dumpDebugInfo"]
+  void mozDumpDebugInfo();
+
+  attribute MediaStream? srcObject;
+  // TODO: remove prefixed version soon (1183495).
   attribute MediaStream? mozSrcObject;
+
   attribute boolean mozPreservesPitch;
   readonly attribute boolean mozAutoplayEnabled;
 
+  // NB: for internal use with the video controls:
+  [Func="IsChromeOrXBL"] attribute boolean mozAllowCasting;
+  [Func="IsChromeOrXBL"] attribute boolean mozIsCasting;
+
   // Mozilla extension: stream capture
-  [Throws]
+  [Throws, UnsafeInPrerendering]
   MediaStream mozCaptureStream();
-  [Throws]
+  [Throws, UnsafeInPrerendering]
   MediaStream mozCaptureStreamUntilEnded();
   readonly attribute boolean mozAudioCaptured;
-
-  // Mozilla extension: extra stream metadata information, used as part
-  // of MozAudioAvailable events and the mozWriteAudio() method.  The
-  // mozFrameBufferLength method allows for the size of the framebuffer
-  // used within MozAudioAvailable events to be changed.  The new size must
-  // be between 512 and 16384.  The default size, for a  media element with
-  // audio is (mozChannels * 1024).
-  [GetterThrows]
-  readonly attribute unsigned long mozChannels;
-  [GetterThrows]
-  readonly attribute unsigned long mozSampleRate;
-  [Throws]
-           attribute unsigned long mozFrameBufferLength;
 
   // Mozilla extension: return embedded metadata from the stream as a
   // JSObject with key:value pairs for each tag. This can be used by
@@ -133,42 +138,87 @@ partial interface HTMLMediaElement {
   readonly attribute double mozFragmentEnd;
 
   // Mozilla extension: an audio channel type for media elements.
-  // An exception is thrown if the app tries to change the audio channel type
-  // without the permission (manifest file for B2G apps).
-  // The supported values are:
-  // * normal (default value)
-  //   Automatically paused if "notification" or higher priority channel
-  //   is played
-  //   Use case: normal applications
-  // * content
-  //   Automatically paused if "notification" or higher priority channel
-  //   is played. Also paused if another app starts using "content"
-  //   channel. Using this channel never affects applications using
-  //   the "normal" channel.
-  //   Use case: video/audio players
-  // * notification
-  //   Automatically paused if "alarm" or higher priority channel is played.
-  //   Use case: New email, incoming SMS
-  // * alarm
-  //   Automatically paused if "telephony" or higher priority channel is
-  //   played.
-  //   User case: Alarm clock, calendar alarms
-  // * telephony
-  //   Automatically paused if "ringer" or higher priority
-  //   channel is played.
-  //   Use case: dialer, voip
-  // * ringer
-  //   Automatically paused if "publicnotification" or higher priority
-  //   channel is played.
-  //   Use case: dialer, voip
-  // * publicnotification
-  //   Always plays in speaker, even when headphones are plugged in.
-  //   Use case: Camera shutter sound.
-  [SetterThrows]
-  attribute DOMString mozAudioChannelType;
+  // Read AudioChannel.webidl for more information about this attribute.
+  [SetterThrows, Pref="media.useAudioChannelAPI"]
+  attribute AudioChannel mozAudioChannelType;
 
   // In addition the media element has this new events:
   // * onmozinterruptbegin - called when the media element is interrupted
   //   because of the audiochannel manager.
   // * onmozinterruptend - called when the interruption is concluded
+  [Pref="media.useAudioChannelAPI"]
+  attribute EventHandler onmozinterruptbegin;
+
+  [Pref="media.useAudioChannelAPI"]
+  attribute EventHandler onmozinterruptend;
+};
+
+// Encrypted Media Extensions
+partial interface HTMLMediaElement {
+  [Pref="media.eme.apiVisible"]
+  readonly attribute MediaKeys? mediaKeys;
+
+  // void, not any: https://www.w3.org/Bugs/Public/show_bug.cgi?id=26457
+  [Pref="media.eme.apiVisible", NewObject]
+  Promise<void> setMediaKeys(MediaKeys? mediaKeys);
+
+  [Pref="media.eme.apiVisible"]
+  attribute EventHandler onencrypted;
+
+  [Pref="media.eme.apiVisible"]
+  attribute EventHandler onwaitingforkey;
+};
+
+// This is just for testing
+partial interface HTMLMediaElement {
+  [Pref="media.useAudioChannelService.testing"]
+  readonly attribute double computedVolume;
+  [Pref="media.useAudioChannelService.testing"]
+  readonly attribute boolean computedMuted;
+  [Pref="media.useAudioChannelService.testing"]
+  readonly attribute unsigned long computedSuspended;
+};
+
+/*
+ * HTMLMediaElement::seekToNextFrame() is a Mozilla experimental feature.
+ *
+ * The SeekToNextFrame() method provides a way to access a video element's video
+ * frames one by one without going through the realtime playback. So, it lets
+ * authors use "frame" as unit to access the video element's underlying data,
+ * instead of "time".
+ *
+ * The SeekToNextFrame() is a kind of seek operation, so normally, once it is
+ * invoked, a "seeking" event is dispatched. However, if the media source has no
+ * video data or is not seekable, the operation is ignored without filing the
+ * "seeking" event.
+ *
+ * Once the SeekToNextFrame() is done, a "seeked" event should always be filed
+ * and a "ended" event might also be filed depends on where the media element's
+ * position before seeking was. There are two cases:
+ * Assume the media source has n+1 video frames where n is a non-negative
+ * integers and the frame sequence is indexed from zero.
+ * (1) If the currentTime is at anywhere smaller than the n-th frame's beginning
+ *     time, say the currentTime is now pointing to a position which is smaller
+ *     than the x-th frame's beginning time and larger or equal to the (x-1)-th
+ *     frame's beginning time, where x belongs to [1, n], then the
+ *     SeekToNextFrame() operation seeks the media to the x-th frame, sets the
+ *     media's currentTime to the x-th frame's beginning time and dispatches a
+ *     "seeked" event.
+ * (2) Otherwise, if the currentTime is larger or equal to the n-th frame's
+ *     beginning time, then the SeekToNextFrame() operation sets the media's
+ *     currentTime to the duration of the media source and dispatches a "seeked"
+ *     event and an "ended" event.
+ */
+partial interface HTMLMediaElement {
+  [Throws, Pref="media.seekToNextFrame.enabled"]
+  Promise<void> seekToNextFrame();
+};
+
+/*
+ * This is an API for simulating visibility changes to help debug and write
+ * tests about suspend-video-decoding.
+ */
+partial interface HTMLMediaElement {
+  [Pref="media.test.setVisible"]
+  void setVisible(boolean aVisible);
 };

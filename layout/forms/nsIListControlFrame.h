@@ -7,12 +7,16 @@
 #define nsIListControlFrame_h___
 
 #include "nsQueryFrame.h"
-#include "nsFont.h"
 
 class nsAString;
-class nsIContent;
 
-/** 
+namespace mozilla {
+namespace dom {
+class HTMLOptionElement;
+} // namespace dom
+} // namespace mozilla
+
+/**
   * nsIListControlFrame is the interface for frame-based listboxes.
   */
 class nsIListControlFrame : public nsQueryFrame
@@ -29,7 +33,7 @@ public:
   /**
    * Get the display string for an item
    */
-  virtual void GetOptionText(int32_t aIndex, nsAString & aStr) = 0;
+  virtual void GetOptionText(uint32_t aIndex, nsAString& aStr) = 0;
 
   /**
    * Get the Selected Item's index
@@ -41,7 +45,7 @@ public:
    * Return current option. The current option is the option displaying
    * the focus ring when the listbox is focused.
    */
-  virtual already_AddRefed<nsIContent> GetCurrentOption() = 0;
+  virtual mozilla::dom::HTMLOptionElement* GetCurrentOption() = 0;
 
   /**
    * Initiates mouse capture for the listbox
@@ -50,10 +54,10 @@ public:
   virtual void CaptureMouseEvents(bool aGrabMouseEvents) = 0;
 
   /**
-   * Returns the height of a single row in the list.  This is the
-   * maximum of the heights of all the options/optgroups.
+   * Returns the block size of a single row in the list.  This is the
+   * maximum of the block sizes of all the options/optgroups.
    */
-  virtual nscoord GetHeightOfARow() = 0;
+  virtual nscoord GetBSizeOfARow() = 0;
 
   /**
    * Returns the number of options in the listbox
@@ -72,9 +76,9 @@ public:
   virtual void AboutToRollup() = 0;
 
   /**
-   * Fire on change (used by combobox)
+   * Fire on input and on change (used by combobox)
    */
-  virtual void FireOnChange() = 0;
+  virtual void FireOnInputAndOnChange() = 0;
 
   /**
    * Tell the selected list to roll up and ensure that the proper index is

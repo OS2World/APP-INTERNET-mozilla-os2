@@ -4,20 +4,24 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "nsTXTToHTMLConv.h"
-#include "nsNetUtil.h"
 #include "nsEscape.h"
 #include "nsStringStream.h"
 #include "nsAutoPtr.h"
+#include "nsIChannel.h"
 #include <algorithm>
 
-#define TOKEN_DELIMITERS NS_LITERAL_STRING("\t\r\n ").get()
+#include "mozilla/UniquePtrExtensions.h"
+
+#define TOKEN_DELIMITERS u"\t\r\n "
+
+using namespace mozilla;
 
 // nsISupports methods
-NS_IMPL_ISUPPORTS4(nsTXTToHTMLConv,
-                   nsIStreamConverter,
-                   nsITXTToHTMLConv,
-                   nsIRequestObserver,
-                   nsIStreamListener)
+NS_IMPL_ISUPPORTS(nsTXTToHTMLConv,
+                  nsIStreamConverter,
+                  nsITXTToHTMLConv,
+                  nsIRequestObserver,
+                  nsIStreamListener)
 
 
 // nsIStreamConverter methods
@@ -69,7 +73,8 @@ nsTXTToHTMLConv::OnStartRequest(nsIRequest* request, nsISupports *aContext)
     if (NS_FAILED(rv)) return rv;
 
     nsCOMPtr<nsIInputStream> inputData;
-    rv = NS_NewStringInputStream(getter_AddRefs(inputData), mBuffer);
+    NS_LossyConvertUTF16toASCII asciiData(mBuffer);
+    rv = NS_NewCStringInputStream(getter_AddRefs(inputData), asciiData);
     if (NS_FAILED(rv)) return rv;
 
     rv = mListener->OnDataAvailable(request, aContext,
@@ -98,8 +103,8 @@ nsTXTToHTMLConv::OnStopRequest(nsIRequest* request, nsISupports *aContext,
     mBuffer.AppendLiteral("\n</body></html>");
 
     nsCOMPtr<nsIInputStream> inputData;
-
-    rv = NS_NewStringInputStream(getter_AddRefs(inputData), mBuffer);
+    NS_LossyConvertUTF16toASCII asciiData(mBuffer);
+    rv = NS_NewCStringInputStream(getter_AddRefs(inputData), asciiData);
     if (NS_FAILED(rv)) return rv;
 
     rv = mListener->OnDataAvailable(request, aContext,
@@ -111,7 +116,7 @@ nsTXTToHTMLConv::OnStopRequest(nsIRequest* request, nsISupports *aContext,
 
 // nsITXTToHTMLConv methods
 NS_IMETHODIMP
-nsTXTToHTMLConv::SetTitle(const PRUnichar *aTitle)
+nsTXTToHTMLConv::SetTitle(const char16_t *aTitle)
 {
     mPageTitle.Assign(aTitle);
     return NS_OK;
@@ -133,18 +138,18 @@ nsTXTToHTMLConv::OnDataAvailable(nsIRequest* request, nsISupports *aContext,
     nsresult rv = NS_OK;
     nsString pushBuffer;
     uint32_t amtRead = 0;
-    nsAutoArrayPtr<char> buffer(new char[aCount+1]);
+    auto buffer = MakeUniqueFallible<char[]>(aCount+1);
     if (!buffer) return NS_ERROR_OUT_OF_MEMORY;
 
     do {
         uint32_t read = 0;
         // XXX readSegments, to avoid the first copy?
-        rv = aInStream->Read(buffer, aCount-amtRead, &read);
+        rv = aInStream->Read(buffer.get(), aCount-amtRead, &read);
         if (NS_FAILED(rv)) return rv;
 
         buffer[read] = '\0';
         // XXX charsets?? non-latin1 characters?? utf-16??
-        AppendASCIItoUTF16(buffer, mBuffer);
+        AppendASCIItoUTF16(buffer.get(), mBuffer);
         amtRead += read;
 
         int32_t front = -1, back = -1, tokenLoc = -1, cursor = 0;
@@ -175,8 +180,8 @@ nsTXTToHTMLConv::OnDataAvailable(nsIRequest* request, nsISupports *aContext,
 
         if (!pushBuffer.IsEmpty()) {
             nsCOMPtr<nsIInputStream> inputData;
-
-            rv = NS_NewStringInputStream(getter_AddRefs(inputData), pushBuffer);
+            NS_LossyConvertUTF16toASCII asciiData(pushBuffer);
+            rv = NS_NewCStringInputStream(getter_AddRefs(inputData), asciiData);
             if (NS_FAILED(rv))
                 return rv;
 
@@ -211,21 +216,21 @@ nsTXTToHTMLConv::Init()
     convToken *token = new convToken;
     if (!token) return NS_ERROR_OUT_OF_MEMORY;
     token->prepend = false;
-    token->token.Assign(PRUnichar('<'));
+    token->token.Assign(char16_t('<'));
     token->modText.AssignLiteral("&lt;");
     mTokens.AppendElement(token);
 
     token = new convToken;
     if (!token) return NS_ERROR_OUT_OF_MEMORY;
     token->prepend = false;
-    token->token.Assign(PRUnichar('>'));
+    token->token.Assign(char16_t('>'));
     token->modText.AssignLiteral("&gt;");
     mTokens.AppendElement(token);
 
     token = new convToken;
     if (!token) return NS_ERROR_OUT_OF_MEMORY;
     token->prepend = false;
-    token->token.Assign(PRUnichar('&'));
+    token->token.Assign(char16_t('&'));
     token->modText.AssignLiteral("&amp;");
     mTokens.AppendElement(token);
 
@@ -238,7 +243,7 @@ nsTXTToHTMLConv::Init()
     token = new convToken;
     if (!token) return NS_ERROR_OUT_OF_MEMORY;
     token->prepend = true;
-    token->token.Assign(PRUnichar('@'));
+    token->token.Assign(char16_t('@'));
     token->modText.AssignLiteral("mailto:");
     mTokens.AppendElement(token);
 

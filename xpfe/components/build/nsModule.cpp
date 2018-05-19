@@ -4,7 +4,6 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "mozilla/ModuleUtils.h"
-#include "nsNetUtil.h"
 #include "nsDirectoryViewer.h"
 #include "rdf.h"
 #include "nsRDFCID.h"
@@ -18,21 +17,21 @@ NS_DEFINE_NAMED_CID(NS_DIRECTORYVIEWERFACTORY_CID);
 NS_DEFINE_NAMED_CID(NS_HTTPINDEX_SERVICE_CID);
 
 static const mozilla::Module::CIDEntry kXPFECIDs[] = {
-    { &kNS_DIRECTORYVIEWERFACTORY_CID, false, NULL, nsDirectoryViewerFactoryConstructor },
-    { &kNS_HTTPINDEX_SERVICE_CID, false, NULL, nsHTTPIndexConstructor },
-    { NULL }
+    { &kNS_DIRECTORYVIEWERFACTORY_CID, false, nullptr, nsDirectoryViewerFactoryConstructor },
+    { &kNS_HTTPINDEX_SERVICE_CID, false, nullptr, nsHTTPIndexConstructor },
+    { nullptr }
 };
 
 static const mozilla::Module::ContractIDEntry kXPFEContracts[] = {
     { "@mozilla.org/xpfe/http-index-format-factory-constructor", &kNS_DIRECTORYVIEWERFACTORY_CID },
     { NS_HTTPINDEX_SERVICE_CONTRACTID, &kNS_HTTPINDEX_SERVICE_CID },
     { NS_HTTPINDEX_DATASOURCE_CONTRACTID, &kNS_HTTPINDEX_SERVICE_CID },
-    { NULL }
+    { nullptr }
 };
 
 static const mozilla::Module::CategoryEntry kXPFECategories[] = {
     { "Gecko-Content-Viewers", "application/http-index-format", "@mozilla.org/xpfe/http-index-format-factory-constructor" },
-    { NULL }
+    { nullptr }
 };
 
 static const mozilla::Module kXPFEModule = {

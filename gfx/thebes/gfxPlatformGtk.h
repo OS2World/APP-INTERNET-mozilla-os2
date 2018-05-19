@@ -9,6 +9,7 @@
 #include "gfxPlatform.h"
 #include "nsAutoRef.h"
 #include "nsTArray.h"
+#include "mozilla/gfx/gfxVars.h"
 
 #if (MOZ_WIDGET_GTK == 2)
 extern "C" {
@@ -16,12 +17,12 @@ extern "C" {
 }
 #endif
 
+#ifdef MOZ_X11
+struct _XDisplay;
+typedef struct _XDisplay Display;
+#endif // MOZ_X11
+
 class gfxFontconfigUtils;
-#ifndef MOZ_PANGO
-class FontFamily;
-class FontEntry;
-typedef struct FT_LibraryRec_ *FT_Library;
-#endif
 
 class gfxPlatformGtk : public gfxPlatform {
 public:
@@ -32,109 +33,140 @@ public:
         return (gfxPlatformGtk*) gfxPlatform::GetPlatform();
     }
 
-    already_AddRefed<gfxASurface> CreateOffscreenSurface(const gfxIntSize& size,
-                                                         gfxASurface::gfxContentType contentType);
+    virtual already_AddRefed<gfxASurface>
+      CreateOffscreenSurface(const IntSize& aSize,
+                             gfxImageFormat aFormat) override;
 
-    mozilla::TemporaryRef<mozilla::gfx::ScaledFont>
-      GetScaledFontForFont(mozilla::gfx::DrawTarget* aTarget, gfxFont *aFont);
+    virtual already_AddRefed<mozilla::gfx::ScaledFont>
+      GetScaledFontForFont(mozilla::gfx::DrawTarget* aTarget, gfxFont *aFont) override;
 
-    nsresult GetFontList(nsIAtom *aLangGroup,
-                         const nsACString& aGenericFamily,
-                         nsTArray<nsString>& aListOfFonts);
+    virtual nsresult GetFontList(nsIAtom *aLangGroup,
+                                 const nsACString& aGenericFamily,
+                                 nsTArray<nsString>& aListOfFonts) override;
 
-    nsresult UpdateFontList();
+    virtual nsresult UpdateFontList() override;
 
-    nsresult ResolveFontName(const nsAString& aFontName,
-                             FontResolverCallback aCallback,
-                             void *aClosure, bool& aAborted);
+    virtual void
+    GetCommonFallbackFonts(uint32_t aCh, uint32_t aNextCh,
+                           Script aRunScript,
+                           nsTArray<const char*>& aFontList) override;
 
-    nsresult GetStandardFamilyName(const nsAString& aFontName, nsAString& aFamilyName);
+    virtual gfxPlatformFontList* CreatePlatformFontList() override;
 
-    gfxFontGroup *CreateFontGroup(const nsAString &aFamilies,
-                                  const gfxFontStyle *aStyle,
-                                  gfxUserFontSet *aUserFontSet);
+    virtual nsresult GetStandardFamilyName(const nsAString& aFontName,
+                                           nsAString& aFamilyName) override;
 
-#ifdef MOZ_PANGO
+    gfxFontGroup*
+    CreateFontGroup(const mozilla::FontFamilyList& aFontFamilyList,
+                    const gfxFontStyle *aStyle,
+                    gfxTextPerfMetrics* aTextPerf,
+                    gfxUserFontSet *aUserFontSet,
+                    gfxFloat aDevToCssSize) override;
+
     /**
      * Look up a local platform font using the full font face name (needed to
      * support @font-face src local() )
      */
-    virtual gfxFontEntry* LookupLocalFont(const gfxProxyFontEntry *aProxyEntry,
-                                          const nsAString& aFontName);
+    virtual gfxFontEntry* LookupLocalFont(const nsAString& aFontName,
+                                          uint16_t aWeight,
+                                          int16_t aStretch,
+                                          uint8_t aStyle) override;
 
     /**
      * Activate a platform font (needed to support @font-face src url() )
      *
      */
-    virtual gfxFontEntry* MakePlatformFont(const gfxProxyFontEntry *aProxyEntry,
-                                           const uint8_t *aFontData,
-                                           uint32_t aLength);
+    virtual gfxFontEntry* MakePlatformFont(const nsAString& aFontName,
+                                           uint16_t aWeight,
+                                           int16_t aStretch,
+                                           uint8_t aStyle,
+                                           const uint8_t* aFontData,
+                                           uint32_t aLength) override;
 
     /**
      * Check whether format is supported on a platform or not (if unclear,
      * returns true).
      */
     virtual bool IsFontFormatSupported(nsIURI *aFontURI,
-                                         uint32_t aFormatFlags);
-#endif
+                                         uint32_t aFormatFlags) override;
 
-#ifndef MOZ_PANGO
-    FontFamily *FindFontFamily(const nsAString& aName);
-    FontEntry *FindFontEntry(const nsAString& aFamilyName, const gfxFontStyle& aFontStyle);
-    already_AddRefed<gfxFont> FindFontForChar(uint32_t aCh, gfxFont *aFont);
-    bool GetPrefFontEntries(const nsCString& aLangGroup, nsTArray<nsRefPtr<gfxFontEntry> > *aFontEntryList);
-    void SetPrefFontEntries(const nsCString& aLangGroup, nsTArray<nsRefPtr<gfxFontEntry> >& aFontEntryList);
-#endif
-
-#ifndef MOZ_PANGO
-    FT_Library GetFTLibrary();
-#endif
+    /**
+     * Calls XFlush if xrender is enabled.
+     */
+    virtual void FlushContentDrawing() override;
 
 #if (MOZ_WIDGET_GTK == 2)
-    static void SetGdkDrawable(gfxASurface *target,
+    static void SetGdkDrawable(cairo_surface_t *target,
                                GdkDrawable *drawable);
-    static GdkDrawable *GetGdkDrawable(gfxASurface *target);
+    static GdkDrawable *GetGdkDrawable(cairo_surface_t *target);
 #endif
 
     static int32_t GetDPI();
+    static double  GetDPIScale();
 
-    bool UseXRender() {
-#if defined(MOZ_X11) && defined(MOZ_PLATFORM_MAEMO)
-        // XRender is not accelerated on the Maemo at the moment, and 
-        // X server pixman is out of our control; it's likely to be 
-        // older than (our) cairo's.   So fall back on software 
-        // rendering for more predictable performance.
-        // This setting will likely not be relevant when we have
-        // GL-accelerated compositing. We know of other platforms 
-        // with bad drivers where we'd like to also use client side 
-        // rendering, but until we have the ability to featuer test 
-        // this, we'll only disable this for maemo.
-        return true;
-#elif defined(MOZ_X11)
-        if (GetContentBackend() != mozilla::gfx::BACKEND_NONE &&
-            GetContentBackend() != mozilla::gfx::BACKEND_CAIRO)
-            return false;
-
-        return sUseXRender;
-#else
-        return false;
+#ifdef MOZ_X11
+    virtual void GetAzureBackendInfo(mozilla::widget::InfoObject &aObj) override {
+      gfxPlatform::GetAzureBackendInfo(aObj);
+      aObj.DefineProperty("CairoUseXRender", mozilla::gfx::gfxVars::UseXRender());
+    }
 #endif
+
+    static bool UseFcFontList() { return sUseFcFontList; }
+
+    bool UseImageOffscreenSurfaces();
+
+    virtual gfxImageFormat GetOffscreenFormat() override;
+
+    bool SupportsApzWheelInput() const override {
+      return true;
     }
 
-    virtual gfxImageFormat GetOffscreenFormat();
+    bool SupportsApzTouchInput() const override;
 
-    virtual int GetScreenDepth() const;
+    void FontsPrefsChanged(const char *aPref) override;
+
+    // maximum number of fonts to substitute for a generic
+    uint32_t MaxGenericSubstitions();
+
+    bool SupportsPluginDirectBitmapDrawing() override {
+      return true;
+    }
+
+    bool AccelerateLayersByDefault() override {
+#ifdef NIGHTLY_BUILD
+      // Only enable the GL compositor on Nightly for now until we have
+      // sufficient data for blocklisting.
+      return true;
+#endif
+      return false;
+    }
+
+#ifdef GL_PROVIDER_GLX
+    already_AddRefed<mozilla::gfx::VsyncSource> CreateHardwareVsyncSource() override;
+#endif
+
+#ifdef MOZ_X11
+    Display* GetCompositorDisplay() {
+      return mCompositorDisplay;
+    }
+#endif // MOZ_X11
 
 protected:
     static gfxFontconfigUtils *sFontconfigUtils;
 
-private:
-    virtual qcms_profile *GetPlatformCMSOutputProfile();
+    int8_t mMaxGenericSubstitutions;
 
-    virtual bool SupportsOffMainThreadCompositing();
+private:
+    virtual void GetPlatformCMSOutputProfile(void *&mem,
+                                             size_t &size) override;
+
 #ifdef MOZ_X11
-    static bool sUseXRender;
+    Display* mCompositorDisplay;
 #endif
+
+    // xxx - this will be removed once the new fontconfig platform font list
+    // replaces gfxPangoFontGroup
+    static bool sUseFcFontList;
 };
 
 #endif /* GFX_PLATFORM_GTK_H */

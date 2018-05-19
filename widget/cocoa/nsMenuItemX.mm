@@ -8,18 +8,19 @@
 #include "nsMenuX.h"
 #include "nsMenuItemIconX.h"
 #include "nsMenuUtilsX.h"
+#include "nsCocoaUtils.h"
 
 #include "nsObjCExceptions.h"
 
 #include "nsCOMPtr.h"
 #include "nsGkAtoms.h"
-#include "nsGUIEvent.h"
 
 #include "mozilla/dom/Element.h"
 #include "nsIWidget.h"
 #include "nsIDocument.h"
 #include "nsIDOMDocument.h"
 #include "nsIDOMElement.h"
+#include "nsIDOMEvent.h"
 
 nsMenuItemX::nsMenuItemX()
 {
@@ -54,159 +55,6 @@ nsMenuItemX::~nsMenuItemX()
   NS_OBJC_END_TRY_ABORT_BLOCK;
 }
 
-struct macKeyCodeData {
-  const char* str;
-  size_t strlength;
-  uint32_t keycode;
-};
-
-static const macKeyCodeData gMacKeyCodes[] = {
-
-#define KEYCODE_ENTRY(str, code) {#str, sizeof(#str) - 1, code}
-
-  KEYCODE_ENTRY(VK_CANCEL, 0x001B),
-  KEYCODE_ENTRY(VK_DELETE, NSBackspaceCharacter),
-  KEYCODE_ENTRY(VK_BACK, NSBackspaceCharacter),
-  KEYCODE_ENTRY(VK_BACK_SPACE, NSBackspaceCharacter),
-  KEYCODE_ENTRY(VK_TAB, NSTabCharacter),
-  KEYCODE_ENTRY(VK_CLEAR, NSClearLineFunctionKey),
-  KEYCODE_ENTRY(VK_RETURN, NSEnterCharacter),
-  KEYCODE_ENTRY(VK_ENTER, NSEnterCharacter),
-  KEYCODE_ENTRY(VK_SHIFT, 0),
-  KEYCODE_ENTRY(VK_CONTROL, 0),
-  KEYCODE_ENTRY(VK_ALT, 0),
-  KEYCODE_ENTRY(VK_PAUSE, NSPauseFunctionKey),
-  KEYCODE_ENTRY(VK_CAPS_LOCK, 0),
-  KEYCODE_ENTRY(VK_ESCAPE, 0),
-  KEYCODE_ENTRY(VK_SPACE, ' '),
-  KEYCODE_ENTRY(VK_PAGE_UP, NSPageUpFunctionKey),
-  KEYCODE_ENTRY(VK_PAGE_DOWN, NSPageDownFunctionKey),
-  KEYCODE_ENTRY(VK_END, NSEndFunctionKey),
-  KEYCODE_ENTRY(VK_HOME, NSHomeFunctionKey),
-  KEYCODE_ENTRY(VK_LEFT, NSLeftArrowFunctionKey),
-  KEYCODE_ENTRY(VK_UP, NSUpArrowFunctionKey),
-  KEYCODE_ENTRY(VK_RIGHT, NSRightArrowFunctionKey),
-  KEYCODE_ENTRY(VK_DOWN, NSDownArrowFunctionKey),
-  KEYCODE_ENTRY(VK_PRINTSCREEN, NSPrintScreenFunctionKey),
-  KEYCODE_ENTRY(VK_INSERT, NSInsertFunctionKey),
-  KEYCODE_ENTRY(VK_HELP, NSHelpFunctionKey),
-  KEYCODE_ENTRY(VK_0, '0'),
-  KEYCODE_ENTRY(VK_1, '1'),
-  KEYCODE_ENTRY(VK_2, '2'),
-  KEYCODE_ENTRY(VK_3, '3'),
-  KEYCODE_ENTRY(VK_4, '4'),
-  KEYCODE_ENTRY(VK_5, '5'),
-  KEYCODE_ENTRY(VK_6, '6'),
-  KEYCODE_ENTRY(VK_7, '7'),
-  KEYCODE_ENTRY(VK_8, '8'),
-  KEYCODE_ENTRY(VK_9, '9'),
-  KEYCODE_ENTRY(VK_SEMICOLON, ':'),
-  KEYCODE_ENTRY(VK_EQUALS, '='),
-  KEYCODE_ENTRY(VK_A, 'A'),
-  KEYCODE_ENTRY(VK_B, 'B'),
-  KEYCODE_ENTRY(VK_C, 'C'),
-  KEYCODE_ENTRY(VK_D, 'D'),
-  KEYCODE_ENTRY(VK_E, 'E'),
-  KEYCODE_ENTRY(VK_F, 'F'),
-  KEYCODE_ENTRY(VK_G, 'G'),
-  KEYCODE_ENTRY(VK_H, 'H'),
-  KEYCODE_ENTRY(VK_I, 'I'),
-  KEYCODE_ENTRY(VK_J, 'J'),
-  KEYCODE_ENTRY(VK_K, 'K'),
-  KEYCODE_ENTRY(VK_L, 'L'),
-  KEYCODE_ENTRY(VK_M, 'M'),
-  KEYCODE_ENTRY(VK_N, 'N'),
-  KEYCODE_ENTRY(VK_O, 'O'),
-  KEYCODE_ENTRY(VK_P, 'P'),
-  KEYCODE_ENTRY(VK_Q, 'Q'),
-  KEYCODE_ENTRY(VK_R, 'R'),
-  KEYCODE_ENTRY(VK_S, 'S'),
-  KEYCODE_ENTRY(VK_T, 'T'),
-  KEYCODE_ENTRY(VK_U, 'U'),
-  KEYCODE_ENTRY(VK_V, 'V'),
-  KEYCODE_ENTRY(VK_W, 'W'),
-  KEYCODE_ENTRY(VK_X, 'X'),
-  KEYCODE_ENTRY(VK_Y, 'Y'),
-  KEYCODE_ENTRY(VK_Z, 'Z'),
-  KEYCODE_ENTRY(VK_CONTEXT_MENU, NSMenuFunctionKey),
-  KEYCODE_ENTRY(VK_NUMPAD0, '0'),
-  KEYCODE_ENTRY(VK_NUMPAD1, '1'),
-  KEYCODE_ENTRY(VK_NUMPAD2, '2'),
-  KEYCODE_ENTRY(VK_NUMPAD3, '3'),
-  KEYCODE_ENTRY(VK_NUMPAD4, '4'),
-  KEYCODE_ENTRY(VK_NUMPAD5, '5'),
-  KEYCODE_ENTRY(VK_NUMPAD6, '6'),
-  KEYCODE_ENTRY(VK_NUMPAD7, '7'),
-  KEYCODE_ENTRY(VK_NUMPAD8, '8'),
-  KEYCODE_ENTRY(VK_NUMPAD9, '9'),
-  KEYCODE_ENTRY(VK_MULTIPLY, '*'),
-  KEYCODE_ENTRY(VK_ADD, '+'),
-  KEYCODE_ENTRY(VK_SEPARATOR, 0),
-  KEYCODE_ENTRY(VK_SUBTRACT, '-'),
-  KEYCODE_ENTRY(VK_DECIMAL, '.'),
-  KEYCODE_ENTRY(VK_DIVIDE, '/'),
-  KEYCODE_ENTRY(VK_F1, NSF1FunctionKey),
-  KEYCODE_ENTRY(VK_F2, NSF2FunctionKey),
-  KEYCODE_ENTRY(VK_F3, NSF3FunctionKey),
-  KEYCODE_ENTRY(VK_F4, NSF4FunctionKey),
-  KEYCODE_ENTRY(VK_F5, NSF5FunctionKey),
-  KEYCODE_ENTRY(VK_F6, NSF6FunctionKey),
-  KEYCODE_ENTRY(VK_F7, NSF7FunctionKey),
-  KEYCODE_ENTRY(VK_F8, NSF8FunctionKey),
-  KEYCODE_ENTRY(VK_F9, NSF9FunctionKey),
-  KEYCODE_ENTRY(VK_F10, NSF10FunctionKey),
-  KEYCODE_ENTRY(VK_F11, NSF11FunctionKey),
-  KEYCODE_ENTRY(VK_F12, NSF12FunctionKey),
-  KEYCODE_ENTRY(VK_F13, NSF13FunctionKey),
-  KEYCODE_ENTRY(VK_F14, NSF14FunctionKey),
-  KEYCODE_ENTRY(VK_F15, NSF15FunctionKey),
-  KEYCODE_ENTRY(VK_F16, NSF16FunctionKey),
-  KEYCODE_ENTRY(VK_F17, NSF17FunctionKey),
-  KEYCODE_ENTRY(VK_F18, NSF18FunctionKey),
-  KEYCODE_ENTRY(VK_F19, NSF19FunctionKey),
-  KEYCODE_ENTRY(VK_F20, NSF20FunctionKey),
-  KEYCODE_ENTRY(VK_F21, NSF21FunctionKey),
-  KEYCODE_ENTRY(VK_F22, NSF22FunctionKey),
-  KEYCODE_ENTRY(VK_F23, NSF23FunctionKey),
-  KEYCODE_ENTRY(VK_F24, NSF24FunctionKey),
-  KEYCODE_ENTRY(VK_NUM_LOCK, NSClearLineFunctionKey),
-  KEYCODE_ENTRY(VK_SCROLL_LOCK, NSScrollLockFunctionKey),
-  KEYCODE_ENTRY(VK_COMMA, ','),
-  KEYCODE_ENTRY(VK_PERIOD, '.'),
-  KEYCODE_ENTRY(VK_SLASH, '/'),
-  KEYCODE_ENTRY(VK_BACK_QUOTE, '`'),
-  KEYCODE_ENTRY(VK_OPEN_BRACKET, '['),
-  KEYCODE_ENTRY(VK_BACK_SLASH, '\\'),
-  KEYCODE_ENTRY(VK_CLOSE_BRACKET, ']'),
-  KEYCODE_ENTRY(VK_QUOTE, '\'')
-
-#undef KEYCODE_ENTRY
-
-};
-
-uint32_t nsMenuItemX::ConvertGeckoToMacKeyCode(nsAString& aKeyCodeName)
-{
-  if (aKeyCodeName.IsEmpty()) {
-    return 0;
-  }
-
-  nsAutoCString keyCodeName;
-  keyCodeName.AssignWithConversion(aKeyCodeName);
-  // We want case-insensitive comparison with data stored as uppercase.
-  ToUpperCase(keyCodeName);
-
-  uint32_t keyCodeNameLength = keyCodeName.Length();
-  const char* keyCodeNameStr = keyCodeName.get();
-  for (uint16_t i = 0; i < (sizeof(gMacKeyCodes) / sizeof(gMacKeyCodes[0])); ++i) {
-    if (keyCodeNameLength == gMacKeyCodes[i].strlength &&
-        nsCRT::strcmp(gMacKeyCodes[i].str, keyCodeNameStr) == 0) {
-      return gMacKeyCodes[i].keycode;
-    }
-  }
-
-  return 0;
-}
-
 nsresult nsMenuItemX::Create(nsMenuX* aParent, const nsString& aLabel, EMenuItemType aItemType,
                              nsMenuGroupOwnerX* aMenuGroupOwner, nsIContent* aNode)
 {
@@ -221,7 +69,7 @@ nsresult nsMenuItemX::Create(nsMenuX* aParent, const nsString& aLabel, EMenuItem
 
   mMenuGroupOwner->RegisterForContentChanges(mContent, this);
 
-  nsIDocument *doc = mContent->GetCurrentDoc();
+  nsIDocument *doc = mContent->GetUncomposedDoc();
 
   // if we have a command associated with this menu item, register for changes
   // to the command DOM node
@@ -277,12 +125,12 @@ nsresult nsMenuItemX::SetChecked(bool aIsChecked)
   NS_OBJC_BEGIN_TRY_ABORT_BLOCK_NSRESULT;
 
   mIsChecked = aIsChecked;
-  
+
   // update the content model. This will also handle unchecking our siblings
   // if we are a radiomenu
-  mContent->SetAttr(kNameSpaceID_None, nsGkAtoms::checked, 
+  mContent->SetAttr(kNameSpaceID_None, nsGkAtoms::checked,
                     mIsChecked ? NS_LITERAL_STRING("true") : NS_LITERAL_STRING("false"), true);
-  
+
   // update native menu item
   if (mIsChecked)
     [mNativeMenuItem setState:NSOnState];
@@ -369,14 +217,14 @@ void nsMenuItemX::UncheckRadioSiblings(nsIContent* inCheckedContent)
   uint32_t count = parent->GetChildCount();
   for (uint32_t i = 0; i < count; i++) {
     nsIContent *sibling = parent->GetChildAt(i);
-    if (sibling) {      
+    if (sibling) {
       if (sibling != inCheckedContent) { // skip this node
         // if the current sibling is in the same group, clear it
         if (sibling->AttrValueIs(kNameSpaceID_None, nsGkAtoms::name,
                                  myGroupName, eCaseMatters))
           sibling->SetAttr(kNameSpaceID_None, nsGkAtoms::checked, NS_LITERAL_STRING("false"), true);
       }
-    }    
+    }
   }
 }
 
@@ -387,8 +235,8 @@ void nsMenuItemX::SetKeyEquiv()
   // Set key shortcut and modifiers
   nsAutoString keyValue;
   mContent->GetAttr(kNameSpaceID_None, nsGkAtoms::key, keyValue);
-  if (!keyValue.IsEmpty() && mContent->GetCurrentDoc()) {
-    nsIContent *keyContent = mContent->GetCurrentDoc()->GetElementById(keyValue);
+  if (!keyValue.IsEmpty() && mContent->GetUncomposedDoc()) {
+    nsIContent *keyContent = mContent->GetUncomposedDoc()->GetElementById(keyValue);
     if (keyContent) {
       nsAutoString keyChar;
       bool hasKey = keyContent->GetAttr(kNameSpaceID_None, nsGkAtoms::key, keyChar);
@@ -396,9 +244,10 @@ void nsMenuItemX::SetKeyEquiv()
       if (!hasKey || keyChar.IsEmpty()) {
         nsAutoString keyCodeName;
         keyContent->GetAttr(kNameSpaceID_None, nsGkAtoms::keycode, keyCodeName);
-        uint32_t keycode = ConvertGeckoToMacKeyCode(keyCodeName);
-        if (keycode) {
-          keyChar.Assign(keycode);
+        uint32_t charCode =
+          nsCocoaUtils::ConvertGeckoNameToMacCharCode(keyCodeName);
+        if (charCode) {
+          keyChar.Assign(charCode);
         }
         else {
           keyChar.Assign(NS_LITERAL_STRING(" "));
@@ -440,7 +289,7 @@ nsMenuItemX::ObserveAttributeChanged(nsIDocument *aDocument, nsIContent *aConten
 
   if (!aContent)
     return;
-  
+
   if (aContent == mContent) { // our own content node changed
     if (aAttribute == nsGkAtoms::checked) {
       // if we're a radio menu, uncheck our sibling radio items. No need to
@@ -481,7 +330,7 @@ nsMenuItemX::ObserveAttributeChanged(nsIDocument *aDocument, nsIContent *aConten
       mContent->GetAttr(kNameSpaceID_None, nsGkAtoms::disabled, menuDisabled);
       if (!commandDisabled.Equals(menuDisabled)) {
         // The menu's disabled state needs to be updated to match the command.
-        if (commandDisabled.IsEmpty()) 
+        if (commandDisabled.IsEmpty())
           mContent->UnsetAttr(kNameSpaceID_None, nsGkAtoms::disabled, true);
         else
           mContent->SetAttr(kNameSpaceID_None, nsGkAtoms::disabled, commandDisabled, true);

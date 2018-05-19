@@ -16,13 +16,14 @@
 #include "nsIURI.h"
 #include "nsIURL.h"
 #include "nsNetUtil.h"
-#include "nsOS2Uni.h"
+#include "nsNativeCharsetUtils.h"
 #include "wdgtos2rc.h"
 #include "nsILocalFileOS2.h"
 #include "nsIDocument.h"
-#include "nsGUIEvent.h"
 #include "nsISelection.h"
+#include "mozilla/BasicEvents.h"
 #include <algorithm>
+#include <uconv.h>
 
 // --------------------------------------------------------------------------
 // Local defines
@@ -67,7 +68,7 @@ nsresult GetTempFileName(char** outText);
 void     SaveTypeAndSource(nsIFile *file, nsIDOMDocument *domDoc,
                            PCSZ pszType);
 int      UnicodeToCodepage( const nsAString& inString, char **outText);
-int      CodepageToUnicode( const nsACString& inString, PRUnichar **outText);
+int      CodepageToUnicode( const nsACString& inString, char16_t **outText);
 void     RemoveCarriageReturns(char * pszText);
 MRESULT EXPENTRY nsDragWindowProc(HWND hWnd, ULONG msg, MPARAM mp1, MPARAM mp2);
 
@@ -88,7 +89,7 @@ nsDragService::nsDragService()
   WinSubclassWindow( mDragWnd, nsDragWindowProc);
 
   HMODULE hModResources = NULLHANDLE;
-  DosQueryModFromEIP(&hModResources, NULL, 0, NULL, NULL, (ULONG) &gPtrArray);
+  DosQueryModFromEIP(&hModResources, nullptr, 0, nullptr, nullptr, (ULONG) &gPtrArray);
   for (int i = 0; i < IDC_DNDCOUNT; i++)
     gPtrArray[i] = ::WinLoadPointer(HWND_DESKTOP, hModResources, i+IDC_DNDBASE);
 }
@@ -106,26 +107,21 @@ nsDragService::~nsDragService()
   }
 }
 
-NS_IMPL_ISUPPORTS_INHERITED1(nsDragService, nsBaseDragService, nsIDragSessionOS2)
+NS_IMPL_ISUPPORTS_INHERITED(nsDragService, nsBaseDragService, nsIDragSessionOS2)
 
 // --------------------------------------------------------------------------
 
-NS_IMETHODIMP nsDragService::InvokeDragSession(nsIDOMNode *aDOMNode,
-                                            nsISupportsArray *aTransferables, 
-                                            nsIScriptableRegion *aRegion,
-                                            uint32_t aActionType)
+NS_IMETHODIMP nsDragService::InvokeDragSessionImpl(nsISupportsArray *aTransferables, 
+                                                   nsIScriptableRegion *aRegion,
+                                                   uint32_t aActionType)
 {
   if (mDoingDrag)
     return NS_ERROR_UNEXPECTED;
 
-  nsresult rv = nsBaseDragService::InvokeDragSession(aDOMNode, aTransferables,
-                                                     aRegion, aActionType);
-  NS_ENSURE_SUCCESS(rv, rv);
-
   mSourceDataItems = aTransferables;
   WinSetCapture(HWND_DESKTOP, NULLHANDLE);
 
-    // Assume we are only dragging one thing for now
+  // Assume we are only dragging one thing for now
   PDRAGINFO pDragInfo = DrgAllocDraginfo(1);
   if (!pDragInfo)
     return NS_ERROR_UNEXPECTED;
@@ -140,14 +136,14 @@ NS_IMETHODIMP nsDragService::InvokeDragSession(nsIDOMNode *aDOMNode,
   dragitem.cyOffset            = 2;
   dragitem.fsSupportedOps      = DO_COPYABLE|DO_MOVEABLE|DO_LINKABLE;
 
-    // since there is no source file, leave these "blank"
+  // since there is no source file, leave these "blank"
   dragitem.hstrContainerName   = NULLHANDLE;
   dragitem.hstrSourceName      = NULLHANDLE;
 
-  rv = NS_ERROR_FAILURE;
+  nsresult rv = NS_ERROR_FAILURE;
   ULONG idIcon = 0;
 
-    // bracket this to reduce our footprint before the drag begins
+  // bracket this to reduce our footprint before the drag begins
   {
     nsCOMPtr<nsISupports> genericItem;
     mSourceDataItems->GetElementAt(0, getter_AddRefs(genericItem));
@@ -156,8 +152,8 @@ NS_IMETHODIMP nsDragService::InvokeDragSession(nsIDOMNode *aDOMNode,
     nsCOMPtr<nsISupports> genericData;
     uint32_t len = 0;
 
-      // see if we have a URL or text;  if so, the title method
-      // will save the data and mimetype for use with a native drop
+    // see if we have a URL or text;  if so, the title method
+    // will save the data and mimetype for use with a native drop
 
     if (NS_SUCCEEDED(transItem->GetTransferData(kURLMime,
                               getter_AddRefs(genericData), &len))) {
@@ -187,8 +183,8 @@ NS_IMETHODIMP nsDragService::InvokeDragSession(nsIDOMNode *aDOMNode,
     }
   }
 
-    // if neither URL nor text are available, make this a Moz-only drag
-    // by making it unidentifiable to native apps
+  // if neither URL nor text are available, make this a Moz-only drag
+  // by making it unidentifiable to native apps
   if (NS_FAILED(rv)) {
     mMimeType = 0;
     dragitem.hstrType       = DrgAddStrHandle("Unknown");
@@ -215,19 +211,19 @@ NS_IMETHODIMP nsDragService::InvokeDragSession(nsIDOMNode *aDOMNode,
   HWND hwndDest = DrgDrag(mDragWnd, pDragInfo, &dragimage, 1, VK_BUTTON2,
                   (void*)0x80000000L); // Don't lock the desktop PS
 
-    // determine whether the drag ended because Escape was pressed
+  // determine whether the drag ended because Escape was pressed
   if (hwndDest == 0 && (WinGetKeyState(HWND_DESKTOP, VK_ESC) & 0x01) != escState)
     mUserCancelled = true;
-  FireDragEventAtSource(NS_DRAGDROP_END);
+  FireDragEventAtSource(mozilla::eDragEnd);
   mDoingDrag = false;
 
-    // do clean up;  if the drop completed,
-    // the target will delete the string handles
+  // do clean up;  if the drop completed,
+  // the target will delete the string handles
   if (hwndDest == 0)
       DrgDeleteDraginfoStrHandles(pDragInfo);
   DrgFreeDraginfo(pDragInfo);
 
-    // reset nsDragService's members
+  // reset nsDragService's members
   mSourceDataItems = 0;
   mSourceData = 0;
   mMimeType = 0;
@@ -240,8 +236,7 @@ NS_IMETHODIMP nsDragService::InvokeDragSession(nsIDOMNode *aDOMNode,
   mUserCancelled = false;
   mHasImage = false;
   mImage = nullptr;
-  mImageX = 0;
-  mImageY = 0;
+  mImageOffset = mozilla::CSSIntPoint();
   mScreenX = -1;
   mScreenY = -1;
 
@@ -511,8 +506,10 @@ nsresult nsDragService::SaveAsContents(PCSZ pszDest, nsIURL* aURL)
 
   fwrite("", 0, 1, fp);
   fclose(fp);
-  webPersist->SaveURI(linkURI, nullptr, nullptr, nullptr, nullptr, file,
-                     document->GetLoadContext());
+  webPersist->SaveURI(linkURI, nullptr,
+                      document->GetDocumentURI(), document->GetReferrerPolicy(),
+                      nullptr, nullptr, file,
+                      document->GetLoadContext());
 
   return NS_OK;
 }
@@ -702,7 +699,7 @@ nsresult  nsDragService::GetUniTextTitle(nsISupports *aGenericData,
 
     // alloc a buffer to hold the unicode title text
   int bufsize = (MAXTITLELTH+1)*2;
-  PRUnichar * buffer = (PRUnichar*)nsMemory::Alloc(bufsize);
+  char16_t * buffer = (char16_t*)moz_xmalloc(bufsize);
   if (!buffer)
     return NS_ERROR_FAILURE;
 
@@ -751,7 +748,7 @@ nsresult  nsDragService::GetUniTextTitle(nsISupports *aGenericData,
     ctr = UnicodeToCodepage( nsDependentString(buffer), aTargetName);
 
     // free our buffer, then exit
-  nsMemory::Free(buffer);
+  free(buffer);
 
   if (!ctr)
   return NS_ERROR_FAILURE;
@@ -1014,7 +1011,7 @@ NS_IMETHODIMP nsDragService::ExitSession(uint32_t* dragFlags)
       // if we created a temp file, delete it
     if (gTempFile) {
       DosDelete(gTempFile);
-      nsMemory::Free(gTempFile);
+      free(gTempFile);
       gTempFile = 0;
     }
   }
@@ -1516,7 +1513,7 @@ nsresult RenderToDTShareComplete(PDRAGTRANSFER pdxfer, USHORT usResult,
 
   if (!rc) {
     if (usResult & DMFL_RENDEROK) {
-      pszText = (char*)nsMemory::Alloc( ((ULONG*)pMem)[0] + 1);
+      pszText = (char*)moz_xmalloc( ((ULONG*)pMem)[0] + 1);
       if (pszText) {
         strcpy(pszText, &((char*)pMem)[sizeof(ULONG)] );
         RemoveCarriageReturns(pszText);
@@ -1580,7 +1577,7 @@ nsresult GetAtom( ATOM aAtom, char** outText)
 
   ULONG ulInLength = DrgQueryStrNameLen(aAtom);
   if (ulInLength) {
-    char* pszText = (char*)nsMemory::Alloc(++ulInLength);
+    char* pszText = (char*)moz_xmalloc(++ulInLength);
     if (pszText) {
       DrgQueryStrName(aAtom, ulInLength, pszText);
       RemoveCarriageReturns(pszText);
@@ -1602,7 +1599,7 @@ nsresult GetFileName(PDRAGITEM pditem, char** outText)
   ULONG cntCnr = DrgQueryStrNameLen(pditem->hstrContainerName);
   ULONG cntSrc = DrgQueryStrNameLen(pditem->hstrSourceName);
 
-  char* pszText = (char*)nsMemory::Alloc(cntCnr+cntSrc+1);
+  char* pszText = (char*)moz_xmalloc(cntCnr+cntSrc+1);
   if (pszText) {
     DrgQueryStrName(pditem->hstrContainerName, cntCnr+1, pszText);
     DrgQueryStrName(pditem->hstrSourceName, cntSrc+1, &pszText[cntCnr]);
@@ -1631,7 +1628,7 @@ nsresult GetFileContents(PCSZ pszPath, char** outText)
       fseek(fp, 0, SEEK_SET);
       if (filesize > 0) {
         size_t readsize = (size_t)filesize;
-        pszText = (char*)nsMemory::Alloc(readsize+1);
+        pszText = (char*)moz_xmalloc(readsize+1);
         if (pszText) {
           readsize = fread((void *)pszText, 1, readsize, fp);
           if (readsize) {
@@ -1641,7 +1638,7 @@ nsresult GetFileContents(PCSZ pszPath, char** outText)
             rv = NS_OK;
           }
           else {
-            nsMemory::Free(pszText);
+            free(pszText);
             pszText = 0;
           }
         }
@@ -1659,7 +1656,7 @@ nsresult GetFileContents(PCSZ pszPath, char** outText)
 
 nsresult GetTempFileName(char** outText)
 {
-  char * pszText = (char*)nsMemory::Alloc(CCHMAXPATH);
+  char * pszText = (char*)moz_xmalloc(CCHMAXPATH);
   if (!pszText)
     return NS_ERROR_FAILURE;
 
@@ -1741,24 +1738,20 @@ void SaveTypeAndSource(nsIFile *file, nsIDOMDocument *domDoc,
 
 int UnicodeToCodepage(const nsAString& aString, char **aResult)
 {
-  nsAutoCharBuffer buffer;
-  int32_t bufLength;
-  WideCharToMultiByte(0, PromiseFlatString(aString).get(), aString.Length(),
-                      buffer, bufLength);
-  *aResult = ToNewCString(nsDependentCString(buffer.Elements()));
-  return bufLength;
+  nsAutoCString buf;
+  NS_CopyUnicodeToNative(aString, buf);
+  *aResult = ToNewCString(buf);
+  return buf.Length();
 }
 
 // --------------------------------------------------------------------------
 
-int CodepageToUnicode(const nsACString& aString, PRUnichar **aResult)
+int CodepageToUnicode(const nsACString& aString, char16_t **aResult)
 {
-  nsAutoChar16Buffer buffer;
-  int32_t bufLength;
-  MultiByteToWideChar(0, PromiseFlatCString(aString).get(),
-                      aString.Length(), buffer, bufLength);
-  *aResult = ToNewUnicode(nsDependentString(buffer.Elements()));
-  return bufLength;
+  nsAutoString buf;
+  NS_CopyNativeToUnicode(aString, buf);
+  *aResult = ToNewUnicode(buf);
+  return buf.Length();
 }
 
 // --------------------------------------------------------------------------

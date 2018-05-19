@@ -96,28 +96,26 @@ function run_test_1() {
 
         restartManager();
 
-        AddonManager.getAddonByID("addon1@tests.mozilla.org", function(a1) {
-          check_addon_upgrading(a1);
+        AddonManager.getAddonByID("addon1@tests.mozilla.org", callback_soon(function(a1_2) {
+          check_addon_upgrading(a1_2);
 
           restartManager();
 
-          AddonManager.getAddonByID("addon1@tests.mozilla.org", function(a1) {
-            check_addon_upgrading(a1);
+          AddonManager.getAddonByID("addon1@tests.mozilla.org", callback_soon(function(a1_3) {
+            check_addon_upgrading(a1_3);
 
             fstream.close();
 
             restartManager();
 
-            AddonManager.getAddonByID("addon1@tests.mozilla.org", function(a1) {
-              check_addon(a1, "2.0");
+            AddonManager.getAddonByID("addon1@tests.mozilla.org", function(a1_4) {
+              check_addon(a1_4, "2.0");
 
-              a1.uninstall();
-              restartManager();
-
-              run_test_2();
+              a1_4.uninstall();
+              do_execute_soon(run_test_2);
             });
-          });
-        });
+          }));
+        }));
       });
     });
   });
@@ -125,10 +123,12 @@ function run_test_1() {
 
 // Test that a failed uninstall gets rolled back
 function run_test_2() {
+  restartManager();
+
   installAllFiles([do_get_addon("test_bug587088_1")], function() {
     restartManager();
 
-    AddonManager.getAddonByID("addon1@tests.mozilla.org", function(a1) {
+    AddonManager.getAddonByID("addon1@tests.mozilla.org", callback_soon(function(a1) {
       check_addon(a1, "1.0");
 
       // Lock either install.rdf for unpacked add-ons or the xpi for packed add-ons.
@@ -146,29 +146,29 @@ function run_test_2() {
 
       restartManager();
 
-      AddonManager.getAddonByID("addon1@tests.mozilla.org", function(a1) {
-        check_addon_uninstalling(a1, true);
+      AddonManager.getAddonByID("addon1@tests.mozilla.org", callback_soon(function(a1_2) {
+        check_addon_uninstalling(a1_2, true);
 
         restartManager();
 
-        AddonManager.getAddonByID("addon1@tests.mozilla.org", function(a1) {
-          check_addon_uninstalling(a1, true);
+        AddonManager.getAddonByID("addon1@tests.mozilla.org", callback_soon(function(a1_3) {
+          check_addon_uninstalling(a1_3, true);
 
           fstream.close();
 
           restartManager();
 
-          AddonManager.getAddonByID("addon1@tests.mozilla.org", function(a1) {
-            do_check_eq(a1, null);
+          AddonManager.getAddonByID("addon1@tests.mozilla.org", function(a1_4) {
+            do_check_eq(a1_4, null);
             var dir = profileDir.clone();
             dir.append(do_get_expected_addon_name("addon1@tests.mozilla.org"));
             do_check_false(dir.exists());
             do_check_false(isExtensionInAddonsList(profileDir, "addon1@tests.mozilla.org"));
 
-            do_test_finished();
+            do_execute_soon(do_test_finished);
           });
-        });
-      });
-    });
+        }));
+      }));
+    }));
   });
 }

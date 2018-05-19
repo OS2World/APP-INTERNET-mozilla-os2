@@ -7,13 +7,14 @@
 #include "HttpLog.h"
 
 #include "nsHttpHandler.h"
-#include "nsHttpChannel.h"
 #include "nsHttpAuthManager.h"
-#include "nsReadableUtils.h"
 #include "nsNetUtil.h"
 #include "nsIPrincipal.h"
 
-NS_IMPL_ISUPPORTS1(nsHttpAuthManager, nsIHttpAuthManager)
+namespace mozilla {
+namespace net {
+
+NS_IMPL_ISUPPORTS(nsHttpAuthManager, nsIHttpAuthManager)
 
 nsHttpAuthManager::nsHttpAuthManager()
 {
@@ -66,11 +67,10 @@ nsHttpAuthManager::GetAuthIdentity(const nsACString & aScheme,
   nsHttpAuthCache* auth_cache = aIsPrivate ? mPrivateAuthCache : mAuthCache;
   nsHttpAuthEntry * entry = nullptr;
   nsresult rv;
-  uint32_t appId = NECKO_NO_APP_ID;
-  bool inBrowserElement = false;
+
+  nsAutoCString originSuffix;
   if (aPrincipal) {
-    appId = aPrincipal->GetAppId();
-    inBrowserElement = aPrincipal->GetIsInBrowserElement();
+    BasePrincipal::Cast(aPrincipal)->OriginAttributesRef().CreateSuffix(originSuffix);
   }
 
   if (!aPath.IsEmpty())
@@ -78,14 +78,14 @@ nsHttpAuthManager::GetAuthIdentity(const nsACString & aScheme,
                                          PromiseFlatCString(aHost).get(),
                                          aPort,
                                          PromiseFlatCString(aPath).get(),
-                                         appId, inBrowserElement,
+                                         originSuffix,
                                          &entry);
   else
     rv = auth_cache->GetAuthEntryForDomain(PromiseFlatCString(aScheme).get(),
                                            PromiseFlatCString(aHost).get(),
                                            aPort,
                                            PromiseFlatCString(aRealm).get(),
-                                           appId, inBrowserElement,
+                                           originSuffix,
                                            &entry);
 
   if (NS_FAILED(rv))
@@ -116,12 +116,11 @@ nsHttpAuthManager::SetAuthIdentity(const nsACString & aScheme,
                            PromiseFlatString(aUserName).get(),
                            PromiseFlatString(aUserPassword).get());
 
-  uint32_t appId = NECKO_NO_APP_ID;
-  bool inBrowserElement = false;
+  nsAutoCString originSuffix;
   if (aPrincipal) {
-    appId = aPrincipal->GetAppId();
-    inBrowserElement = aPrincipal->GetIsInBrowserElement();
+    BasePrincipal::Cast(aPrincipal)->OriginAttributesRef().CreateSuffix(originSuffix);
   }
+
 
   nsHttpAuthCache* auth_cache = aIsPrivate ? mPrivateAuthCache : mAuthCache;
   return auth_cache->SetAuthEntry(PromiseFlatCString(aScheme).get(),
@@ -131,7 +130,7 @@ nsHttpAuthManager::SetAuthIdentity(const nsACString & aScheme,
                                   PromiseFlatCString(aRealm).get(),
                                   nullptr,  // credentials
                                   nullptr,  // challenge
-                                  appId, inBrowserElement,
+                                  originSuffix,
                                   &ident,
                                   nullptr); // metadata
 }
@@ -147,3 +146,6 @@ nsHttpAuthManager::ClearAll()
     return rv2;
   return NS_OK;
 }
+
+} // namespace net
+} // namespace mozilla

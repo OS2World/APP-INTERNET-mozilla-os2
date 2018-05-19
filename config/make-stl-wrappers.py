@@ -3,6 +3,7 @@
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 from __future__ import print_function
 import os, re, string, sys
+from mozbuild.util import FileAvoidWrite
 
 def find_in_path(file, searchpath):
     for dir in searchpath.split(os.pathsep):
@@ -29,7 +30,6 @@ def main(outdir, compiler, template_file, header_list_file):
         os.mkdir(outdir)
 
     template = open(template_file, 'r').read()
-    path_to_new = header_path('new', compiler)
 
     for header in open(header_list_file, 'r'):
         header = header.rstrip()
@@ -37,13 +37,9 @@ def main(outdir, compiler, template_file, header_list_file):
             continue
 
         path = header_path(header, compiler)
-        try:
-            f = open(os.path.join(outdir, header), 'w')
+        with FileAvoidWrite(os.path.join(outdir, header)) as f:
             f.write(string.Template(template).substitute(HEADER=header,
-                                                         HEADER_PATH=path,
-                                                         NEW_HEADER_PATH=path_to_new))
-        finally:
-            f.close()
+                                                         HEADER_PATH=path))
 
 
 if __name__ == '__main__':

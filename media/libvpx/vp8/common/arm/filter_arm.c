@@ -10,9 +10,9 @@
 
 
 #include "vpx_config.h"
+#include "vp8_rtcd.h"
 #include <math.h>
 #include "vp8/common/filter.h"
-#include "vp8/common/subpixel.h"
 #include "vpx_ports/mem.h"
 
 extern void vp8_filter_block2d_first_pass_armv6
@@ -86,8 +86,8 @@ extern void vp8_filter_block2d_second_pass_only_armv6
     const short *vp8_filter
 );
 
-#if HAVE_ARMV6
-void vp8_sixtap_predict_armv6
+#if HAVE_MEDIA
+void vp8_sixtap_predict4x4_armv6
 (
     unsigned char  *src_ptr,
     int  src_pixels_per_line,
@@ -99,7 +99,7 @@ void vp8_sixtap_predict_armv6
 {
     const short  *HFilter;
     const short  *VFilter;
-    DECLARE_ALIGNED_ARRAY(4, short, FData, 12*4); /* Temp data buffer used in filtering */
+    DECLARE_ALIGNED(4, short, FData[12*4]); /* Temp data buffer used in filtering */
 
 
     HFilter = vp8_sub_pel_filters[xoffset];   /* 6 tap */
@@ -147,7 +147,7 @@ void vp8_sixtap_predict8x8_armv6
 {
     const short  *HFilter;
     const short  *VFilter;
-    DECLARE_ALIGNED_ARRAY(4, short, FData, 16*8); /* Temp data buffer used in filtering */
+    DECLARE_ALIGNED(4, short, FData[16*8]); /* Temp data buffer used in filtering */
 
     HFilter = vp8_sub_pel_filters[xoffset];   /* 6 tap */
     VFilter = vp8_sub_pel_filters[yoffset];   /* 6 tap */
@@ -189,7 +189,7 @@ void vp8_sixtap_predict16x16_armv6
 {
     const short  *HFilter;
     const short  *VFilter;
-    DECLARE_ALIGNED_ARRAY(4, short, FData, 24*16);    /* Temp data buffer used in filtering */
+    DECLARE_ALIGNED(4, short, FData[24*16]);    /* Temp data buffer used in filtering */
 
     HFilter = vp8_sub_pel_filters[xoffset];   /* 6 tap */
     VFilter = vp8_sub_pel_filters[yoffset];   /* 6 tap */

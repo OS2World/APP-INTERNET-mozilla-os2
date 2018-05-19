@@ -11,9 +11,12 @@
 
 #define VIEW_SOURCE "view-source"
 
+namespace mozilla {
+namespace net {
+
 ////////////////////////////////////////////////////////////////////////////////
 
-NS_IMPL_ISUPPORTS1(nsViewSourceHandler, nsIProtocolHandler)
+NS_IMPL_ISUPPORTS(nsViewSourceHandler, nsIProtocolHandler)
 
 ////////////////////////////////////////////////////////////////////////////////
 // nsIProtocolHandler methods:
@@ -35,7 +38,7 @@ nsViewSourceHandler::GetDefaultPort(int32_t *result)
 NS_IMETHODIMP
 nsViewSourceHandler::GetProtocolFlags(uint32_t *result)
 {
-    *result = URI_NORELATIVE | URI_NOAUTH | URI_LOADABLE_BY_ANYONE |
+    *result = URI_NORELATIVE | URI_NOAUTH | URI_DANGEROUS_TO_LOAD |
         URI_NON_PERSISTABLE;
     return NS_OK;
 }
@@ -70,7 +73,7 @@ nsViewSourceHandler::NewURI(const nsACString &aSpec,
 
     asciiSpec.Insert(VIEW_SOURCE ":", 0);
 
-    // We can't swap() from an nsRefPtr<nsSimpleNestedURI> to an nsIURI**,
+    // We can't swap() from an RefPtr<nsSimpleNestedURI> to an nsIURI**,
     // sadly.
     nsSimpleNestedURI* ourURI = new nsSimpleNestedURI(innerURI);
     nsCOMPtr<nsIURI> uri = ourURI;
@@ -90,7 +93,9 @@ nsViewSourceHandler::NewURI(const nsACString &aSpec,
 }
 
 NS_IMETHODIMP
-nsViewSourceHandler::NewChannel(nsIURI* uri, nsIChannel* *result)
+nsViewSourceHandler::NewChannel2(nsIURI* uri,
+                                 nsILoadInfo* aLoadInfo,
+                                 nsIChannel** result)
 {
     NS_ENSURE_ARG_POINTER(uri);
     nsViewSourceChannel *channel = new nsViewSourceChannel();
@@ -104,7 +109,39 @@ nsViewSourceHandler::NewChannel(nsIURI* uri, nsIChannel* *result)
         return rv;
     }
 
+    // set the loadInfo on the new channel
+    rv = channel->SetLoadInfo(aLoadInfo);
+    if (NS_FAILED(rv)) {
+        NS_RELEASE(channel);
+        return rv;
+    }
+
     *result = static_cast<nsIViewSourceChannel*>(channel);
+    return NS_OK;
+}
+
+NS_IMETHODIMP
+nsViewSourceHandler::NewChannel(nsIURI* uri, nsIChannel* *result)
+{
+    return NewChannel2(uri, nullptr, result);
+}
+
+nsresult
+nsViewSourceHandler::NewSrcdocChannel(nsIURI *aURI,
+                                      nsIURI *aBaseURI,
+                                      const nsAString &aSrcdoc,
+                                      nsILoadInfo* aLoadInfo,
+                                      nsIChannel** outChannel)
+{
+    NS_ENSURE_ARG_POINTER(aURI);
+    RefPtr<nsViewSourceChannel> channel = new nsViewSourceChannel();
+
+    nsresult rv = channel->InitSrcdoc(aURI, aBaseURI, aSrcdoc, aLoadInfo);
+    if (NS_FAILED(rv)) {
+        return rv;
+    }
+
+    *outChannel = static_cast<nsIViewSourceChannel*>(channel.forget().take());
     return NS_OK;
 }
 
@@ -115,3 +152,24 @@ nsViewSourceHandler::AllowPort(int32_t port, const char *scheme, bool *_retval)
     *_retval = false;
     return NS_OK;
 }
+
+nsViewSourceHandler::nsViewSourceHandler()
+{
+    gInstance = this;
+}
+
+nsViewSourceHandler::~nsViewSourceHandler()
+{
+    gInstance = nullptr;
+}
+
+nsViewSourceHandler* nsViewSourceHandler::gInstance = nullptr;
+
+nsViewSourceHandler*
+nsViewSourceHandler::GetInstance()
+{
+    return gInstance;
+}
+
+} // namespace net
+} // namespace mozilla

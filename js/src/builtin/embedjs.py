@@ -37,9 +37,10 @@
 # It uses the C preprocessor to process its inputs.
 
 from __future__ import with_statement
-import re, sys, os, fileinput, subprocess
+import re, sys, os, subprocess
 import shlex
-from optparse import OptionParser
+import which
+import buildconfig
 
 def ToCAsciiArray(lines):
   result = []
@@ -61,7 +62,7 @@ HEADER_TEMPLATE = """\
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 namespace js {
-namespace selfhosted {
+namespace %(namespace)s {
     static const %(sources_type)s data[] = { %(sources_data)s };
 
     static const %(sources_type)s * const %(sources_name)s = reinterpret_cast<const %(sources_type)s *>(data);
@@ -77,84 +78,82 @@ namespace selfhosted {
 } // js
 """
 
-def embed(cpp, msgs, sources, c_out, js_out, env):
-  # Clang seems to complain and not output anything if the extension of the
-  # input is not something it recognizes, so just fake a .h here.
-  tmp = 'selfhosted.js.h'
-  with open(tmp, 'wb') as output:
-    output.write('\n'.join([msgs] + ['#include "%(s)s"' % { 's': source } for source in sources]))
-  cmdline = cpp + ['-D%(k)s=%(v)s' % { 'k': k, 'v': env[k] } for k in env] + [tmp]
-  p = subprocess.Popen(cmdline, stdout=subprocess.PIPE)
-  processed = ''
-  for line in p.stdout:
-    if not line.startswith('#'):
-      processed += line
-  os.remove(tmp)
-  with open(js_out, 'w') as output:
-    output.write(processed)
-  with open(c_out, 'w') as output:
-    if 'USE_ZLIB' in env:
-      import zlib
-      compressed = zlib.compress(processed)
-      data = ToCArray(compressed)
-      output.write(HEADER_TEMPLATE % {
-          'sources_type': 'unsigned char',
-          'sources_data': data,
-          'sources_name': 'compressedSources',
-          'compressed_total_length': len(compressed),
-          'raw_total_length': len(processed)
-      })
-    else:
-      data = ToCAsciiArray(processed)
-      output.write(HEADER_TEMPLATE % {
-          'sources_type': 'char',
-          'sources_data': data,
-          'sources_name': 'rawSources',
-          'compressed_total_length': 0,
-          'raw_total_length': len(processed)
-      })
+def embed(cxx, preprocessorOption, msgs, sources, c_out, js_out, namespace, env):
+  combinedSources = '\n'.join([msgs] + ['#include "%(s)s"' % { 's': source } for source in sources])
+  args = ['-D%(k)s=%(v)s' % { 'k': k, 'v': env[k] } for k in env]
+  preprocessed = preprocess(cxx, preprocessorOption, combinedSources, args)
+  processed = '\n'.join([line for line in preprocessed.splitlines() if \
+                         (line.strip() and not line.startswith('#'))])
 
-def process_msgs(cpp, msgs):
+  js_out.write(processed)
+  import zlib
+  compressed = zlib.compress(processed)
+  data = ToCArray(compressed)
+  c_out.write(HEADER_TEMPLATE % {
+    'sources_type': 'unsigned char',
+    'sources_data': data,
+    'sources_name': 'compressedSources',
+    'compressed_total_length': len(compressed),
+    'raw_total_length': len(processed),
+    'namespace': namespace
+  })
+
+def preprocess(cxx, preprocessorOption, source, args = []):
+  if (not os.path.exists(cxx[0])):
+    cxx[0] = which.which(cxx[0])
   # Clang seems to complain and not output anything if the extension of the
-  # input is not something it recognizes, so just fake a .h here.
-  tmp = 'selfhosted.msg.h'
-  with open(tmp, 'wb') as output:
-    output.write("""\
-#define hash #
-#define id(x) x
-#define hashify(x) id(hash)x
-#define MSG_DEF(name, id, argc, ex, msg) hashify(define) name id
-#include "%(msgs)s"
-""" % { 'msgs': msgs })
-  p = subprocess.Popen(cpp + [tmp], stdout=subprocess.PIPE)
-  processed = p.communicate()[0]
-  os.remove(tmp)
+  # input is not something it recognizes, so just fake a .cpp here.
+  tmpIn = 'self-hosting-cpp-input.cpp';
+  tmpOut = 'self-hosting-preprocessed.pp';
+  outputArg = shlex.split(preprocessorOption + tmpOut)
+
+  with open(tmpIn, 'wb') as input:
+    input.write(source)
+  print(' '.join(cxx + outputArg + args + [tmpIn]))
+  result = subprocess.Popen(cxx + outputArg + args + [tmpIn]).wait()
+  if (result != 0):
+    sys.exit(result);
+  with open(tmpOut, 'r') as output:
+    processed = output.read();
+  os.remove(tmpIn)
+  os.remove(tmpOut)
   return processed
 
-def main():
-  env = {}
-  def define_env(option, opt, value, parser):
-    pair = value.split('=', 1)
-    if len(pair) == 1:
-      pair.append(1)
-    env[pair[0]] = pair[1]
-  p = OptionParser(usage="%prog [options] file")
-  p.add_option('-D', action='callback', callback=define_env, type="string",
-               metavar='var=[val]', help='Define a variable')
-  p.add_option('-m', type='string', metavar='jsmsg', default='../js.msg',
-               help='js.msg file')
-  p.add_option('-p', type='string', metavar='cpp', help='Path to C preprocessor')
-  p.add_option('-o', type='string', metavar='filename', default='selfhosted.out.h',
-               help='C array header file')
-  p.add_option('-s', type='string', metavar='jsfilename', default='selfhosted.js',
-               help='Combined postprocessed JS file')
-  (options, sources) = p.parse_args()
-  if not (options.p and sources):
-    p.print_help()
-    exit(1)
-  cpp = shlex.split(options.p)
-  embed(cpp, process_msgs(cpp, options.m),
-        sources, options.o, options.s, env)
+def messages(jsmsg):
+  defines = []
+  for line in open(jsmsg):
+    match = re.match("MSG_DEF\((JSMSG_(\w+))", line)
+    if match:
+      defines.append("#define %s %i" % (match.group(1), len(defines)))
+    else:
+      # Make sure that MSG_DEF isn't preceded by whitespace
+      assert not line.strip().startswith("MSG_DEF")
+  return '\n'.join(defines)
 
-if __name__ == "__main__":
-  main()
+def get_config_defines(buildconfig):
+  # Collect defines equivalent to ACDEFINES and add MOZ_DEBUG_DEFINES.
+  env = {key: value for key, value in buildconfig.defines.iteritems()
+         if key not in buildconfig.non_global_defines}
+  for define in buildconfig.substs['MOZ_DEBUG_DEFINES']:
+    env[define] = 1
+  return env
+
+def process_inputs(namespace, c_out, msg_file, inputs):
+  deps = [path for path in inputs if path.endswith(".h") or path.endswith(".h.js")]
+  sources = [path for path in inputs if path.endswith(".js") and not path.endswith(".h.js")]
+  assert len(deps) + len(sources) == len(inputs)
+  cxx = shlex.split(buildconfig.substs['CXX'])
+  cxx_option = buildconfig.substs['PREPROCESS_OPTION']
+  env = get_config_defines(buildconfig)
+  js_path = re.sub(r"\.out\.h$", "", c_out.name) + ".js"
+  msgs = messages(msg_file)
+  with open(js_path, 'w') as js_out:
+    embed(cxx, cxx_option, msgs, sources, c_out, js_out, namespace, env)
+
+def generate_selfhosted(c_out, msg_file, *inputs):
+  # Called from moz.build to embed selfhosted JS.
+  process_inputs('selfhosted', c_out, msg_file, inputs)
+
+def generate_shellmoduleloader(c_out, msg_file, *inputs):
+  # Called from moz.build to embed shell module loader JS.
+  process_inputs('moduleloader', c_out, msg_file, inputs)

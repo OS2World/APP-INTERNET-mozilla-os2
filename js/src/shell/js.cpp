@@ -1,254 +1,477 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 4 -*- * vim: set ts=8 sts=4 et sw=4 tw=99:
+/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 4 -*-
+ * vim: set ts=8 sts=4 et sw=4 tw=99:
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 /* JS shell. */
 
+#include "mozilla/ArrayUtils.h"
+#include "mozilla/Atomics.h"
+#include "mozilla/Attributes.h"
+#include "mozilla/DebugOnly.h"
+#include "mozilla/GuardObjects.h"
+#include "mozilla/IntegerPrintfMacros.h"
+#include "mozilla/mozalloc.h"
+#include "mozilla/PodOperations.h"
+#include "mozilla/ScopeExit.h"
+#include "mozilla/SizePrintfMacros.h"
+#include "mozilla/Sprintf.h"
+#include "mozilla/TimeStamp.h"
+
+#ifdef XP_WIN
+# include <direct.h>
+# include <process.h>
+#endif
 #include <errno.h>
+#include <fcntl.h>
+#if defined(XP_WIN) || defined(XP_OS2)
+# include <io.h>     /* for isatty() */
+#endif
 #include <locale.h>
+#if defined(MALLOC_H)
+# include MALLOC_H    /* for malloc_usable_size, malloc_size, _msize */
+#endif
 #include <math.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+#ifdef XP_UNIX
+# include <sys/mman.h>
+# include <sys/stat.h>
+# include <sys/wait.h>
+# include <unistd.h>
+#endif
+#ifdef XP_OS2
+# include <sys/mman.h>
+# include <process.h>
+#endif
 
-#include "mozilla/DebugOnly.h"
-#include "mozilla/GuardObjects.h"
-#include "mozilla/Util.h"
-
-#include "jstypes.h"
-#include "jsutil.h"
-#include "jsprf.h"
 #include "jsapi.h"
 #include "jsarray.h"
 #include "jsatom.h"
 #include "jscntxt.h"
-#include "jsdate.h"
-#include "jsdbgapi.h"
 #include "jsfun.h"
-#include "jsgc.h"
-#include "jsiter.h"
-#include "jslock.h"
-#include "jsnum.h"
 #include "jsobj.h"
-#include "json.h"
-#include "jsreflect.h"
+#include "jsprf.h"
 #include "jsscript.h"
-#include "jstypedarray.h"
-#include "jstypedarrayinlines.h"
-#include "jsworkers.h"
-#include "jswrapper.h"
-#include "jsperf.h"
-
-#include "builtin/TestingFunctions.h"
-#include "frontend/BytecodeEmitter.h"
-#include "frontend/Parser.h"
-#include "vm/Shape.h"
-
-#include "prmjtime.h"
-
-#include "jsoptparse.h"
-#include "jsheaptools.h"
-
-#include "jsinferinlines.h"
-#include "jsscriptinlines.h"
-#include "jit/Ion.h"
-
-#include "vm/Interpreter-inl.h"
-
-#ifdef XP_UNIX
-#include <unistd.h>
-#include <sys/types.h>
-#include <sys/wait.h>
-#endif
-
-#if defined(XP_WIN) || defined(XP_OS2)
-#include <io.h>     /* for isatty() */
-#endif
-
+#include "jstypes.h"
+#include "jsutil.h"
 #ifdef XP_WIN
-# include <io.h>
-# include <direct.h>
 # include "jswin.h"
-# define PATH_MAX (MAX_PATH > _MAX_DIR ? MAX_PATH : _MAX_DIR)
-#else
-# include <libgen.h>
 #endif
+#include "jswrapper.h"
+#include "shellmoduleloader.out.h"
 
-#if JS_TRACE_LOGGING
-#include "TraceLogging.h"
-#endif
+#include "builtin/ModuleObject.h"
+#include "builtin/TestingFunctions.h"
+#include "frontend/Parser.h"
+#include "gc/GCInternals.h"
+#include "jit/arm/Simulator-arm.h"
+#include "jit/InlinableNatives.h"
+#include "jit/Ion.h"
+#include "jit/JitcodeMap.h"
+#include "jit/OptimizationTracking.h"
+#include "js/Debug.h"
+#include "js/GCAPI.h"
+#include "js/Initialization.h"
+#include "js/StructuredClone.h"
+#include "js/TrackedOptimizationInfo.h"
+#include "perf/jsperf.h"
+#include "shell/jsoptparse.h"
+#include "shell/jsshell.h"
+#include "shell/OSObject.h"
+#include "threading/ConditionVariable.h"
+#include "threading/LockGuard.h"
+#include "threading/Thread.h"
+#include "vm/ArgumentsObject.h"
+#include "vm/AsyncFunction.h"
+#include "vm/Compression.h"
+#include "vm/Debugger.h"
+#include "vm/HelperThreads.h"
+#include "vm/Monitor.h"
+#include "vm/MutexIDs.h"
+#include "vm/Shape.h"
+#include "vm/SharedArrayObject.h"
+#include "vm/StringBuffer.h"
+#include "vm/Time.h"
+#include "vm/TypedArrayObject.h"
+#include "vm/WrapperObject.h"
+#include "wasm/WasmJS.h"
+
+#include "jscompartmentinlines.h"
+#include "jsobjinlines.h"
+
+#include "vm/ErrorObject-inl.h"
+#include "vm/Interpreter-inl.h"
+#include "vm/Stack-inl.h"
 
 using namespace js;
 using namespace js::cli;
+using namespace js::shell;
 
 using mozilla::ArrayLength;
+using mozilla::Atomic;
+using mozilla::MakeScopeExit;
 using mozilla::Maybe;
+using mozilla::Nothing;
+using mozilla::NumberEqualsInt32;
+using mozilla::PodCopy;
+using mozilla::PodEqual;
+using mozilla::TimeDuration;
+using mozilla::TimeStamp;
 
-typedef enum JSShellExitCode {
+enum JSShellExitCode {
     EXITCODE_RUNTIME_ERROR      = 3,
     EXITCODE_FILE_NOT_FOUND     = 4,
     EXITCODE_OUT_OF_MEMORY      = 5,
     EXITCODE_TIMEOUT            = 6
-} JSShellExitCode;
+};
 
-size_t gStackChunkSize = 8192;
+static const size_t gStackChunkSize = 8192;
 
 /*
  * Note: This limit should match the stack limit set by the browser in
- *       js/xpconnect/src/XPCJSRuntime.cpp
+ *       js/xpconnect/src/XPCJSContext.cpp
  */
 #if defined(MOZ_ASAN) || (defined(DEBUG) && !defined(XP_WIN))
-size_t gMaxStackSize = 2 * 128 * sizeof(size_t) * 1024;
+static const size_t gMaxStackSize = 2 * 128 * sizeof(size_t) * 1024;
 #else
-size_t gMaxStackSize = 128 * sizeof(size_t) * 1024;
-#endif
-
-#ifdef JS_THREADSAFE
-static unsigned gStackBaseThreadIndex;
-#else
-static uintptr_t gStackBase;
+static const size_t gMaxStackSize = 128 * sizeof(size_t) * 1024;
 #endif
 
 /*
  * Limit the timeout to 30 minutes to prevent an overflow on platfoms
  * that represent the time internally in microseconds using 32-bit int.
  */
-static double MAX_TIMEOUT_INTERVAL = 1800.0;
-static double gTimeoutInterval = -1.0;
-static volatile bool gTimedOut = false;
-static JS::Value gTimeoutFunc;
+static const TimeDuration MAX_TIMEOUT_INTERVAL = TimeDuration::FromSeconds(1800.0);
 
-static bool enableTypeInference = true;
-static bool enableDisassemblyDumps = false;
-static bool enableIon = true;
-static bool enableBaseline = true;
-static bool enableAsmJS = true;
-
-static bool printTiming = false;
-
-static JSBool
-SetTimeoutValue(JSContext *cx, double t);
-
-static bool
-InitWatchdog(JSRuntime *rt);
-
-static void
-KillWatchdog();
-
-static bool
-ScheduleWatchdog(JSRuntime *rt, double t);
-
-static void
-CancelExecution(JSRuntime *rt);
-
-/*
- * Watchdog thread state.
- */
-#ifdef JS_THREADSAFE
-
-static PRLock *gWatchdogLock = NULL;
-static PRCondVar *gWatchdogWakeup = NULL;
-static PRThread *gWatchdogThread = NULL;
-static bool gWatchdogHasTimeout = false;
-static int64_t gWatchdogTimeout = 0;
-
-static PRCondVar *gSleepWakeup = NULL;
-
+// SharedArrayBuffer and Atomics settings track Firefox.  Choose a custom setting
+// with --shared-memory={on,off}.
+#ifndef RELEASE_OR_BETA
+# define SHARED_MEMORY_DEFAULT 1
 #else
-
-static JSRuntime *gRuntime = NULL;
-
+# define SHARED_MEMORY_DEFAULT 0
 #endif
 
-int gExitCode = 0;
-bool gQuitting = false;
-bool gGotError = false;
-FILE *gErrFile = NULL;
-FILE *gOutFile = NULL;
+#ifdef SPIDERMONKEY_PROMISE
+using JobQueue = GCVector<JSObject*, 0, SystemAllocPolicy>;
 
+struct ShellAsyncTasks
+{
+    explicit ShellAsyncTasks(JSContext* cx)
+      : outstanding(0),
+        finished(cx)
+    {}
+
+    size_t outstanding;
+    Vector<JS::AsyncTask*> finished;
+};
+#endif // SPIDERMONKEY_PROMISE
+
+enum class ScriptKind
+{
+    Script,
+    Module
+};
+
+class OffThreadState {
+    enum State {
+        IDLE,           /* ready to work; no token, no source */
+        COMPILING,      /* working; no token, have source */
+        DONE            /* compilation done: have token and source */
+    };
+
+  public:
+    OffThreadState()
+      : monitor(mutexid::ShellOffThreadState),
+        state(IDLE),
+        token(),
+        source(nullptr)
+    { }
+
+    bool startIfIdle(JSContext* cx, ScriptKind kind,
+                     ScopedJSFreePtr<char16_t>& newSource)
+    {
+        AutoLockMonitor alm(monitor);
+        if (state != IDLE)
+            return false;
+
+        MOZ_ASSERT(!token);
+
+        source = newSource.forget();
+
+        scriptKind = kind;
+        state = COMPILING;
+        return true;
+    }
+
+    void abandon(JSContext* cx) {
+        AutoLockMonitor alm(monitor);
+        MOZ_ASSERT(state == COMPILING);
+        MOZ_ASSERT(!token);
+        MOZ_ASSERT(source);
+
+        js_free(source);
+        source = nullptr;
+
+        state = IDLE;
+    }
+
+    void markDone(void* newToken) {
+        AutoLockMonitor alm(monitor);
+        MOZ_ASSERT(state == COMPILING);
+        MOZ_ASSERT(!token);
+        MOZ_ASSERT(source);
+        MOZ_ASSERT(newToken);
+
+        token = newToken;
+        state = DONE;
+        alm.notify();
+    }
+
+    void* waitUntilDone(JSContext* cx, ScriptKind kind) {
+        AutoLockMonitor alm(monitor);
+        if (state == IDLE || scriptKind != kind)
+            return nullptr;
+
+        if (state == COMPILING) {
+            while (state != DONE)
+                alm.wait();
+        }
+
+        MOZ_ASSERT(source);
+        js_free(source);
+        source = nullptr;
+
+        MOZ_ASSERT(token);
+        void* holdToken = token;
+        token = nullptr;
+        state = IDLE;
+        return holdToken;
+    }
+
+  private:
+    Monitor monitor;
+    ScriptKind scriptKind;
+    State state;
+    void* token;
+    char16_t* source;
+};
+
+// Per-context shell state.
+struct ShellContext
+{
+    explicit ShellContext(JSContext* cx);
+
+    bool isWorker;
+    double timeoutInterval;
+    double startTime;
+    Atomic<bool> serviceInterrupt;
+    Atomic<bool> haveInterruptFunc;
+    JS::PersistentRootedValue interruptFunc;
+    bool lastWarningEnabled;
+    JS::PersistentRootedValue lastWarning;
+#ifdef SPIDERMONKEY_PROMISE
+    JS::PersistentRootedValue promiseRejectionTrackerCallback;
+    JS::PersistentRooted<JobQueue> jobQueue;
+    ExclusiveData<ShellAsyncTasks> asyncTasks;
+    bool drainingJobQueue;
+#endif // SPIDERMONKEY_PROMISE
+
+    /*
+     * Watchdog thread state.
+     */
+    Mutex watchdogLock;
+    ConditionVariable watchdogWakeup;
+    Maybe<Thread> watchdogThread;
+    Maybe<TimeStamp> watchdogTimeout;
+
+    ConditionVariable sleepWakeup;
+
+    int exitCode;
+    bool quitting;
+
+    UniqueChars readLineBuf;
+    size_t readLineBufPos;
+
+    static const uint32_t SpsProfilingMaxStackSize = 1000;
+    ProfileEntry spsProfilingStack[SpsProfilingMaxStackSize];
+    uint32_t spsProfilingStackSize;
+
+    OffThreadState offThreadState;
+};
+
+struct MOZ_STACK_CLASS EnvironmentPreparer : public js::ScriptEnvironmentPreparer {
+    JSContext* cx;
+    explicit EnvironmentPreparer(JSContext* cx)
+      : cx(cx)
+    {
+        js::SetScriptEnvironmentPreparer(cx, this);
+    }
+    void invoke(JS::HandleObject scope, Closure& closure) override;
+};
+
+// Shell state set once at startup.
+static bool enableCodeCoverage = false;
+static bool enableDisassemblyDumps = false;
+static bool offthreadCompilation = false;
+static bool enableBaseline = false;
+static bool enableIon = false;
+static bool enableAsmJS = false;
+static bool enableWasm = false;
+static bool enableNativeRegExp = false;
+static bool enableUnboxedArrays = false;
+static bool enableSharedMemory = SHARED_MEMORY_DEFAULT;
+static bool enableWasmAlwaysBaseline = false;
+#ifdef JS_GC_ZEAL
+static uint32_t gZealBits = 0;
+static uint32_t gZealFrequency = 0;
+#endif
+static bool printTiming = false;
+static const char* jsCacheDir = nullptr;
+static const char* jsCacheAsmJSPath = nullptr;
+static RCFile* gErrFile = nullptr;
+static RCFile* gOutFile = nullptr;
 static bool reportWarnings = true;
 static bool compileOnly = false;
 static bool fuzzingSafe = false;
+static bool disableOOMFunctions = false;
+static const char* moduleLoadPath = ".";
 
 #ifdef DEBUG
+static bool dumpEntrainedVariables = false;
 static bool OOM_printAllocationCount = false;
 #endif
 
-typedef enum JSShellErrNum {
-#define MSG_DEF(name, number, count, exception, format) \
-    name = number,
-#include "jsshell.msg"
-#undef MSG_DEF
-    JSShellErr_Limit
-} JSShellErrNum;
+// Shell state this is only accessed on the main thread.
+bool jsCachingEnabled = false;
+mozilla::Atomic<bool> jsCacheOpened(false);
 
-static JSContext *
-NewContext(JSRuntime *rt);
+static bool
+SetTimeoutValue(JSContext* cx, double t);
 
 static void
-DestroyContext(JSContext *cx, bool withGC);
+KillWatchdog(JSContext* cx);
 
-static const JSErrorFormatString *
-my_GetErrorMessage(void *userRef, const char *locale, const unsigned errorNumber);
-
-#ifdef EDITLINE
-JS_BEGIN_EXTERN_C
-extern JS_EXPORT_API(char *) readline(const char *prompt);
-extern JS_EXPORT_API(void)   add_history(char *line);
-JS_END_EXTERN_C
-#endif
+static bool
+ScheduleWatchdog(JSContext* cx, double t);
 
 static void
-ReportException(JSContext *cx)
-{
-    if (JS_IsExceptionPending(cx)) {
-        if (!JS_ReportPendingException(cx))
-            JS_ClearPendingException(cx);
+CancelExecution(JSContext* cx);
+
+static JSObject*
+NewGlobalObject(JSContext* cx, JS::CompartmentOptions& options,
+                JSPrincipals* principals);
+
+/*
+ * A toy principals type for the shell.
+ *
+ * In the shell, a principal is simply a 32-bit mask: P subsumes Q if the
+ * set bits in P are a superset of those in Q. Thus, the principal 0 is
+ * subsumed by everything, and the principal ~0 subsumes everything.
+ *
+ * As a special case, a null pointer as a principal is treated like 0xffff.
+ *
+ * The 'newGlobal' function takes an option indicating which principal the
+ * new global should have; 'evaluate' does for the new code.
+ */
+class ShellPrincipals final : public JSPrincipals {
+    uint32_t bits;
+
+    static uint32_t getBits(JSPrincipals* p) {
+        if (!p)
+            return 0xffff;
+        return static_cast<ShellPrincipals*>(p)->bits;
     }
-}
 
-class ToStringHelper
-{
   public:
-    ToStringHelper(JSContext *aCx, HandleValue v, bool aThrow = false)
-      : cx(aCx), mStr(cx, JS_ValueToString(cx, v))
-    {
-        if (!aThrow && !mStr)
-            ReportException(cx);
+    explicit ShellPrincipals(uint32_t bits, int32_t refcount = 0) : bits(bits) {
+        this->refcount = refcount;
     }
-    ToStringHelper(JSContext *aCx, HandleId id, bool aThrow = false)
-      : cx(aCx), mStr(cx, JS_ValueToString(cx, IdToValue(id)))
-    {
-        if (!aThrow && !mStr)
-            ReportException(cx);
+
+    bool write(JSContext* cx, JSStructuredCloneWriter* writer) override {
+        // The shell doesn't have a read principals hook, so it doesn't really
+        // matter what we write here, but we have to write something so the
+        // fuzzer is happy.
+        return JS_WriteUint32Pair(writer, bits, 0);
     }
-    bool threw() { return !mStr; }
-    jsval getJSVal() { return STRING_TO_JSVAL(mStr); }
-    const char *getBytes() {
-        if (mStr && (mBytes.ptr() || mBytes.encodeLatin1(cx, mStr)))
-            return mBytes.ptr();
-        return "(error converting value)";
+
+    static void destroy(JSPrincipals* principals) {
+        MOZ_ASSERT(principals != &fullyTrusted);
+        MOZ_ASSERT(principals->refcount == 0);
+        js_delete(static_cast<const ShellPrincipals*>(principals));
     }
-  private:
-    JSContext *cx;
-    RootedString mStr;  // Objects of this class are always stack-allocated.
-    JSAutoByteString mBytes;
+
+    static bool subsumes(JSPrincipals* first, JSPrincipals* second) {
+        uint32_t firstBits  = getBits(first);
+        uint32_t secondBits = getBits(second);
+        return (firstBits | secondBits) == firstBits;
+    }
+
+    static JSSecurityCallbacks securityCallbacks;
+
+    // Fully-trusted principals singleton.
+    static ShellPrincipals fullyTrusted;
 };
 
-static char *
-GetLine(FILE *file, const char * prompt)
+JSSecurityCallbacks ShellPrincipals::securityCallbacks = {
+    nullptr, // contentSecurityPolicyAllows
+    subsumes
+};
+
+// The fully-trusted principal subsumes all other principals.
+ShellPrincipals ShellPrincipals::fullyTrusted(-1, 1);
+
+#ifdef EDITLINE
+extern "C" {
+extern JS_EXPORT_API(char*) readline(const char* prompt);
+extern JS_EXPORT_API(void)   add_history(char* line);
+} // extern "C"
+#endif
+
+ShellContext::ShellContext(JSContext* cx)
+  : isWorker(false),
+    timeoutInterval(-1.0),
+    startTime(PRMJ_Now()),
+    serviceInterrupt(false),
+    haveInterruptFunc(false),
+    interruptFunc(cx, NullValue()),
+    lastWarningEnabled(false),
+    lastWarning(cx, NullValue()),
+#ifdef SPIDERMONKEY_PROMISE
+    promiseRejectionTrackerCallback(cx, NullValue()),
+    asyncTasks(mutexid::ShellAsyncTasks, cx),
+    drainingJobQueue(false),
+#endif // SPIDERMONKEY_PROMISE
+    watchdogLock(mutexid::ShellContextWatchdog),
+    exitCode(0),
+    quitting(false),
+    readLineBufPos(0),
+    spsProfilingStackSize(0)
+{}
+
+static ShellContext*
+GetShellContext(JSContext* cx)
 {
-    size_t size;
-    char *buffer;
+    ShellContext* sc = static_cast<ShellContext*>(JS_GetContextPrivate(cx));
+    MOZ_ASSERT(sc);
+    return sc;
+}
+
+static char*
+GetLine(FILE* file, const char * prompt)
+{
 #ifdef EDITLINE
     /*
      * Use readline only if file is stdin, because there's no way to specify
      * another handle.  Are other filehandles interactive?
      */
     if (file == stdin) {
-        char *linep = readline(prompt);
+        char* linep = readline(prompt);
         /*
          * We set it to zero to avoid complaining about inappropriate ioctl
          * for device in the case of EOF. Looks like errno == 251 if line is
@@ -258,124 +481,105 @@ GetLine(FILE *file, const char * prompt)
         if (errno == 251 || errno == 25 || errno == EINVAL)
             errno = 0;
         if (!linep)
-            return NULL;
+            return nullptr;
         if (linep[0] != '\0')
             add_history(linep);
         return linep;
     }
 #endif
+
     size_t len = 0;
-    if (*prompt != '\0') {
-        fprintf(gOutFile, "%s", prompt);
-        fflush(gOutFile);
+    if (*prompt != '\0' && gOutFile->isOpen()) {
+        fprintf(gOutFile->fp, "%s", prompt);
+        fflush(gOutFile->fp);
     }
-    size = 80;
-    buffer = (char *) malloc(size);
+
+    size_t size = 80;
+    char* buffer = static_cast<char*>(malloc(size));
     if (!buffer)
-        return NULL;
-    char *current = buffer;
-    while (fgets(current, size - len, file)) {
+        return nullptr;
+
+    char* current = buffer;
+    do {
+        while (true) {
+            if (fgets(current, size - len, file))
+                break;
+            if (errno != EINTR) {
+                free(buffer);
+                return nullptr;
+            }
+        }
+
         len += strlen(current);
-        char *t = buffer + len - 1;
+        char* t = buffer + len - 1;
         if (*t == '\n') {
             /* Line was read. We remove '\n' and exit. */
             *t = '\0';
             return buffer;
         }
+
         if (len + 1 == size) {
             size = size * 2;
-            char *tmp = (char *) realloc(buffer, size);
+            char* tmp = static_cast<char*>(realloc(buffer, size));
             if (!tmp) {
                 free(buffer);
-                return NULL;
+                return nullptr;
             }
             buffer = tmp;
         }
         current = buffer + len;
-    }
-    if (len && !ferror(file))
-        return buffer;
-    free(buffer);
-    return NULL;
+    } while (true);
+    return nullptr;
 }
 
-static char *
-JSStringToUTF8(JSContext *cx, JSString *str)
+static bool
+ShellInterruptCallback(JSContext* cx)
 {
-    JSLinearString *linear = str->ensureLinear(cx);
-    if (!linear)
-        return NULL;
-
-    return TwoByteCharsToNewUTF8CharsZ(cx, linear->range()).c_str();
-}
-
-/*
- * State to store as JSContext private.
- *
- * We declare such timestamp as volatile as they are updated in the operation
- * callback without taking any locks. Any possible race can only lead to more
- * frequent callback calls. This is safe as the callback does everything based
- * on timing.
- */
-struct JSShellContextData {
-    volatile int64_t startTime;
-};
-
-static JSShellContextData *
-NewContextData()
-{
-    /* Prevent creation of new contexts after we have been canceled. */
-    if (gTimedOut)
-        return NULL;
-
-    JSShellContextData *data = (JSShellContextData *)
-                               calloc(sizeof(JSShellContextData), 1);
-    if (!data)
-        return NULL;
-    data->startTime = PRMJ_Now();
-    return data;
-}
-
-static inline JSShellContextData *
-GetContextData(JSContext *cx)
-{
-    JSShellContextData *data = (JSShellContextData *) JS_GetContextPrivate(cx);
-
-    JS_ASSERT(data);
-    return data;
-}
-
-static JSBool
-ShellOperationCallback(JSContext *cx)
-{
-    if (!gTimedOut)
+    ShellContext* sc = GetShellContext(cx);
+    if (!sc->serviceInterrupt)
         return true;
 
-    JS_ClearPendingException(cx);
+    // Reset serviceInterrupt. CancelExecution or InterruptIf will set it to
+    // true to distinguish watchdog or user triggered interrupts.
+    // Do this first to prevent other interrupts that may occur while the
+    // user-supplied callback is executing from re-entering the handler.
+    sc->serviceInterrupt = false;
 
     bool result;
-    if (!gTimeoutFunc.isNull()) {
-        RootedValue returnedValue(cx);
-        if (!JS_CallFunctionValue(cx, NULL, gTimeoutFunc, 0, NULL, returnedValue.address()))
-            return false;
-        if (returnedValue.isBoolean())
-            result = returnedValue.toBoolean();
+    if (sc->haveInterruptFunc) {
+        bool wasAlreadyThrowing = cx->isExceptionPending();
+        JS::AutoSaveExceptionState savedExc(cx);
+        JSAutoCompartment ac(cx, &sc->interruptFunc.toObject());
+        RootedValue rval(cx);
+
+        // Report any exceptions thrown by the JS interrupt callback, but do
+        // *not* keep it on the cx. The interrupt handler is invoked at points
+        // that are not expected to throw catchable exceptions, like at
+        // JSOP_RETRVAL.
+        //
+        // If the interrupted JS code was already throwing, any exceptions
+        // thrown by the interrupt handler are silently swallowed.
+        {
+            Maybe<AutoReportException> are;
+            if (!wasAlreadyThrowing)
+                are.emplace(cx);
+            result = JS_CallFunctionValue(cx, nullptr, sc->interruptFunc,
+                                          JS::HandleValueArray::empty(), &rval);
+        }
+        savedExc.restore();
+
+        if (rval.isBoolean())
+            result = rval.toBoolean();
         else
             result = false;
     } else {
         result = false;
     }
 
-    if (!result && gExitCode == 0)
-        gExitCode = EXITCODE_TIMEOUT;
+    if (!result && sc->exitCode == 0)
+        sc->exitCode = EXITCODE_TIMEOUT;
 
     return result;
-}
-
-static void
-SetContextOptions(JSContext *cx)
-{
-    JS_SetOperationCallback(cx, ShellOperationCallback);
 }
 
 /*
@@ -403,8 +607,19 @@ SkipUTF8BOM(FILE* file)
         ungetc(ch1, file);
 }
 
-static void
-RunFile(JSContext *cx, Handle<JSObject*> obj, const char *filename, FILE *file, bool compileOnly)
+void
+EnvironmentPreparer::invoke(HandleObject scope, Closure& closure)
+{
+    MOZ_ASSERT(!JS_IsExceptionPending(cx));
+
+    AutoCompartment ac(cx, scope);
+    AutoReportException are(cx);
+    if (!closure(cx))
+        return;
+}
+
+static MOZ_MUST_USE bool
+RunFile(JSContext* cx, const char* filename, FILE* file, bool compileOnly)
 {
     SkipUTF8BOM(file);
 
@@ -420,67 +635,334 @@ RunFile(JSContext *cx, Handle<JSObject*> obj, const char *filename, FILE *file, 
     ungetc(ch, file);
 
     int64_t t1 = PRMJ_Now();
-    uint32_t oldopts = JS_GetOptions(cx);
-    gGotError = false;
-    JS_SetOptions(cx, oldopts | JSOPTION_COMPILE_N_GO | JSOPTION_NO_SCRIPT_RVAL);
-    CompileOptions options(cx);
-    options.setUTF8(true)
-        .setFileAndLine(filename, 1);
-
     RootedScript script(cx);
-    script = JS::Compile(cx, obj, options, file);
-    JS_SetOptions(cx, oldopts);
-    JS_ASSERT_IF(!script, gGotError);
-    if (script && !compileOnly) {
-        if (!JS_ExecuteScript(cx, obj, script, NULL)) {
-            if (!gQuitting && !gTimedOut)
-                gExitCode = EXITCODE_RUNTIME_ERROR;
-        }
+
+    {
+        CompileOptions options(cx);
+        options.setIntroductionType("js shell file")
+               .setUTF8(true)
+               .setFileAndLine(filename, 1)
+               .setIsRunOnce(true)
+               .setNoScriptRval(true);
+
+        if (!JS::Compile(cx, options, file, &script))
+            return false;
+        MOZ_ASSERT(script);
+    }
+
+    #ifdef DEBUG
+        if (dumpEntrainedVariables)
+            AnalyzeEntrainedVariables(cx, script);
+    #endif
+    if (!compileOnly) {
+        if (!JS_ExecuteScript(cx, script))
+            return false;
         int64_t t2 = PRMJ_Now() - t1;
         if (printTiming)
             printf("runtime = %.3f ms\n", double(t2) / PRMJ_USEC_PER_MSEC);
     }
+    return true;
 }
 
 static bool
-EvalAndPrint(JSContext *cx, Handle<JSObject*> global, const char *bytes, size_t length,
-             int lineno, bool compileOnly, FILE *out)
+InitModuleLoader(JSContext* cx)
+{
+    // Decompress and evaluate the embedded module loader source to initialize
+    // the module loader for the current compartment.
+
+    uint32_t srcLen = moduleloader::GetRawScriptsSize();
+    ScopedJSFreePtr<char> src(cx->pod_malloc<char>(srcLen));
+    if (!src || !DecompressString(moduleloader::compressedSources, moduleloader::GetCompressedSize(),
+                                  reinterpret_cast<unsigned char*>(src.get()), srcLen))
+    {
+        return false;
+    }
+
+    CompileOptions options(cx);
+    options.setIntroductionType("shell module loader");
+    options.setFileAndLine("shell/ModuleLoader.js", 1);
+    options.setSelfHostingMode(false);
+    options.setCanLazilyParse(false);
+    options.setVersion(JSVERSION_LATEST);
+    options.werrorOption = true;
+    options.strictOption = true;
+
+    RootedValue rv(cx);
+    return Evaluate(cx, options, src, srcLen, &rv);
+}
+
+static bool
+GetLoaderObject(JSContext* cx, MutableHandleObject resultOut)
+{
+    // Look up the |Reflect.Loader| object that has been defined by the module
+    // loader.
+
+    RootedObject object(cx, cx->global());
+    RootedValue value(cx);
+    if (!JS_GetProperty(cx, object, "Reflect", &value) || !value.isObject())
+        return false;
+
+    object = &value.toObject();
+    if (!JS_GetProperty(cx, object, "Loader", &value) || !value.isObject())
+        return false;
+
+    resultOut.set(&value.toObject());
+    return true;
+}
+
+static bool
+GetImportMethod(JSContext* cx, HandleObject loader, MutableHandleFunction resultOut)
+{
+    // Look up the module loader's |import| method.
+
+    RootedValue value(cx);
+    if (!JS_GetProperty(cx, loader, "import", &value) || !value.isObject())
+        return false;
+
+    RootedObject object(cx, &value.toObject());
+    if (!object->is<JSFunction>())
+        return false;
+
+    resultOut.set(&object->as<JSFunction>());
+    return true;
+}
+
+static MOZ_MUST_USE bool
+RunModule(JSContext* cx, const char* filename, FILE* file, bool compileOnly)
+{
+    // Execute a module by calling |Reflect.Loader.import(filename)|.
+
+    RootedObject loaderObj(cx);
+    MOZ_ALWAYS_TRUE(GetLoaderObject(cx, &loaderObj));
+
+    RootedFunction importFun(cx);
+    MOZ_ALWAYS_TRUE(GetImportMethod(cx, loaderObj, &importFun));
+
+    JS::AutoValueArray<2> args(cx);
+    args[0].setString(JS_NewStringCopyZ(cx, filename));
+    args[1].setUndefined();
+
+    RootedValue value(cx);
+    return JS_CallFunction(cx, loaderObj, importFun, args, &value);
+}
+
+#ifdef SPIDERMONKEY_PROMISE
+static JSObject*
+ShellGetIncumbentGlobalCallback(JSContext* cx)
+{
+    return JS::CurrentGlobalOrNull(cx);
+}
+
+static bool
+ShellEnqueuePromiseJobCallback(JSContext* cx, JS::HandleObject job, JS::HandleObject allocationSite,
+                               JS::HandleObject incumbentGlobal, void* data)
+{
+    ShellContext* sc = GetShellContext(cx);
+    MOZ_ASSERT(job);
+    return sc->jobQueue.append(job);
+}
+
+static bool
+ShellStartAsyncTaskCallback(JSContext* cx, JS::AsyncTask* task)
+{
+    ShellContext* sc = GetShellContext(cx);
+    task->user = sc;
+
+    ExclusiveData<ShellAsyncTasks>::Guard asyncTasks = sc->asyncTasks.lock();
+    asyncTasks->outstanding++;
+    return true;
+}
+
+static bool
+ShellFinishAsyncTaskCallback(JS::AsyncTask* task)
+{
+    ShellContext* sc = (ShellContext*)task->user;
+
+    ExclusiveData<ShellAsyncTasks>::Guard asyncTasks = sc->asyncTasks.lock();
+    MOZ_ASSERT(asyncTasks->outstanding > 0);
+    asyncTasks->outstanding--;
+    return asyncTasks->finished.append(task);
+}
+#endif // SPIDERMONKEY_PROMISE
+
+static bool
+DrainJobQueue(JSContext* cx)
+{
+#ifdef SPIDERMONKEY_PROMISE
+    ShellContext* sc = GetShellContext(cx);
+    if (sc->quitting || sc->drainingJobQueue)
+        return true;
+
+    // Wait for any outstanding async tasks to finish so that the
+    // finishedAsyncTasks list is fixed.
+    while (true) {
+        AutoLockHelperThreadState lock;
+        if (!sc->asyncTasks.lock()->outstanding)
+            break;
+        HelperThreadState().wait(lock, GlobalHelperThreadState::CONSUMER);
+    }
+
+    // Lock the whole time while copying back the asyncTasks finished queue so
+    // that any new tasks created during finish() cannot racily join the job
+    // queue.  Call finish() only thereafter, to avoid a circular mutex
+    // dependency (see also bug 1297901).
+    Vector<JS::AsyncTask*> finished(cx);
+    {
+        ExclusiveData<ShellAsyncTasks>::Guard asyncTasks = sc->asyncTasks.lock();
+        finished = Move(asyncTasks->finished);
+        asyncTasks->finished.clear();
+    }
+
+    for (JS::AsyncTask* task : finished)
+        task->finish(cx);
+
+    // It doesn't make sense for job queue draining to be reentrant. At the
+    // same time we don't want to assert against it, because that'd make
+    // drainJobQueue unsafe for fuzzers. We do want fuzzers to test this, so
+    // we simply ignore nested calls of drainJobQueue.
+    sc->drainingJobQueue = true;
+
+    RootedObject job(cx);
+    JS::HandleValueArray args(JS::HandleValueArray::empty());
+    RootedValue rval(cx);
+    // Execute jobs in a loop until we've reached the end of the queue.
+    // Since executing a job can trigger enqueuing of additional jobs,
+    // it's crucial to re-check the queue length during each iteration.
+    for (size_t i = 0; i < sc->jobQueue.length(); i++) {
+        job = sc->jobQueue[i];
+        AutoCompartment ac(cx, job);
+        {
+            AutoReportException are(cx);
+            JS::Call(cx, UndefinedHandleValue, job, args, &rval);
+        }
+        sc->jobQueue[i].set(nullptr);
+    }
+    sc->jobQueue.clear();
+    sc->drainingJobQueue = false;
+#endif // SPIDERMONKEY_PROMISE
+    return true;
+}
+
+static bool
+DrainJobQueue(JSContext* cx, unsigned argc, Value* vp)
+{
+    CallArgs args = CallArgsFromVp(argc, vp);
+
+    if (!DrainJobQueue(cx))
+        return false;
+    args.rval().setUndefined();
+    return true;
+}
+
+#ifdef SPIDERMONKEY_PROMISE
+static void
+ForwardingPromiseRejectionTrackerCallback(JSContext* cx, JS::HandleObject promise,
+                                          PromiseRejectionHandlingState state, void* data)
+{
+    RootedValue callback(cx, GetShellContext(cx)->promiseRejectionTrackerCallback);
+    if (callback.isNull()) {
+        return;
+    }
+
+    AutoCompartment ac(cx, &callback.toObject());
+
+    FixedInvokeArgs<2> args(cx);
+    args[0].setObject(*promise);
+    args[1].setInt32(static_cast<int32_t>(state));
+
+    if (!JS_WrapValue(cx, args[0]))
+        return;
+
+    RootedValue rval(cx);
+    if (!Call(cx, callback, UndefinedHandleValue, args, &rval))
+        JS_ClearPendingException(cx);
+}
+#endif // SPIDERMONKEY_PROMISE
+
+static bool
+SetPromiseRejectionTrackerCallback(JSContext* cx, unsigned argc, Value* vp)
+{
+    CallArgs args = CallArgsFromVp(argc, vp);
+
+#ifdef SPIDERMONKEY_PROMISE
+    if (!IsCallable(args.get(0))) {
+        JS_ReportErrorASCII(cx,
+                            "setPromiseRejectionTrackerCallback expects a function as its sole "
+                            "argument");
+        return false;
+    }
+
+    GetShellContext(cx)->promiseRejectionTrackerCallback = args[0];
+    JS::SetPromiseRejectionTrackerCallback(cx, ForwardingPromiseRejectionTrackerCallback);
+
+#endif // SPIDERMONKEY_PROMISE
+    args.rval().setUndefined();
+    return true;
+}
+
+#ifdef ENABLE_INTL_API
+static bool
+AddIntlExtras(JSContext* cx, unsigned argc, Value* vp)
+{
+    CallArgs args = CallArgsFromVp(argc, vp);
+    if (!args.get(0).isObject()) {
+        JS_ReportErrorASCII(cx, "addIntlExtras must be passed an object");
+        return false;
+    }
+    JS::RootedObject intl(cx, &args[0].toObject());
+
+    static const JSFunctionSpec funcs[] = {
+        JS_SELF_HOSTED_FN("getCalendarInfo", "Intl_getCalendarInfo", 1, 0),
+        JS_FS_END
+    };
+
+    if (!JS_DefineFunctions(cx, intl, funcs))
+        return false;
+
+    args.rval().setUndefined();
+    return true;
+}
+#endif // ENABLE_INTL_API
+
+static bool
+EvalAndPrint(JSContext* cx, const char* bytes, size_t length,
+             int lineno, bool compileOnly)
 {
     // Eval.
     JS::CompileOptions options(cx);
-    options.utf8 = true;
-    options.compileAndGo = true;
-    options.filename = "typein";
-    options.lineno = lineno;
+    options.setIntroductionType("js shell interactive")
+           .setUTF8(true)
+           .setIsRunOnce(true)
+           .setFileAndLine("typein", lineno);
     RootedScript script(cx);
-    script = JS::Compile(cx, global, options, bytes, length);
-    if (!script)
+    if (!JS::Compile(cx, options, bytes, length, &script))
         return false;
     if (compileOnly)
         return true;
     RootedValue result(cx);
-    if (!JS_ExecuteScript(cx, global, script, result.address()))
+    if (!JS_ExecuteScript(cx, script, &result))
         return false;
 
-    if (!result.isUndefined()) {
+    if (!result.isUndefined() && gOutFile->isOpen()) {
         // Print.
         RootedString str(cx);
         str = JS_ValueToSource(cx, result);
         if (!str)
             return false;
 
-        char *utf8chars = JSStringToUTF8(cx, str);
+        char* utf8chars = JS_EncodeStringToUTF8(cx, str);
         if (!utf8chars)
             return false;
-        fprintf(out, "%s\n", utf8chars);
+        fprintf(gOutFile->fp, "%s\n", utf8chars);
         JS_free(cx, utf8chars);
     }
     return true;
 }
 
-static void
-ReadEvalPrintLoop(JSContext *cx, Handle<JSObject*> global, FILE *in, FILE *out, bool compileOnly)
+static MOZ_MUST_USE bool
+ReadEvalPrintLoop(JSContext* cx, FILE* in, bool compileOnly)
 {
+    ShellContext* sc = GetShellContext(cx);
     int lineno = 1;
     bool hitEOF = false;
 
@@ -492,141 +974,131 @@ ReadEvalPrintLoop(JSContext *cx, Handle<JSObject*> global, FILE *in, FILE *out, 
          * coincides with the end of a line.
          */
         int startline = lineno;
-        typedef Vector<char, 32, ContextAllocPolicy> CharBuffer;
+        typedef Vector<char, 32> CharBuffer;
+        RootedObject globalLexical(cx, &cx->global()->lexicalEnvironment());
         CharBuffer buffer(cx);
         do {
-            ScheduleWatchdog(cx->runtime(), -1);
-            gTimedOut = false;
+            ScheduleWatchdog(cx, -1);
+            sc->serviceInterrupt = false;
             errno = 0;
 
-            char *line = GetLine(in, startline == lineno ? "js> " : "");
+            char* line = GetLine(in, startline == lineno ? "js> " : "");
             if (!line) {
                 if (errno) {
-                    JS_ReportError(cx, strerror(errno));
-                    return;
+                    /*
+                     * Use Latin1 variant here because strerror(errno)'s
+                     * encoding depends on the user's C locale.
+                     */
+                    JS_ReportErrorLatin1(cx, "%s", strerror(errno));
+                    return false;
                 }
                 hitEOF = true;
                 break;
             }
 
             if (!buffer.append(line, strlen(line)) || !buffer.append('\n'))
-                return;
+                return false;
 
             lineno++;
-            if (!ScheduleWatchdog(cx->runtime(), gTimeoutInterval)) {
+            if (!ScheduleWatchdog(cx, sc->timeoutInterval)) {
                 hitEOF = true;
                 break;
             }
-        } while (!JS_BufferIsCompilableUnit(cx, global, buffer.begin(), buffer.length()));
+        } while (!JS_BufferIsCompilableUnit(cx, cx->global(), buffer.begin(), buffer.length()));
 
         if (hitEOF && buffer.empty())
             break;
 
-        if (!EvalAndPrint(cx, global, buffer.begin(), buffer.length(), startline, compileOnly,
-                          out))
         {
-            // Catch the error, report it, and keep going.
-            JS_ReportPendingException(cx);
+            // Report exceptions but keep going.
+            AutoReportException are(cx);
+            (void) EvalAndPrint(cx, buffer.begin(), buffer.length(), startline, compileOnly);
         }
-    } while (!hitEOF && !gQuitting);
 
-    fprintf(out, "\n");
+        // If a let or const fail to initialize they will remain in an unusable
+        // without further intervention. This call cleans up the global scope,
+        // setting uninitialized lexicals to undefined so that they may still
+        // be used. This behavior is _only_ acceptable in the context of the repl.
+        if (JS::ForceLexicalInitialization(cx, globalLexical) && gErrFile->isOpen()) {
+            fputs("Warning: According to the standard, after the above exception,\n"
+                  "Warning: the global bindings should be permanently uninitialized.\n"
+                  "Warning: We have non-standard-ly initialized them to `undefined`"
+                  "for you.\nWarning: This nicety only happens in the JS shell.\n",
+                  stderr);
+        }
+
+        DrainJobQueue(cx);
+
+    } while (!hitEOF && !sc->quitting);
+
+    if (gOutFile->isOpen())
+        fprintf(gOutFile->fp, "\n");
+
+    return true;
 }
 
-class AutoCloseInputFile
+enum FileKind
 {
-  private:
-    FILE *f_;
-  public:
-    explicit AutoCloseInputFile(FILE *f) : f_(f) {}
-    ~AutoCloseInputFile() {
-        if (f_ && f_ != stdin)
-            fclose(f_);
-    }
+    FileScript,
+    FileModule
 };
 
 static void
-Process(JSContext *cx, JSObject *obj_, const char *filename, bool forceTTY)
+ReportCantOpenErrorUnknownEncoding(JSContext* cx, const char* filename)
 {
-    RootedObject obj(cx, obj_);
+    /*
+     * Filenames are in some random system encoding.  *Probably* it's UTF-8,
+     * but no guarantees.
+     *
+     * strerror(errno)'s encoding, in contrast, depends on the user's C locale.
+     *
+     * Latin-1 is possibly wrong for both of these -- but at least if it's
+     * wrong it'll produce mojibake *safely*.  Run with Latin-1 til someone
+     * complains.
+     */
+    JS_ReportErrorNumberLatin1(cx, my_GetErrorMessage, nullptr, JSSMSG_CANT_OPEN,
+                               filename, strerror(errno));
+}
 
-    FILE *file;
+static MOZ_MUST_USE bool
+Process(JSContext* cx, const char* filename, bool forceTTY, FileKind kind = FileScript)
+{
+    FILE* file;
     if (forceTTY || !filename || strcmp(filename, "-") == 0) {
         file = stdin;
     } else {
         file = fopen(filename, "r");
         if (!file) {
-            JS_ReportErrorNumber(cx, my_GetErrorMessage, NULL,
-                                 JSSMSG_CANT_OPEN, filename, strerror(errno));
-            gExitCode = EXITCODE_FILE_NOT_FOUND;
-            return;
+            ReportCantOpenErrorUnknownEncoding(cx, filename);
+            return false;
         }
     }
-    AutoCloseInputFile autoClose(file);
-
-    SetContextOptions(cx);
+    AutoCloseFile autoClose(file);
 
     if (!forceTTY && !isatty(fileno(file))) {
         // It's not interactive - just execute it.
-        RunFile(cx, obj, filename, file, compileOnly);
+        if (kind == FileScript) {
+            if (!RunFile(cx, filename, file, compileOnly))
+                return false;
+        } else {
+            if (!RunModule(cx, filename, file, compileOnly))
+                return false;
+        }
     } else {
         // It's an interactive filehandle; drop into read-eval-print loop.
-        ReadEvalPrintLoop(cx, obj, file, gOutFile, compileOnly);
+        MOZ_ASSERT(kind == FileScript);
+        if (!ReadEvalPrintLoop(cx, file, compileOnly))
+            return false;
     }
+    return true;
 }
 
-/*
- * JSContext option name to flag map. The option names are in alphabetical
- * order for better reporting.
- */
-static const struct JSOption {
-    const char  *name;
-    uint32_t    flag;
-} js_options[] = {
-    {"strict",          JSOPTION_EXTRA_WARNINGS},
-    {"typeinfer",       JSOPTION_TYPE_INFERENCE},
-    {"werror",          JSOPTION_WERROR},
-    {"strict_mode",     JSOPTION_STRICT_MODE},
-};
-
-static uint32_t
-MapContextOptionNameToFlag(JSContext* cx, const char* name)
-{
-    for (size_t i = 0; i < ArrayLength(js_options); ++i) {
-        if (strcmp(name, js_options[i].name) == 0)
-            return js_options[i].flag;
-    }
-
-    char* msg = JS_sprintf_append(NULL,
-                                  "unknown option name '%s'."
-                                  " The valid names are ", name);
-    for (size_t i = 0; i < ArrayLength(js_options); ++i) {
-        if (!msg)
-            break;
-        msg = JS_sprintf_append(msg, "%s%s", js_options[i].name,
-                                (i + 2 < ArrayLength(js_options)
-                                 ? ", "
-                                 : i + 2 == ArrayLength(js_options)
-                                 ? " and "
-                                 : "."));
-    }
-    if (!msg) {
-        JS_ReportOutOfMemory(cx);
-    } else {
-        JS_ReportError(cx, msg);
-        free(msg);
-    }
-    return 0;
-}
-
-extern JSClass global_class;
-
-static JSBool
-Version(JSContext *cx, unsigned argc, jsval *vp)
+static bool
+Version(JSContext* cx, unsigned argc, Value* vp)
 {
     CallArgs args = CallArgsFromVp(argc, vp);
     JSVersion origVersion = JS_GetVersion(cx);
-    if (args.length() == 0 || JSVAL_IS_VOID(args[0])) {
+    if (args.length() == 0 || args[0].isUndefined()) {
         /* Get version. */
         args.rval().setInt32(origVersion);
     } else {
@@ -636,11 +1108,13 @@ Version(JSContext *cx, unsigned argc, jsval *vp)
             v = args[0].toInt32();
         } else if (args[0].isDouble()) {
             double fv = args[0].toDouble();
-            if (int32_t(fv) == fv)
-                v = int32_t(fv);
+            int32_t fvi;
+            if (NumberEqualsInt32(fv, &fvi))
+                v = fvi;
         }
         if (v < 0 || v > JSVERSION_LATEST) {
-            JS_ReportErrorNumber(cx, my_GetErrorMessage, NULL, JSSMSG_INVALID_ARGS, "version");
+            JS_ReportErrorNumberASCII(cx, my_GetErrorMessage, nullptr, JSSMSG_INVALID_ARGS,
+                                      "version");
             return false;
         }
         JS_SetVersionForCompartment(js::GetContextCompartment(cx), JSVersion(v));
@@ -649,125 +1123,190 @@ Version(JSContext *cx, unsigned argc, jsval *vp)
     return true;
 }
 
-static JSScript *
-GetTopScript(JSContext *cx)
-{
-    RootedScript script(cx);
-    JS_DescribeScriptedCaller(cx, script.address(), NULL);
-    return script;
-}
-
-/*
- * Resolve a (possibly) relative filename to an absolute path. If
- * |scriptRelative| is true, then the result will be relative to the directory
- * containing the currently-running script, or the current working directory if
- * the currently-running script is "-e" (namely, you're using it from the
- * command line.) Otherwise, it will be relative to the current working
- * directory.
- */
-static JSString *
-ResolvePath(JSContext *cx, HandleString filenameStr, bool scriptRelative)
-{
-    JSAutoByteString filename(cx, filenameStr);
-    if (!filename)
-        return NULL;
-
-    const char *pathname = filename.ptr();
-    if (pathname[0] == '/')
-        return filenameStr;
 #ifdef XP_WIN
-    // Various forms of absolute paths per http://msdn.microsoft.com/en-us/library/windows/desktop/aa365247%28v=vs.85%29.aspx
-    // "\..."
-    if (pathname[0] == '\\')
-        return filenameStr;
-    // "C:\..."
-    if (strlen(pathname) > 3 && isalpha(pathname[0]) && pathname[1] == ':' && pathname[2] == '\\')
-        return filenameStr;
-    // "\\..."
-    if (strlen(pathname) > 2 && pathname[1] == '\\' && pathname[2] == '\\')
-        return filenameStr;
-#endif
-
-    /* Get the currently executing script's name. */
-    RootedScript script(cx, GetTopScript(cx));
-    if (!script->filename())
-        return NULL;
-    if (strcmp(script->filename(), "-e") == 0 || strcmp(script->filename(), "typein") == 0)
-        scriptRelative = false;
-
-    static char buffer[PATH_MAX+1];
-    if (scriptRelative) {
-#ifdef XP_WIN
-        // The docs say it can return EINVAL, but the compiler says it's void
-        _splitpath(script->filename(), NULL, buffer, NULL, NULL);
+#  define GET_FD_FROM_FILE(a) int(_get_osfhandle(fileno(a)))
 #else
-        strncpy(buffer, script->filename(), PATH_MAX+1);
-        if (buffer[PATH_MAX] != '\0')
-            return NULL;
-
-        // dirname(buffer) might return buffer, or it might return a
-        // statically-allocated string
-        memmove(buffer, dirname(buffer), strlen(buffer) + 1);
+#  define GET_FD_FROM_FILE(a) fileno(a)
 #endif
-    } else {
-        const char *cwd = getcwd(buffer, PATH_MAX);
-        if (!cwd)
-            return NULL;
-    }
 
-    size_t len = strlen(buffer);
-    buffer[len] = '/';
-    strncpy(buffer + len + 1, pathname, sizeof(buffer) - (len+1));
-    if (buffer[PATH_MAX] != '\0')
-        return NULL;
-
-    return JS_NewStringCopyZ(cx, buffer);
-}
-
-static JSBool
-Options(JSContext *cx, unsigned argc, jsval *vp)
+static bool
+CreateMappedArrayBuffer(JSContext* cx, unsigned argc, Value* vp)
 {
     CallArgs args = CallArgsFromVp(argc, vp);
 
-    uint32_t flag;
-    JSString *str;
-    char *names;
-    bool found;
-
-    uint32_t optset = 0;
-    for (unsigned i = 0; i < args.length(); i++) {
-        str = JS_ValueToString(cx, args[i]);
-        if (!str)
-            return false;
-        args[i] = STRING_TO_JSVAL(str);
-        JSAutoByteString opt(cx, str);
-        if (!opt)
-            return false;
-        flag = MapContextOptionNameToFlag(cx, opt.ptr());
-        if (!flag)
-            return false;
-        optset |= flag;
+    if (args.length() < 1 || args.length() > 3) {
+        JS_ReportErrorNumberASCII(cx, my_GetErrorMessage, nullptr,
+                                  args.length() < 1 ? JSSMSG_NOT_ENOUGH_ARGS : JSSMSG_TOO_MANY_ARGS,
+                                  "createMappedArrayBuffer");
+        return false;
     }
-    optset = JS_ToggleOptions(cx, optset);
 
-    names = NULL;
-    found = false;
-    for (size_t i = 0; i < ArrayLength(js_options); i++) {
-        if (js_options[i].flag & optset) {
-            found = true;
-            names = JS_sprintf_append(names, "%s%s",
-                                      names ? "," : "", js_options[i].name);
-            if (!names)
-                break;
+    RootedString rawFilenameStr(cx, JS::ToString(cx, args[0]));
+    if (!rawFilenameStr)
+        return false;
+    // It's a little bizarre to resolve relative to the script, but for testing
+    // I need a file at a known location, and the only good way I know of to do
+    // that right now is to include it in the repo alongside the test script.
+    // Bug 944164 would introduce an alternative.
+    JSString* filenameStr = ResolvePath(cx, rawFilenameStr, ScriptRelative);
+    if (!filenameStr)
+        return false;
+    JSAutoByteString filename(cx, filenameStr);
+    if (!filename)
+        return false;
+
+    uint32_t offset = 0;
+    if (args.length() >= 2) {
+        if (!JS::ToUint32(cx, args[1], &offset))
+            return false;
+    }
+
+    bool sizeGiven = false;
+    uint32_t size;
+    if (args.length() >= 3) {
+        if (!JS::ToUint32(cx, args[2], &size))
+            return false;
+        sizeGiven = true;
+        if (size == 0) {
+            JS_ReportErrorNumberASCII(cx, GetErrorMessage, nullptr, JSMSG_BAD_ARRAY_LENGTH);
+            return false;
         }
     }
-    if (!found)
-        names = strdup("");
+
+    FILE* file = fopen(filename.ptr(), "r");
+    if (!file) {
+        ReportCantOpenErrorUnknownEncoding(cx, filename.ptr());
+        return false;
+    }
+    AutoCloseFile autoClose(file);
+
+    if (!sizeGiven) {
+        struct stat st;
+        if (fstat(fileno(file), &st) < 0) {
+            JS_ReportErrorASCII(cx, "Unable to stat file");
+            return false;
+        }
+        if (off_t(offset) >= st.st_size) {
+            JS_ReportErrorNumberASCII(cx, GetErrorMessage, nullptr,
+                                      JSMSG_ARG_INDEX_OUT_OF_RANGE, "2");
+            return false;
+        }
+        size = st.st_size - offset;
+    }
+
+    void* contents = JS_CreateMappedArrayBufferContents(GET_FD_FROM_FILE(file), offset, size);
+    if (!contents) {
+        JS_ReportErrorASCII(cx, "failed to allocate mapped array buffer contents (possibly due to bad alignment)");
+        return false;
+    }
+
+    RootedObject obj(cx, JS_NewMappedArrayBufferWithContents(cx, size, contents));
+    if (!obj)
+        return false;
+
+    args.rval().setObject(*obj);
+    return true;
+}
+
+#undef GET_FD_FROM_FILE
+
+static bool
+AddPromiseReactions(JSContext* cx, unsigned argc, Value* vp)
+{
+    CallArgs args = CallArgsFromVp(argc, vp);
+
+    if (args.length() != 3) {
+        JS_ReportErrorNumberASCII(cx, my_GetErrorMessage, nullptr,
+                                  args.length() < 3 ? JSSMSG_NOT_ENOUGH_ARGS : JSSMSG_TOO_MANY_ARGS,
+                                  "addPromiseReactions");
+        return false;
+    }
+
+    RootedObject promise(cx);
+    if (args[0].isObject())
+        promise = &args[0].toObject();
+
+    if (!promise || !JS::IsPromiseObject(promise)) {
+        JS_ReportErrorNumberASCII(cx, my_GetErrorMessage, nullptr, JSSMSG_INVALID_ARGS,
+                                  "addPromiseReactions");
+        return false;
+    }
+
+    RootedObject onResolve(cx);
+    if (args[1].isObject())
+        onResolve = &args[1].toObject();
+
+    RootedObject onReject(cx);
+    if (args[2].isObject())
+        onReject = &args[2].toObject();
+
+    if (!onResolve || !onResolve->is<JSFunction>() || !onReject || !onReject->is<JSFunction>()) {
+        JS_ReportErrorNumberASCII(cx, my_GetErrorMessage, nullptr, JSSMSG_INVALID_ARGS,
+                                  "addPromiseReactions");
+        return false;
+    }
+
+    return JS::AddPromiseReactions(cx, promise, onResolve, onReject);
+}
+
+static bool
+Options(JSContext* cx, unsigned argc, Value* vp)
+{
+    CallArgs args = CallArgsFromVp(argc, vp);
+
+    JS::ContextOptions oldContextOptions = JS::ContextOptionsRef(cx);
+    for (unsigned i = 0; i < args.length(); i++) {
+        RootedString str(cx, JS::ToString(cx, args[i]));
+        if (!str)
+            return false;
+        args[i].setString(str);
+
+        JSAutoByteString opt;
+        if (!opt.encodeUtf8(cx, str))
+            return false;
+
+        if (strcmp(opt.ptr(), "strict") == 0)
+            JS::ContextOptionsRef(cx).toggleExtraWarnings();
+        else if (strcmp(opt.ptr(), "werror") == 0)
+            JS::ContextOptionsRef(cx).toggleWerror();
+        else if (strcmp(opt.ptr(), "throw_on_asmjs_validation_failure") == 0)
+            JS::ContextOptionsRef(cx).toggleThrowOnAsmJSValidationFailure();
+        else if (strcmp(opt.ptr(), "strict_mode") == 0)
+            JS::ContextOptionsRef(cx).toggleStrictMode();
+        else {
+            JS_ReportErrorUTF8(cx,
+                               "unknown option name '%s'."
+                               " The valid names are strict,"
+                               " werror, and strict_mode.",
+                               opt.ptr());
+            return false;
+        }
+    }
+
+    char* names = strdup("");
+    bool found = false;
+    if (names && oldContextOptions.extraWarnings()) {
+        names = JS_sprintf_append(names, "%s%s", found ? "," : "", "strict");
+        found = true;
+    }
+    if (names && oldContextOptions.werror()) {
+        names = JS_sprintf_append(names, "%s%s", found ? "," : "", "werror");
+        found = true;
+    }
+    if (names && oldContextOptions.throwOnAsmJSValidationFailure()) {
+        names = JS_sprintf_append(names, "%s%s", found ? "," : "", "throw_on_asmjs_validation_failure");
+        found = true;
+    }
+    if (names && oldContextOptions.strictMode()) {
+        names = JS_sprintf_append(names, "%s%s", found ? "," : "", "strict_mode");
+        found = true;
+    }
     if (!names) {
         JS_ReportOutOfMemory(cx);
         return false;
     }
-    str = JS_NewStringCopyZ(cx, names);
+
+    JSString* str = JS_NewStringCopyZ(cx, names);
     free(names);
     if (!str)
         return false;
@@ -775,24 +1314,22 @@ Options(JSContext *cx, unsigned argc, jsval *vp)
     return true;
 }
 
-static JSBool
-LoadScript(JSContext *cx, unsigned argc, jsval *vp, bool scriptRelative)
+static bool
+LoadScript(JSContext* cx, unsigned argc, Value* vp, bool scriptRelative)
 {
     CallArgs args = CallArgsFromVp(argc, vp);
-    RootedObject thisobj(cx, JS_THIS_OBJECT(cx, vp));
-    if (!thisobj)
-        return false;
 
     RootedString str(cx);
     for (unsigned i = 0; i < args.length(); i++) {
-        str = JS_ValueToString(cx, args[i]);
+        str = JS::ToString(cx, args[i]);
         if (!str) {
-            JS_ReportErrorNumber(cx, my_GetErrorMessage, NULL, JSSMSG_INVALID_ARGS, "load");
+            JS_ReportErrorNumberASCII(cx, my_GetErrorMessage, nullptr, JSSMSG_INVALID_ARGS,
+                                      "load");
             return false;
         }
-        str = ResolvePath(cx, str, scriptRelative);
+        str = ResolvePath(cx, str, scriptRelative ? ScriptRelative : RootRelative);
         if (!str) {
-            JS_ReportError(cx, "unable to resolve path");
+            JS_ReportErrorASCII(cx, "unable to resolve path");
             return false;
         }
         JSAutoByteString filename(cx, str);
@@ -800,9 +1337,14 @@ LoadScript(JSContext *cx, unsigned argc, jsval *vp, bool scriptRelative)
             return false;
         errno = 0;
         CompileOptions opts(cx);
-        opts.setUTF8(true).setCompileAndGo(true).setNoScriptRval(true);
-        if ((compileOnly && !Compile(cx, thisobj, opts, filename.ptr())) ||
-            !Evaluate(cx, thisobj, opts, filename.ptr(), NULL))
+        opts.setIntroductionType("js shell load")
+            .setUTF8(true)
+            .setIsRunOnce(true)
+            .setNoScriptRval(true);
+        RootedScript script(cx);
+        RootedValue unused(cx);
+        if ((compileOnly && !Compile(cx, opts, filename.ptr(), &script)) ||
+            !Evaluate(cx, opts, filename.ptr(), &unused))
         {
             return false;
         }
@@ -812,114 +1354,256 @@ LoadScript(JSContext *cx, unsigned argc, jsval *vp, bool scriptRelative)
     return true;
 }
 
-static JSBool
-Load(JSContext *cx, unsigned argc, jsval *vp)
+static bool
+Load(JSContext* cx, unsigned argc, Value* vp)
 {
     return LoadScript(cx, argc, vp, false);
 }
 
-static JSBool
-LoadScriptRelativeToScript(JSContext *cx, unsigned argc, jsval *vp)
+static bool
+LoadScriptRelativeToScript(JSContext* cx, unsigned argc, Value* vp)
 {
     return LoadScript(cx, argc, vp, true);
 }
 
-class AutoNewContext
+// Populate |options| with the options given by |opts|'s properties. If we
+// need to convert a filename to a C string, let fileNameBytes own the
+// bytes.
+static bool
+ParseCompileOptions(JSContext* cx, CompileOptions& options, HandleObject opts,
+                    JSAutoByteString& fileNameBytes)
 {
-  private:
-    JSContext *oldcx;
-    JSContext *newcx;
-    Maybe<JSAutoRequest> newRequest;
-    Maybe<AutoCompartment> newCompartment;
+    RootedValue v(cx);
+    RootedString s(cx);
 
-    AutoNewContext(const AutoNewContext &) MOZ_DELETE;
+    if (!JS_GetProperty(cx, opts, "isRunOnce", &v))
+        return false;
+    if (!v.isUndefined())
+        options.setIsRunOnce(ToBoolean(v));
 
-  public:
-    AutoNewContext() : oldcx(NULL), newcx(NULL) {}
+    if (!JS_GetProperty(cx, opts, "noScriptRval", &v))
+        return false;
+    if (!v.isUndefined())
+        options.setNoScriptRval(ToBoolean(v));
 
-    bool enter(JSContext *cx) {
-        JS_ASSERT(!JS_IsExceptionPending(cx));
-        oldcx = cx;
-        newcx = NewContext(JS_GetRuntime(cx));
-        if (!newcx)
+    if (!JS_GetProperty(cx, opts, "fileName", &v))
+        return false;
+    if (v.isNull()) {
+        options.setFile(nullptr);
+    } else if (!v.isUndefined()) {
+        s = ToString(cx, v);
+        if (!s)
             return false;
-        JS_SetOptions(newcx, JS_GetOptions(newcx) | JSOPTION_DONT_REPORT_UNCAUGHT);
-        JS_SetGlobalObject(newcx, JS_GetGlobalForScopeChain(cx));
-
-        newRequest.construct(newcx);
-        newCompartment.construct(newcx, JS_GetGlobalForScopeChain(cx));
-        return true;
+        char* fileName = fileNameBytes.encodeLatin1(cx, s);
+        if (!fileName)
+            return false;
+        options.setFile(fileName);
     }
 
-    JSContext *get() { return newcx; }
+    if (!JS_GetProperty(cx, opts, "element", &v))
+        return false;
+    if (v.isObject())
+        options.setElement(&v.toObject());
 
-    ~AutoNewContext() {
-        if (newcx) {
-            RootedValue exc(oldcx);
-            bool throwing = JS_IsExceptionPending(newcx);
-            if (throwing)
-                JS_GetPendingException(newcx, exc.address());
-            newCompartment.destroy();
-            newRequest.destroy();
-            if (throwing)
-                JS_SetPendingException(oldcx, exc);
-            DestroyContext(newcx, false);
-        }
+    if (!JS_GetProperty(cx, opts, "elementAttributeName", &v))
+        return false;
+    if (!v.isUndefined()) {
+        s = ToString(cx, v);
+        if (!s)
+            return false;
+        options.setElementAttributeName(s);
     }
+
+    if (!JS_GetProperty(cx, opts, "lineNumber", &v))
+        return false;
+    if (!v.isUndefined()) {
+        uint32_t u;
+        if (!ToUint32(cx, v, &u))
+            return false;
+        options.setLine(u);
+    }
+
+    if (!JS_GetProperty(cx, opts, "columnNumber", &v))
+        return false;
+    if (!v.isUndefined()) {
+        int32_t c;
+        if (!ToInt32(cx, v, &c))
+            return false;
+        options.setColumn(c);
+    }
+
+    if (!JS_GetProperty(cx, opts, "sourceIsLazy", &v))
+        return false;
+    if (v.isBoolean())
+        options.setSourceIsLazy(v.toBoolean());
+
+    return true;
+}
+
+static void
+my_LargeAllocFailCallback(void* data)
+{
+    JSContext* cx = (JSContext*)data;
+    JSRuntime* rt = cx->runtime();
+
+    if (!cx->isJSContext())
+        return;
+
+    MOZ_ASSERT(!rt->isHeapBusy());
+
+    JS::PrepareForFullGC(cx);
+    AutoKeepAtoms keepAtoms(cx->perThreadData);
+    rt->gc.gc(GC_NORMAL, JS::gcreason::SHARED_MEMORY_LIMIT);
+}
+
+static const uint32_t CacheEntry_SOURCE = 0;
+static const uint32_t CacheEntry_BYTECODE = 1;
+
+static const JSClass CacheEntry_class = {
+    "CacheEntryObject", JSCLASS_HAS_RESERVED_SLOTS(2)
 };
 
-class AutoSaveFrameChain
+static bool
+CacheEntry(JSContext* cx, unsigned argc, JS::Value* vp)
 {
-    JSContext *cx_;
-    bool saved_;
+    CallArgs args = CallArgsFromVp(argc, vp);
 
-  public:
-    AutoSaveFrameChain(JSContext *cx)
-      : cx_(cx),
-        saved_(false)
-    {}
+    if (args.length() != 1 || !args[0].isString()) {
+        JS_ReportErrorNumberASCII(cx, my_GetErrorMessage, nullptr, JSSMSG_INVALID_ARGS,
+                                  "CacheEntry");
+        return false;
+    }
 
-    bool save() {
-        if (!JS_SaveFrameChain(cx_))
-            return false;
-        saved_ = true;
+    RootedObject obj(cx, JS_NewObject(cx, &CacheEntry_class));
+    if (!obj)
+        return false;
+
+    SetReservedSlot(obj, CacheEntry_SOURCE, args[0]);
+    SetReservedSlot(obj, CacheEntry_BYTECODE, UndefinedValue());
+    args.rval().setObject(*obj);
+    return true;
+}
+
+static bool
+CacheEntry_isCacheEntry(JSObject* cache)
+{
+    return JS_GetClass(cache) == &CacheEntry_class;
+}
+
+static JSString*
+CacheEntry_getSource(HandleObject cache)
+{
+    MOZ_ASSERT(CacheEntry_isCacheEntry(cache));
+    Value v = JS_GetReservedSlot(cache, CacheEntry_SOURCE);
+    if (!v.isString())
+        return nullptr;
+
+    return v.toString();
+}
+
+static uint8_t*
+CacheEntry_getBytecode(HandleObject cache, uint32_t* length)
+{
+    MOZ_ASSERT(CacheEntry_isCacheEntry(cache));
+    Value v = JS_GetReservedSlot(cache, CacheEntry_BYTECODE);
+    if (!v.isObject() || !v.toObject().is<ArrayBufferObject>())
+        return nullptr;
+
+    ArrayBufferObject* arrayBuffer = &v.toObject().as<ArrayBufferObject>();
+    *length = arrayBuffer->byteLength();
+    return arrayBuffer->dataPointer();
+}
+
+static bool
+CacheEntry_setBytecode(JSContext* cx, HandleObject cache, uint8_t* buffer, uint32_t length)
+{
+    MOZ_ASSERT(CacheEntry_isCacheEntry(cache));
+
+    ArrayBufferObject::BufferContents contents =
+        ArrayBufferObject::BufferContents::create<ArrayBufferObject::PLAIN>(buffer);
+    Rooted<ArrayBufferObject*> arrayBuffer(cx, ArrayBufferObject::create(cx, length, contents));
+    if (!arrayBuffer)
+        return false;
+
+    SetReservedSlot(cache, CacheEntry_BYTECODE, ObjectValue(*arrayBuffer));
+    return true;
+}
+
+static bool
+ConvertTranscodeResultToJSException(JSContext* cx, JS::TranscodeResult rv)
+{
+    switch (rv) {
+      case JS::TranscodeResult_Ok:
         return true;
-    }
 
-    ~AutoSaveFrameChain() {
-        if (saved_)
-            JS_RestoreFrameChain(cx_);
-    }
-};
+      default:
+        MOZ_FALLTHROUGH;
+      case JS::TranscodeResult_Failure:
+        MOZ_ASSERT(!cx->isExceptionPending());
+        JS_ReportErrorASCII(cx, "generic warning");
+        return false;
+      case JS::TranscodeResult_Failure_BadBuildId:
+        MOZ_ASSERT(!cx->isExceptionPending());
+        JS_ReportErrorASCII(cx, "the build-id does not match");
+        return false;
+      case JS::TranscodeResult_Failure_RunOnceNotSupported:
+        MOZ_ASSERT(!cx->isExceptionPending());
+        JS_ReportErrorASCII(cx, "run-once script are not supported by XDR");
+        return false;
+      case JS::TranscodeResult_Failure_AsmJSNotSupported:
+        MOZ_ASSERT(!cx->isExceptionPending());
+        JS_ReportErrorASCII(cx, "Asm.js is not supported by XDR");
+        return false;
+      case JS::TranscodeResult_Failure_UnknownClassKind:
+        MOZ_ASSERT(!cx->isExceptionPending());
+        JS_ReportErrorASCII(cx, "Unknown class kind, go fix it.");
+        return false;
 
-static JSBool
-Evaluate(JSContext *cx, unsigned argc, jsval *vp)
+      case JS::TranscodeResult_Throw:
+        MOZ_ASSERT(cx->isExceptionPending());
+        return false;
+    }
+}
+
+static bool
+Evaluate(JSContext* cx, unsigned argc, Value* vp)
 {
     CallArgs args = CallArgsFromVp(argc, vp);
 
     if (args.length() < 1 || args.length() > 2) {
-        JS_ReportErrorNumber(cx, my_GetErrorMessage, NULL,
-                             args.length() < 1 ? JSSMSG_NOT_ENOUGH_ARGS : JSSMSG_TOO_MANY_ARGS,
-                             "evaluate");
-        return false;
-    }
-    if (!args[0].isString() || (args.length() == 2 && args[1].isPrimitive())) {
-        JS_ReportErrorNumber(cx, my_GetErrorMessage, NULL, JSSMSG_INVALID_ARGS, "evaluate");
+        JS_ReportErrorNumberASCII(cx, my_GetErrorMessage, nullptr,
+                                  args.length() < 1 ? JSSMSG_NOT_ENOUGH_ARGS : JSSMSG_TOO_MANY_ARGS,
+                                  "evaluate");
         return false;
     }
 
-    bool newContext = false;
-    bool compileAndGo = true;
-    bool noScriptRval = false;
-    const char *fileName = "@evaluate";
-    RootedObject element(cx);
+    RootedString code(cx, nullptr);
+    RootedObject cacheEntry(cx, nullptr);
+    if (args[0].isString()) {
+        code = args[0].toString();
+    } else if (args[0].isObject() && CacheEntry_isCacheEntry(&args[0].toObject())) {
+        cacheEntry = &args[0].toObject();
+        code = CacheEntry_getSource(cacheEntry);
+    }
+
+    if (!code || (args.length() == 2 && args[1].isPrimitive())) {
+        JS_ReportErrorNumberASCII(cx, my_GetErrorMessage, nullptr, JSSMSG_INVALID_ARGS, "evaluate");
+        return false;
+    }
+
+    CompileOptions options(cx);
     JSAutoByteString fileNameBytes;
+    RootedString displayURL(cx);
     RootedString sourceMapURL(cx);
-    unsigned lineNumber = 1;
-    RootedObject global(cx, NULL);
+    RootedObject global(cx, nullptr);
     bool catchTermination = false;
-    bool saveFrameChain = false;
+    bool loadBytecode = false;
+    bool saveBytecode = false;
+    bool assertEqBytecode = false;
     RootedObject callerGlobal(cx, cx->global());
+
+    options.setIntroductionType("js shell evaluate")
+           .setFileAndLine("@evaluate", 1);
 
     global = JS_GetGlobalForObject(cx, &args.callee());
     if (!global)
@@ -929,151 +1613,149 @@ Evaluate(JSContext *cx, unsigned argc, jsval *vp)
         RootedObject opts(cx, &args[1].toObject());
         RootedValue v(cx);
 
-        if (!JS_GetProperty(cx, opts, "newContext", v.address()))
+        if (!ParseCompileOptions(cx, options, opts, fileNameBytes))
             return false;
-        if (!JSVAL_IS_VOID(v)) {
-            JSBool b;
-            if (!JS_ValueToBoolean(cx, v, &b))
-                return false;
-            newContext = b;
-        }
 
-        if (!JS_GetProperty(cx, opts, "compileAndGo", v.address()))
+        if (!JS_GetProperty(cx, opts, "displayURL", &v))
             return false;
-        if (!JSVAL_IS_VOID(v)) {
-            JSBool b;
-            if (!JS_ValueToBoolean(cx, v, &b))
-                return false;
-            compileAndGo = b;
-        }
-
-        if (!JS_GetProperty(cx, opts, "noScriptRval", v.address()))
-            return false;
-        if (!JSVAL_IS_VOID(v)) {
-            JSBool b;
-            if (!JS_ValueToBoolean(cx, v, &b))
-                return false;
-            noScriptRval = b;
-        }
-
-        if (!JS_GetProperty(cx, opts, "fileName", v.address()))
-            return false;
-        if (JSVAL_IS_NULL(v)) {
-            fileName = NULL;
-        } else if (!JSVAL_IS_VOID(v)) {
-            JSString *s = JS_ValueToString(cx, v);
-            if (!s)
-                return false;
-            fileName = fileNameBytes.encodeLatin1(cx, s);
-            if (!fileName)
+        if (!v.isUndefined()) {
+            displayURL = ToString(cx, v);
+            if (!displayURL)
                 return false;
         }
 
-        if (!JS_GetProperty(cx, opts, "element", v.address()))
+        if (!JS_GetProperty(cx, opts, "sourceMapURL", &v))
             return false;
-        if (!JSVAL_IS_PRIMITIVE(v))
-            element = JSVAL_TO_OBJECT(v);
-
-        if (!JS_GetProperty(cx, opts, "sourceMapURL", v.address()))
-            return false;
-        if (!JSVAL_IS_VOID(v)) {
-            sourceMapURL = JS_ValueToString(cx, v);
+        if (!v.isUndefined()) {
+            sourceMapURL = ToString(cx, v);
             if (!sourceMapURL)
                 return false;
         }
 
-        if (!JS_GetProperty(cx, opts, "lineNumber", v.address()))
+        if (!JS_GetProperty(cx, opts, "global", &v))
             return false;
-        if (!JSVAL_IS_VOID(v)) {
-            uint32_t u;
-            if (!JS_ValueToECMAUint32(cx, v, &u))
-                return false;
-            lineNumber = u;
-        }
-
-        if (!JS_GetProperty(cx, opts, "global", v.address()))
-            return false;
-        if (!JSVAL_IS_VOID(v)) {
-            global = JSVAL_IS_PRIMITIVE(v) ? NULL : JSVAL_TO_OBJECT(v);
-            if (global) {
-                global = js::UncheckedUnwrap(global);
+        if (!v.isUndefined()) {
+            if (v.isObject()) {
+                global = js::UncheckedUnwrap(&v.toObject());
                 if (!global)
                     return false;
             }
             if (!global || !(JS_GetClass(global)->flags & JSCLASS_IS_GLOBAL)) {
-                JS_ReportErrorNumber(cx, js_GetErrorMessage, NULL, JSMSG_UNEXPECTED_TYPE,
-                                     "\"global\" passed to evaluate()", "not a global object");
+                JS_ReportErrorNumberASCII(cx, GetErrorMessage, nullptr, JSMSG_UNEXPECTED_TYPE,
+                                          "\"global\" passed to evaluate()", "not a global object");
                 return false;
             }
         }
 
-        if (!JS_GetProperty(cx, opts, "catchTermination", v.address()))
+        if (!JS_GetProperty(cx, opts, "catchTermination", &v))
             return false;
-        if (!JSVAL_IS_VOID(v)) {
-            JSBool b;
-            if (!JS_ValueToBoolean(cx, v, &b))
-                return false;
-            catchTermination = b;
-        }
+        if (!v.isUndefined())
+            catchTermination = ToBoolean(v);
 
-        if (!JS_GetProperty(cx, opts, "saveFrameChain", v.address()))
+        if (!JS_GetProperty(cx, opts, "loadBytecode", &v))
             return false;
-        if (!JSVAL_IS_VOID(v)) {
-            JSBool b;
-            if (!JS_ValueToBoolean(cx, v, &b))
+        if (!v.isUndefined())
+            loadBytecode = ToBoolean(v);
+
+        if (!JS_GetProperty(cx, opts, "saveBytecode", &v))
+            return false;
+        if (!v.isUndefined())
+            saveBytecode = ToBoolean(v);
+
+        if (!JS_GetProperty(cx, opts, "assertEqBytecode", &v))
+            return false;
+        if (!v.isUndefined())
+            assertEqBytecode = ToBoolean(v);
+
+        // We cannot load or save the bytecode if we have no object where the
+        // bytecode cache is stored.
+        if (loadBytecode || saveBytecode) {
+            if (!cacheEntry) {
+                JS_ReportErrorNumberASCII(cx, my_GetErrorMessage, nullptr, JSSMSG_INVALID_ARGS,
+                                          "evaluate");
                 return false;
-            saveFrameChain = b;
+            }
         }
     }
 
-    RootedString code(cx, args[0].toString());
-
-    size_t codeLength;
-    const jschar *codeChars = JS_GetStringCharsAndLength(cx, code, &codeLength);
-    if (!codeChars)
+    AutoStableStringChars codeChars(cx);
+    if (!codeChars.initTwoByte(cx, code))
         return false;
 
-    AutoNewContext ancx;
-    if (newContext) {
-        if (!ancx.enter(cx))
+    JS::TranscodeBuffer loadBuffer;
+    JS::TranscodeBuffer saveBuffer;
+
+    if (loadBytecode) {
+        uint32_t loadLength = 0;
+        uint8_t* loadData = nullptr;
+        loadData = CacheEntry_getBytecode(cacheEntry, &loadLength);
+        if (!loadData)
             return false;
-        cx = ancx.get();
+        if (!loadBuffer.append(loadData, loadLength)) {
+            JS_ReportOutOfMemory(cx);
+            return false;
+        }
     }
 
     {
-        AutoSaveFrameChain asfc(cx);
-        if (saveFrameChain && !asfc.save())
-            return false;
-
         JSAutoCompartment ac(cx, global);
-        uint32_t oldopts = JS_GetOptions(cx);
-        uint32_t opts = oldopts & ~(JSOPTION_COMPILE_N_GO | JSOPTION_NO_SCRIPT_RVAL);
-        if (compileAndGo)
-            opts |= JSOPTION_COMPILE_N_GO;
-        if (noScriptRval)
-            opts |= JSOPTION_NO_SCRIPT_RVAL;
+        RootedScript script(cx);
 
-        JS_SetOptions(cx, opts);
-        CompileOptions options(cx);
-        options.setFileAndLine(fileName, lineNumber);
-        options.setElement(element);
-        RootedScript script(cx, JS::Compile(cx, global, options, codeChars, codeLength));
-        JS_SetOptions(cx, oldopts);
-        if (!script)
-            return false;
+        {
+            if (saveBytecode) {
+                if (!JS::CompartmentCreationOptionsRef(cx).cloneSingletons()) {
+                    JS_ReportErrorNumberASCII(cx, my_GetErrorMessage, nullptr,
+                                              JSSMSG_CACHE_SINGLETON_FAILED);
+                    return false;
+                }
 
-        if (sourceMapURL && !script->scriptSource()->hasSourceMap()) {
-            const jschar *smurl = JS_GetStringCharsZ(cx, sourceMapURL);
-            if (!smurl)
-                return false;
-            jschar *smurl_copy = js_strdup(cx, smurl);
-            if (!smurl_copy || !script->scriptSource()->setSourceMap(cx, smurl_copy, script->filename()))
+                // cloneSingletons implies that singletons are used as template objects.
+                MOZ_ASSERT(JS::CompartmentBehaviorsRef(cx).getSingletonsAsTemplates());
+            }
+
+            if (loadBytecode) {
+                JS::TranscodeResult rv = JS::DecodeScript(cx, loadBuffer, &script);
+                if (!ConvertTranscodeResultToJSException(cx, rv))
+                    return false;
+            } else {
+                mozilla::Range<const char16_t> chars = codeChars.twoByteRange();
+                (void) JS::Compile(cx, options, chars.begin().get(), chars.length(), &script);
+            }
+
+            if (!script)
                 return false;
         }
-        if (!JS_ExecuteScript(cx, global, script, vp)) {
+
+        if (displayURL && !script->scriptSource()->hasDisplayURL()) {
+            JSFlatString* flat = displayURL->ensureFlat(cx);
+            if (!flat)
+                return false;
+
+            AutoStableStringChars chars(cx);
+            if (!chars.initTwoByte(cx, flat))
+                return false;
+
+            const char16_t* durl = chars.twoByteRange().begin().get();
+            if (!script->scriptSource()->setDisplayURL(cx, durl))
+                return false;
+        }
+        if (sourceMapURL && !script->scriptSource()->hasSourceMapURL()) {
+            JSFlatString* flat = sourceMapURL->ensureFlat(cx);
+            if (!flat)
+                return false;
+
+            AutoStableStringChars chars(cx);
+            if (!chars.initTwoByte(cx, flat))
+                return false;
+
+            const char16_t* smurl = chars.twoByteRange().begin().get();
+            if (!script->scriptSource()->setSourceMapURL(cx, smurl))
+                return false;
+        }
+        if (!JS_ExecuteScript(cx, script, args.rval())) {
             if (catchTermination && !JS_IsExceptionPending(cx)) {
                 JSAutoCompartment ac1(cx, callerGlobal);
-                JSString *str = JS_NewStringCopyZ(cx, "terminated");
+                JSString* str = JS_NewStringCopyZ(cx, "terminated");
                 if (!str)
                     return false;
                 args.rval().setString(str);
@@ -1081,95 +1763,114 @@ Evaluate(JSContext *cx, unsigned argc, jsval *vp)
             }
             return false;
         }
-    }
 
-    return JS_WrapValue(cx, vp);
-}
-
-static JSString *
-FileAsString(JSContext *cx, const char *pathname)
-{
-    FILE *file;
-    RootedString str(cx);
-    size_t len, cc;
-    char *buf;
-
-    file = fopen(pathname, "rb");
-    if (!file) {
-        JS_ReportError(cx, "can't open %s: %s", pathname, strerror(errno));
-        return NULL;
-    }
-
-    if (fseek(file, 0, SEEK_END) != 0) {
-        JS_ReportError(cx, "can't seek end of %s", pathname);
-    } else {
-        len = ftell(file);
-        if (fseek(file, 0, SEEK_SET) != 0) {
-            JS_ReportError(cx, "can't seek start of %s", pathname);
-        } else {
-            buf = (char*) JS_malloc(cx, len + 1);
-            if (buf) {
-                cc = fread(buf, 1, len, file);
-                if (cc != len) {
-                    JS_ReportError(cx, "can't read %s: %s", pathname,
-                                   (ptrdiff_t(cc) < 0) ? strerror(errno) : "short read");
-                } else {
-                    jschar *ucbuf;
-                    size_t uclen;
-
-                    len = (size_t)cc;
-
-                    if (!InflateUTF8StringToBuffer(cx, buf, len, NULL, &uclen)) {
-                        JS_ReportError(cx, "Invalid UTF-8 in file '%s'", pathname);
-                        gExitCode = EXITCODE_RUNTIME_ERROR;
-                        return NULL;
-                    }
-
-                    ucbuf = (jschar*)malloc(uclen * sizeof(jschar));
-                    InflateUTF8StringToBuffer(cx, buf, len, ucbuf, &uclen);
-                    str = JS_NewUCStringCopyN(cx, ucbuf, uclen);
-                    free(ucbuf);
-                }
-                JS_free(cx, buf);
-            }
+        if (saveBytecode) {
+            JS::TranscodeResult rv = JS::EncodeScript(cx, saveBuffer, script);
+            if (!ConvertTranscodeResultToJSException(cx, rv))
+                return false;
         }
     }
-    fclose(file);
 
-    return str;
-}
+    if (saveBytecode) {
+        // If we are both loading and saving, we assert that we are going to
+        // replace the current bytecode by the same stream of bytes.
+        if (loadBytecode && assertEqBytecode) {
+            if (saveBuffer.length() != loadBuffer.length()) {
+                char loadLengthStr[16];
+                SprintfLiteral(loadLengthStr, "%" PRIuSIZE, loadBuffer.length());
+                char saveLengthStr[16];
+                SprintfLiteral(saveLengthStr,"%" PRIuSIZE, saveBuffer.length());
 
-static JSObject *
-FileAsTypedArray(JSContext *cx, const char *pathname)
-{
-    FILE *file = fopen(pathname, "rb");
-    if (!file) {
-        JS_ReportError(cx, "can't open %s: %s", pathname, strerror(errno));
-        return NULL;
-    }
+                JS_ReportErrorNumberASCII(cx, my_GetErrorMessage, nullptr, JSSMSG_CACHE_EQ_SIZE_FAILED,
+                                          loadLengthStr, saveLengthStr);
+                return false;
+            }
 
-    RootedObject obj(cx);
-    if (fseek(file, 0, SEEK_END) != 0) {
-        JS_ReportError(cx, "can't seek end of %s", pathname);
-    } else {
-        size_t len = ftell(file);
-        if (fseek(file, 0, SEEK_SET) != 0) {
-            JS_ReportError(cx, "can't seek start of %s", pathname);
-        } else {
-            obj = JS_NewUint8Array(cx, len);
-            if (!obj)
-                return NULL;
-            char *buf = (char *) TypedArray::viewData(obj);
-            size_t cc = fread(buf, 1, len, file);
-            if (cc != len) {
-                JS_ReportError(cx, "can't read %s: %s", pathname,
-                               (ptrdiff_t(cc) < 0) ? strerror(errno) : "short read");
-                obj = NULL;
+            if (!PodEqual(loadBuffer.begin(), saveBuffer.begin(), loadBuffer.length())) {
+                JS_ReportErrorNumberASCII(cx, my_GetErrorMessage, nullptr,
+                                          JSSMSG_CACHE_EQ_CONTENT_FAILED);
+                return false;
             }
         }
+
+        size_t saveLength = saveBuffer.length();
+        if (saveLength >= INT32_MAX) {
+            JS_ReportErrorASCII(cx, "Cannot save large cache entry content");
+            return false;
+        }
+        uint8_t* saveData = saveBuffer.extractOrCopyRawBuffer();
+        if (!CacheEntry_setBytecode(cx, cacheEntry, saveData, saveLength)) {
+            js_free(saveData);
+            return false;
+        }
     }
-    fclose(file);
-    return obj;
+
+    return JS_WrapValue(cx, args.rval());
+}
+
+JSString*
+js::shell::FileAsString(JSContext* cx, JS::HandleString pathnameStr)
+{
+    JSAutoByteString pathname(cx, pathnameStr);
+    if (!pathname)
+        return nullptr;
+
+    FILE* file;
+
+    file = fopen(pathname.ptr(), "rb");
+    if (!file) {
+        ReportCantOpenErrorUnknownEncoding(cx, pathname.ptr());
+        return nullptr;
+    }
+
+    AutoCloseFile autoClose(file);
+
+    if (fseek(file, 0, SEEK_END) != 0) {
+        pathname.clear();
+        if (!pathname.encodeUtf8(cx, pathnameStr))
+            return nullptr;
+        JS_ReportErrorUTF8(cx, "can't seek end of %s", pathname.ptr());
+        return nullptr;
+    }
+
+    size_t len = ftell(file);
+    if (fseek(file, 0, SEEK_SET) != 0) {
+        pathname.clear();
+        if (!pathname.encodeUtf8(cx, pathnameStr))
+            return nullptr;
+        JS_ReportErrorUTF8(cx, "can't seek start of %s", pathname.ptr());
+        return nullptr;
+    }
+
+    UniqueChars buf(static_cast<char*>(js_malloc(len + 1)));
+    if (!buf)
+        return nullptr;
+
+    size_t cc = fread(buf.get(), 1, len, file);
+    if (cc != len) {
+        if (ptrdiff_t(cc) < 0) {
+            ReportCantOpenErrorUnknownEncoding(cx, pathname.ptr());
+        } else {
+            pathname.clear();
+            if (!pathname.encodeUtf8(cx, pathnameStr))
+                return nullptr;
+            JS_ReportErrorUTF8(cx, "can't read %s: short read", pathname.ptr());
+        }
+        return nullptr;
+    }
+
+    UniqueTwoByteChars ucbuf(
+        JS::LossyUTF8CharsToNewTwoByteCharsZ(cx, JS::UTF8Chars(buf.get(), len), &len).get()
+    );
+    if (!ucbuf) {
+        pathname.clear();
+        if (!pathname.encodeUtf8(cx, pathnameStr))
+            return nullptr;
+        JS_ReportErrorUTF8(cx, "Invalid UTF-8 in file '%s'", pathname.ptr());
+        return nullptr;
+    }
+
+    return JS_NewUCStringCopyN(cx, ucbuf.get(), len);
 }
 
 /*
@@ -1177,46 +1878,53 @@ FileAsTypedArray(JSContext *cx, const char *pathname)
  * are closely modelled after the equivalent function in WebKit, as this is used
  * to produce benchmark timings by SunSpider.
  */
-static JSBool
-Run(JSContext *cx, unsigned argc, jsval *vp)
+static bool
+Run(JSContext* cx, unsigned argc, Value* vp)
 {
     CallArgs args = CallArgsFromVp(argc, vp);
     if (args.length() != 1) {
-        JS_ReportErrorNumber(cx, my_GetErrorMessage, NULL, JSSMSG_INVALID_ARGS, "run");
+        JS_ReportErrorNumberASCII(cx, my_GetErrorMessage, nullptr, JSSMSG_INVALID_ARGS, "run");
         return false;
     }
 
-    RootedObject thisobj(cx, JS_THIS_OBJECT(cx, vp));
-    if (!thisobj)
-        return false;
-
-    JSString *str = JS_ValueToString(cx, args[0]);
+    RootedString str(cx, JS::ToString(cx, args[0]));
     if (!str)
         return false;
-    args[0] = STRING_TO_JSVAL(str);
-    JSAutoByteString filename(cx, str);
-    if (!filename)
+    args[0].setString(str);
+
+    str = FileAsString(cx, str);
+    if (!str)
         return false;
 
-    const jschar *ucbuf = NULL;
-    size_t buflen;
-    str = FileAsString(cx, filename.ptr());
-    if (str)
-        ucbuf = JS_GetStringCharsAndLength(cx, str, &buflen);
-    if (!ucbuf)
+    AutoStableStringChars chars(cx);
+    if (!chars.initTwoByte(cx, str))
         return false;
 
-    JS::Anchor<JSString *> a_str(str);
-    uint32_t oldopts = JS_GetOptions(cx);
-    JS_SetOptions(cx, oldopts | JSOPTION_COMPILE_N_GO | JSOPTION_NO_SCRIPT_RVAL);
+    const char16_t* ucbuf = chars.twoByteRange().begin().get();
+    size_t buflen = str->length();
 
+    RootedScript script(cx);
     int64_t startClock = PRMJ_Now();
-    RootedScript script(cx, JS_CompileUCScript(cx, thisobj, ucbuf, buflen, filename.ptr(), 1));
-    JS_SetOptions(cx, oldopts);
-    if (!script || !JS_ExecuteScript(cx, thisobj, script, NULL))
+    {
+        /* FIXME: This should use UTF-8 (bug 987069). */
+        JSAutoByteString filename(cx, str);
+        if (!filename)
+            return false;
+
+        JS::CompileOptions options(cx);
+        options.setIntroductionType("js shell run")
+               .setFileAndLine(filename.ptr(), 1)
+               .setIsRunOnce(true)
+               .setNoScriptRval(true);
+        if (!JS_CompileUCScript(cx, ucbuf, buflen, options, &script))
+            return false;
+    }
+
+    if (!JS_ExecuteScript(cx, script))
         return false;
 
     int64_t endClock = PRMJ_Now();
+
     args.rval().setDouble((endClock - startClock) / double(PRMJ_USEC_PER_MSEC));
     return true;
 }
@@ -1225,16 +1933,16 @@ Run(JSContext *cx, unsigned argc, jsval *vp)
  * function readline()
  * Provides a hook for scripts to read a line from stdin.
  */
-static JSBool
-ReadLine(JSContext *cx, unsigned argc, jsval *vp)
+static bool
+ReadLine(JSContext* cx, unsigned argc, Value* vp)
 {
     CallArgs args = CallArgsFromVp(argc, vp);
 
 #define BUFSIZE 256
-    FILE *from = stdin;
+    FILE* from = stdin;
     size_t buflength = 0;
     size_t bufsize = BUFSIZE;
-    char *buf = (char *) JS_malloc(cx, bufsize);
+    char* buf = (char*) JS_malloc(cx, bufsize);
     if (!buf)
         return false;
 
@@ -1253,13 +1961,13 @@ ReadLine(JSContext *cx, unsigned argc, jsval *vp)
         }
 
         /* Else, grow our buffer for another pass. */
-        char *tmp;
+        char* tmp;
         bufsize *= 2;
         if (bufsize > buflength) {
-            tmp = (char *) JS_realloc(cx, buf, bufsize);
+            tmp = static_cast<char*>(JS_realloc(cx, buf, bufsize / 2, bufsize));
         } else {
             JS_ReportOutOfMemory(cx);
-            tmp = NULL;
+            tmp = nullptr;
         }
 
         if (!tmp) {
@@ -1278,7 +1986,7 @@ ReadLine(JSContext *cx, unsigned argc, jsval *vp)
     }
 
     /* Shrink the buffer to the real size. */
-    char *tmp = static_cast<char*>(JS_realloc(cx, buf, buflength));
+    char* tmp = static_cast<char*>(JS_realloc(cx, buf, bufsize, buflength));
     if (!tmp) {
         JS_free(cx, buf);
         return false;
@@ -1290,7 +1998,7 @@ ReadLine(JSContext *cx, unsigned argc, jsval *vp)
      * Turn buf into a JSString. Note that buflength includes the trailing null
      * character.
      */
-    JSString *str = JS_NewStringCopyN(cx, buf, sawNewline ? buflength - 1 : buflength);
+    JSString* str = JS_NewStringCopyN(cx, buf, sawNewline ? buflength - 1 : buflength);
     JS_free(cx, buf);
     if (!str)
         return false;
@@ -1299,29 +2007,98 @@ ReadLine(JSContext *cx, unsigned argc, jsval *vp)
     return true;
 }
 
-static JSBool
-PutStr(JSContext *cx, unsigned argc, jsval *vp)
+/*
+ * function readlineBuf()
+ * Provides a hook for scripts to emulate readline() using a string object.
+ */
+static bool
+ReadLineBuf(JSContext* cx, unsigned argc, Value* vp)
+{
+    CallArgs args = CallArgsFromVp(argc, vp);
+    ShellContext* sc = GetShellContext(cx);
+
+    if (!args.length()) {
+        if (!sc->readLineBuf) {
+            JS_ReportErrorASCII(cx, "No source buffer set. You must initially "
+                                "call readlineBuf with an argument.");
+            return false;
+        }
+
+        char* currentBuf = sc->readLineBuf.get() + sc->readLineBufPos;
+        size_t buflen = strlen(currentBuf);
+
+        if (!buflen) {
+            args.rval().setNull();
+            return true;
+        }
+
+        size_t len = 0;
+        while(len < buflen) {
+            if (currentBuf[len] == '\n')
+                break;
+            len++;
+        }
+
+        JSString* str = JS_NewStringCopyN(cx, currentBuf, len);
+        if (!str)
+            return false;
+
+        if (currentBuf[len] == '\0')
+            sc->readLineBufPos += len;
+        else
+            sc->readLineBufPos += len + 1;
+
+        args.rval().setString(str);
+        return true;
+    }
+
+    if (args.length() == 1) {
+        if (sc->readLineBuf)
+            sc->readLineBuf.reset();
+
+        RootedString str(cx, JS::ToString(cx, args[0]));
+        if (!str)
+            return false;
+        sc->readLineBuf = UniqueChars(JS_EncodeStringToUTF8(cx, str));
+        if (!sc->readLineBuf)
+            return false;
+
+        sc->readLineBufPos = 0;
+        return true;
+    }
+
+    JS_ReportErrorASCII(cx, "Must specify at most one argument");
+    return false;
+}
+
+static bool
+PutStr(JSContext* cx, unsigned argc, Value* vp)
 {
     CallArgs args = CallArgsFromVp(argc, vp);
 
     if (args.length() != 0) {
-        JSString *str = JS_ValueToString(cx, args[0]);
+        if (!gOutFile->isOpen()) {
+            JS_ReportErrorASCII(cx, "output file is closed");
+            return false;
+        }
+
+        RootedString str(cx, JS::ToString(cx, args[0]));
         if (!str)
             return false;
-        char *bytes = JSStringToUTF8(cx, str);
+        char* bytes = JS_EncodeStringToUTF8(cx, str);
         if (!bytes)
             return false;
-        fputs(bytes, gOutFile);
+        fputs(bytes, gOutFile->fp);
         JS_free(cx, bytes);
-        fflush(gOutFile);
+        fflush(gOutFile->fp);
     }
 
     args.rval().setUndefined();
     return true;
 }
 
-static JSBool
-Now(JSContext *cx, unsigned argc, jsval *vp)
+static bool
+Now(JSContext* cx, unsigned argc, Value* vp)
 {
     CallArgs args = CallArgsFromVp(argc, vp);
     double now = PRMJ_Now() / double(PRMJ_USEC_PER_MSEC);
@@ -1329,63 +2106,130 @@ Now(JSContext *cx, unsigned argc, jsval *vp)
     return true;
 }
 
-static JSBool
-PrintInternal(JSContext *cx, const CallArgs &args, FILE *file)
+static bool
+PrintInternal(JSContext* cx, const CallArgs& args, RCFile* file)
 {
+    if (!file->isOpen()) {
+        JS_ReportErrorASCII(cx, "output file is closed");
+        return false;
+    }
+
     for (unsigned i = 0; i < args.length(); i++) {
-        JSString *str = JS_ValueToString(cx, args[i]);
+        RootedString str(cx, JS::ToString(cx, args[i]));
         if (!str)
             return false;
-        char *bytes = JSStringToUTF8(cx, str);
+        char* bytes = JS_EncodeStringToUTF8(cx, str);
         if (!bytes)
             return false;
-        fprintf(file, "%s%s", i ? " " : "", bytes);
-#if JS_TRACE_LOGGING
-        TraceLog(TraceLogging::defaultLogger(), bytes);
-#endif
+        fprintf(file->fp, "%s%s", i ? " " : "", bytes);
         JS_free(cx, bytes);
     }
 
-    fputc('\n', file);
-    fflush(file);
+    fputc('\n', file->fp);
+    fflush(file->fp);
 
     args.rval().setUndefined();
     return true;
 }
 
-static JSBool
-Print(JSContext *cx, unsigned argc, jsval *vp)
+static bool
+Print(JSContext* cx, unsigned argc, Value* vp)
 {
     CallArgs args = CallArgsFromVp(argc, vp);
     return PrintInternal(cx, args, gOutFile);
 }
 
-static JSBool
-PrintErr(JSContext *cx, unsigned argc, jsval *vp)
+static bool
+PrintErr(JSContext* cx, unsigned argc, Value* vp)
 {
     CallArgs args = CallArgsFromVp(argc, vp);
     return PrintInternal(cx, args, gErrFile);
 }
 
-static JSBool
-Help(JSContext *cx, unsigned argc, jsval *vp);
+static bool
+Help(JSContext* cx, unsigned argc, Value* vp);
 
-static JSBool
-Quit(JSContext *cx, unsigned argc, jsval *vp)
+static bool
+Quit(JSContext* cx, unsigned argc, Value* vp)
 {
-    CallArgs args = CallArgsFromVp(argc, vp);
-    JS_ConvertArguments(cx, args.length(), args.array(), "/ i", &gExitCode);
+    ShellContext* sc = GetShellContext(cx);
 
-    gQuitting = true;
+#ifdef JS_MORE_DETERMINISTIC
+    // Print a message to stderr in more-deterministic builds to help jsfunfuzz
+    // find uncatchable-exception bugs.
+    fprintf(stderr, "quit called\n");
+#endif
+
+    CallArgs args = CallArgsFromVp(argc, vp);
+    int32_t code;
+    if (!ToInt32(cx, args.get(0), &code))
+        return false;
+
+    // The fuzzers check the shell's exit code and assume a value >= 128 means
+    // the process crashed (for instance, SIGSEGV will result in code 139). On
+    // POSIX platforms, the exit code is 8-bit and negative values can also
+    // result in an exit code >= 128. We restrict the value to range [0, 127] to
+    // avoid false positives.
+    if (code < 0 || code >= 128) {
+        JS_ReportErrorASCII(cx, "quit exit code should be in range 0-127");
+        return false;
+    }
+
+    sc->exitCode = code;
+    sc->quitting = true;
     return false;
 }
 
-static const char *
-ToSource(JSContext *cx, jsval *vp, JSAutoByteString *bytes)
+static bool
+StartTimingMutator(JSContext* cx, unsigned argc, Value* vp)
 {
-    JSString *str = JS_ValueToSource(cx, *vp);
+    CallArgs args = CallArgsFromVp(argc, vp);
+    if (args.length() > 0) {
+        JS_ReportErrorNumberASCII(cx, my_GetErrorMessage, nullptr, JSSMSG_TOO_MANY_ARGS,
+                                  "startTimingMutator");
+        return false;
+    }
+
+    if (!cx->runtime()->gc.stats.startTimingMutator()) {
+        JS_ReportErrorASCII(cx, "StartTimingMutator should only be called from outside of GC");
+        return false;
+    }
+
+    args.rval().setUndefined();
+    return true;
+}
+
+static bool
+StopTimingMutator(JSContext* cx, unsigned argc, Value* vp)
+{
+    CallArgs args = CallArgsFromVp(argc, vp);
+    if (args.length() > 0) {
+        JS_ReportErrorNumberASCII(cx, my_GetErrorMessage, nullptr, JSSMSG_TOO_MANY_ARGS,
+                                  "stopTimingMutator");
+        return false;
+    }
+
+    double mutator_ms, gc_ms;
+    if (!cx->runtime()->gc.stats.stopTimingMutator(mutator_ms, gc_ms)) {
+        JS_ReportErrorASCII(cx, "stopTimingMutator called when not timing the mutator");
+        return false;
+    }
+    double total_ms = mutator_ms + gc_ms;
+    if (total_ms > 0 && gOutFile->isOpen()) {
+        fprintf(gOutFile->fp, "Mutator: %.3fms (%.1f%%), GC: %.3fms (%.1f%%)\n",
+                mutator_ms, mutator_ms / total_ms * 100.0, gc_ms, gc_ms / total_ms * 100.0);
+    }
+
+    args.rval().setUndefined();
+    return true;
+}
+
+static const char*
+ToSource(JSContext* cx, MutableHandleValue vp, JSAutoByteString* bytes)
+{
+    JSString* str = JS_ValueToSource(cx, vp);
     if (str) {
-        *vp = STRING_TO_JSVAL(str);
+        vp.setString(str);
         if (bytes->encodeLatin1(cx, str))
             return bytes->ptr();
     }
@@ -1393,37 +2237,38 @@ ToSource(JSContext *cx, jsval *vp, JSAutoByteString *bytes)
     return "<<error converting value to string>>";
 }
 
-static JSBool
-AssertEq(JSContext *cx, unsigned argc, jsval *vp)
+static bool
+AssertEq(JSContext* cx, unsigned argc, Value* vp)
 {
     CallArgs args = CallArgsFromVp(argc, vp);
     if (!(args.length() == 2 || (args.length() == 3 && args[2].isString()))) {
-        JS_ReportErrorNumber(cx, my_GetErrorMessage, NULL,
-                             (args.length() < 2)
-                             ? JSSMSG_NOT_ENOUGH_ARGS
-                             : (args.length() == 3)
-                             ? JSSMSG_INVALID_ARGS
-                             : JSSMSG_TOO_MANY_ARGS,
-                             "assertEq");
+        JS_ReportErrorNumberASCII(cx, my_GetErrorMessage, nullptr,
+                                  (args.length() < 2)
+                                  ? JSSMSG_NOT_ENOUGH_ARGS
+                                  : (args.length() == 3)
+                                  ? JSSMSG_INVALID_ARGS
+                                  : JSSMSG_TOO_MANY_ARGS,
+                                  "assertEq");
         return false;
     }
 
-    JSBool same;
+    bool same;
     if (!JS_SameValue(cx, args[0], args[1], &same))
         return false;
     if (!same) {
         JSAutoByteString bytes0, bytes1;
-        const char *actual = ToSource(cx, &args[0], &bytes0);
-        const char *expected = ToSource(cx, &args[1], &bytes1);
+        const char* actual = ToSource(cx, args[0], &bytes0);
+        const char* expected = ToSource(cx, args[1], &bytes1);
         if (args.length() == 2) {
-            JS_ReportErrorNumber(cx, my_GetErrorMessage, NULL, JSSMSG_ASSERT_EQ_FAILED,
-                                 actual, expected);
+            JS_ReportErrorNumberLatin1(cx, my_GetErrorMessage, nullptr, JSSMSG_ASSERT_EQ_FAILED,
+                                       actual, expected);
         } else {
             JSAutoByteString bytes2(cx, args[2].toString());
             if (!bytes2)
                 return false;
-            JS_ReportErrorNumber(cx, my_GetErrorMessage, NULL, JSSMSG_ASSERT_EQ_FAILED_MSG,
-                                 actual, expected, bytes2.ptr());
+            JS_ReportErrorNumberLatin1(cx, my_GetErrorMessage, nullptr,
+                                       JSSMSG_ASSERT_EQ_FAILED_MSG,
+                                       actual, expected, bytes2.ptr());
         }
         return false;
     }
@@ -1431,81 +2276,87 @@ AssertEq(JSContext *cx, unsigned argc, jsval *vp)
     return true;
 }
 
-static JSScript *
-ValueToScript(JSContext *cx, jsval v, JSFunction **funp = NULL)
+static JSScript*
+ValueToScript(JSContext* cx, HandleValue v, JSFunction** funp = nullptr)
 {
+    if (v.isString()) {
+        // To convert a string to a script, compile it. Parse it as an ES6 Program.
+        RootedLinearString linearStr(cx, StringToLinearString(cx, v.toString()));
+        if (!linearStr)
+            return nullptr;
+        size_t len = GetLinearStringLength(linearStr);
+        AutoStableStringChars linearChars(cx);
+        if (!linearChars.initTwoByte(cx, linearStr))
+            return nullptr;
+        const char16_t* chars = linearChars.twoByteRange().begin().get();
+
+        RootedScript script(cx);
+        CompileOptions options(cx);
+        if (!JS::Compile(cx, options, chars, len, &script))
+            return nullptr;
+        return script;
+    }
+
     RootedFunction fun(cx, JS_ValueToFunction(cx, v));
     if (!fun)
-        return NULL;
+        return nullptr;
 
     // Unwrap bound functions.
     while (fun->isBoundFunction()) {
-        JSObject *target = fun->getBoundFunctionTarget();
+        JSObject* target = fun->getBoundFunctionTarget();
         if (target && target->is<JSFunction>())
             fun = &target->as<JSFunction>();
         else
             break;
     }
 
+    // Get unwrapped async function.
+    if (IsWrappedAsyncFunction(fun))
+        fun = GetUnwrappedAsyncFunction(fun);
+
     if (!fun->isInterpreted()) {
-        JS_ReportErrorNumber(cx, my_GetErrorMessage, NULL, JSSMSG_SCRIPTS_ONLY);
-        return NULL;
+        JS_ReportErrorNumberASCII(cx, my_GetErrorMessage, nullptr, JSSMSG_SCRIPTS_ONLY);
+        return nullptr;
     }
 
-    JSScript *script = fun->getOrCreateScript(cx);
+    JSScript* script = fun->getOrCreateScript(cx);
     if (!script)
-        return NULL;
+        return nullptr;
 
-    if (fun && funp)
+    if (funp)
         *funp = fun;
 
     return script;
 }
 
-static JSBool
-SetDebug(JSContext *cx, unsigned argc, jsval *vp)
+static JSScript*
+GetTopScript(JSContext* cx)
 {
-    CallArgs args = CallArgsFromVp(argc, vp);
-    if (args.length() == 0 || !args[0].isBoolean()) {
-        JS_ReportErrorNumber(cx, my_GetErrorMessage, NULL,
-                             JSSMSG_NOT_ENOUGH_ARGS, "setDebug");
-        return false;
-    }
-
-    /*
-     * Debug mode can only be set when there is no JS code executing on the
-     * stack. Unfortunately, that currently means that this call will fail
-     * unless debug mode is already set to what you're trying to set it to.
-     * In the future, this restriction may be lifted.
-     */
-
-    bool ok = !!JS_SetDebugMode(cx, args[0].toBoolean());
-    if (ok)
-        args.rval().setBoolean(true);
-    return ok;
+    NonBuiltinScriptFrameIter iter(cx);
+    return iter.done() ? nullptr : iter.script();
 }
 
-static JSBool
-GetScriptAndPCArgs(JSContext *cx, unsigned argc, jsval *argv, MutableHandleScript scriptp,
-                   int32_t *ip)
+static bool
+GetScriptAndPCArgs(JSContext* cx, CallArgs& args, MutableHandleScript scriptp,
+                   int32_t* ip)
 {
     RootedScript script(cx, GetTopScript(cx));
     *ip = 0;
-    if (argc != 0) {
-        jsval v = argv[0];
+    if (!args.get(0).isUndefined()) {
+        HandleValue v = args[0];
         unsigned intarg = 0;
-        if (!JSVAL_IS_PRIMITIVE(v) &&
+        if (v.isObject() &&
             JS_GetClass(&v.toObject()) == Jsvalify(&JSFunction::class_)) {
             script = ValueToScript(cx, v);
             if (!script)
                 return false;
             intarg++;
         }
-        if (argc > intarg) {
-            if (!JS_ValueToInt32(cx, argv[intarg], ip))
+        if (!args.get(intarg).isUndefined()) {
+            if (!JS::ToInt32(cx, args[intarg], ip))
                 return false;
-            if ((uint32_t)*ip >= script->length) {
-                JS_ReportError(cx, "Invalid PC");
+            if ((uint32_t)*ip >= script->length()) {
+                JS_ReportErrorASCII(cx, "Invalid PC");
                 return false;
             }
         }
@@ -1516,168 +2367,47 @@ GetScriptAndPCArgs(JSContext *cx, unsigned argc, jsval *argv, MutableHandleScrip
     return true;
 }
 
-static JSTrapStatus
-TrapHandler(JSContext *cx, JSScript *, jsbytecode *pc, jsval *rvalArg,
-            jsval closure)
-{
-    JSString *str = JSVAL_TO_STRING(closure);
-    RootedValue rval(cx, *rvalArg);
-
-    ScriptFrameIter iter(cx);
-    JS_ASSERT(!iter.done());
-
-    /* Debug-mode currently disables Ion compilation. */
-    JSAbstractFramePtr frame(Jsvalify(iter.abstractFramePtr()));
-    RootedScript script(cx, iter.script());
-
-    size_t length;
-    const jschar *chars = JS_GetStringCharsAndLength(cx, str, &length);
-    if (!chars)
-        return JSTRAP_ERROR;
-
-    if (!frame.evaluateUCInStackFrame(cx, chars, length,
-                                      script->filename(),
-                                      script->lineno,
-                                      &rval))
-    {
-        *rvalArg = rval;
-        return JSTRAP_ERROR;
-    }
-    *rvalArg = rval;
-    if (!rval.isUndefined())
-        return JSTRAP_RETURN;
-    return JSTRAP_CONTINUE;
-}
-
-static JSBool
-Trap(JSContext *cx, unsigned argc, jsval *vp)
+static bool
+LineToPC(JSContext* cx, unsigned argc, Value* vp)
 {
     CallArgs args = CallArgsFromVp(argc, vp);
-    RootedScript script(cx);
-    int32_t i;
 
     if (args.length() == 0) {
-        JS_ReportErrorNumber(cx, my_GetErrorMessage, NULL, JSSMSG_TRAP_USAGE);
-        return false;
-    }
-    argc = args.length() - 1;
-    RootedString str(cx, JS_ValueToString(cx, args[argc]));
-    if (!str)
-        return false;
-    args[argc] = STRING_TO_JSVAL(str);
-    if (!GetScriptAndPCArgs(cx, argc, args.array(), &script, &i))
-        return false;
-    if (uint32_t(i) >= script->length) {
-        JS_ReportErrorNumber(cx, my_GetErrorMessage, NULL, JSSMSG_TRAP_USAGE);
-        return false;
-    }
-    args.rval().setUndefined();
-    return JS_SetTrap(cx, script, script->code + i, TrapHandler, STRING_TO_JSVAL(str));
-}
-
-static JSBool
-Untrap(JSContext *cx, unsigned argc, jsval *vp)
-{
-    CallArgs args = CallArgsFromVp(argc, vp);
-    RootedScript script(cx);
-    int32_t i;
-
-    if (!GetScriptAndPCArgs(cx, args.length(), args.array(), &script, &i))
-        return false;
-    JS_ClearTrap(cx, script, script->code + i, NULL, NULL);
-    args.rval().setUndefined();
-    return true;
-}
-
-static JSTrapStatus
-DebuggerAndThrowHandler(JSContext *cx, JSScript *script, jsbytecode *pc, jsval *rval,
-                        void *closure)
-{
-    return TrapHandler(cx, script, pc, rval, STRING_TO_JSVAL((JSString *)closure));
-}
-
-static JSBool
-SetDebuggerHandler(JSContext *cx, unsigned argc, jsval *vp)
-{
-    CallArgs args = CallArgsFromVp(argc, vp);
-    if (args.length() == 0) {
-        JS_ReportErrorNumber(cx, my_GetErrorMessage, NULL,
-                             JSSMSG_NOT_ENOUGH_ARGS, "setDebuggerHandler");
+        JS_ReportErrorNumberASCII(cx, my_GetErrorMessage, nullptr, JSSMSG_LINE2PC_USAGE);
         return false;
     }
 
-    JSString *str = JS_ValueToString(cx, args[0]);
-    if (!str)
-        return false;
-
-    JS_SetDebuggerHandler(cx->runtime(), DebuggerAndThrowHandler, str);
-    args.rval().setUndefined();
-    return true;
-}
-
-static JSBool
-SetThrowHook(JSContext *cx, unsigned argc, jsval *vp)
-{
-    CallArgs args = CallArgsFromVp(argc, vp);
-    JSString *str;
-    if (args.length() == 0) {
-        JS_ReportErrorNumber(cx, my_GetErrorMessage, NULL,
-                             JSSMSG_NOT_ENOUGH_ARGS, "setThrowHook");
-        return false;
-    }
-
-    str = JS_ValueToString(cx, args[0]);
-    if (!str)
-        return false;
-
-    JS_SetThrowHook(cx->runtime(), DebuggerAndThrowHandler, str);
-    args.rval().setUndefined();
-    return true;
-}
-
-static JSBool
-LineToPC(JSContext *cx, unsigned argc, jsval *vp)
-{
-    CallArgs args = CallArgsFromVp(argc, vp);
-    RootedScript script(cx);
+    RootedScript script(cx, GetTopScript(cx));
     int32_t lineArg = 0;
-    uint32_t lineno;
-    jsbytecode *pc;
-
-    if (args.length() == 0) {
-        JS_ReportErrorNumber(cx, my_GetErrorMessage, NULL, JSSMSG_LINE2PC_USAGE);
-        return false;
-    }
-    script = GetTopScript(cx);
-    jsval v = args[0];
-    if (!JSVAL_IS_PRIMITIVE(v) &&
-        JS_GetClass(&v.toObject()) == Jsvalify(&JSFunction::class_))
-    {
-        script = ValueToScript(cx, v);
+    if (args[0].isObject() && args[0].toObject().is<JSFunction>()) {
+        script = ValueToScript(cx, args[0]);
         if (!script)
             return false;
         lineArg++;
     }
-    if (!JS_ValueToECMAUint32(cx, args[lineArg], &lineno))
-        return false;
-    pc = JS_LineNumberToPC(cx, script, lineno);
+
+    uint32_t lineno;
+    if (!ToUint32(cx, args.get(lineArg), &lineno))
+         return false;
+
+    jsbytecode* pc = LineNumberToPC(script, lineno);
     if (!pc)
         return false;
-    args.rval().setInt32(pc - script->code);
+    args.rval().setInt32(script->pcToOffset(pc));
     return true;
 }
 
-static JSBool
-PCToLine(JSContext *cx, unsigned argc, jsval *vp)
+static bool
+PCToLine(JSContext* cx, unsigned argc, Value* vp)
 {
     CallArgs args = CallArgsFromVp(argc, vp);
     RootedScript script(cx);
     int32_t i;
     unsigned lineno;
 
-    if (!GetScriptAndPCArgs(cx, args.length(), args.array(), &script, &i))
+    if (!GetScriptAndPCArgs(cx, args, &script, &i))
         return false;
-    lineno = JS_PCToLineNumber(cx, script, script->code + i);
+    lineno = PCToLineNumber(script, script->offsetToPC(i));
     if (!lineno)
         return false;
     args.rval().setInt32(lineno);
@@ -1687,15 +2417,15 @@ PCToLine(JSContext *cx, unsigned argc, jsval *vp)
 #ifdef DEBUG
 
 static void
-UpdateSwitchTableBounds(JSContext *cx, HandleScript script, unsigned offset,
-                        unsigned *start, unsigned *end)
+UpdateSwitchTableBounds(JSContext* cx, HandleScript script, unsigned offset,
+                        unsigned* start, unsigned* end)
 {
-    jsbytecode *pc;
+    jsbytecode* pc;
     JSOp op;
     ptrdiff_t jmplen;
     int32_t low, high, n;
 
-    pc = script->code + offset;
+    pc = script->offsetToPC(offset);
     op = JSOp(*pc);
     switch (op) {
       case JSOP_TABLESWITCH:
@@ -1710,32 +2440,41 @@ UpdateSwitchTableBounds(JSContext *cx, HandleScript script, unsigned offset,
 
       default:
         /* [condswitch] switch does not have any jump or lookup tables. */
-        JS_ASSERT(op == JSOP_CONDSWITCH);
+        MOZ_ASSERT(op == JSOP_CONDSWITCH);
         return;
     }
 
-    *start = (unsigned)(pc - script->code);
+    *start = script->pcToOffset(pc);
     *end = *start + (unsigned)(n * jmplen);
 }
 
-static void
-SrcNotes(JSContext *cx, HandleScript script, Sprinter *sp)
+static MOZ_MUST_USE bool
+SrcNotes(JSContext* cx, HandleScript script, Sprinter* sp)
 {
-    Sprint(sp, "\nSource notes:\n");
-    Sprint(sp, "%4s %4s %5s %6s %-8s %s\n",
-           "ofs", "line", "pc", "delta", "desc", "args");
-    Sprint(sp, "---- ---- ----- ------ -------- ------\n");
+    if (sp->put("\nSource notes:\n") < 0 ||
+        !sp->jsprintf("%4s %4s %5s %6s %-8s %s\n",
+                      "ofs", "line", "pc", "delta", "desc", "args") ||
+        sp->put("---- ---- ----- ------ -------- ------\n") < 0)
+    {
+        return false;
+    }
+
     unsigned offset = 0;
     unsigned colspan = 0;
-    unsigned lineno = script->lineno;
-    jssrcnote *notes = script->notes();
+    unsigned lineno = script->lineno();
+    jssrcnote* notes = script->notes();
     unsigned switchTableEnd = 0, switchTableStart = 0;
-    for (jssrcnote *sn = notes; !SN_IS_TERMINATOR(sn); sn = SN_NEXT(sn)) {
+    for (jssrcnote* sn = notes; !SN_IS_TERMINATOR(sn); sn = SN_NEXT(sn)) {
         unsigned delta = SN_DELTA(sn);
         offset += delta;
         SrcNoteType type = (SrcNoteType) SN_TYPE(sn);
-        const char *name = js_SrcNoteSpec[type].name;
-        Sprint(sp, "%3u: %4u %5u [%4u] %-8s", unsigned(sn - notes), lineno, offset, delta, name);
+        const char* name = js_SrcNoteSpec[type].name;
+        if (!sp->jsprintf("%3u: %4u %5u [%4u] %-8s",
+                          unsigned(sn - notes), lineno, offset, delta, name))
+        {
+            return false;
+        }
+
         switch (type) {
           case SRC_NULL:
           case SRC_IF:
@@ -1744,21 +2483,19 @@ SrcNotes(JSContext *cx, HandleScript script, Sprinter *sp)
           case SRC_BREAK2LABEL:
           case SRC_SWITCHBREAK:
           case SRC_ASSIGNOP:
-          case SRC_HIDDEN:
-          case SRC_CATCH:
           case SRC_XDELTA:
             break;
 
           case SRC_COLSPAN:
-            colspan = js_GetSrcNoteOffset(sn, 0);
-            if (colspan >= SN_COLSPAN_DOMAIN / 2)
-                colspan -= SN_COLSPAN_DOMAIN;
-            Sprint(sp, "%d", colspan);
+            colspan = SN_OFFSET_TO_COLSPAN(GetSrcNoteOffset(sn, 0));
+            if (!sp->jsprintf("%d", colspan))
+                return false;
             break;
 
           case SRC_SETLINE:
-            lineno = js_GetSrcNoteOffset(sn, 0);
-            Sprint(sp, " lineno %u", lineno);
+            lineno = GetSrcNoteOffset(sn, 0);
+            if (!sp->jsprintf(" lineno %u", lineno))
+                return false;
             break;
 
           case SRC_NEWLINE:
@@ -1766,56 +2503,74 @@ SrcNotes(JSContext *cx, HandleScript script, Sprinter *sp)
             break;
 
           case SRC_FOR:
-            Sprint(sp, " cond %u update %u tail %u",
-                   unsigned(js_GetSrcNoteOffset(sn, 0)),
-                   unsigned(js_GetSrcNoteOffset(sn, 1)),
-                   unsigned(js_GetSrcNoteOffset(sn, 2)));
+            if (!sp->jsprintf(" cond %u update %u tail %u",
+                              unsigned(GetSrcNoteOffset(sn, 0)),
+                              unsigned(GetSrcNoteOffset(sn, 1)),
+                              unsigned(GetSrcNoteOffset(sn, 2))))
+            {
+                return false;
+            }
             break;
 
           case SRC_IF_ELSE:
-            Sprint(sp, " else %u", unsigned(js_GetSrcNoteOffset(sn, 0)));
+            if (!sp->jsprintf(" else %u", unsigned(GetSrcNoteOffset(sn, 0))))
+                return false;
             break;
 
           case SRC_FOR_IN:
-            Sprint(sp, " closingjump %u", unsigned(js_GetSrcNoteOffset(sn, 0)));
+          case SRC_FOR_OF:
+            if (!sp->jsprintf(" closingjump %u", unsigned(GetSrcNoteOffset(sn, 0))))
+                return false;
             break;
 
           case SRC_COND:
           case SRC_WHILE:
           case SRC_NEXTCASE:
-            Sprint(sp, " offset %u", unsigned(js_GetSrcNoteOffset(sn, 0)));
+            if (!sp->jsprintf(" offset %u", unsigned(GetSrcNoteOffset(sn, 0))))
+                return false;
             break;
 
           case SRC_TABLESWITCH: {
-            JSOp op = JSOp(script->code[offset]);
-            JS_ASSERT(op == JSOP_TABLESWITCH);
-            Sprint(sp, " length %u", unsigned(js_GetSrcNoteOffset(sn, 0)));
+            JSOp op = JSOp(script->code()[offset]);
+            MOZ_ASSERT(op == JSOP_TABLESWITCH);
+            if (!sp->jsprintf(" length %u", unsigned(GetSrcNoteOffset(sn, 0))))
+                return false;
             UpdateSwitchTableBounds(cx, script, offset,
                                     &switchTableStart, &switchTableEnd);
             break;
           }
           case SRC_CONDSWITCH: {
-            JSOp op = JSOp(script->code[offset]);
-            JS_ASSERT(op == JSOP_CONDSWITCH);
-            Sprint(sp, " length %u", unsigned(js_GetSrcNoteOffset(sn, 0)));
-            unsigned caseOff = (unsigned) js_GetSrcNoteOffset(sn, 1);
-            if (caseOff)
-                Sprint(sp, " first case offset %u", caseOff);
+            JSOp op = JSOp(script->code()[offset]);
+            MOZ_ASSERT(op == JSOP_CONDSWITCH);
+            if (!sp->jsprintf(" length %u", unsigned(GetSrcNoteOffset(sn, 0))))
+                return false;
+            if (unsigned caseOff = (unsigned) GetSrcNoteOffset(sn, 1)) {
+                if (!sp->jsprintf(" first case offset %u", caseOff))
+                    return false;
+            }
             UpdateSwitchTableBounds(cx, script, offset,
                                     &switchTableStart, &switchTableEnd);
             break;
           }
 
-          default:
-            JS_ASSERT(0);
+          case SRC_TRY:
+            MOZ_ASSERT(JSOp(script->code()[offset]) == JSOP_TRY);
+            if (!sp->jsprintf(" offset to jump %u", unsigned(GetSrcNoteOffset(sn, 0))))
+                return false;
             break;
+
+          default:
+            MOZ_ASSERT_UNREACHABLE("unrecognized srcnote");
         }
-        Sprint(sp, "\n");
+        if (sp->put("\n") < 0)
+            return false;
     }
+
+    return true;
 }
 
-static JSBool
-Notes(JSContext *cx, unsigned argc, jsval *vp)
+static bool
+Notes(JSContext* cx, unsigned argc, Value* vp)
 {
     CallArgs args = CallArgsFromVp(argc, vp);
     Sprinter sprinter(cx);
@@ -1827,10 +2582,11 @@ Notes(JSContext *cx, unsigned argc, jsval *vp)
         if (!script)
             return false;
 
-        SrcNotes(cx, script, &sprinter);
+        if (!SrcNotes(cx, script, &sprinter))
+            return false;
     }
 
-    JSString *str = JS_NewStringCopyZ(cx, sprinter.string());
+    JSString* str = JS_NewStringCopyZ(cx, sprinter.string());
     if (!str)
         return false;
     args.rval().setString(str);
@@ -1839,100 +2595,171 @@ Notes(JSContext *cx, unsigned argc, jsval *vp)
 
 JS_STATIC_ASSERT(JSTRY_CATCH == 0);
 JS_STATIC_ASSERT(JSTRY_FINALLY == 1);
-JS_STATIC_ASSERT(JSTRY_ITER == 2);
+JS_STATIC_ASSERT(JSTRY_FOR_IN == 2);
 
-static const char* const TryNoteNames[] = { "catch", "finally", "iter", "loop" };
+static const char* const TryNoteNames[] = { "catch", "finally", "for-in", "for-of", "loop" };
 
-static JSBool
-TryNotes(JSContext *cx, HandleScript script, Sprinter *sp)
+static MOZ_MUST_USE bool
+TryNotes(JSContext* cx, HandleScript script, Sprinter* sp)
 {
-    JSTryNote *tn, *tnlimit;
-
     if (!script->hasTrynotes())
         return true;
 
-    tn = script->trynotes()->vector;
-    tnlimit = tn + script->trynotes()->length;
-    Sprint(sp, "\nException table:\nkind      stack    start      end\n");
+    if (sp->put("\nException table:\nkind      stack    start      end\n") < 0)
+        return false;
+
+    JSTryNote* tn = script->trynotes()->vector;
+    JSTryNote* tnlimit = tn + script->trynotes()->length;
     do {
-        JS_ASSERT(tn->kind < ArrayLength(TryNoteNames));
-        Sprint(sp, " %-7s %6u %8u %8u\n",
-               TryNoteNames[tn->kind], tn->stackDepth,
-               tn->start, tn->start + tn->length);
+        MOZ_ASSERT(tn->kind < ArrayLength(TryNoteNames));
+        uint8_t startOff = script->pcToOffset(script->main()) + tn->start;
+        if (!sp->jsprintf(" %-7s %6u %8u %8u\n",
+                          TryNoteNames[tn->kind], tn->stackDepth,
+                          startOff, startOff + tn->length))
+        {
+            return false;
+        }
     } while (++tn != tnlimit);
     return true;
 }
 
-static bool
-DisassembleScript(JSContext *cx, HandleScript script, HandleFunction fun, bool lines,
-                  bool recursive, Sprinter *sp)
+static MOZ_MUST_USE bool
+ScopeNotes(JSContext* cx, HandleScript script, Sprinter* sp)
+{
+    if (!script->hasScopeNotes())
+        return true;
+
+    if (sp->put("\nScope notes:\n   index   parent    start      end\n") < 0)
+        return false;
+
+    ScopeNoteArray* notes = script->scopeNotes();
+    for (uint32_t i = 0; i < notes->length; i++) {
+        const ScopeNote* note = &notes->vector[i];
+        if (note->index == ScopeNote::NoScopeIndex) {
+            if (!sp->jsprintf("%8s ", "(none)"))
+                return false;
+        } else {
+            if (!sp->jsprintf("%8u ", note->index))
+                return false;
+        }
+        if (note->parent == ScopeNote::NoScopeIndex) {
+            if (!sp->jsprintf("%8s ", "(none)"))
+                return false;
+        } else {
+            if (!sp->jsprintf("%8u ", note->parent))
+                return false;
+        }
+        if (!sp->jsprintf("%8u %8u\n", note->start, note->start + note->length))
+            return false;
+    }
+    return true;
+}
+
+static MOZ_MUST_USE bool
+DisassembleScript(JSContext* cx, HandleScript script, HandleFunction fun,
+                  bool lines, bool recursive, bool sourceNotes, Sprinter* sp)
 {
     if (fun) {
-        Sprint(sp, "flags:");
-        if (fun->isLambda())
-            Sprint(sp, " LAMBDA");
-        if (fun->isHeavyweight())
-            Sprint(sp, " HEAVYWEIGHT");
-        if (fun->isExprClosure())
-            Sprint(sp, " EXPRESSION_CLOSURE");
-        if (fun->isFunctionPrototype())
-            Sprint(sp, " Function.prototype");
-        if (fun->isSelfHostedBuiltin())
-            Sprint(sp, " SELF_HOSTED");
-        if (fun->isSelfHostedConstructor())
-            Sprint(sp, " SELF_HOSTED_CTOR");
-        if (fun->isArrow())
-            Sprint(sp, " ARROW");
-        Sprint(sp, "\n");
+        if (sp->put("flags:") < 0)
+            return false;
+        if (fun->isLambda()) {
+            if (sp->put(" LAMBDA") < 0)
+                return false;
+        }
+        if (fun->needsCallObject()) {
+            if (sp->put(" NEEDS_CALLOBJECT") < 0)
+                return false;
+        }
+        if (fun->needsExtraBodyVarEnvironment()) {
+            if (sp->put(" NEEDS_EXTRABODYVARENV") < 0)
+                return false;
+        }
+        if (fun->needsNamedLambdaEnvironment()) {
+            if (sp->put(" NEEDS_NAMEDLAMBDAENV") < 0)
+                return false;
+        }
+        if (fun->isConstructor()) {
+            if (sp->put(" CONSTRUCTOR") < 0)
+                return false;
+        }
+        if (fun->isExprBody()) {
+            if (sp->put(" EXPRESSION_CLOSURE") < 0)
+                return false;
+        }
+        if (fun->isSelfHostedBuiltin()) {
+            if (sp->put(" SELF_HOSTED") < 0)
+                return false;
+        }
+        if (fun->isArrow()) {
+            if (sp->put(" ARROW") < 0)
+                return false;
+        }
+        if (sp->put("\n") < 0)
+            return false;
     }
 
-    if (!js_Disassemble(cx, script, lines, sp))
+    if (!Disassemble(cx, script, lines, sp))
         return false;
-    SrcNotes(cx, script, sp);
-    TryNotes(cx, script, sp);
+    if (sourceNotes) {
+        if (!SrcNotes(cx, script, sp))
+            return false;
+    }
+    if (!TryNotes(cx, script, sp))
+        return false;
+    if (!ScopeNotes(cx, script, sp))
+        return false;
 
     if (recursive && script->hasObjects()) {
-        ObjectArray *objects = script->objects();
+        ObjectArray* objects = script->objects();
         for (unsigned i = 0; i != objects->length; ++i) {
-            JSObject *obj = objects->vector[i];
+            JSObject* obj = objects->vector[i];
             if (obj->is<JSFunction>()) {
-                Sprint(sp, "\n");
+                if (sp->put("\n") < 0)
+                    return false;
+
                 RootedFunction fun(cx, &obj->as<JSFunction>());
                 if (fun->isInterpreted()) {
                     RootedScript script(cx, fun->getOrCreateScript(cx));
-                    if (!script || !DisassembleScript(cx, script, fun, lines, recursive, sp))
-                        return false;
+                    if (script) {
+                        if (!DisassembleScript(cx, script, fun, lines, recursive, sourceNotes, sp))
+                            return false;
+                    }
                 } else {
-                    Sprint(sp, "[native code]\n");
+                    if (sp->put("[native code]\n") < 0)
+                        return false;
                 }
             }
         }
     }
+
     return true;
 }
 
 namespace {
 
 struct DisassembleOptionParser {
-    unsigned   argc;
-    jsval   *argv;
-    bool    lines;
-    bool    recursive;
+    unsigned argc;
+    Value* argv;
+    bool lines;
+    bool recursive;
+    bool sourceNotes;
 
-    DisassembleOptionParser(unsigned argc, jsval *argv)
-      : argc(argc), argv(argv), lines(false), recursive(false) {}
+    DisassembleOptionParser(unsigned argc, Value* argv)
+      : argc(argc), argv(argv), lines(false), recursive(false), sourceNotes(true) {}
 
-    bool parse(JSContext *cx) {
+    bool parse(JSContext* cx) {
         /* Read options off early arguments */
         while (argc > 0 && argv[0].isString()) {
-            JSString *str = argv[0].toString();
-            JSFlatString *flatStr = JS_FlattenString(cx, str);
+            JSString* str = argv[0].toString();
+            JSFlatString* flatStr = JS_FlattenString(cx, str);
             if (!flatStr)
                 return false;
             if (JS_FlatStringEqualsAscii(flatStr, "-l"))
                 lines = true;
             else if (JS_FlatStringEqualsAscii(flatStr, "-r"))
                 recursive = true;
+            else if (JS_FlatStringEqualsAscii(flatStr, "-S"))
+                sourceNotes = false;
             else
                 break;
             argv++, argc--;
@@ -1944,7 +2771,7 @@ struct DisassembleOptionParser {
 } /* anonymous namespace */
 
 static bool
-DisassembleToSprinter(JSContext *cx, unsigned argc, jsval *vp, Sprinter *sprinter)
+DisassembleToSprinter(JSContext* cx, unsigned argc, Value* vp, Sprinter* sprinter)
 {
     CallArgs args = CallArgsFromVp(argc, vp);
     DisassembleOptionParser p(args.length(), args.array());
@@ -1956,26 +2783,36 @@ DisassembleToSprinter(JSContext *cx, unsigned argc, jsval *vp, Sprinter *sprinte
         RootedScript script(cx, GetTopScript(cx));
         if (script) {
             JSAutoCompartment ac(cx, script);
-            if (!js_Disassemble(cx, script, p.lines, sprinter))
+            if (!Disassemble(cx, script, p.lines, sprinter))
                 return false;
-            SrcNotes(cx, script, sprinter);
-            TryNotes(cx, script, sprinter);
+            if (!SrcNotes(cx, script, sprinter))
+                return false;
+            if (!TryNotes(cx, script, sprinter))
+                return false;
+            if (!ScopeNotes(cx, script, sprinter))
+                return false;
         }
     } else {
         for (unsigned i = 0; i < p.argc; i++) {
             RootedFunction fun(cx);
-            RootedScript script (cx, ValueToScript(cx, p.argv[i], fun.address()));
+            RootedScript script(cx);
+            RootedValue value(cx, p.argv[i]);
+            if (value.isObject() && value.toObject().is<ModuleObject>())
+                script = value.toObject().as<ModuleObject>().script();
+            else
+                script = ValueToScript(cx, value, fun.address());
             if (!script)
                 return false;
-            if (!DisassembleScript(cx, script, fun, p.lines, p.recursive, sprinter))
+            if (!DisassembleScript(cx, script, fun, p.lines, p.recursive, p.sourceNotes, sprinter))
                 return false;
         }
     }
-    return true;
+
+    return !sprinter->hadOutOfMemory();
 }
 
-static JSBool
-DisassembleToString(JSContext *cx, unsigned argc, jsval *vp)
+static bool
+DisassembleToString(JSContext* cx, unsigned argc, Value* vp)
 {
     CallArgs args = CallArgsFromVp(argc, vp);
     Sprinter sprinter(cx);
@@ -1984,32 +2821,43 @@ DisassembleToString(JSContext *cx, unsigned argc, jsval *vp)
     if (!DisassembleToSprinter(cx, args.length(), vp, &sprinter))
         return false;
 
-    JSString *str = JS_NewStringCopyZ(cx, sprinter.string());
+    JSString* str = JS_NewStringCopyZ(cx, sprinter.string());
     if (!str)
         return false;
     args.rval().setString(str);
     return true;
 }
 
-static JSBool
-Disassemble(JSContext *cx, unsigned argc, jsval *vp)
+static bool
+Disassemble(JSContext* cx, unsigned argc, Value* vp)
 {
     CallArgs args = CallArgsFromVp(argc, vp);
+
+    if (!gOutFile->isOpen()) {
+        JS_ReportErrorASCII(cx, "output file is closed");
+        return false;
+    }
+
     Sprinter sprinter(cx);
     if (!sprinter.init())
         return false;
     if (!DisassembleToSprinter(cx, args.length(), vp, &sprinter))
         return false;
 
-    fprintf(stdout, "%s\n", sprinter.string());
+    fprintf(gOutFile->fp, "%s\n", sprinter.string());
     args.rval().setUndefined();
     return true;
 }
 
-static JSBool
-DisassFile(JSContext *cx, unsigned argc, jsval *vp)
+static bool
+DisassFile(JSContext* cx, unsigned argc, Value* vp)
 {
     CallArgs args = CallArgsFromVp(argc, vp);
+
+    if (!gOutFile->isOpen()) {
+        JS_ReportErrorASCII(cx, "output file is closed");
+        return false;
+    }
 
     /* Support extra options at the start, just like Disassemble. */
     DisassembleOptionParser p(args.length(), args.array());
@@ -2021,33 +2869,33 @@ DisassFile(JSContext *cx, unsigned argc, jsval *vp)
         return true;
     }
 
-    RootedObject thisobj(cx, JS_THIS_OBJECT(cx, vp));
-    if (!thisobj)
-        return false;
-
-    JSString *str = JS_ValueToString(cx, p.argv[0]);
+    // We should change DisassembleOptionParser to store CallArgs.
+    JSString* str = JS::ToString(cx, HandleValue::fromMarkedLocation(&p.argv[0]));
     if (!str)
         return false;
     JSAutoByteString filename(cx, str);
     if (!filename)
         return false;
+    RootedScript script(cx);
 
-    uint32_t oldopts = JS_GetOptions(cx);
-    JS_SetOptions(cx, oldopts | JSOPTION_COMPILE_N_GO | JSOPTION_NO_SCRIPT_RVAL);
-    CompileOptions options(cx);
-    options.setUTF8(true)
-           .setFileAndLine(filename.ptr(), 1);
-    RootedScript script (cx, JS::Compile(cx, thisobj, options, filename.ptr()));
-    JS_SetOptions(cx, oldopts);
-    if (!script)
-        return false;
+    {
+        CompileOptions options(cx);
+        options.setIntroductionType("js shell disFile")
+               .setUTF8(true)
+               .setFileAndLine(filename.ptr(), 1)
+               .setIsRunOnce(true)
+               .setNoScriptRval(true);
+
+        if (!JS::Compile(cx, options, filename.ptr(), &script))
+            return false;
+    }
 
     Sprinter sprinter(cx);
     if (!sprinter.init())
         return false;
-    bool ok = DisassembleScript(cx, script, NullPtr(), p.lines, p.recursive, &sprinter);
+    bool ok = DisassembleScript(cx, script, nullptr, p.lines, p.recursive, p.sourceNotes, &sprinter);
     if (ok)
-        fprintf(stdout, "%s\n", sprinter.string());
+        fprintf(gOutFile->fp, "%s\n", sprinter.string());
     if (!ok)
         return false;
 
@@ -2055,218 +2903,100 @@ DisassFile(JSContext *cx, unsigned argc, jsval *vp)
     return true;
 }
 
-static JSBool
-DisassWithSrc(JSContext *cx, unsigned argc, jsval *vp)
+static bool
+DisassWithSrc(JSContext* cx, unsigned argc, Value* vp)
 {
     CallArgs args = CallArgsFromVp(argc, vp);
 
-#define LINE_BUF_LEN 512
+    if (!gOutFile->isOpen()) {
+        JS_ReportErrorASCII(cx, "output file is closed");
+        return false;
+    }
+
+    const size_t lineBufLen = 512;
     unsigned len, line1, line2, bupline;
-    FILE *file;
-    char linebuf[LINE_BUF_LEN];
-    jsbytecode *pc, *end;
+    char linebuf[lineBufLen];
     static const char sep[] = ";-------------------------";
 
-    bool ok = true;
     RootedScript script(cx);
-    for (unsigned i = 0; ok && i < args.length(); i++) {
+    for (unsigned i = 0; i < args.length(); i++) {
         script = ValueToScript(cx, args[i]);
         if (!script)
            return false;
 
         if (!script->filename()) {
-            JS_ReportErrorNumber(cx, my_GetErrorMessage, NULL,
-                                 JSSMSG_FILE_SCRIPTS_ONLY);
+            JS_ReportErrorNumberASCII(cx, my_GetErrorMessage, nullptr, JSSMSG_FILE_SCRIPTS_ONLY);
             return false;
         }
 
-        file = fopen(script->filename(), "r");
+        FILE* file = fopen(script->filename(), "r");
         if (!file) {
-            JS_ReportErrorNumber(cx, my_GetErrorMessage, NULL,
-                                 JSSMSG_CANT_OPEN, script->filename(),
-                                 strerror(errno));
+            /* FIXME: script->filename() should become UTF-8 (bug 987069). */
+            ReportCantOpenErrorUnknownEncoding(cx, script->filename());
             return false;
         }
+        auto closeFile = MakeScopeExit([file]() { fclose(file); });
 
-        pc = script->code;
-        end = pc + script->length;
+        jsbytecode* pc = script->code();
+        jsbytecode* end = script->codeEnd();
 
         Sprinter sprinter(cx);
-        if (!sprinter.init()) {
-            ok = false;
-            goto bail;
-        }
+        if (!sprinter.init())
+            return false;
 
         /* burn the leading lines */
-        line2 = JS_PCToLineNumber(cx, script, pc);
+        line2 = PCToLineNumber(script, pc);
         for (line1 = 0; line1 < line2 - 1; line1++) {
-            char *tmp = fgets(linebuf, LINE_BUF_LEN, file);
+            char* tmp = fgets(linebuf, lineBufLen, file);
             if (!tmp) {
-                JS_ReportError(cx, "failed to read %s fully", script->filename());
-                ok = false;
-                goto bail;
+                /* FIXME: This should use UTF-8 (bug 987069). */
+                JS_ReportErrorLatin1(cx, "failed to read %s fully", script->filename());
+                return false;
             }
         }
 
         bupline = 0;
         while (pc < end) {
-            line2 = JS_PCToLineNumber(cx, script, pc);
+            line2 = PCToLineNumber(script, pc);
 
             if (line2 < line1) {
                 if (bupline != line2) {
                     bupline = line2;
-                    Sprint(&sprinter, "%s %3u: BACKUP\n", sep, line2);
+                    if (!sprinter.jsprintf("%s %3u: BACKUP\n", sep, line2))
+                        return false;
                 }
             } else {
-                if (bupline && line1 == line2)
-                    Sprint(&sprinter, "%s %3u: RESTORE\n", sep, line2);
+                if (bupline && line1 == line2) {
+                    if (!sprinter.jsprintf("%s %3u: RESTORE\n", sep, line2))
+                        return false;
+                }
                 bupline = 0;
                 while (line1 < line2) {
-                    if (!fgets(linebuf, LINE_BUF_LEN, file)) {
-                        JS_ReportErrorNumber(cx, my_GetErrorMessage, NULL,
-                                             JSSMSG_UNEXPECTED_EOF,
-                                             script->filename());
-                        ok = false;
-                        goto bail;
+                    if (!fgets(linebuf, lineBufLen, file)) {
+                        /*
+                         * FIXME: script->filename() should become UTF-8
+                         *        (bug 987069).
+                         */
+                        JS_ReportErrorNumberLatin1(cx, my_GetErrorMessage, nullptr,
+                                                   JSSMSG_UNEXPECTED_EOF,
+                                                   script->filename());
+                        return false;
                     }
                     line1++;
-                    Sprint(&sprinter, "%s %3u: %s", sep, line1, linebuf);
+                    if (!sprinter.jsprintf("%s %3u: %s", sep, line1, linebuf))
+                        return false;
                 }
             }
 
-            len = js_Disassemble1(cx, script, pc, pc - script->code, true, &sprinter);
-            if (!len) {
-                ok = false;
-                goto bail;
-            }
+            len = Disassemble1(cx, script, pc, script->pcToOffset(pc), true, &sprinter);
+            if (!len)
+                return false;
+
             pc += len;
         }
 
-      bail:
-        fclose(file);
+        fprintf(gOutFile->fp, "%s\n", sprinter.string());
     }
-    args.rval().setUndefined();
-    return ok;
-#undef LINE_BUF_LEN
-}
-
-static JSBool
-DumpHeap(JSContext *cx, unsigned argc, jsval *vp)
-{
-    CallArgs args = CallArgsFromVp(argc, vp);
-
-    jsval v;
-    void* startThing;
-    JSGCTraceKind startTraceKind;
-    const char *badTraceArg;
-    void *thingToFind;
-    size_t maxDepth;
-    void *thingToIgnore;
-    FILE *dumpFile;
-    bool ok;
-
-    const char *fileName = NULL;
-    JSAutoByteString fileNameBytes;
-    if (args.length() > 0) {
-        v = args[0];
-        if (!v.isNull()) {
-            JSString *str;
-
-            str = JS_ValueToString(cx, v);
-            if (!str)
-                return false;
-            args[0] = STRING_TO_JSVAL(str);
-            if (!fileNameBytes.encodeLatin1(cx, str))
-                return false;
-            fileName = fileNameBytes.ptr();
-        }
-    }
-
-    // Grab the depth param first, because JS_ValueToECMAUint32 can GC, and
-    // there's no easy way to root the traceable void* parameters below.
-    maxDepth = (size_t)-1;
-    if (args.length() > 3) {
-        v = args[3];
-        if (!v.isNull()) {
-            uint32_t depth;
-
-            if (!JS_ValueToECMAUint32(cx, v, &depth))
-                return false;
-            maxDepth = depth;
-        }
-    }
-
-    startThing = NULL;
-    startTraceKind = JSTRACE_OBJECT;
-    if (args.length() > 1) {
-        v = args[1];
-        if (v.isMarkable()) {
-            startThing = JSVAL_TO_TRACEABLE(v);
-            startTraceKind = v.gcKind();
-        } else if (!v.isNull()) {
-            badTraceArg = "start";
-            goto not_traceable_arg;
-        }
-    }
-
-    thingToFind = NULL;
-    if (args.length() > 2) {
-        v = args[2];
-        if (v.isMarkable()) {
-            thingToFind = JSVAL_TO_TRACEABLE(v);
-        } else if (!v.isNull()) {
-            badTraceArg = "toFind";
-            goto not_traceable_arg;
-        }
-    }
-
-    thingToIgnore = NULL;
-    if (args.length() > 4) {
-        v = args[4];
-        if (v.isMarkable()) {
-            thingToIgnore = JSVAL_TO_TRACEABLE(v);
-        } else if (!v.isNull()) {
-            badTraceArg = "toIgnore";
-            goto not_traceable_arg;
-        }
-    }
-
-    if (!fileName) {
-        dumpFile = stdout;
-    } else {
-        dumpFile = fopen(fileName, "w");
-        if (!dumpFile) {
-            JS_ReportError(cx, "can't open %s: %s", fileName, strerror(errno));
-            return false;
-        }
-    }
-
-    ok = JS_DumpHeap(JS_GetRuntime(cx), dumpFile, startThing, startTraceKind, thingToFind,
-                     maxDepth, thingToIgnore);
-    if (dumpFile != stdout)
-        fclose(dumpFile);
-    if (!ok) {
-        JS_ReportOutOfMemory(cx);
-        return false;
-    }
-    args.rval().setUndefined();
-    return true;
-
-  not_traceable_arg:
-    JS_ReportError(cx, "argument '%s' is not null or a heap-allocated thing",
-                   badTraceArg);
-    return false;
-}
-
-static JSBool
-DumpObject(JSContext *cx, unsigned argc, jsval *vp)
-{
-    CallArgs args = CallArgsFromVp(argc, vp);
-    RootedObject arg0(cx);
-    if (!JS_ConvertArguments(cx, args.length(), args.array(), "o", arg0.address()))
-        return false;
-
-    js_DumpObject(arg0);
 
     args.rval().setUndefined();
     return true;
@@ -2274,166 +3004,120 @@ DumpObject(JSContext *cx, unsigned argc, jsval *vp)
 
 #endif /* DEBUG */
 
-static JSBool
-BuildDate(JSContext *cx, unsigned argc, jsval *vp)
+/* Pretend we can always preserve wrappers for dummy DOM objects. */
+static bool
+DummyPreserveWrapperCallback(JSContext* cx, JSObject* obj)
 {
-    CallArgs args = CallArgsFromVp(argc, vp);
-    fprintf(gOutFile, "built on %s at %s\n", __DATE__, __TIME__);
-    args.rval().setUndefined();
     return true;
 }
 
-static JSBool
-Intern(JSContext *cx, unsigned argc, jsval *vp)
+static bool
+Intern(JSContext* cx, unsigned argc, Value* vp)
 {
     CallArgs args = CallArgsFromVp(argc, vp);
-    JSString *str = JS_ValueToString(cx, args.length() == 0 ? UndefinedValue() : args[0]);
+
+    JSString* str = JS::ToString(cx, args.get(0));
     if (!str)
         return false;
 
-    size_t length;
-    const jschar *chars = JS_GetStringCharsAndLength(cx, str, &length);
-    if (!chars)
+    AutoStableStringChars strChars(cx);
+    if (!strChars.initTwoByte(cx, str))
         return false;
 
-    if (!JS_InternUCStringN(cx, chars, length))
+    mozilla::Range<const char16_t> chars = strChars.twoByteRange();
+
+    if (!JS_AtomizeAndPinUCStringN(cx, chars.begin().get(), chars.length()))
         return false;
 
     args.rval().setUndefined();
     return true;
 }
 
-static JSBool
-Clone(JSContext *cx, unsigned argc, jsval *vp)
+static bool
+Clone(JSContext* cx, unsigned argc, Value* vp)
 {
     CallArgs args = CallArgsFromVp(argc, vp);
     RootedObject parent(cx);
     RootedObject funobj(cx);
 
     if (!args.length()) {
-        JS_ReportError(cx, "Invalid arguments to clone");
+        JS_ReportErrorASCII(cx, "Invalid arguments to clone");
         return false;
     }
 
     {
         Maybe<JSAutoCompartment> ac;
-        RootedObject obj(cx, JSVAL_IS_PRIMITIVE(args[0]) ? NULL : &args[0].toObject());
+        RootedObject obj(cx, args[0].isPrimitive() ? nullptr : &args[0].toObject());
 
-        if (obj && IsCrossCompartmentWrapper(obj)) {
+        if (obj && obj->is<CrossCompartmentWrapperObject>()) {
             obj = UncheckedUnwrap(obj);
-            ac.construct(cx, obj);
-            args[0] = ObjectValue(*obj);
+            ac.emplace(cx, obj);
+            args[0].setObject(*obj);
         }
         if (obj && obj->is<JSFunction>()) {
             funobj = obj;
         } else {
-            JSFunction *fun = JS_ValueToFunction(cx, args[0]);
+            JSFunction* fun = JS_ValueToFunction(cx, args[0]);
             if (!fun)
                 return false;
             funobj = JS_GetFunctionObject(fun);
         }
     }
-    if (funobj->compartment() != cx->compartment()) {
-        JSFunction *fun = &funobj->as<JSFunction>();
-        if (fun->hasScript() && fun->nonLazyScript()->compileAndGo) {
-            JS_ReportErrorNumber(cx, js_GetErrorMessage, NULL, JSMSG_UNEXPECTED_TYPE,
-                                 "function", "compile-and-go");
-            return false;
-        }
-    }
 
-    if (argc > 1) {
-        if (!JS_ValueToObject(cx, args[1], parent.address()))
+    if (args.length() > 1) {
+        if (!JS_ValueToObject(cx, args[1], &parent))
             return false;
     } else {
-        parent = JS_GetParent(JSVAL_TO_OBJECT(JS_CALLEE(cx, vp)));
+        parent = js::GetGlobalForObjectCrossCompartment(&args.callee());
     }
 
-    JSObject *clone = JS_CloneFunctionObject(cx, funobj, parent);
+    // Should it worry us that we might be getting with wrappers
+    // around with wrappers here?
+    JS::AutoObjectVector scopeChain(cx);
+    if (!parent->is<GlobalObject>() && !scopeChain.append(parent))
+        return false;
+    JSObject* clone = JS::CloneFunctionObject(cx, funobj, scopeChain);
     if (!clone)
         return false;
-    JS_SET_RVAL(cx, vp, OBJECT_TO_JSVAL(clone));
+    args.rval().setObject(*clone);
     return true;
 }
 
-static JSBool
-GetPDA(JSContext *cx, unsigned argc, jsval *vp)
+static bool
+Crash(JSContext* cx, unsigned argc, Value* vp)
 {
-    RootedObject vobj(cx);
-    bool ok;
-    JSPropertyDescArray pda;
-    JSPropertyDesc *pd;
-    jsval v;
-
-    if (!JS_ValueToObject(cx, argc == 0 ? UndefinedValue() : vp[2], vobj.address()))
+    CallArgs args = CallArgsFromVp(argc, vp);
+    if (args.length() == 0)
+        MOZ_CRASH("forced crash");
+    RootedString message(cx, JS::ToString(cx, args[0]));
+    if (!message)
         return false;
-    if (!vobj) {
-        JS_SET_RVAL(cx, vp, UndefinedValue());
-        return true;
-    }
-
-    RootedObject aobj(cx, JS_NewArrayObject(cx, 0, NULL));
-    if (!aobj)
+    char* utf8chars = JS_EncodeStringToUTF8(cx, message);
+    if (!utf8chars)
         return false;
-    JS_SET_RVAL(cx, vp, OBJECT_TO_JSVAL(aobj));
-
-    ok = !!JS_GetPropertyDescArray(cx, vobj, &pda);
-    if (!ok)
-        return false;
-    pd = pda.array;
-    RootedObject pdobj(cx);
-    for (uint32_t i = 0; i < pda.length; i++, pd++) {
-        pdobj = JS_NewObject(cx, NULL, NULL, NULL);
-        if (!pdobj) {
-            ok = false;
-            break;
-        }
-
-        /* Protect pdobj from GC by setting it as an element of aobj now */
-        v = OBJECT_TO_JSVAL(pdobj);
-        ok = !!JS_SetElement(cx, aobj, i, &v);
-        if (!ok)
-            break;
-
-        ok = JS_SetProperty(cx, pdobj, "id", &pd->id) &&
-             JS_SetProperty(cx, pdobj, "value", &pd->value) &&
-             (v = INT_TO_JSVAL(pd->flags),
-              JS_SetProperty(cx, pdobj, "flags", &v)) &&
-             JS_SetProperty(cx, pdobj, "alias", &pd->alias);
-        if (!ok)
-            break;
-    }
-    JS_PutPropertyDescArray(cx, &pda);
-    return ok;
+#ifndef DEBUG
+    MOZ_ReportCrash(utf8chars, __FILE__, __LINE__);
+#endif
+    MOZ_CRASH_UNSAFE_OOL(utf8chars);
 }
 
-static JSBool
-GetSLX(JSContext *cx, unsigned argc, jsval *vp)
+static bool
+GetSLX(JSContext* cx, unsigned argc, Value* vp)
 {
+    CallArgs args = CallArgsFromVp(argc, vp);
     RootedScript script(cx);
 
-    script = ValueToScript(cx, argc == 0 ? UndefinedValue() : vp[2]);
+    script = ValueToScript(cx, args.get(0));
     if (!script)
         return false;
-    JS_SET_RVAL(cx, vp, INT_TO_JSVAL(js_GetScriptLineExtent(script)));
+    args.rval().setInt32(GetScriptLineExtent(script));
     return true;
 }
 
-static JSBool
-ToInt32(JSContext *cx, unsigned argc, jsval *vp)
+static bool
+ThrowError(JSContext* cx, unsigned argc, Value* vp)
 {
-    int32_t i;
-
-    if (!JS_ValueToInt32(cx, argc == 0 ? UndefinedValue() : vp[2], &i))
-        return false;
-    JS_SET_RVAL(cx, vp, JS_NumberValue(i));
-    return true;
-}
-
-static JSBool
-ThrowError(JSContext *cx, unsigned argc, jsval *vp)
-{
-    JS_ReportError(cx, "This is an error");
+    JS_ReportErrorASCII(cx, "This is an error");
     return false;
 }
 
@@ -2443,91 +3127,109 @@ ThrowError(JSContext *cx, unsigned argc, jsval *vp)
 typedef struct ComplexObject {
     bool isInner;
     bool frozen;
-    JSObject *inner;
-    JSObject *outer;
+    JSObject* inner;
+    JSObject* outer;
 } ComplexObject;
 
-static JSBool
-sandbox_enumerate(JSContext *cx, HandleObject obj)
+static bool
+sandbox_enumerate(JSContext* cx, HandleObject obj)
 {
     RootedValue v(cx);
-    JSBool b;
 
-    if (!JS_GetProperty(cx, obj, "lazy", v.address()))
+    if (!JS_GetProperty(cx, obj, "lazy", &v))
         return false;
 
-    JS_ValueToBoolean(cx, v, &b);
-    return !b || JS_EnumerateStandardClasses(cx, obj);
+    if (!ToBoolean(v))
+        return true;
+
+    return JS_EnumerateStandardClasses(cx, obj);
 }
 
-static JSBool
-sandbox_resolve(JSContext *cx, HandleObject obj, HandleId id, unsigned flags,
-                MutableHandleObject objp)
+static bool
+sandbox_resolve(JSContext* cx, HandleObject obj, HandleId id, bool* resolvedp)
 {
     RootedValue v(cx);
-    JSBool b, resolved;
-
-    if (!JS_GetProperty(cx, obj, "lazy", v.address()))
+    if (!JS_GetProperty(cx, obj, "lazy", &v))
         return false;
 
-    JS_ValueToBoolean(cx, v, &b);
-    if (b) {
-        if (!JS_ResolveStandardClass(cx, obj, id, &resolved))
-            return false;
-        if (resolved) {
-            objp.set(obj);
-            return true;
-        }
-    }
-    objp.set(NULL);
+    if (ToBoolean(v))
+        return JS_ResolveStandardClass(cx, obj, id, resolvedp);
     return true;
 }
 
-static JSClass sandbox_class = {
-    "sandbox",
-    JSCLASS_NEW_RESOLVE | JSCLASS_GLOBAL_FLAGS,
-    JS_PropertyStub,   JS_DeletePropertyStub,
-    JS_PropertyStub,   JS_StrictPropertyStub,
-    sandbox_enumerate, (JSResolveOp)sandbox_resolve,
-    JS_ConvertStub
+static const JSClassOps sandbox_classOps = {
+    nullptr, nullptr, nullptr, nullptr,
+    sandbox_enumerate, sandbox_resolve,
+    nullptr, nullptr,
+    nullptr, nullptr, nullptr,
+    JS_GlobalObjectTraceHook
 };
 
-static JSObject *
-NewSandbox(JSContext *cx, bool lazy)
+static const JSClass sandbox_class = {
+    "sandbox",
+    JSCLASS_GLOBAL_FLAGS,
+    &sandbox_classOps
+};
+
+static void
+SetStandardCompartmentOptions(JS::CompartmentOptions& options)
 {
-    RootedObject obj(cx, JS_NewGlobalObject(cx, &sandbox_class, NULL));
+    options.behaviors().setVersion(JSVERSION_DEFAULT);
+    options.creationOptions().setSharedMemoryAndAtomicsEnabled(enableSharedMemory);
+}
+
+static JSObject*
+NewSandbox(JSContext* cx, bool lazy)
+{
+    JS::CompartmentOptions options;
+    SetStandardCompartmentOptions(options);
+    RootedObject obj(cx, JS_NewGlobalObject(cx, &sandbox_class, nullptr,
+                                            JS::DontFireOnNewGlobalHook, options));
     if (!obj)
-        return NULL;
+        return nullptr;
 
     {
         JSAutoCompartment ac(cx, obj);
         if (!lazy && !JS_InitStandardClasses(cx, obj))
-            return NULL;
+            return nullptr;
 
         RootedValue value(cx, BooleanValue(lazy));
-        if (!JS_SetProperty(cx, obj, "lazy", value.address()))
-            return NULL;
+        if (!JS_SetProperty(cx, obj, "lazy", value))
+            return nullptr;
     }
 
-    if (!cx->compartment()->wrap(cx, obj.address()))
-        return NULL;
+    JS_FireOnNewGlobalObject(cx, obj);
+
+    if (!cx->compartment()->wrap(cx, &obj))
+        return nullptr;
     return obj;
 }
 
-static JSBool
-EvalInContext(JSContext *cx, unsigned argc, jsval *vp)
+static bool
+EvalInContext(JSContext* cx, unsigned argc, Value* vp)
 {
-    RootedString str(cx);
+    CallArgs args = CallArgsFromVp(argc, vp);
+    if (!args.requireAtLeast(cx, "evalcx", 1))
+        return false;
+
+    RootedString str(cx, ToString(cx, args[0]));
+    if (!str)
+        return false;
+
     RootedObject sobj(cx);
-    if (!JS_ConvertArguments(cx, argc, JS_ARGV(cx, vp), "S / o", str.address(), sobj.address()))
+    if (args.hasDefined(1)) {
+        sobj = ToObject(cx, args[1]);
+        if (!sobj)
+            return false;
+    }
+
+    AutoStableStringChars strChars(cx);
+    if (!strChars.initTwoByte(cx, str))
         return false;
 
-    size_t srclen;
-    const jschar *src = JS_GetStringCharsAndLength(cx, str, &srclen);
-    if (!src)
-        return false;
-
-    SkipRoot skip(cx, &src);
+    mozilla::Range<const char16_t> chars = strChars.twoByteRange();
+    size_t srclen = chars.length();
+    const char16_t* src = chars.begin().get();
 
     bool lazy = false;
     if (srclen == 4) {
@@ -2544,633 +3246,843 @@ EvalInContext(JSContext *cx, unsigned argc, jsval *vp)
     }
 
     if (srclen == 0) {
-        JS_SET_RVAL(cx, vp, OBJECT_TO_JSVAL(sobj));
+        args.rval().setObject(*sobj);
         return true;
     }
 
-    RootedScript script(cx);
+    JS::AutoFilename filename;
     unsigned lineno;
 
-    JS_DescribeScriptedCaller(cx, script.address(), &lineno);
-    RootedValue rval(cx);
+    DescribeScriptedCaller(cx, &filename, &lineno);
     {
         Maybe<JSAutoCompartment> ac;
         unsigned flags;
-        JSObject *unwrapped = UncheckedUnwrap(sobj, true, &flags);
+        JSObject* unwrapped = UncheckedUnwrap(sobj, true, &flags);
         if (flags & Wrapper::CROSS_COMPARTMENT) {
             sobj = unwrapped;
-            ac.construct(cx, sobj);
+            ac.emplace(cx, sobj);
         }
 
-        sobj = GetInnerObject(cx, sobj);
-        if (!sobj)
-            return false;
+        sobj = ToWindowIfWindowProxy(sobj);
+
         if (!(sobj->getClass()->flags & JSCLASS_IS_GLOBAL)) {
-            JS_ReportError(cx, "Invalid scope argument to evalcx");
+            JS_ReportErrorASCII(cx, "Invalid scope argument to evalcx");
             return false;
         }
-        if (!JS_EvaluateUCScript(cx, sobj, src, srclen,
-                                 script->filename(),
-                                 lineno,
-                                 rval.address())) {
+        JS::CompileOptions opts(cx);
+        opts.setFileAndLine(filename.get(), lineno);
+        if (!JS::Evaluate(cx, opts, src, srclen, args.rval())) {
             return false;
         }
     }
 
-    if (!cx->compartment()->wrap(cx, &rval))
+    if (!cx->compartment()->wrap(cx, args.rval()))
         return false;
 
-    JS_SET_RVAL(cx, vp, rval);
     return true;
 }
 
-static JSBool
-EvalInFrame(JSContext *cx, unsigned argc, jsval *vp)
+struct WorkerInput
 {
-    jsval *argv = JS_ARGV(cx, vp);
-    if (argc < 2 ||
-        !JSVAL_IS_INT(argv[0]) ||
-        !JSVAL_IS_STRING(argv[1])) {
-        JS_ReportError(cx, "Invalid arguments to evalInFrame");
-        return false;
-    }
-
-    uint32_t upCount = JSVAL_TO_INT(argv[0]);
-    RootedString str(cx, JSVAL_TO_STRING(argv[1]));
-
-    bool saveCurrent = (argc >= 3 && JSVAL_IS_BOOLEAN(argv[2]))
-                        ? !!(JSVAL_TO_BOOLEAN(argv[2]))
-                        : false;
-
-    /* This is a copy of CheckDebugMode. */
-    if (!JS_GetDebugMode(cx)) {
-        JS_ReportErrorFlagsAndNumber(cx, JSREPORT_ERROR, js_GetErrorMessage,
-                                     NULL, JSMSG_NEED_DEBUG_MODE);
-        return false;
-    }
-
-    /* Debug-mode currently disables Ion compilation. */
-    ScriptFrameIter fi(cx);
-    for (uint32_t i = 0; i < upCount; ++i, ++fi) {
-        ScriptFrameIter next(fi);
-        ++next;
-        if (next.done())
-            break;
-    }
-
-    AutoSaveFrameChain sfc(cx);
-    mozilla::Maybe<AutoCompartment> ac;
-    if (saveCurrent) {
-        if (!sfc.save())
-            return false;
-        ac.construct(cx, GetDefaultGlobalForContext(cx));
-    }
-
+    JSContext* context;
+    char16_t* chars;
     size_t length;
-    const jschar *chars = JS_GetStringCharsAndLength(cx, str, &length);
-    if (!chars)
-        return false;
 
-    JSAbstractFramePtr frame(Jsvalify(fi.abstractFramePtr()));
-    RootedScript fpscript(cx, frame.script());
-    bool ok = !!frame.evaluateUCInStackFrame(cx, chars, length,
-                                             fpscript->filename(),
-                                             JS_PCToLineNumber(cx, fpscript,
-                                                               fi.pc()),
-                                             MutableHandleValue::fromMarkedLocation(vp));
-    return ok;
-}
+    WorkerInput(JSContext* context, char16_t* chars, size_t length)
+      : context(context), chars(chars), length(length)
+    {}
 
-static JSBool
-ShapeOf(JSContext *cx, unsigned argc, JS::Value *vp)
-{
-    JS::Value v;
-    if (argc < 1 || !((v = JS_ARGV(cx, vp)[0]).isObject())) {
-        JS_ReportError(cx, "shapeOf: object expected");
-        return false;
+    ~WorkerInput() {
+        js_free(chars);
     }
-    JSObject *obj = &v.toObject();
-    JS_SET_RVAL(cx, vp, JS_NumberValue((double) ((uintptr_t)obj->lastProperty() >> 3)));
-    return true;
-}
-
-/*
- * If referent has an own property named id, copy that property to obj[id].
- * Since obj is native, this isn't totally transparent; properties of a
- * non-native referent may be simplified to data properties.
- */
-static JSBool
-CopyProperty(JSContext *cx, HandleObject obj, HandleObject referent, HandleId id,
-             unsigned lookupFlags, MutableHandleObject objp)
-{
-    RootedShape shape(cx);
-    AutoPropertyDescriptorRooter desc(cx);
-    unsigned propFlags = 0;
-    RootedObject obj2(cx);
-
-    objp.set(NULL);
-    if (referent->isNative()) {
-        if (!LookupPropertyWithFlags(cx, referent, id, lookupFlags, &obj2, &shape))
-            return false;
-        if (obj2 != referent)
-            return true;
-
-        if (shape->hasSlot()) {
-            desc.value = referent->nativeGetSlot(shape->slot());
-        } else {
-            desc.value.setUndefined();
-        }
-
-        desc.attrs = shape->attributes();
-        desc.getter = shape->getter();
-        if (!desc.getter && !(desc.attrs & JSPROP_GETTER))
-            desc.getter = JS_PropertyStub;
-        desc.setter = shape->setter();
-        if (!desc.setter && !(desc.attrs & JSPROP_SETTER))
-            desc.setter = JS_StrictPropertyStub;
-        desc.shortid = shape->shortid();
-        propFlags = shape->getFlags();
-    } else if (IsProxy(referent)) {
-        if (!Proxy::getOwnPropertyDescriptor(cx, referent, id, &desc, 0))
-            return false;
-        if (!desc.obj)
-            return true;
-    } else {
-        if (!JSObject::lookupGeneric(cx, referent, id, objp, &shape))
-            return false;
-        if (objp != referent)
-            return true;
-        RootedValue value(cx);
-        if (!JSObject::getGeneric(cx, referent, referent, id, &value) ||
-            !JSObject::getGenericAttributes(cx, referent, id, &desc.attrs))
-        {
-            return false;
-        }
-        desc.value = value;
-        desc.attrs &= JSPROP_ENUMERATE | JSPROP_READONLY | JSPROP_PERMANENT;
-        desc.getter = JS_PropertyStub;
-        desc.setter = JS_StrictPropertyStub;
-        desc.shortid = 0;
-    }
-
-    RootedValue value(cx, desc.value);
-    objp.set(obj);
-    return DefineNativeProperty(cx, obj, id, value, desc.getter, desc.setter,
-                                desc.attrs, propFlags, desc.shortid);
-}
-
-static JSBool
-resolver_resolve(JSContext *cx, HandleObject obj, HandleId id, unsigned flags,
-                 MutableHandleObject objp)
-{
-    jsval v = JS_GetReservedSlot(obj, 0);
-    Rooted<JSObject*> vobj(cx, &v.toObject());
-    return CopyProperty(cx, obj, vobj, id, flags, objp);
-}
-
-static JSBool
-resolver_enumerate(JSContext *cx, HandleObject obj)
-{
-    jsval v = JS_GetReservedSlot(obj, 0);
-    RootedObject referent(cx, JSVAL_TO_OBJECT(v));
-
-    AutoIdArray ida(cx, JS_Enumerate(cx, referent));
-    bool ok = !!ida;
-    RootedObject ignore(cx);
-    for (size_t i = 0; ok && i < ida.length(); i++) {
-        Rooted<jsid> id(cx, ida[i]);
-        ok = CopyProperty(cx, obj, referent, id, 0, &ignore);
-    }
-    return ok;
-}
-
-static JSClass resolver_class = {
-    "resolver",
-    JSCLASS_NEW_RESOLVE | JSCLASS_HAS_RESERVED_SLOTS(1),
-    JS_PropertyStub,   JS_DeletePropertyStub,
-    JS_PropertyStub,   JS_StrictPropertyStub,
-    resolver_enumerate, (JSResolveOp)resolver_resolve,
-    JS_ConvertStub
 };
 
+static void SetWorkerContextOptions(JSContext* cx);
 
-static JSBool
-Resolver(JSContext *cx, unsigned argc, jsval *vp)
+static void
+WorkerMain(void* arg)
 {
-    RootedObject referent(cx, NULL);
-    RootedObject proto(cx, NULL);
-    if (!JS_ConvertArguments(cx, argc, JS_ARGV(cx, vp), "o/o", &referent, &proto))
+    WorkerInput* input = (WorkerInput*) arg;
+
+    JSContext* cx = JS_NewContext(8L * 1024L * 1024L, 2L * 1024L * 1024L, input->context);
+    if (!cx) {
+        js_delete(input);
+        return;
+    }
+
+    UniquePtr<ShellContext> sc = MakeUnique<ShellContext>(cx);
+    if (!sc) {
+        JS_DestroyContext(cx);
+        js_delete(input);
+        return;
+    }
+
+    sc->isWorker = true;
+    JS_SetContextPrivate(cx, sc.get());
+    JS_SetFutexCanWait(cx);
+    JS::SetWarningReporter(cx, WarningReporter);
+    js::SetPreserveWrapperCallback(cx, DummyPreserveWrapperCallback);
+    JS_InitDestroyPrincipalsCallback(cx, ShellPrincipals::destroy);
+    SetWorkerContextOptions(cx);
+
+    if (!JS::InitSelfHostedCode(cx)) {
+        JS_DestroyContext(cx);
+        js_delete(input);
+        return;
+    }
+
+#ifdef SPIDERMONKEY_PROMISE
+    sc->jobQueue.init(cx, JobQueue(SystemAllocPolicy()));
+    JS::SetEnqueuePromiseJobCallback(cx, ShellEnqueuePromiseJobCallback);
+    JS::SetGetIncumbentGlobalCallback(cx, ShellGetIncumbentGlobalCallback);
+    JS::SetAsyncTaskCallbacks(cx, ShellStartAsyncTaskCallback, ShellFinishAsyncTaskCallback);
+#endif // SPIDERMONKEY_PROMISE
+
+    EnvironmentPreparer environmentPreparer(cx);
+
+    JS::SetLargeAllocationFailureCallback(cx, my_LargeAllocFailCallback, (void*)cx);
+
+    do {
+        JSAutoRequest ar(cx);
+
+        JS::CompartmentOptions compartmentOptions;
+        SetStandardCompartmentOptions(compartmentOptions);
+        RootedObject global(cx, NewGlobalObject(cx, compartmentOptions, nullptr));
+        if (!global)
+            break;
+
+        JSAutoCompartment ac(cx, global);
+
+        JS::CompileOptions options(cx);
+        options.setFileAndLine("<string>", 1)
+               .setIsRunOnce(true);
+
+        AutoReportException are(cx);
+        RootedScript script(cx);
+        if (!JS::Compile(cx, options, input->chars, input->length, &script))
+            break;
+        RootedValue result(cx);
+        JS_ExecuteScript(cx, script, &result);
+    } while (0);
+
+    JS::SetLargeAllocationFailureCallback(cx, nullptr, nullptr);
+
+#ifdef SPIDERMONKEY_PROMISE
+    JS::SetGetIncumbentGlobalCallback(cx, nullptr);
+    JS::SetEnqueuePromiseJobCallback(cx, nullptr);
+    sc->jobQueue.reset();
+#endif // SPIDERMONKEY_PROMISE
+
+    KillWatchdog(cx);
+
+    JS_DestroyContext(cx);
+
+    js_delete(input);
+}
+
+// Workers can spawn other workers, so we need a lock to access workerThreads.
+static Mutex* workerThreadsLock = nullptr;
+static Vector<js::Thread*, 0, SystemAllocPolicy> workerThreads;
+
+class MOZ_RAII AutoLockWorkerThreads : public LockGuard<Mutex>
+{
+    using Base = LockGuard<Mutex>;
+  public:
+    AutoLockWorkerThreads()
+      : Base(*workerThreadsLock)
+    {
+        MOZ_ASSERT(workerThreadsLock);
+    }
+};
+
+static bool
+EvalInWorker(JSContext* cx, unsigned argc, Value* vp)
+{
+    if (!CanUseExtraThreads()) {
+        JS_ReportErrorASCII(cx, "Can't create worker threads with --no-threads");
+        return false;
+    }
+
+    CallArgs args = CallArgsFromVp(argc, vp);
+    if (!args.get(0).isString()) {
+        JS_ReportErrorASCII(cx, "Invalid arguments to evalInWorker");
+        return false;
+    }
+
+#if defined(DEBUG) || defined(JS_OOM_BREAKPOINT)
+    if (cx->runtime()->runningOOMTest) {
+        JS_ReportErrorASCII(cx, "Can't create workers while running simulated OOM test");
+        return false;
+    }
+#endif
+
+    if (!args[0].toString()->ensureLinear(cx))
         return false;
 
-    RootedObject parent(cx, JS_GetParent(referent));
-    JSObject *result = (argc > 1
-                        ? JS_NewObjectWithGivenProto
-                        : JS_NewObject)(cx, &resolver_class, proto, parent);
-    if (!result)
-        return false;
+    if (!workerThreadsLock) {
+        workerThreadsLock = js_new<Mutex>(mutexid::ShellWorkerThreads);
+        if (!workerThreadsLock) {
+            ReportOutOfMemory(cx);
+            return false;
+        }
+    }
 
-    JS_SetReservedSlot(result, 0, OBJECT_TO_JSVAL(referent));
-    JS_SET_RVAL(cx, vp, OBJECT_TO_JSVAL(result));
+    JSLinearString* str = &args[0].toString()->asLinear();
+
+    char16_t* chars = (char16_t*) js_malloc(str->length() * sizeof(char16_t));
+    if (!chars) {
+        ReportOutOfMemory(cx);
+        return false;
+    }
+
+    CopyChars(chars, *str);
+
+    WorkerInput* input = js_new<WorkerInput>(JS_GetParentContext(cx), chars, str->length());
+    if (!input) {
+        ReportOutOfMemory(cx);
+        return false;
+    }
+
+    auto thread = js_new<Thread>(Thread::Options().setStackSize(gMaxStackSize + 128 * 1024));
+    if (!thread || !thread->init(WorkerMain, input)) {
+        ReportOutOfMemory(cx);
+        return false;
+    }
+
+    AutoLockWorkerThreads alwt;
+    if (!workerThreads.append(thread)) {
+        ReportOutOfMemory(cx);
+        thread->join();
+        return false;
+    }
+
+    args.rval().setUndefined();
     return true;
 }
 
-#ifdef JS_THREADSAFE
-
-/*
- * Check that t1 comes strictly before t2. The function correctly deals with
- * wrap-around between t2 and t1 assuming that t2 and t1 stays within INT32_MAX
- * from each other. We use MAX_TIMEOUT_INTERVAL to enforce this restriction.
- */
 static bool
-IsBefore(int64_t t1, int64_t t2)
+ShapeOf(JSContext* cx, unsigned argc, JS::Value* vp)
 {
-    return int32_t(t1 - t2) < 0;
+    CallArgs args = CallArgsFromVp(argc, vp);
+    if (!args.get(0).isObject()) {
+        JS_ReportErrorASCII(cx, "shapeOf: object expected");
+        return false;
+    }
+    JSObject* obj = &args[0].toObject();
+    args.rval().set(JS_NumberValue(double(uintptr_t(obj->maybeShape()) >> 3)));
+    return true;
 }
 
-static JSBool
-Sleep_fn(JSContext *cx, unsigned argc, jsval *vp)
+static bool
+GroupOf(JSContext* cx, unsigned argc, JS::Value* vp)
 {
-    int64_t t_ticks;
+    CallArgs args = CallArgsFromVp(argc, vp);
+    if (!args.get(0).isObject()) {
+        JS_ReportErrorASCII(cx, "groupOf: object expected");
+        return false;
+    }
+    JSObject* obj = &args[0].toObject();
+    ObjectGroup* group = obj->getGroup(cx);
+    if (!group)
+        return false;
+    args.rval().set(JS_NumberValue(double(uintptr_t(group) >> 3)));
+    return true;
+}
 
-    if (argc == 0) {
-        t_ticks = 0;
-    } else {
+static bool
+UnwrappedObjectsHaveSameShape(JSContext* cx, unsigned argc, JS::Value* vp)
+{
+    CallArgs args = CallArgsFromVp(argc, vp);
+    if (!args.get(0).isObject() || !args.get(1).isObject()) {
+        JS_ReportErrorASCII(cx, "2 objects expected");
+        return false;
+    }
+
+    RootedObject obj1(cx, UncheckedUnwrap(&args[0].toObject()));
+    RootedObject obj2(cx, UncheckedUnwrap(&args[1].toObject()));
+
+    if (!obj1->is<ShapedObject>() || !obj2->is<ShapedObject>()) {
+        JS_ReportErrorASCII(cx, "object does not have a Shape");
+        return false;
+    }
+
+    args.rval().setBoolean(obj1->as<ShapedObject>().shape() == obj2->as<ShapedObject>().shape());
+    return true;
+}
+
+static bool
+Sleep_fn(JSContext* cx, unsigned argc, Value* vp)
+{
+    ShellContext* sc = GetShellContext(cx);
+    CallArgs args = CallArgsFromVp(argc, vp);
+
+    TimeDuration duration = TimeDuration::FromSeconds(0.0);
+    if (args.length() > 0) {
         double t_secs;
-
-        if (!JS_ValueToNumber(cx, argc == 0 ? UndefinedValue() : vp[2], &t_secs))
+        if (!ToNumber(cx, args[0], &t_secs))
             return false;
-
-        /* NB: The next condition also filter out NaNs. */
-        if (!(t_secs <= MAX_TIMEOUT_INTERVAL)) {
-            JS_ReportError(cx, "Excessive sleep interval");
+        if (mozilla::IsNaN(t_secs)) {
+            JS_ReportErrorASCII(cx, "sleep interval is not a number");
             return false;
         }
-        t_ticks = (t_secs <= 0.0)
-                  ? 0
-                  : int64_t(PRMJ_USEC_PER_SEC * t_secs);
-    }
-    PR_Lock(gWatchdogLock);
-    int64_t to_wakeup = PRMJ_Now() + t_ticks;
-    for (;;) {
-        PR_WaitCondVar(gSleepWakeup, t_ticks);
-        if (gTimedOut)
-            break;
-        int64_t now = PRMJ_Now();
-        if (!IsBefore(now, to_wakeup))
-            break;
-        t_ticks = to_wakeup - now;
-    }
-    PR_Unlock(gWatchdogLock);
-    return !gTimedOut;
-}
 
-static bool
-InitWatchdog(JSRuntime *rt)
-{
-    JS_ASSERT(!gWatchdogThread);
-    gWatchdogLock = PR_NewLock();
-    if (gWatchdogLock) {
-        gWatchdogWakeup = PR_NewCondVar(gWatchdogLock);
-        if (gWatchdogWakeup) {
-            gSleepWakeup = PR_NewCondVar(gWatchdogLock);
-            if (gSleepWakeup)
-                return true;
-            PR_DestroyCondVar(gWatchdogWakeup);
+        duration = TimeDuration::FromSeconds(Max(0.0, t_secs));
+        if (duration > MAX_TIMEOUT_INTERVAL) {
+            JS_ReportErrorASCII(cx, "Excessive sleep interval");
+            return false;
         }
-        PR_DestroyLock(gWatchdogLock);
     }
-    return false;
+    {
+        LockGuard<Mutex> guard(sc->watchdogLock);
+        TimeStamp toWakeup = TimeStamp::Now() + duration;
+        for (;;) {
+            sc->sleepWakeup.wait_for(guard, duration);
+            if (sc->serviceInterrupt)
+                break;
+            auto now = TimeStamp::Now();
+            if (now >= toWakeup)
+                break;
+            duration = toWakeup - now;
+        }
+    }
+    args.rval().setUndefined();
+    return !sc->serviceInterrupt;
 }
 
 static void
-KillWatchdog()
+KillWatchdog(JSContext* cx)
 {
-    PRThread *thread;
+    ShellContext* sc = GetShellContext(cx);
+    Maybe<Thread> thread;
 
-    PR_Lock(gWatchdogLock);
-    thread = gWatchdogThread;
-    if (thread) {
-        /*
-         * The watchdog thread is running, tell it to terminate waking it up
-         * if necessary.
-         */
-        gWatchdogThread = NULL;
-        PR_NotifyCondVar(gWatchdogWakeup);
+    {
+        LockGuard<Mutex> guard(sc->watchdogLock);
+        Swap(sc->watchdogThread, thread);
+        if (thread) {
+            // The watchdog thread becoming Nothing is its signal to exit.
+            sc->watchdogWakeup.notify_one();
+        }
     }
-    PR_Unlock(gWatchdogLock);
     if (thread)
-        PR_JoinThread(thread);
-    PR_DestroyCondVar(gSleepWakeup);
-    PR_DestroyCondVar(gWatchdogWakeup);
-    PR_DestroyLock(gWatchdogLock);
+        thread->join();
+
+    MOZ_ASSERT(!sc->watchdogThread);
 }
 
 static void
-WatchdogMain(void *arg)
+WatchdogMain(JSContext* cx)
 {
-    PR_SetCurrentThreadName("JS Watchdog");
+    ThisThread::SetName("JS Watchdog");
 
-    JSRuntime *rt = (JSRuntime *) arg;
+    ShellContext* sc = GetShellContext(cx);
 
-    PR_Lock(gWatchdogLock);
-    while (gWatchdogThread) {
-        int64_t now = PRMJ_Now();
-        if (gWatchdogHasTimeout && !IsBefore(now, gWatchdogTimeout)) {
+    LockGuard<Mutex> guard(sc->watchdogLock);
+    while (sc->watchdogThread) {
+        auto now = TimeStamp::Now();
+        if (sc->watchdogTimeout && now >= sc->watchdogTimeout.value()) {
             /*
-             * The timeout has just expired. Trigger the operation callback
+             * The timeout has just expired. Request an interrupt callback
              * outside the lock.
              */
-            gWatchdogHasTimeout = false;
-            PR_Unlock(gWatchdogLock);
-            CancelExecution(rt);
-            PR_Lock(gWatchdogLock);
-
-            /* Wake up any threads doing sleep. */
-            PR_NotifyAllCondVar(gSleepWakeup);
-        } else {
-            if (gWatchdogHasTimeout) {
-                /*
-                 * Time hasn't expired yet. Simulate an operation callback
-                 * which doesn't abort execution.
-                 */
-                JS_TriggerOperationCallback(rt);
+            sc->watchdogTimeout = Nothing();
+            {
+                UnlockGuard<Mutex> unlock(guard);
+                CancelExecution(cx);
             }
 
-            uint64_t sleepDuration = PR_INTERVAL_NO_TIMEOUT;
-            if (gWatchdogHasTimeout)
-                sleepDuration = PR_TicksPerSecond() / 10;
-            mozilla::DebugOnly<PRStatus> status =
-              PR_WaitCondVar(gWatchdogWakeup, sleepDuration);
-            JS_ASSERT(status == PR_SUCCESS);
+            /* Wake up any threads doing sleep. */
+            sc->sleepWakeup.notify_all();
+        } else {
+            if (sc->watchdogTimeout) {
+                /*
+                 * Time hasn't expired yet. Simulate an interrupt callback
+                 * which doesn't abort execution.
+                 */
+                JS_RequestInterruptCallback(cx);
+            }
+
+            TimeDuration sleepDuration = sc->watchdogTimeout
+                                         ? TimeDuration::FromSeconds(0.1)
+                                         : TimeDuration::Forever();
+            sc->watchdogWakeup.wait_for(guard, sleepDuration);
         }
     }
-    PR_Unlock(gWatchdogLock);
 }
 
 static bool
-ScheduleWatchdog(JSRuntime *rt, double t)
+ScheduleWatchdog(JSContext* cx, double t)
 {
+    ShellContext* sc = GetShellContext(cx);
+
     if (t <= 0) {
-        PR_Lock(gWatchdogLock);
-        gWatchdogHasTimeout = false;
-        PR_Unlock(gWatchdogLock);
+        LockGuard<Mutex> guard(sc->watchdogLock);
+        sc->watchdogTimeout = Nothing();
         return true;
     }
 
-    int64_t interval = int64_t(ceil(t * PRMJ_USEC_PER_SEC));
-    int64_t timeout = PRMJ_Now() + interval;
-    PR_Lock(gWatchdogLock);
-    if (!gWatchdogThread) {
-        JS_ASSERT(!gWatchdogHasTimeout);
-        gWatchdogThread = PR_CreateThread(PR_USER_THREAD,
-                                          WatchdogMain,
-                                          rt,
-                                          PR_PRIORITY_NORMAL,
-                                          PR_LOCAL_THREAD,
-                                          PR_JOINABLE_THREAD,
-                                          0);
-        if (!gWatchdogThread) {
-            PR_Unlock(gWatchdogLock);
-            return false;
+    auto interval = TimeDuration::FromSeconds(t);
+    auto timeout = TimeStamp::Now() + interval;
+    LockGuard<Mutex> guard(sc->watchdogLock);
+    if (!sc->watchdogThread) {
+        MOZ_ASSERT(!sc->watchdogTimeout);
+        sc->watchdogThread.emplace();
+        AutoEnterOOMUnsafeRegion oomUnsafe;
+        if (!sc->watchdogThread->init(WatchdogMain, cx))
+            oomUnsafe.crash("watchdogThread.init");
+    } else if (!sc->watchdogTimeout || timeout < sc->watchdogTimeout.value()) {
+        sc->watchdogWakeup.notify_one();
+    }
+    sc->watchdogTimeout = Some(timeout);
+    return true;
+}
+
+static void
+KillWorkerThreads()
+{
+    MOZ_ASSERT_IF(!CanUseExtraThreads(), workerThreads.empty());
+
+    if (!workerThreadsLock) {
+        MOZ_ASSERT(workerThreads.empty());
+        return;
+    }
+
+    while (true) {
+        // We need to leave the AutoLockWorkerThreads scope before we call
+        // js::Thread::join, to avoid deadlocks when AutoLockWorkerThreads is
+        // used by the worker thread.
+        Thread* thread;
+        {
+            AutoLockWorkerThreads alwt;
+            if (workerThreads.empty())
+                break;
+            thread = workerThreads.popCopy();
         }
-    } else if (!gWatchdogHasTimeout || IsBefore(timeout, gWatchdogTimeout)) {
-         PR_NotifyCondVar(gWatchdogWakeup);
+        thread->join();
     }
-    gWatchdogHasTimeout = true;
-    gWatchdogTimeout = timeout;
-    PR_Unlock(gWatchdogLock);
-    return true;
-}
 
-#else /* !JS_THREADSAFE */
-
-#ifdef XP_WIN
-static HANDLE gTimerHandle = 0;
-
-VOID CALLBACK
-TimerCallback(PVOID lpParameter, BOOLEAN TimerOrWaitFired)
-{
-    CancelExecution((JSRuntime *) lpParameter);
-}
-
-#else
-
-static void
-AlarmHandler(int sig)
-{
-    CancelExecution(gRuntime);
-}
-
-#endif
-
-static bool
-InitWatchdog(JSRuntime *rt)
-{
-    gRuntime = rt;
-    return true;
+    js_delete(workerThreadsLock);
+    workerThreadsLock = nullptr;
 }
 
 static void
-KillWatchdog()
+CancelExecution(JSContext* cx)
 {
-    ScheduleWatchdog(gRuntime, -1);
-}
+    ShellContext* sc = GetShellContext(cx);
+    sc->serviceInterrupt = true;
+    JS_RequestInterruptCallback(cx);
 
-static bool
-ScheduleWatchdog(JSRuntime *rt, double t)
-{
-#ifdef XP_WIN
-    if (gTimerHandle) {
-        DeleteTimerQueueTimer(NULL, gTimerHandle, NULL);
-        gTimerHandle = 0;
-    }
-    if (t > 0 &&
-        !CreateTimerQueueTimer(&gTimerHandle,
-                               NULL,
-                               (WAITORTIMERCALLBACK)TimerCallback,
-                               rt,
-                               DWORD(ceil(t * 1000.0)),
-                               0,
-                               WT_EXECUTEINTIMERTHREAD | WT_EXECUTEONLYONCE)) {
-        gTimerHandle = 0;
-        return false;
-    }
-#else
-    /* FIXME: use setitimer when available for sub-second resolution. */
-    if (t <= 0) {
-        alarm(0);
-        signal(SIGALRM, NULL);
-    } else {
-        signal(SIGALRM, AlarmHandler); /* set the Alarm signal capture */
-        alarm(ceil(t));
-    }
-#endif
-    return true;
-}
-
-#endif /* !JS_THREADSAFE */
-
-static void
-CancelExecution(JSRuntime *rt)
-{
-    gTimedOut = true;
-    JS_TriggerOperationCallback(rt);
-
-    if (!gTimeoutFunc.isNull()) {
+    if (sc->haveInterruptFunc) {
         static const char msg[] = "Script runs for too long, terminating.\n";
-#if defined(XP_UNIX) && !defined(JS_THREADSAFE)
-        /* It is not safe to call fputs from signals. */
-        /* Dummy assignment avoids GCC warning on "attribute warn_unused_result" */
-        ssize_t dummy = write(2, msg, sizeof(msg) - 1);
-        (void)dummy;
-#else
         fputs(msg, stderr);
-#endif
     }
 }
 
-static JSBool
-SetTimeoutValue(JSContext *cx, double t)
+static bool
+SetTimeoutValue(JSContext* cx, double t)
 {
-    /* NB: The next condition also filter out NaNs. */
-    if (!(t <= MAX_TIMEOUT_INTERVAL)) {
-        JS_ReportError(cx, "Excessive timeout value");
+    if (mozilla::IsNaN(t)) {
+        JS_ReportErrorASCII(cx, "timeout is not a number");
         return false;
     }
-    gTimeoutInterval = t;
-    if (!ScheduleWatchdog(cx->runtime(), t)) {
-        JS_ReportError(cx, "Failed to create the watchdog");
+    if (TimeDuration::FromSeconds(t) > MAX_TIMEOUT_INTERVAL) {
+        JS_ReportErrorASCII(cx, "Excessive timeout value");
+        return false;
+    }
+    GetShellContext(cx)->timeoutInterval = t;
+    if (!ScheduleWatchdog(cx, t)) {
+        JS_ReportErrorASCII(cx, "Failed to create the watchdog");
         return false;
     }
     return true;
 }
 
-static JSBool
-Timeout(JSContext *cx, unsigned argc, jsval *vp)
+static bool
+Timeout(JSContext* cx, unsigned argc, Value* vp)
 {
-    if (argc == 0) {
-        JS_SET_RVAL(cx, vp, JS_NumberValue(gTimeoutInterval));
+    ShellContext* sc = GetShellContext(cx);
+    CallArgs args = CallArgsFromVp(argc, vp);
+
+    if (args.length() == 0) {
+        args.rval().setNumber(sc->timeoutInterval);
         return true;
     }
 
-    if (argc > 2) {
-        JS_ReportError(cx, "Wrong number of arguments");
+    if (args.length() > 2) {
+        JS_ReportErrorASCII(cx, "Wrong number of arguments");
         return false;
     }
 
     double t;
-    if (!JS_ValueToNumber(cx, JS_ARGV(cx, vp)[0], &t))
+    if (!ToNumber(cx, args[0], &t))
         return false;
 
-    if (argc > 1) {
-        RootedValue value(cx, JS_ARGV(cx, vp)[1]);
+    if (args.length() > 1) {
+        RootedValue value(cx, args[1]);
         if (!value.isObject() || !value.toObject().is<JSFunction>()) {
-            JS_ReportError(cx, "Second argument must be a timeout function");
+            JS_ReportErrorASCII(cx, "Second argument must be a timeout function");
             return false;
         }
-        gTimeoutFunc = value;
+        sc->interruptFunc = value;
+        sc->haveInterruptFunc = true;
     }
 
-    JS_SET_RVAL(cx, vp, UndefinedValue());
+    args.rval().setUndefined();
     return SetTimeoutValue(cx, t);
 }
 
-static JSBool
-Elapsed(JSContext *cx, unsigned argc, jsval *vp)
+static bool
+InterruptIf(JSContext* cx, unsigned argc, Value* vp)
 {
-    if (argc == 0) {
-        double d = 0.0;
-        JSShellContextData *data = GetContextData(cx);
-        if (data)
-            d = PRMJ_Now() - data->startTime;
-        JS_SET_RVAL(cx, vp, JS_NumberValue(d));
-        return true;
-    }
-    JS_ReportError(cx, "Wrong number of arguments");
-    return false;
-}
+    CallArgs args = CallArgsFromVp(argc, vp);
 
-static JSBool
-Parent(JSContext *cx, unsigned argc, jsval *vp)
-{
-    if (argc != 1) {
-        JS_ReportError(cx, "Wrong number of arguments");
+    if (args.length() != 1) {
+        JS_ReportErrorASCII(cx, "Wrong number of arguments");
         return false;
     }
 
-    jsval v = JS_ARGV(cx, vp)[0];
-    if (JSVAL_IS_PRIMITIVE(v)) {
-        JS_ReportError(cx, "Only objects have parents!");
-        return false;
+    if (ToBoolean(args[0])) {
+        GetShellContext(cx)->serviceInterrupt = true;
+        JS_RequestInterruptCallback(cx);
     }
 
-    Rooted<JSObject*> parent(cx, JS_GetParent(&v.toObject()));
-    JS_SET_RVAL(cx, vp, OBJECT_TO_JSVAL(parent));
-
-    /* Outerize if necessary.  Embrace the ugliness! */
-    if (parent) {
-        if (JSObjectOp op = parent->getClass()->ext.outerObject)
-            JS_SET_RVAL(cx, vp, OBJECT_TO_JSVAL(op(cx, parent)));
-    }
-
+    args.rval().setUndefined();
     return true;
 }
 
-static JSBool
-Compile(JSContext *cx, unsigned argc, jsval *vp)
+static bool
+InvokeInterruptCallbackWrapper(JSContext* cx, unsigned argc, Value* vp)
 {
-    if (argc < 1) {
-        JS_ReportErrorNumber(cx, js_GetErrorMessage, NULL, JSMSG_MORE_ARGS_NEEDED,
-                             "compile", "0", "s");
-        return false;
-    }
-    jsval arg0 = JS_ARGV(cx, vp)[0];
-    if (!JSVAL_IS_STRING(arg0)) {
-        const char *typeName = JS_GetTypeName(cx, JS_TypeOfValue(cx, arg0));
-        JS_ReportError(cx, "expected string to compile, got %s", typeName);
+    CallArgs args = CallArgsFromVp(argc, vp);
+    if (args.length() != 1) {
+        JS_ReportErrorASCII(cx, "Wrong number of arguments");
         return false;
     }
 
-    RootedObject global(cx, JS_GetGlobalForScopeChain(cx));
-    JSString *scriptContents = JSVAL_TO_STRING(arg0);
-    unsigned oldopts = JS_GetOptions(cx);
-    JS_SetOptions(cx, oldopts | JSOPTION_COMPILE_N_GO | JSOPTION_NO_SCRIPT_RVAL);
-    bool ok = JS_CompileUCScript(cx, global, JS_GetStringCharsZ(cx, scriptContents),
-                                 JS_GetStringLength(scriptContents), "<string>", 1);
-    JS_SetOptions(cx, oldopts);
+    GetShellContext(cx)->serviceInterrupt = true;
+    JS_RequestInterruptCallback(cx);
+    bool interruptRv = CheckForInterrupt(cx);
 
-    JS_SET_RVAL(cx, vp, UndefinedValue());
+    // The interrupt handler could have set a pending exception. Since we call
+    // back into JS, don't have it see the pending exception. If we have an
+    // uncatchable exception that's not propagating a debug mode forced
+    // return, return.
+    if (!interruptRv && !cx->isExceptionPending() && !cx->isPropagatingForcedReturn())
+        return false;
+
+    JS::AutoSaveExceptionState savedExc(cx);
+
+    FixedInvokeArgs<1> iargs(cx);
+
+    iargs[0].setBoolean(interruptRv);
+
+    RootedValue rv(cx);
+    if (!js::Call(cx, args[0], UndefinedHandleValue, iargs, &rv))
+        return false;
+
+    args.rval().setUndefined();
+    return interruptRv;
+}
+
+static bool
+SetInterruptCallback(JSContext* cx, unsigned argc, Value* vp)
+{
+    CallArgs args = CallArgsFromVp(argc, vp);
+
+    if (args.length() != 1) {
+        JS_ReportErrorASCII(cx, "Wrong number of arguments");
+        return false;
+    }
+
+    RootedValue value(cx, args[0]);
+    if (!value.isObject() || !value.toObject().is<JSFunction>()) {
+        JS_ReportErrorASCII(cx, "Argument must be a function");
+        return false;
+    }
+    GetShellContext(cx)->interruptFunc = value;
+    GetShellContext(cx)->haveInterruptFunc = true;
+
+    args.rval().setUndefined();
+    return true;
+}
+
+static bool
+EnableLastWarning(JSContext* cx, unsigned argc, Value* vp)
+{
+    ShellContext* sc = GetShellContext(cx);
+    CallArgs args = CallArgsFromVp(argc, vp);
+
+    sc->lastWarningEnabled = true;
+    sc->lastWarning.setNull();
+
+    args.rval().setUndefined();
+    return true;
+}
+
+static bool
+DisableLastWarning(JSContext* cx, unsigned argc, Value* vp)
+{
+    ShellContext* sc = GetShellContext(cx);
+    CallArgs args = CallArgsFromVp(argc, vp);
+
+    sc->lastWarningEnabled = false;
+    sc->lastWarning.setNull();
+
+    args.rval().setUndefined();
+    return true;
+}
+
+static bool
+GetLastWarning(JSContext* cx, unsigned argc, Value* vp)
+{
+    ShellContext* sc = GetShellContext(cx);
+    CallArgs args = CallArgsFromVp(argc, vp);
+
+    if (!sc->lastWarningEnabled) {
+        JS_ReportErrorASCII(cx, "Call enableLastWarning first.");
+        return false;
+    }
+
+    if (!JS_WrapValue(cx, &sc->lastWarning))
+        return false;
+
+    args.rval().set(sc->lastWarning);
+    return true;
+}
+
+static bool
+ClearLastWarning(JSContext* cx, unsigned argc, Value* vp)
+{
+    ShellContext* sc = GetShellContext(cx);
+    CallArgs args = CallArgsFromVp(argc, vp);
+
+    if (!sc->lastWarningEnabled) {
+        JS_ReportErrorASCII(cx, "Call enableLastWarning first.");
+        return false;
+    }
+
+    sc->lastWarning.setNull();
+
+    args.rval().setUndefined();
+    return true;
+}
+
+#ifdef DEBUG
+static bool
+StackDump(JSContext* cx, unsigned argc, Value* vp)
+{
+    CallArgs args = CallArgsFromVp(argc, vp);
+
+    if (!gOutFile->isOpen()) {
+        JS_ReportErrorASCII(cx, "output file is closed");
+        return false;
+    }
+
+    bool showArgs = ToBoolean(args.get(0));
+    bool showLocals = ToBoolean(args.get(1));
+    bool showThisProps = ToBoolean(args.get(2));
+
+    char* buf = JS::FormatStackDump(cx, nullptr, showArgs, showLocals, showThisProps);
+    if (!buf) {
+        fputs("Failed to format JavaScript stack for dump\n", gOutFile->fp);
+        JS_ClearPendingException(cx);
+    } else {
+        fputs(buf, gOutFile->fp);
+        JS_smprintf_free(buf);
+    }
+
+    args.rval().setUndefined();
+    return true;
+}
+#endif
+
+static bool
+StackPointerInfo(JSContext* cx, unsigned argc, Value* vp)
+{
+    CallArgs args = CallArgsFromVp(argc, vp);
+
+    // Copy the truncated stack pointer to the result.  This value is not used
+    // as a pointer but as a way to measure frame-size from JS.
+    args.rval().setInt32(int32_t(reinterpret_cast<size_t>(&args) & 0xfffffff));
+    return true;
+}
+
+
+static bool
+Elapsed(JSContext* cx, unsigned argc, Value* vp)
+{
+    CallArgs args = CallArgsFromVp(argc, vp);
+    if (args.length() == 0) {
+        double d = PRMJ_Now() - GetShellContext(cx)->startTime;
+        args.rval().setDouble(d);
+        return true;
+    }
+    JS_ReportErrorASCII(cx, "Wrong number of arguments");
+    return false;
+}
+
+static bool
+Compile(JSContext* cx, unsigned argc, Value* vp)
+{
+    CallArgs args = CallArgsFromVp(argc, vp);
+    if (args.length() < 1) {
+        JS_ReportErrorNumberASCII(cx, GetErrorMessage, nullptr, JSMSG_MORE_ARGS_NEEDED,
+                                  "compile", "0", "s");
+        return false;
+    }
+    if (!args[0].isString()) {
+        const char* typeName = InformalValueTypeName(args[0]);
+        JS_ReportErrorASCII(cx, "expected string to compile, got %s", typeName);
+        return false;
+    }
+
+    RootedObject global(cx, JS::CurrentGlobalOrNull(cx));
+    JSFlatString* scriptContents = args[0].toString()->ensureFlat(cx);
+    if (!scriptContents)
+        return false;
+
+    AutoStableStringChars stableChars(cx);
+    if (!stableChars.initTwoByte(cx, scriptContents))
+        return false;
+
+    JS::CompileOptions options(cx);
+    options.setIntroductionType("js shell compile")
+           .setFileAndLine("<string>", 1)
+           .setIsRunOnce(true)
+           .setNoScriptRval(true);
+    RootedScript script(cx);
+    const char16_t* chars = stableChars.twoByteRange().begin().get();
+    bool ok = JS_CompileUCScript(cx, chars, scriptContents->length(), options, &script);
+    args.rval().setUndefined();
     return ok;
 }
 
-static JSBool
-Parse(JSContext *cx, unsigned argc, jsval *vp)
+static bool
+ParseModule(JSContext* cx, unsigned argc, Value* vp)
+{
+    CallArgs args = CallArgsFromVp(argc, vp);
+    if (args.length() == 0) {
+        JS_ReportErrorNumberASCII(cx, GetErrorMessage, nullptr, JSMSG_MORE_ARGS_NEEDED,
+                                  "parseModule", "0", "s");
+        return false;
+    }
+
+    if (!args[0].isString()) {
+        const char* typeName = InformalValueTypeName(args[0]);
+        JS_ReportErrorASCII(cx, "expected string to compile, got %s", typeName);
+        return false;
+    }
+
+    JSFlatString* scriptContents = args[0].toString()->ensureFlat(cx);
+    if (!scriptContents)
+        return false;
+
+    UniqueChars filename;
+    CompileOptions options(cx);
+    if (args.length() > 1) {
+        if (!args[1].isString()) {
+            const char* typeName = InformalValueTypeName(args[1]);
+            JS_ReportErrorASCII(cx, "expected filename string, got %s", typeName);
+            return false;
+        }
+
+        RootedString str(cx, args[1].toString());
+        filename.reset(JS_EncodeString(cx, str));
+        if (!filename)
+            return false;
+
+        options.setFileAndLine(filename.get(), 1);
+    } else {
+        options.setFileAndLine("<string>", 1);
+    }
+
+    AutoStableStringChars stableChars(cx);
+    if (!stableChars.initTwoByte(cx, scriptContents))
+        return false;
+
+    const char16_t* chars = stableChars.twoByteRange().begin().get();
+    SourceBufferHolder srcBuf(chars, scriptContents->length(),
+                              SourceBufferHolder::NoOwnership);
+
+    RootedObject module(cx, frontend::CompileModule(cx, options, srcBuf));
+    if (!module)
+        return false;
+
+    args.rval().setObject(*module);
+    return true;
+}
+
+static bool
+SetModuleResolveHook(JSContext* cx, unsigned argc, Value* vp)
+{
+    CallArgs args = CallArgsFromVp(argc, vp);
+    if (args.length() != 1) {
+        JS_ReportErrorNumberASCII(cx, GetErrorMessage, nullptr, JSMSG_MORE_ARGS_NEEDED,
+                                  "setModuleResolveHook", "0", "s");
+        return false;
+    }
+
+    if (!args[0].isObject() || !args[0].toObject().is<JSFunction>()) {
+        const char* typeName = InformalValueTypeName(args[0]);
+        JS_ReportErrorASCII(cx, "expected hook function, got %s", typeName);
+        return false;
+    }
+
+    RootedFunction hook(cx, &args[0].toObject().as<JSFunction>());
+    Rooted<GlobalObject*> global(cx, cx->global());
+    global->setModuleResolveHook(hook);
+    args.rval().setUndefined();
+    return true;
+}
+
+static bool
+GetModuleLoadPath(JSContext* cx, unsigned argc, Value* vp)
+{
+    CallArgs args = CallArgsFromVp(argc, vp);
+    args.rval().setString(JS_NewStringCopyZ(cx, moduleLoadPath));
+    return true;
+}
+
+static bool
+Parse(JSContext* cx, unsigned argc, Value* vp)
 {
     using namespace js::frontend;
 
     CallArgs args = CallArgsFromVp(argc, vp);
 
     if (args.length() < 1) {
-        JS_ReportErrorNumber(cx, js_GetErrorMessage, NULL, JSMSG_MORE_ARGS_NEEDED,
-                             "parse", "0", "s");
+        JS_ReportErrorNumberASCII(cx, GetErrorMessage, nullptr, JSMSG_MORE_ARGS_NEEDED,
+                                  "parse", "0", "s");
         return false;
     }
     if (!args[0].isString()) {
-        const char *typeName = JS_GetTypeName(cx, JS_TypeOfValue(cx, args[0]));
-        JS_ReportError(cx, "expected string to parse, got %s", typeName);
+        const char* typeName = InformalValueTypeName(args[0]);
+        JS_ReportErrorASCII(cx, "expected string to parse, got %s", typeName);
         return false;
     }
 
-    JSString *scriptContents = args[0].toString();
-    CompileOptions options(cx);
-    options.setFileAndLine("<string>", 1)
-           .setCompileAndGo(false);
-    Parser<FullParseHandler> parser(cx, options,
-                                    JS_GetStringCharsZ(cx, scriptContents),
-                                    JS_GetStringLength(scriptContents),
-                                    /* foldConstants = */ true, NULL, NULL);
+    JSFlatString* scriptContents = args[0].toString()->ensureFlat(cx);
+    if (!scriptContents)
+        return false;
 
-    ParseNode *pn = parser.parse(NULL);
+    AutoStableStringChars stableChars(cx);
+    if (!stableChars.initTwoByte(cx, scriptContents))
+        return false;
+
+    size_t length = scriptContents->length();
+    const char16_t* chars = stableChars.twoByteRange().begin().get();
+
+    CompileOptions options(cx);
+    options.setIntroductionType("js shell parse")
+           .setFileAndLine("<string>", 1);
+    UsedNameTracker usedNames(cx);
+    if (!usedNames.init())
+        return false;
+    Parser<FullParseHandler> parser(cx, cx->tempLifoAlloc(), options, chars, length,
+                                    /* foldConstants = */ true, usedNames, nullptr, nullptr);
+    if (!parser.checkOptions())
+        return false;
+
+    ParseNode* pn = parser.parse();
     if (!pn)
         return false;
 #ifdef DEBUG
@@ -3181,41 +4093,54 @@ Parse(JSContext *cx, unsigned argc, jsval *vp)
     return true;
 }
 
-static JSBool
-SyntaxParse(JSContext *cx, unsigned argc, jsval *vp)
+static bool
+SyntaxParse(JSContext* cx, unsigned argc, Value* vp)
 {
     using namespace js::frontend;
 
     CallArgs args = CallArgsFromVp(argc, vp);
 
     if (args.length() < 1) {
-        JS_ReportErrorNumber(cx, js_GetErrorMessage, NULL, JSMSG_MORE_ARGS_NEEDED,
-                             "parse", "0", "s");
+        JS_ReportErrorNumberASCII(cx, GetErrorMessage, nullptr, JSMSG_MORE_ARGS_NEEDED,
+                                  "parse", "0", "s");
         return false;
     }
     if (!args[0].isString()) {
-        const char *typeName = JS_GetTypeName(cx, JS_TypeOfValue(cx, args[0]));
-        JS_ReportError(cx, "expected string to parse, got %s", typeName);
+        const char* typeName = InformalValueTypeName(args[0]);
+        JS_ReportErrorASCII(cx, "expected string to parse, got %s", typeName);
         return false;
     }
 
-    JSString *scriptContents = args[0].toString();
+    JSFlatString* scriptContents = args[0].toString()->ensureFlat(cx);
+    if (!scriptContents)
+        return false;
     CompileOptions options(cx);
-    options.setFileAndLine("<string>", 1)
-           .setCompileAndGo(false);
+    options.setIntroductionType("js shell syntaxParse")
+           .setFileAndLine("<string>", 1);
 
-    const jschar *chars = JS_GetStringCharsZ(cx, scriptContents);
-    size_t length = JS_GetStringLength(scriptContents);
-    Parser<frontend::SyntaxParseHandler> parser(cx, options, chars, length, false, NULL, NULL);
+    AutoStableStringChars stableChars(cx);
+    if (!stableChars.initTwoByte(cx, scriptContents))
+        return false;
 
-    bool succeeded = parser.parse(NULL);
+    const char16_t* chars = stableChars.twoByteRange().begin().get();
+    size_t length = scriptContents->length();
+    UsedNameTracker usedNames(cx);
+    if (!usedNames.init())
+        return false;
+    Parser<frontend::SyntaxParseHandler> parser(cx, cx->tempLifoAlloc(),
+                                                options, chars, length, false,
+                                                usedNames, nullptr, nullptr);
+    if (!parser.checkOptions())
+        return false;
+
+    bool succeeded = parser.parse();
     if (cx->isExceptionPending())
         return false;
 
     if (!succeeded && !parser.hadAbortedSyntaxParse()) {
         // If no exception is posted, either there was an OOM or a language
         // feature unhandled by the syntax parser was encountered.
-        JS_ASSERT(cx->runtime()->hadOutOfMemory);
+        MOZ_ASSERT(cx->runtime()->hadOutOfMemory);
         return false;
     }
 
@@ -3223,21 +4148,230 @@ SyntaxParse(JSContext *cx, unsigned argc, jsval *vp)
     return true;
 }
 
-struct FreeOnReturn
+static void
+OffThreadCompileScriptCallback(void* token, void* callbackData)
 {
-    JSContext *cx;
-    const char *ptr;
+    ShellContext* sc = static_cast<ShellContext*>(callbackData);
+    sc->offThreadState.markDone(token);
+}
+
+static bool
+OffThreadCompileScript(JSContext* cx, unsigned argc, Value* vp)
+{
+    if (!CanUseExtraThreads()) {
+        JS_ReportErrorASCII(cx, "Can't use offThreadCompileScript with --no-threads");
+        return false;
+    }
+
+    CallArgs args = CallArgsFromVp(argc, vp);
+
+    if (args.length() < 1) {
+        JS_ReportErrorNumberASCII(cx, GetErrorMessage, nullptr, JSMSG_MORE_ARGS_NEEDED,
+                                  "offThreadCompileScript", "0", "s");
+        return false;
+    }
+    if (!args[0].isString()) {
+        const char* typeName = InformalValueTypeName(args[0]);
+        JS_ReportErrorASCII(cx, "expected string to parse, got %s", typeName);
+        return false;
+    }
+
+    JSAutoByteString fileNameBytes;
+    CompileOptions options(cx);
+    options.setIntroductionType("js shell offThreadCompileScript")
+           .setFileAndLine("<string>", 1);
+
+    if (args.length() >= 2) {
+        if (args[1].isPrimitive()) {
+            JS_ReportErrorNumberASCII(cx, my_GetErrorMessage, nullptr, JSSMSG_INVALID_ARGS,
+                                      "evaluate");
+            return false;
+        }
+
+        RootedObject opts(cx, &args[1].toObject());
+        if (!ParseCompileOptions(cx, options, opts, fileNameBytes))
+            return false;
+    }
+
+    // These option settings must override whatever the caller requested.
+    options.setIsRunOnce(true)
+           .setSourceIsLazy(false);
+
+    // We assume the caller wants caching if at all possible, ignoring
+    // heuristics that make sense for a real browser.
+    options.forceAsync = true;
+
+    JSString* scriptContents = args[0].toString();
+    AutoStableStringChars stableChars(cx);
+    if (!stableChars.initTwoByte(cx, scriptContents))
+        return false;
+
+    size_t length = scriptContents->length();
+    const char16_t* chars = stableChars.twoByteRange().begin().get();
+
+    // Make sure we own the string's chars, so that they are not freed before
+    // the compilation is finished.
+    ScopedJSFreePtr<char16_t> ownedChars;
+    if (stableChars.maybeGiveOwnershipToCaller()) {
+        ownedChars = const_cast<char16_t*>(chars);
+    } else {
+        char16_t* copy = cx->pod_malloc<char16_t>(length);
+        if (!copy)
+            return false;
+
+        mozilla::PodCopy(copy, chars, length);
+        ownedChars = copy;
+        chars = copy;
+    }
+
+    if (!JS::CanCompileOffThread(cx, options, length)) {
+        JS_ReportErrorASCII(cx, "cannot compile code on worker thread");
+        return false;
+    }
+
+    ShellContext* sc = GetShellContext(cx);
+    if (!sc->offThreadState.startIfIdle(cx, ScriptKind::Script, ownedChars)) {
+        JS_ReportErrorASCII(cx, "called offThreadCompileScript without calling runOffThreadScript"
+                            " to receive prior off-thread compilation");
+        return false;
+    }
+
+    if (!JS::CompileOffThread(cx, options, chars, length,
+                              OffThreadCompileScriptCallback, sc))
+    {
+        sc->offThreadState.abandon(cx);
+        return false;
+    }
+
+    args.rval().setUndefined();
+    return true;
+}
+
+static bool
+runOffThreadScript(JSContext* cx, unsigned argc, Value* vp)
+{
+    CallArgs args = CallArgsFromVp(argc, vp);
+
+    if (OffThreadParsingMustWaitForGC(cx))
+        gc::FinishGC(cx);
+
+    ShellContext* sc = GetShellContext(cx);
+    void* token = sc->offThreadState.waitUntilDone(cx, ScriptKind::Script);
+    if (!token) {
+        JS_ReportErrorASCII(cx, "called runOffThreadScript when no compilation is pending");
+        return false;
+    }
+
+    RootedScript script(cx, JS::FinishOffThreadScript(cx, token));
+    if (!script)
+        return false;
+
+    return JS_ExecuteScript(cx, script, args.rval());
+}
+
+static bool
+OffThreadCompileModule(JSContext* cx, unsigned argc, Value* vp)
+{
+    CallArgs args = CallArgsFromVp(argc, vp);
+
+    if (args.length() != 1 || !args[0].isString()) {
+        JS_ReportErrorNumberASCII(cx, my_GetErrorMessage, nullptr, JSSMSG_INVALID_ARGS,
+                                  "offThreadCompileModule");
+        return false;
+    }
+
+    JSAutoByteString fileNameBytes;
+    CompileOptions options(cx);
+    options.setIntroductionType("js shell offThreadCompileModule")
+           .setFileAndLine("<string>", 1);
+    options.setIsRunOnce(true)
+           .setSourceIsLazy(false);
+    options.forceAsync = true;
+
+    JSString* scriptContents = args[0].toString();
+    AutoStableStringChars stableChars(cx);
+    if (!stableChars.initTwoByte(cx, scriptContents))
+        return false;
+
+    size_t length = scriptContents->length();
+    const char16_t* chars = stableChars.twoByteRange().begin().get();
+
+    // Make sure we own the string's chars, so that they are not freed before
+    // the compilation is finished.
+    ScopedJSFreePtr<char16_t> ownedChars;
+    if (stableChars.maybeGiveOwnershipToCaller()) {
+        ownedChars = const_cast<char16_t*>(chars);
+    } else {
+        char16_t* copy = cx->pod_malloc<char16_t>(length);
+        if (!copy)
+            return false;
+
+        mozilla::PodCopy(copy, chars, length);
+        ownedChars = copy;
+        chars = copy;
+    }
+
+    if (!JS::CanCompileOffThread(cx, options, length)) {
+        JS_ReportErrorASCII(cx, "cannot compile code on worker thread");
+        return false;
+    }
+
+    ShellContext* sc = GetShellContext(cx);
+    if (!sc->offThreadState.startIfIdle(cx, ScriptKind::Module, ownedChars)) {
+        JS_ReportErrorASCII(cx, "called offThreadCompileModule without receiving prior off-thread "
+                            "compilation");
+        return false;
+    }
+
+    if (!JS::CompileOffThreadModule(cx, options, chars, length,
+                                    OffThreadCompileScriptCallback, sc))
+    {
+        sc->offThreadState.abandon(cx);
+        return false;
+    }
+
+    args.rval().setUndefined();
+    return true;
+}
+
+static bool
+FinishOffThreadModule(JSContext* cx, unsigned argc, Value* vp)
+{
+    CallArgs args = CallArgsFromVp(argc, vp);
+
+    if (OffThreadParsingMustWaitForGC(cx))
+        gc::FinishGC(cx);
+
+    ShellContext* sc = GetShellContext(cx);
+    void* token = sc->offThreadState.waitUntilDone(cx, ScriptKind::Module);
+    if (!token) {
+        JS_ReportErrorASCII(cx, "called finishOffThreadModule when no compilation is pending");
+        return false;
+    }
+
+    RootedObject module(cx, JS::FinishOffThreadModule(cx, token));
+    if (!module)
+        return false;
+
+    args.rval().setObject(*module);
+    return true;
+}
+
+struct MOZ_RAII FreeOnReturn
+{
+    JSContext* cx;
+    const char* ptr;
     MOZ_DECL_USE_GUARD_OBJECT_NOTIFIER
 
-    FreeOnReturn(JSContext *cx, const char *ptr = NULL
+    explicit FreeOnReturn(JSContext* cx, const char* ptr = nullptr
                  MOZ_GUARD_OBJECT_NOTIFIER_PARAM)
       : cx(cx), ptr(ptr)
     {
         MOZ_GUARD_OBJECT_NOTIFIER_INIT;
     }
 
-    void init(const char *ptr) {
-        JS_ASSERT(!this->ptr);
+    void init(const char* ptr) {
+        MOZ_ASSERT(!this->ptr);
         this->ptr = ptr;
     }
 
@@ -3246,328 +4380,1315 @@ struct FreeOnReturn
     }
 };
 
-static JSBool
-ReadFile(JSContext *cx, unsigned argc, jsval *vp, bool scriptRelative)
+static int sArgc;
+static char** sArgv;
+
+class AutoCStringVector
+{
+    Vector<char*> argv_;
+  public:
+    explicit AutoCStringVector(JSContext* cx) : argv_(cx) {}
+    ~AutoCStringVector() {
+        for (size_t i = 0; i < argv_.length(); i++)
+            js_free(argv_[i]);
+    }
+    bool append(char* arg) {
+        if (!argv_.append(arg)) {
+            js_free(arg);
+            return false;
+        }
+        return true;
+    }
+    char* const* get() const {
+        return argv_.begin();
+    }
+    size_t length() const {
+        return argv_.length();
+    }
+    char* operator[](size_t i) const {
+        return argv_[i];
+    }
+    void replace(size_t i, char* arg) {
+        js_free(argv_[i]);
+        argv_[i] = arg;
+    }
+    char* back() const {
+        return argv_.back();
+    }
+    void replaceBack(char* arg) {
+        js_free(argv_.back());
+        argv_.back() = arg;
+    }
+};
+
+#if defined(XP_WIN)
+static bool
+EscapeForShell(AutoCStringVector& argv)
+{
+    // Windows will break arguments in argv by various spaces, so we wrap each
+    // argument in quotes and escape quotes within. Even with quotes, \ will be
+    // treated like an escape character, so inflate each \ to \\.
+
+    for (size_t i = 0; i < argv.length(); i++) {
+        if (!argv[i])
+            continue;
+
+        size_t newLen = 3;  // quotes before and after and null-terminator
+        for (char* p = argv[i]; *p; p++) {
+            newLen++;
+            if (*p == '\"' || *p == '\\')
+                newLen++;
+        }
+
+        char* escaped = (char*)js_malloc(newLen);
+        if (!escaped)
+            return false;
+
+        char* src = argv[i];
+        char* dst = escaped;
+        *dst++ = '\"';
+        while (*src) {
+            if (*src == '\"' || *src == '\\')
+                *dst++ = '\\';
+            *dst++ = *src++;
+        }
+        *dst++ = '\"';
+        *dst++ = '\0';
+        MOZ_ASSERT(escaped + newLen == dst);
+
+        argv.replace(i, escaped);
+    }
+    return true;
+}
+#endif
+
+static Vector<const char*, 4, js::SystemAllocPolicy> sPropagatedFlags;
+
+#if defined(JS_CODEGEN_X86) || defined(JS_CODEGEN_X64)
+static bool
+PropagateFlagToNestedShells(const char* flag)
+{
+    return sPropagatedFlags.append(flag);
+}
+#endif
+
+static bool
+NestedShell(JSContext* cx, unsigned argc, Value* vp)
 {
     CallArgs args = CallArgsFromVp(argc, vp);
 
-    if (args.length() < 1 || args.length() > 2) {
-        JS_ReportErrorNumber(cx, my_GetErrorMessage, NULL,
-                             args.length() < 1 ? JSSMSG_NOT_ENOUGH_ARGS : JSSMSG_TOO_MANY_ARGS,
-                             "snarf");
+    AutoCStringVector argv(cx);
+
+    // The first argument to the shell is its path, which we assume is our own
+    // argv[0].
+    if (sArgc < 1) {
+        JS_ReportErrorNumberASCII(cx, my_GetErrorMessage, nullptr, JSSMSG_NESTED_FAIL);
         return false;
     }
-
-    if (!args[0].isString() || (args.length() == 2 && !args[1].isString())) {
-        JS_ReportErrorNumber(cx, my_GetErrorMessage, NULL, JSSMSG_INVALID_ARGS, "snarf");
+    if (!argv.append(strdup(sArgv[0])))
         return false;
+
+    // Propagate selected flags from the current shell
+    for (unsigned i = 0; i < sPropagatedFlags.length(); i++) {
+        char* cstr = strdup(sPropagatedFlags[i]);
+        if (!cstr || !argv.append(cstr))
+            return false;
     }
 
-    RootedString givenPath(cx, args[0].toString());
-    RootedString str(cx, ResolvePath(cx, givenPath, scriptRelative));
-    JSAutoByteString filename(cx, str);
-    if (!filename)
-        return false;
+    // The arguments to nestedShell are stringified and append to argv.
+    RootedString str(cx);
+    for (unsigned i = 0; i < args.length(); i++) {
+        str = ToString(cx, args[i]);
+        if (!str || !argv.append(JS_EncodeString(cx, str)))
+            return false;
 
-    if (args.length() > 1) {
-        JSString *opt = JS_ValueToString(cx, args[1]);
-        if (!opt)
-            return false;
-        JSBool match;
-        if (!JS_StringEqualsAscii(cx, opt, "binary", &match))
-            return false;
-        if (match) {
-            JSObject *obj;
-            if (!(obj = FileAsTypedArray(cx, filename.ptr())))
+        // As a special case, if the caller passes "--js-cache", replace that
+        // with "--js-cache=$(jsCacheDir)"
+        if (!strcmp(argv.back(), "--js-cache") && jsCacheDir) {
+            char* newArg = JS_smprintf("--js-cache=%s", jsCacheDir);
+            if (!newArg)
                 return false;
-            JS_SET_RVAL(cx, vp, OBJECT_TO_JSVAL(obj));
-            return true;
+            argv.replaceBack(newArg);
         }
     }
 
-    if (!(str = FileAsString(cx, filename.ptr())))
+    // execv assumes argv is null-terminated
+    if (!argv.append(nullptr))
         return false;
-    JS_SET_RVAL(cx, vp, STRING_TO_JSVAL(str));
-    return true;
-}
 
-static JSBool
-Snarf(JSContext *cx, unsigned argc, jsval *vp)
-{
-    return ReadFile(cx, argc, vp, false);
-}
+    int status = 0;
+#if defined(XP_WIN)
+    if (!EscapeForShell(argv))
+        return false;
+    status = _spawnv(_P_WAIT, sArgv[0], argv.get());
+#elif defined(XP_OS2)
+    status = spawnv(P_WAIT, sArgv[0], argv.get());
+#else
+    pid_t pid = fork();
+    switch (pid) {
+      case -1:
+        JS_ReportErrorNumberASCII(cx, my_GetErrorMessage, nullptr, JSSMSG_NESTED_FAIL);
+        return false;
+      case 0:
+        (void)execv(sArgv[0], argv.get());
+        exit(-1);
+      default: {
+        while (waitpid(pid, &status, 0) < 0 && errno == EINTR)
+            continue;
+        break;
+      }
+    }
+#endif
 
-static JSBool
-ReadRelativeToScript(JSContext *cx, unsigned argc, jsval *vp)
-{
-    return ReadFile(cx, argc, vp, true);
-}
-
-static JSBool
-System(JSContext *cx, unsigned argc, jsval *vp)
-{
-    JSString *str;
-
-    if (argc != 1) {
-        JS_ReportErrorNumber(cx, my_GetErrorMessage, NULL, JSSMSG_INVALID_ARGS,
-                             "system");
+    if (status != 0) {
+        JS_ReportErrorNumberASCII(cx, my_GetErrorMessage, nullptr, JSSMSG_NESTED_FAIL);
         return false;
     }
 
-    str = JS_ValueToString(cx, JS_ARGV(cx, vp)[0]);
-    if (!str)
-        return false;
-    JSAutoByteString command(cx, str);
-    if (!command)
-        return false;
-
-    int result = system(command.ptr());
-
-    JS_SET_RVAL(cx, vp, Int32Value(result));
+    args.rval().setUndefined();
     return true;
 }
 
 static bool
-DecompileFunctionSomehow(JSContext *cx, unsigned argc, Value *vp,
-                         JSString *(*decompiler)(JSContext *, JSFunction *, unsigned))
+DecompileFunction(JSContext* cx, unsigned argc, Value* vp)
 {
     CallArgs args = CallArgsFromVp(argc, vp);
     if (args.length() < 1 || !args[0].isObject() || !args[0].toObject().is<JSFunction>()) {
         args.rval().setUndefined();
         return true;
     }
-    JSString *result = decompiler(cx, &args[0].toObject().as<JSFunction>(), 0);
+    RootedFunction fun(cx, &args[0].toObject().as<JSFunction>());
+    JSString* result = JS_DecompileFunction(cx, fun, 0);
     if (!result)
         return false;
     args.rval().setString(result);
     return true;
 }
 
-static JSBool
-DecompileBody(JSContext *cx, unsigned argc, Value *vp)
-{
-    return DecompileFunctionSomehow(cx, argc, vp, JS_DecompileFunctionBody);
-}
-
-static JSBool
-DecompileFunction(JSContext *cx, unsigned argc, Value *vp)
-{
-    return DecompileFunctionSomehow(cx, argc, vp, JS_DecompileFunction);
-}
-
-static JSBool
-DecompileThisScript(JSContext *cx, unsigned argc, Value *vp)
+static bool
+DecompileThisScript(JSContext* cx, unsigned argc, Value* vp)
 {
     CallArgs args = CallArgsFromVp(argc, vp);
-    RootedScript script (cx);
-    if (!JS_DescribeScriptedCaller(cx, script.address(), NULL)) {
+
+    NonBuiltinScriptFrameIter iter(cx);
+    if (iter.done()) {
         args.rval().setString(cx->runtime()->emptyString);
         return true;
     }
 
     {
-        JSAutoCompartment ac(cx, script);
-        JSString *result = JS_DecompileScript(cx, script, "test", 0);
+        JSAutoCompartment ac(cx, iter.script());
+
+        RootedScript script(cx, iter.script());
+        JSString* result = JS_DecompileScript(cx, script, "test", 0);
         if (!result)
             return false;
+
         args.rval().setString(result);
     }
 
-    return JS_WrapValue(cx, vp);
+    return JS_WrapValue(cx, args.rval());
 }
 
-static JSBool
-ThisFilename(JSContext *cx, unsigned argc, Value *vp)
+static bool
+ThisFilename(JSContext* cx, unsigned argc, Value* vp)
 {
     CallArgs args = CallArgsFromVp(argc, vp);
-    RootedScript script (cx);
-    if (!JS_DescribeScriptedCaller(cx, script.address(), NULL) || !script->filename()) {
+
+    JS::AutoFilename filename;
+    if (!DescribeScriptedCaller(cx, &filename) || !filename.get()) {
         args.rval().setString(cx->runtime()->emptyString);
         return true;
     }
-    JSString *filename = JS_NewStringCopyZ(cx, script->filename());
-    if (!filename)
+
+    JSString* str = JS_NewStringCopyZ(cx, filename.get());
+    if (!str)
         return false;
-    args.rval().setString(filename);
+
+    args.rval().setString(str);
     return true;
 }
 
-static JSBool
-Wrap(JSContext *cx, unsigned argc, jsval *vp)
+static bool
+WrapWithProto(JSContext* cx, unsigned argc, Value* vp)
 {
-    jsval v = argc > 0 ? JS_ARGV(cx, vp)[0] : UndefinedValue();
-    if (JSVAL_IS_PRIMITIVE(v)) {
-        JS_SET_RVAL(cx, vp, v);
-        return true;
-    }
-
-    RootedObject obj(cx, JSVAL_TO_OBJECT(v));
-    RootedObject proto(cx);
-    if (!JSObject::getProto(cx, obj, &proto))
-        return false;
-    JSObject *wrapped = Wrapper::New(cx, obj, proto, &obj->global(),
-                                     &Wrapper::singleton);
-    if (!wrapped)
-        return false;
-
-    JS_SET_RVAL(cx, vp, OBJECT_TO_JSVAL(wrapped));
-    return true;
-}
-
-static JSBool
-WrapWithProto(JSContext *cx, unsigned argc, jsval *vp)
-{
+    CallArgs args = CallArgsFromVp(argc, vp);
     Value obj = UndefinedValue(), proto = UndefinedValue();
-    if (argc == 2) {
-        obj = JS_ARGV(cx, vp)[0];
-        proto = JS_ARGV(cx, vp)[1];
+    if (args.length() == 2) {
+        obj = args[0];
+        proto = args[1];
     }
     if (!obj.isObject() || !proto.isObjectOrNull()) {
-        JS_ReportErrorNumber(cx, my_GetErrorMessage, NULL, JSSMSG_INVALID_ARGS,
-                             "wrapWithProto");
+        JS_ReportErrorNumberASCII(cx, my_GetErrorMessage, nullptr, JSSMSG_INVALID_ARGS,
+                                  "wrapWithProto");
         return false;
     }
 
-    JSObject *wrapped = Wrapper::New(cx, &obj.toObject(), proto.toObjectOrNull(),
-                                     &obj.toObject().global(),
-                                     &Wrapper::singletonWithPrototype);
+    WrapperOptions options(cx);
+    options.setProto(proto.toObjectOrNull());
+    JSObject* wrapped = Wrapper::New(cx, &obj.toObject(),
+                                     &Wrapper::singletonWithPrototype, options);
     if (!wrapped)
         return false;
 
-    JS_SET_RVAL(cx, vp, OBJECT_TO_JSVAL(wrapped));
+    args.rval().setObject(*wrapped);
     return true;
 }
 
-static JSBool
-Serialize(JSContext *cx, unsigned argc, jsval *vp)
+static bool
+NewGlobal(JSContext* cx, unsigned argc, Value* vp)
 {
-    jsval v = argc > 0 ? JS_ARGV(cx, vp)[0] : UndefinedValue();
-    uint64_t *datap;
-    size_t nbytes;
-    if (!JS_WriteStructuredClone(cx, v, &datap, &nbytes, NULL, NULL, UndefinedValue()))
-        return false;
+    JSPrincipals* principals = nullptr;
 
-    JSObject *array = JS_NewUint8Array(cx, nbytes);
-    if (!array) {
-        JS_free(cx, datap);
-        return false;
+    JS::CompartmentOptions options;
+    JS::CompartmentCreationOptions& creationOptions = options.creationOptions();
+    JS::CompartmentBehaviors& behaviors = options.behaviors();
+
+    SetStandardCompartmentOptions(options);
+
+    CallArgs args = CallArgsFromVp(argc, vp);
+    if (args.length() == 1 && args[0].isObject()) {
+        RootedObject opts(cx, &args[0].toObject());
+        RootedValue v(cx);
+
+        if (!JS_GetProperty(cx, opts, "invisibleToDebugger", &v))
+            return false;
+        if (v.isBoolean())
+            creationOptions.setInvisibleToDebugger(v.toBoolean());
+
+        if (!JS_GetProperty(cx, opts, "cloneSingletons", &v))
+            return false;
+        if (v.isBoolean())
+            creationOptions.setCloneSingletons(v.toBoolean());
+
+        if (!JS_GetProperty(cx, opts, "sameZoneAs", &v))
+            return false;
+        if (v.isObject())
+            creationOptions.setSameZoneAs(UncheckedUnwrap(&v.toObject()));
+
+        if (!JS_GetProperty(cx, opts, "disableLazyParsing", &v))
+            return false;
+        if (v.isBoolean())
+            behaviors.setDisableLazyParsing(v.toBoolean());
+
+        if (!JS_GetProperty(cx, opts, "principal", &v))
+            return false;
+        if (!v.isUndefined()) {
+            uint32_t bits;
+            if (!ToUint32(cx, v, &bits))
+                return false;
+            principals = cx->new_<ShellPrincipals>(bits);
+            if (!principals)
+                return false;
+            JS_HoldPrincipals(principals);
+        }
     }
-    JS_ASSERT((uintptr_t(TypedArray::viewData(array)) & 7) == 0);
-    js_memcpy(TypedArray::viewData(array), datap, nbytes);
 
-    JS_ClearStructuredClone(datap, nbytes);
-    JS_SET_RVAL(cx, vp, OBJECT_TO_JSVAL(array));
-    return true;
-}
-
-static JSBool
-Deserialize(JSContext *cx, unsigned argc, jsval *vp)
-{
-    Rooted<jsval> v(cx, argc > 0 ? JS_ARGV(cx, vp)[0] : UndefinedValue());
-    JSObject *obj;
-    if (JSVAL_IS_PRIMITIVE(v) || !(obj = JSVAL_TO_OBJECT(v))->isTypedArray()) {
-        JS_ReportErrorNumber(cx, my_GetErrorMessage, NULL, JSSMSG_INVALID_ARGS, "deserialize");
-        return false;
-    }
-    if ((TypedArray::byteLength(obj) & 7) != 0) {
-        JS_ReportErrorNumber(cx, my_GetErrorMessage, NULL, JSSMSG_INVALID_ARGS, "deserialize");
-        return false;
-    }
-    if ((uintptr_t(TypedArray::viewData(obj)) & 7) != 0) {
-        JS_ReportErrorNumber(cx, my_GetErrorMessage, NULL, JSSMSG_BAD_ALIGNMENT);
-        return false;
-    }
-
-    if (!JS_ReadStructuredClone(cx, (uint64_t *) TypedArray::viewData(obj), TypedArray::byteLength(obj),
-                                JS_STRUCTURED_CLONE_VERSION, v.address(), NULL, NULL)) {
-        return false;
-    }
-    JS_SET_RVAL(cx, vp, v);
-    return true;
-}
-
-static JSObject *
-NewGlobalObject(JSContext *cx, JSObject *sameZoneAs);
-
-static JSBool
-NewGlobal(JSContext *cx, unsigned argc, jsval *vp)
-{
-    JSObject *sameZoneAs = NULL;
-    if (argc == 1 && JS_ARGV(cx, vp)[0].isObject())
-        sameZoneAs = UncheckedUnwrap(&JS_ARGV(cx, vp)[0].toObject());
-
-    RootedObject global(cx, NewGlobalObject(cx, sameZoneAs));
+    RootedObject global(cx, NewGlobalObject(cx, options, principals));
+    if (principals)
+        JS_DropPrincipals(cx, principals);
     if (!global)
         return false;
 
-    if (!JS_WrapObject(cx, global.address()))
+    if (!JS_WrapObject(cx, &global))
         return false;
 
-    JS_SET_RVAL(cx, vp, OBJECT_TO_JSVAL(global));
+    args.rval().setObject(*global);
     return true;
 }
 
-static JSBool
-EnableStackWalkingAssertion(JSContext *cx, unsigned argc, jsval *vp)
-{
-    if (argc == 0 || !JSVAL_IS_BOOLEAN(JS_ARGV(cx, vp)[0])) {
-        JS_ReportErrorNumber(cx, my_GetErrorMessage, NULL, JSSMSG_INVALID_ARGS,
-                             "enableStackWalkingAssertion");
-        return false;
-    }
-
-#ifdef DEBUG
-    cx->stackIterAssertionEnabled = JSVAL_TO_BOOLEAN(JS_ARGV(cx, vp)[0]);
-#endif
-
-    JS_SET_RVAL(cx, vp, UndefinedValue());
-    return true;
-}
-
-static JSBool
-GetMaxArgs(JSContext *cx, unsigned arg, jsval *vp)
-{
-    JS_SET_RVAL(cx, vp, INT_TO_JSVAL(ARGS_LENGTH_MAX));
-    return true;
-}
-
-static JSBool
-ObjectEmulatingUndefined(JSContext *cx, unsigned argc, jsval *vp)
-{
-    static JSClass cls = {
-        "ObjectEmulatingUndefined",
-        JSCLASS_EMULATES_UNDEFINED,
-        JS_PropertyStub,
-        JS_DeletePropertyStub,
-        JS_PropertyStub,
-        JS_StrictPropertyStub,
-        JS_EnumerateStub,
-        JS_ResolveStub,
-        JS_ConvertStub
-    };
-
-    RootedObject obj(cx, JS_NewObject(cx, &cls, NULL, NULL));
-    if (!obj)
-        return false;
-    JS_SET_RVAL(cx, vp, ObjectValue(*obj));
-    return true;
-}
-
-static JSBool
-GetSelfHostedValue(JSContext *cx, unsigned argc, jsval *vp)
+static bool
+NukeCCW(JSContext* cx, unsigned argc, Value* vp)
 {
     CallArgs args = CallArgsFromVp(argc, vp);
 
-    if (argc != 1 || !args[0].isString()) {
-        JS_ReportErrorNumber(cx, my_GetErrorMessage, NULL, JSSMSG_INVALID_ARGS,
-                             "getSelfHostedValue");
+    if (args.length() != 1 || !args[0].isObject() ||
+        !IsCrossCompartmentWrapper(&args[0].toObject()))
+    {
+        JS_ReportErrorNumberASCII(cx, my_GetErrorMessage, nullptr, JSSMSG_INVALID_ARGS,
+                                  "nukeCCW");
         return false;
     }
-    RootedAtom srcAtom(cx, ToAtom<CanGC>(cx, args.handleAt(0)));
+
+    NukeCrossCompartmentWrapper(cx, &args[0].toObject());
+    args.rval().setUndefined();
+    return true;
+}
+
+static bool
+GetMaxArgs(JSContext* cx, unsigned argc, Value* vp)
+{
+    CallArgs args = CallArgsFromVp(argc, vp);
+    args.rval().setInt32(ARGS_LENGTH_MAX);
+    return true;
+}
+
+static bool
+ObjectEmulatingUndefined(JSContext* cx, unsigned argc, Value* vp)
+{
+    CallArgs args = CallArgsFromVp(argc, vp);
+
+    static const JSClass cls = {
+        "ObjectEmulatingUndefined",
+        JSCLASS_EMULATES_UNDEFINED
+    };
+
+    RootedObject obj(cx, JS_NewObject(cx, &cls));
+    if (!obj)
+        return false;
+    args.rval().setObject(*obj);
+    return true;
+}
+
+static bool
+GetSelfHostedValue(JSContext* cx, unsigned argc, Value* vp)
+{
+    CallArgs args = CallArgsFromVp(argc, vp);
+
+    if (args.length() != 1 || !args[0].isString()) {
+        JS_ReportErrorNumberASCII(cx, my_GetErrorMessage, nullptr, JSSMSG_INVALID_ARGS,
+                                  "getSelfHostedValue");
+        return false;
+    }
+    RootedAtom srcAtom(cx, ToAtom<CanGC>(cx, args[0]));
     if (!srcAtom)
         return false;
     RootedPropertyName srcName(cx, srcAtom->asPropertyName());
     return cx->runtime()->cloneSelfHostedValue(cx, srcName, args.rval());
+}
+
+class ShellSourceHook: public SourceHook {
+    // The function we should call to lazily retrieve source code.
+    PersistentRootedFunction fun;
+
+  public:
+    ShellSourceHook(JSContext* cx, JSFunction& fun) : fun(cx, &fun) {}
+
+    bool load(JSContext* cx, const char* filename, char16_t** src, size_t* length) {
+        RootedString str(cx, JS_NewStringCopyZ(cx, filename));
+        if (!str)
+            return false;
+        RootedValue filenameValue(cx, StringValue(str));
+
+        RootedValue result(cx);
+        if (!Call(cx, UndefinedHandleValue, fun, HandleValueArray(filenameValue), &result))
+            return false;
+
+        str = JS::ToString(cx, result);
+        if (!str)
+            return false;
+
+        *length = JS_GetStringLength(str);
+        *src = cx->pod_malloc<char16_t>(*length);
+        if (!*src)
+            return false;
+
+        JSLinearString* linear = str->ensureLinear(cx);
+        if (!linear)
+            return false;
+
+        CopyChars(*src, *linear);
+        return true;
+    }
+};
+
+static bool
+WithSourceHook(JSContext* cx, unsigned argc, Value* vp)
+{
+    CallArgs args = CallArgsFromVp(argc, vp);
+    RootedObject callee(cx, &args.callee());
+
+    if (args.length() != 2) {
+        ReportUsageErrorASCII(cx, callee, "Wrong number of arguments.");
+        return false;
+    }
+
+    if (!args[0].isObject() || !args[0].toObject().is<JSFunction>()
+        || !args[1].isObject() || !args[1].toObject().is<JSFunction>()) {
+        ReportUsageErrorASCII(cx, callee, "First and second arguments must be functions.");
+        return false;
+    }
+
+    mozilla::UniquePtr<ShellSourceHook> hook =
+        mozilla::MakeUnique<ShellSourceHook>(cx, args[0].toObject().as<JSFunction>());
+    if (!hook)
+        return false;
+
+    mozilla::UniquePtr<SourceHook> savedHook = js::ForgetSourceHook(cx);
+    js::SetSourceHook(cx, Move(hook));
+
+    RootedObject fun(cx, &args[1].toObject());
+    bool result = Call(cx, UndefinedHandleValue, fun, JS::HandleValueArray::empty(), args.rval());
+    js::SetSourceHook(cx, Move(savedHook));
+    return result;
+}
+
+static bool
+IsCachingEnabled(JSContext* cx, unsigned argc, Value* vp)
+{
+    CallArgs args = CallArgsFromVp(argc, vp);
+    args.rval().setBoolean(jsCachingEnabled && jsCacheAsmJSPath != nullptr);
+    return true;
+}
+
+static bool
+SetCachingEnabled(JSContext* cx, unsigned argc, Value* vp)
+{
+    CallArgs args = CallArgsFromVp(argc, vp);
+    if (GetShellContext(cx)->isWorker) {
+        JS_ReportErrorASCII(cx, "Caching is not supported in workers");
+        return false;
+    }
+
+    jsCachingEnabled = ToBoolean(args.get(0));
+    args.rval().setUndefined();
+    return true;
+}
+
+static void
+PrintProfilerEvents_Callback(const char* msg)
+{
+    fprintf(stderr, "PROFILER EVENT: %s\n", msg);
+}
+
+static bool
+PrintProfilerEvents(JSContext* cx, unsigned argc, Value* vp)
+{
+    CallArgs args = CallArgsFromVp(argc, vp);
+    if (cx->runtime()->spsProfiler.enabled())
+        js::RegisterContextProfilingEventMarker(cx, &PrintProfilerEvents_Callback);
+    args.rval().setUndefined();
+    return true;
+}
+
+#if defined(JS_SIMULATOR_ARM) || defined(JS_SIMULATOR_MIPS64)
+typedef Vector<char16_t, 0, SystemAllocPolicy> StackChars;
+Vector<StackChars, 0, SystemAllocPolicy> stacks;
+
+static void
+SingleStepCallback(void* arg, jit::Simulator* sim, void* pc)
+{
+    JSContext* cx = reinterpret_cast<JSContext*>(arg);
+
+    // If profiling is not enabled, don't do anything.
+    if (!cx->spsProfiler.enabled())
+        return;
+
+    JS::ProfilingFrameIterator::RegisterState state;
+    state.pc = pc;
+#if defined(JS_SIMULATOR_ARM)
+    state.sp = (void*)sim->get_register(jit::Simulator::sp);
+    state.lr = (void*)sim->get_register(jit::Simulator::lr);
+#elif defined(JS_SIMULATOR_MIPS64)
+    state.sp = (void*)sim->getRegister(jit::Simulator::sp);
+    state.lr = (void*)sim->getRegister(jit::Simulator::ra);
+#endif
+
+    mozilla::DebugOnly<void*> lastStackAddress = nullptr;
+    StackChars stack;
+    uint32_t frameNo = 0;
+    AutoEnterOOMUnsafeRegion oomUnsafe;
+    for (JS::ProfilingFrameIterator i(cx, state); !i.done(); ++i) {
+        MOZ_ASSERT(i.stackAddress() != nullptr);
+        MOZ_ASSERT(lastStackAddress <= i.stackAddress());
+        lastStackAddress = i.stackAddress();
+        JS::ProfilingFrameIterator::Frame frames[16];
+        uint32_t nframes = i.extractStack(frames, 0, 16);
+        for (uint32_t i = 0; i < nframes; i++) {
+            if (frameNo > 0) {
+                if (!stack.append(",", 1))
+                    oomUnsafe.crash("stack.append");
+            }
+            auto chars = frames[i].label.get();
+            if (!stack.append(chars, strlen(chars)))
+                oomUnsafe.crash("stack.append");
+            frameNo++;
+        }
+    }
+
+    // Only append the stack if it differs from the last stack.
+    if (stacks.empty() ||
+        stacks.back().length() != stack.length() ||
+        !PodEqual(stacks.back().begin(), stack.begin(), stack.length()))
+    {
+        if (!stacks.append(Move(stack)))
+            oomUnsafe.crash("stacks.append");
+    }
+}
+#endif
+
+static bool
+EnableSingleStepProfiling(JSContext* cx, unsigned argc, Value* vp)
+{
+#if defined(JS_SIMULATOR_ARM) || defined(JS_SIMULATOR_MIPS64)
+    CallArgs args = CallArgsFromVp(argc, vp);
+
+    jit::Simulator* sim = cx->runtime()->simulator();
+    sim->enable_single_stepping(SingleStepCallback, cx);
+
+    args.rval().setUndefined();
+    return true;
+#else
+    JS_ReportErrorASCII(cx, "single-step profiling not enabled on this platform");
+    return false;
+#endif
+}
+
+static bool
+DisableSingleStepProfiling(JSContext* cx, unsigned argc, Value* vp)
+{
+#if defined(JS_SIMULATOR_ARM) || defined(JS_SIMULATOR_MIPS64)
+    CallArgs args = CallArgsFromVp(argc, vp);
+
+    jit::Simulator* sim = cx->runtime()->simulator();
+    sim->disable_single_stepping();
+
+    AutoValueVector elems(cx);
+    for (size_t i = 0; i < stacks.length(); i++) {
+        JSString* stack = JS_NewUCStringCopyN(cx, stacks[i].begin(), stacks[i].length());
+        if (!stack)
+            return false;
+        if (!elems.append(StringValue(stack)))
+            return false;
+    }
+
+    JSObject* array = JS_NewArrayObject(cx, elems);
+    if (!array)
+        return false;
+
+    stacks.clear();
+    args.rval().setObject(*array);
+    return true;
+#else
+    JS_ReportErrorASCII(cx, "single-step profiling not enabled on this platform");
+    return false;
+#endif
+}
+
+static bool
+IsLatin1(JSContext* cx, unsigned argc, Value* vp)
+{
+    CallArgs args = CallArgsFromVp(argc, vp);
+    bool isLatin1 = args.get(0).isString() && args[0].toString()->hasLatin1Chars();
+    args.rval().setBoolean(isLatin1);
+    return true;
+}
+
+static bool
+EnableSPSProfiling(JSContext* cx, unsigned argc, Value* vp)
+{
+    CallArgs args = CallArgsFromVp(argc, vp);
+
+    ShellContext* sc = GetShellContext(cx);
+
+    // Disable before re-enabling; see the assertion in |SPSProfiler::setProfilingStack|.
+    if (cx->spsProfiler.installed())
+        cx->spsProfiler.enable(false);
+
+    SetContextProfilingStack(cx, sc->spsProfilingStack, &sc->spsProfilingStackSize,
+                             ShellContext::SpsProfilingMaxStackSize);
+    cx->spsProfiler.enableSlowAssertions(false);
+    cx->spsProfiler.enable(true);
+
+    args.rval().setUndefined();
+    return true;
+}
+
+static bool
+EnableSPSProfilingWithSlowAssertions(JSContext* cx, unsigned argc, Value* vp)
+{
+    CallArgs args = CallArgsFromVp(argc, vp);
+    args.rval().setUndefined();
+
+    ShellContext* sc = GetShellContext(cx);
+
+    if (cx->spsProfiler.enabled()) {
+        // If profiling already enabled with slow assertions disabled,
+        // this is a no-op.
+        if (cx->spsProfiler.slowAssertionsEnabled())
+            return true;
+
+        // Slow assertions are off.  Disable profiling before re-enabling
+        // with slow assertions on.
+        cx->spsProfiler.enable(false);
+    }
+
+    // Disable before re-enabling; see the assertion in |SPSProfiler::setProfilingStack|.
+    if (cx->spsProfiler.installed())
+        cx->spsProfiler.enable(false);
+
+    SetContextProfilingStack(cx, sc->spsProfilingStack, &sc->spsProfilingStackSize,
+                             ShellContext::SpsProfilingMaxStackSize);
+    cx->spsProfiler.enableSlowAssertions(true);
+    cx->spsProfiler.enable(true);
+
+    return true;
+}
+
+static bool
+DisableSPSProfiling(JSContext* cx, unsigned argc, Value* vp)
+{
+    CallArgs args = CallArgsFromVp(argc, vp);
+    if (cx->runtime()->spsProfiler.installed())
+        cx->runtime()->spsProfiler.enable(false);
+    args.rval().setUndefined();
+    return true;
+}
+
+// Global mailbox that is used to communicate a SharedArrayBuffer
+// value from one worker to another.
+//
+// For simplicity we store only the SharedArrayRawBuffer; retaining
+// the SAB object would require per-runtime storage, and would have no
+// real benefits.
+//
+// Invariant: when a SARB is in the mailbox its reference count is at
+// least 1, accounting for the reference from the mailbox.
+//
+// The lock guards the mailbox variable and prevents a race where two
+// workers try to set the mailbox at the same time to replace a SARB
+// that is only referenced from the mailbox: the workers will both
+// decrement the reference count on the old SARB, and one of those
+// decrements will be on a garbage object.  We could implement this
+// with atomics and a CAS loop but it's not worth the bother.
+
+static Mutex* sharedArrayBufferMailboxLock;
+static SharedArrayRawBuffer* sharedArrayBufferMailbox;
+
+static bool
+InitSharedArrayBufferMailbox()
+{
+    sharedArrayBufferMailboxLock = js_new<Mutex>(mutexid::ShellArrayBufferMailbox);
+    return sharedArrayBufferMailboxLock != nullptr;
+}
+
+static void
+DestructSharedArrayBufferMailbox()
+{
+    // All workers need to have terminated at this point.
+    if (sharedArrayBufferMailbox)
+        sharedArrayBufferMailbox->dropReference();
+    js_delete(sharedArrayBufferMailboxLock);
+}
+
+static bool
+GetSharedArrayBuffer(JSContext* cx, unsigned argc, Value* vp)
+{
+    CallArgs args = CallArgsFromVp(argc, vp);
+    JSObject* newObj = nullptr;
+    bool rval = true;
+
+    sharedArrayBufferMailboxLock->lock();
+    SharedArrayRawBuffer* buf = sharedArrayBufferMailbox;
+    if (buf) {
+        buf->addReference();
+        // Shared memory is enabled globally in the shell: there can't be a worker
+        // that does not enable it if the main thread has it.
+        MOZ_ASSERT(cx->compartment()->creationOptions().getSharedMemoryAndAtomicsEnabled());
+        newObj = SharedArrayBufferObject::New(cx, buf);
+        if (!newObj) {
+            buf->dropReference();
+            rval = false;
+        }
+    }
+    sharedArrayBufferMailboxLock->unlock();
+
+    args.rval().setObjectOrNull(newObj);
+    return rval;
+}
+
+static bool
+SetSharedArrayBuffer(JSContext* cx, unsigned argc, Value* vp)
+{
+    CallArgs args = CallArgsFromVp(argc, vp);
+    SharedArrayRawBuffer* newBuffer = nullptr;
+
+    if (argc == 0 || args.get(0).isNullOrUndefined()) {
+        // Clear out the mailbox
+    }
+    else if (args.get(0).isObject() && args[0].toObject().is<SharedArrayBufferObject>()) {
+        newBuffer = args[0].toObject().as<SharedArrayBufferObject>().rawBufferObject();
+        newBuffer->addReference();
+    } else {
+        JS_ReportErrorASCII(cx, "Only a SharedArrayBuffer can be installed in the global mailbox");
+        return false;
+    }
+
+    sharedArrayBufferMailboxLock->lock();
+    SharedArrayRawBuffer* oldBuffer = sharedArrayBufferMailbox;
+    if (oldBuffer)
+        oldBuffer->dropReference();
+    sharedArrayBufferMailbox = newBuffer;
+    sharedArrayBufferMailboxLock->unlock();
+
+    args.rval().setUndefined();
+    return true;
+}
+
+class SprintOptimizationTypeInfoOp : public JS::ForEachTrackedOptimizationTypeInfoOp
+{
+    Sprinter* sp;
+    bool startedTypes_;
+    bool hadError_;
+
+  public:
+    explicit SprintOptimizationTypeInfoOp(Sprinter* sp)
+      : sp(sp),
+        startedTypes_(false),
+        hadError_(false)
+    { }
+
+    void readType(const char* keyedBy, const char* name,
+                  const char* location, Maybe<unsigned> lineno) override
+    {
+        if (hadError_)
+            return;
+
+        do {
+            if (!startedTypes_) {
+                startedTypes_ = true;
+                if (sp->put("{\"typeset\": [") < 0)
+                    break;
+            }
+
+            if (!sp->jsprintf("{\"keyedBy\":\"%s\"", keyedBy))
+                break;
+
+            if (name) {
+                if (!sp->jsprintf(",\"name\":\"%s\"", name))
+                    break;
+            }
+
+            if (location) {
+                char buf[512];
+                PutEscapedString(buf, mozilla::ArrayLength(buf), location, strlen(location), '"');
+                if (!sp->jsprintf(",\"location\":%s", buf))
+                    break;
+            }
+            if (lineno.isSome()) {
+                if (!sp->jsprintf(",\"line\":%u", *lineno))
+                    break;
+            }
+            if (sp->put("},") < 0)
+                break;
+
+            return;
+        } while (false);
+
+        hadError_ = true;
+    }
+
+    void operator()(JS::TrackedTypeSite site, const char* mirType) override {
+        if (hadError_)
+            return;
+
+        do {
+            if (startedTypes_) {
+                // Clear trailing ,
+                if ((*sp)[sp->getOffset() - 1] == ',')
+                    (*sp)[sp->getOffset() - 1] = ' ';
+                if (sp->put("],") < 0)
+                    break;
+
+                startedTypes_ = false;
+            } else {
+                if (sp->put("{") < 0)
+                    break;
+            }
+
+            if (!sp->jsprintf("\"site\":\"%s\",\"mirType\":\"%s\"},",
+                              TrackedTypeSiteString(site), mirType))
+            {
+                break;
+            }
+
+            return;
+        } while (false);
+
+        hadError_ = true;
+    }
+
+    bool hadError() const {
+        return hadError_;
+    }
+};
+
+class SprintOptimizationAttemptsOp : public JS::ForEachTrackedOptimizationAttemptOp
+{
+    Sprinter* sp;
+    bool hadError_;
+
+  public:
+    explicit SprintOptimizationAttemptsOp(Sprinter* sp)
+      : sp(sp), hadError_(false)
+    { }
+
+    void operator()(JS::TrackedStrategy strategy, JS::TrackedOutcome outcome) override {
+        if (hadError_)
+            return;
+
+        hadError_ = !sp->jsprintf("{\"strategy\":\"%s\",\"outcome\":\"%s\"},",
+                                  TrackedStrategyString(strategy), TrackedOutcomeString(outcome));
+    }
+
+    bool hadError() const {
+        return hadError_;
+    }
+};
+
+static bool
+ReflectTrackedOptimizations(JSContext* cx, unsigned argc, Value* vp)
+{
+    CallArgs args = CallArgsFromVp(argc, vp);
+    RootedObject callee(cx, &args.callee());
+    JSRuntime* rt = cx->runtime();
+
+    if (!rt->hasJitRuntime() || !rt->jitRuntime()->isOptimizationTrackingEnabled(rt)) {
+        JS_ReportErrorASCII(cx, "Optimization tracking is off.");
+        return false;
+    }
+
+    if (args.length() != 1) {
+        ReportUsageErrorASCII(cx, callee, "Wrong number of arguments");
+        return false;
+    }
+
+    if (!args[0].isObject() || !args[0].toObject().is<JSFunction>()) {
+        ReportUsageErrorASCII(cx, callee, "Argument must be a function");
+        return false;
+    }
+
+    RootedFunction fun(cx, &args[0].toObject().as<JSFunction>());
+    if (!fun->hasScript() || !fun->nonLazyScript()->hasIonScript()) {
+        args.rval().setNull();
+        return true;
+    }
+
+    // Suppress GC for the unrooted JitcodeGlobalEntry below.
+    gc::AutoSuppressGC suppress(cx);
+
+    jit::JitcodeGlobalTable* table = rt->jitRuntime()->getJitcodeGlobalTable();
+    jit::IonScript* ion = fun->nonLazyScript()->ionScript();
+    jit::JitcodeGlobalEntry& entry = table->lookupInfallible(ion->method()->raw());
+
+    if (!entry.hasTrackedOptimizations()) {
+        JSObject* obj = JS_NewPlainObject(cx);
+        if (!obj)
+            return false;
+        args.rval().setObject(*obj);
+        return true;
+    }
+
+    Sprinter sp(cx);
+    if (!sp.init())
+        return false;
+
+    const jit::IonTrackedOptimizationsRegionTable* regions =
+        entry.ionEntry().trackedOptimizationsRegionTable();
+
+    if (sp.put("{\"regions\": [") < 0)
+        return false;
+
+    for (uint32_t i = 0; i < regions->numEntries(); i++) {
+        jit::IonTrackedOptimizationsRegion region = regions->entry(i);
+        jit::IonTrackedOptimizationsRegion::RangeIterator iter = region.ranges();
+        while (iter.more()) {
+            uint32_t startOffset, endOffset;
+            uint8_t index;
+            iter.readNext(&startOffset, &endOffset, &index);
+
+            JSScript* script;
+            jsbytecode* pc;
+            // Use endOffset, as startOffset may be associated with a
+            // previous, adjacent region ending exactly at startOffset. That
+            // is, suppose we have two regions [0, startOffset], [startOffset,
+            // endOffset]. Since we are not querying a return address, we want
+            // the second region and not the first.
+            uint8_t* addr = ion->method()->raw() + endOffset;
+            entry.youngestFrameLocationAtAddr(rt, addr, &script, &pc);
+
+            if (!sp.jsprintf("{\"location\":\"%s:%" PRIuSIZE "\",\"offset\":%" PRIuSIZE ",\"index\":%u}%s",
+                             script->filename(), script->lineno(), script->pcToOffset(pc), index,
+                             iter.more() ? "," : ""))
+            {
+                return false;
+            }
+        }
+    }
+
+    if (sp.put("],") < 0)
+        return false;
+
+    if (sp.put("\"opts\": [") < 0)
+        return false;
+
+    for (uint8_t i = 0; i < entry.ionEntry().numOptimizationAttempts(); i++) {
+        if (!sp.jsprintf("%s{\"typeinfo\":[", i == 0 ? "" : ","))
+            return false;
+
+        SprintOptimizationTypeInfoOp top(&sp);
+        jit::IonTrackedOptimizationsTypeInfo::ForEachOpAdapter adapter(top);
+        entry.trackedOptimizationTypeInfo(i).forEach(adapter, entry.allTrackedTypes());
+        if (top.hadError())
+            return false;
+
+        // Clear the trailing ,
+        if (sp[sp.getOffset() - 1] == ',')
+            sp[sp.getOffset() - 1] = ' ';
+
+        if (sp.put("],\"attempts\":[") < 0)
+            return false;
+
+        SprintOptimizationAttemptsOp aop(&sp);
+        entry.trackedOptimizationAttempts(i).forEach(aop);
+        if (aop.hadError())
+            return false;
+
+        // Clear the trailing ,
+        if (sp[sp.getOffset() - 1] == ',')
+            sp[sp.getOffset() - 1] = ' ';
+
+        if (sp.put("]}") < 0)
+            return false;
+    }
+
+    if (sp.put("]}") < 0)
+        return false;
+
+    if (sp.hadOutOfMemory())
+        return false;
+
+    RootedString str(cx, JS_NewStringCopyZ(cx, sp.string()));
+    if (!str)
+        return false;
+    RootedValue jsonVal(cx);
+    if (!JS_ParseJSON(cx, str, &jsonVal))
+        return false;
+
+    args.rval().set(jsonVal);
+    return true;
+}
+
+static bool
+DumpScopeChain(JSContext* cx, unsigned argc, Value* vp)
+{
+    CallArgs args = CallArgsFromVp(argc, vp);
+    RootedObject callee(cx, &args.callee());
+
+    if (args.length() != 1) {
+        ReportUsageErrorASCII(cx, callee, "Wrong number of arguments");
+        return false;
+    }
+
+    if (!args[0].isObject() ||
+        !(args[0].toObject().is<JSFunction>() || args[0].toObject().is<ModuleObject>()))
+    {
+        ReportUsageErrorASCII(cx, callee, "Argument must be an interpreted function or a module");
+        return false;
+    }
+
+    RootedObject obj(cx, &args[0].toObject());
+    RootedScript script(cx);
+
+    if (obj->is<JSFunction>()) {
+        RootedFunction fun(cx, &obj->as<JSFunction>());
+        if (!fun->isInterpreted()) {
+            ReportUsageErrorASCII(cx, callee, "Argument must be an interpreted function");
+            return false;
+        }
+        script = fun->getOrCreateScript(cx);
+    } else {
+        script = obj->as<ModuleObject>().script();
+    }
+
+    script->bodyScope()->dump();
+
+    args.rval().setUndefined();
+    return true;
+}
+
+namespace js {
+namespace shell {
+
+class ShellAutoEntryMonitor : JS::dbg::AutoEntryMonitor {
+    Vector<UniqueChars, 1, js::SystemAllocPolicy> log;
+    bool oom;
+    bool enteredWithoutExit;
+
+  public:
+    explicit ShellAutoEntryMonitor(JSContext *cx)
+      : AutoEntryMonitor(cx),
+        oom(false),
+        enteredWithoutExit(false)
+    { }
+
+    ~ShellAutoEntryMonitor() {
+        MOZ_ASSERT(!enteredWithoutExit);
+    }
+
+    void Entry(JSContext* cx, JSFunction* function, JS::HandleValue asyncStack,
+               const char* asyncCause) override {
+        MOZ_ASSERT(!enteredWithoutExit);
+        enteredWithoutExit = true;
+
+        RootedString displayId(cx, JS_GetFunctionDisplayId(function));
+        if (displayId) {
+            UniqueChars displayIdStr(JS_EncodeStringToUTF8(cx, displayId));
+            if (!displayIdStr) {
+                // We report OOM in buildResult.
+                cx->recoverFromOutOfMemory();
+                oom = true;
+                return;
+            }
+            oom = !log.append(mozilla::Move(displayIdStr));
+            return;
+        }
+
+        oom = !log.append(DuplicateString("anonymous"));
+    }
+
+    void Entry(JSContext* cx, JSScript* script, JS::HandleValue asyncStack,
+               const char* asyncCause) override {
+        MOZ_ASSERT(!enteredWithoutExit);
+        enteredWithoutExit = true;
+
+        UniqueChars label(JS_smprintf("eval:%s", JS_GetScriptFilename(script)));
+        oom = !label || !log.append(mozilla::Move(label));
+    }
+
+    void Exit(JSContext* cx) override {
+        MOZ_ASSERT(enteredWithoutExit);
+        enteredWithoutExit = false;
+    }
+
+    bool buildResult(JSContext *cx, MutableHandleValue resultValue) {
+        if (oom) {
+            JS_ReportOutOfMemory(cx);
+            return false;
+        }
+
+        RootedObject result(cx, JS_NewArrayObject(cx, log.length()));
+        if (!result)
+            return false;
+
+        for (size_t i = 0; i < log.length(); i++) {
+            char *name = log[i].get();
+            RootedString string(cx, Atomize(cx, name, strlen(name)));
+            if (!string)
+                return false;
+            RootedValue value(cx, StringValue(string));
+            if (!JS_SetElement(cx, result, i, value))
+                return false;
+        }
+
+        resultValue.setObject(*result.get());
+        return true;
+    }
+};
+
+} // namespace shell
+} // namespace js
+
+static bool
+EntryPoints(JSContext* cx, unsigned argc, Value* vp)
+{
+    CallArgs args = CallArgsFromVp(argc, vp);
+
+    if (args.length() != 1) {
+        JS_ReportErrorASCII(cx, "Wrong number of arguments");
+        return false;
+    }
+
+    RootedObject opts(cx, ToObject(cx, args[0]));
+    if (!opts)
+        return false;
+
+    // { function: f } --- Call f.
+    {
+        RootedValue fun(cx), dummy(cx);
+
+        if (!JS_GetProperty(cx, opts, "function", &fun))
+            return false;
+        if (!fun.isUndefined()) {
+            js::shell::ShellAutoEntryMonitor sarep(cx);
+            if (!Call(cx, UndefinedHandleValue, fun, JS::HandleValueArray::empty(), &dummy))
+                return false;
+            return sarep.buildResult(cx, args.rval());
+        }
+    }
+
+    // { object: o, property: p, value: v } --- Fetch o[p], or if
+    // v is present, assign o[p] = v.
+    {
+        RootedValue objectv(cx), propv(cx), valuev(cx);
+
+        if (!JS_GetProperty(cx, opts, "object", &objectv) ||
+            !JS_GetProperty(cx, opts, "property", &propv))
+            return false;
+        if (!objectv.isUndefined() && !propv.isUndefined()) {
+            RootedObject object(cx, ToObject(cx, objectv));
+            if (!object)
+                return false;
+
+            RootedString string(cx, ToString(cx, propv));
+            if (!string)
+                return false;
+            RootedId id(cx);
+            if (!JS_StringToId(cx, string, &id))
+                return false;
+
+            if (!JS_GetProperty(cx, opts, "value", &valuev))
+                return false;
+
+            js::shell::ShellAutoEntryMonitor sarep(cx);
+
+            if (!valuev.isUndefined()) {
+                if (!JS_SetPropertyById(cx, object, id, valuev))
+                    return false;
+            } else {
+                if (!JS_GetPropertyById(cx, object, id, &valuev))
+                    return false;
+            }
+
+            return sarep.buildResult(cx, args.rval());
+        }
+    }
+
+    // { ToString: v } --- Apply JS::ToString to v.
+    {
+        RootedValue v(cx);
+
+        if (!JS_GetProperty(cx, opts, "ToString", &v))
+            return false;
+        if (!v.isUndefined()) {
+            js::shell::ShellAutoEntryMonitor sarep(cx);
+            if (!JS::ToString(cx, v))
+                return false;
+            return sarep.buildResult(cx, args.rval());
+        }
+    }
+
+    // { ToNumber: v } --- Apply JS::ToNumber to v.
+    {
+        RootedValue v(cx);
+        double dummy;
+
+        if (!JS_GetProperty(cx, opts, "ToNumber", &v))
+            return false;
+        if (!v.isUndefined()) {
+            js::shell::ShellAutoEntryMonitor sarep(cx);
+            if (!JS::ToNumber(cx, v, &dummy))
+                return false;
+            return sarep.buildResult(cx, args.rval());
+        }
+    }
+
+    // { eval: code } --- Apply ToString and then Evaluate to code.
+    {
+        RootedValue code(cx), dummy(cx);
+
+        if (!JS_GetProperty(cx, opts, "eval", &code))
+            return false;
+        if (!code.isUndefined()) {
+            RootedString codeString(cx, ToString(cx, code));
+            if (!codeString || !codeString->ensureFlat(cx))
+                return false;
+
+            AutoStableStringChars stableChars(cx);
+            if (!stableChars.initTwoByte(cx, codeString))
+                return false;
+            const char16_t* chars = stableChars.twoByteRange().begin().get();
+            size_t length = codeString->length();
+
+            CompileOptions options(cx);
+            options.setIntroductionType("entryPoint eval")
+                   .setFileAndLine("entryPoint eval", 1);
+
+            js::shell::ShellAutoEntryMonitor sarep(cx);
+            if (!JS::Evaluate(cx, options, chars, length, &dummy))
+                return false;
+            return sarep.buildResult(cx, args.rval());
+        }
+    }
+
+    JS_ReportErrorASCII(cx, "bad 'params' object");
+    return false;
+}
+
+static bool
+SetARMHwCapFlags(JSContext* cx, unsigned argc, Value* vp)
+{
+    CallArgs args = CallArgsFromVp(argc, vp);
+
+    if (args.length() != 1) {
+        JS_ReportErrorASCII(cx, "Wrong number of arguments");
+        return false;
+    }
+
+    RootedString flagsListString(cx, JS::ToString(cx, args.get(0)));
+    if (!flagsListString)
+        return false;
+
+#if defined(JS_CODEGEN_ARM)
+    JSAutoByteString flagsList(cx, flagsListString);
+    if (!flagsList)
+        return false;
+
+    jit::ParseARMHwCapFlags(flagsList.ptr());
+#endif
+
+    args.rval().setUndefined();
+    return true;
+}
+
+#ifndef __AFL_HAVE_MANUAL_CONTROL
+# define __AFL_LOOP(x) true
+#endif
+
+static bool
+WasmLoop(JSContext* cx, unsigned argc, Value* vp)
+{
+    CallArgs args = CallArgsFromVp(argc, vp);
+    RootedObject callee(cx, &args.callee());
+
+    if (args.length() < 1 || args.length() > 2) {
+        ReportUsageErrorASCII(cx, callee, "Wrong number of arguments");
+        return false;
+    }
+
+    if (!args[0].isString()) {
+        ReportUsageErrorASCII(cx, callee, "First argument must be a String");
+        return false;
+    }
+
+    RootedObject importObj(cx);
+    if (!args.get(1).isUndefined()) {
+        if (!args.get(1).isObject()) {
+            ReportUsageErrorASCII(cx, callee, "Second argument, if present, must be an Object");
+            return false;
+        }
+        importObj = &args[1].toObject();
+    }
+
+    RootedString givenPath(cx, args[0].toString());
+    RootedString filename(cx, ResolvePath(cx, givenPath, RootRelative));
+    if (!filename)
+        return false;
+
+    while (__AFL_LOOP(1000)) {
+        Rooted<JSObject*> ret(cx, FileAsTypedArray(cx, filename));
+        if (!ret)
+            return false;
+
+        Rooted<TypedArrayObject*> typedArray(cx, &ret->as<TypedArrayObject>());
+        RootedWasmInstanceObject instanceObj(cx);
+        if (!wasm::Eval(cx, typedArray, importObj, &instanceObj)) {
+            // Clear any pending exceptions, we don't care about them
+            cx->clearPendingException();
+        }
+    }
+
+    return true;
 }
 
 static const JSFunctionSpecWithHelp shell_functions[] = {
@@ -3593,17 +5714,40 @@ static const JSFunctionSpecWithHelp shell_functions[] = {
 "evaluate(code[, options])",
 "  Evaluate code as though it were the contents of a file.\n"
 "  options is an optional object that may have these properties:\n"
-"      compileAndGo: use the compile-and-go compiler option (default: true)\n"
+"      isRunOnce: use the isRunOnce compiler option (default: false)\n"
 "      noScriptRval: use the no-script-rval compiler option (default: false)\n"
 "      fileName: filename for error messages and debug info\n"
 "      lineNumber: starting line number for error messages and debug info\n"
+"      columnNumber: starting column number for error messages and debug info\n"
 "      global: global in which to execute the code\n"
 "      newContext: if true, create and use a new cx (default: false)\n"
-"      saveFrameChain: if true, save the frame chain before evaluating code\n"
-"         and restore it afterwards\n"
 "      catchTermination: if true, catch termination (failure without\n"
 "         an exception value, as for slow scripts or out-of-memory)\n"
-"          and return 'terminated'\n"),
+"         and return 'terminated'\n"
+"      element: if present with value |v|, convert |v| to an object |o| and\n"
+"         mark the source as being attached to the DOM element |o|. If the\n"
+"         property is omitted or |v| is null, don't attribute the source to\n"
+"         any DOM element.\n"
+"      elementAttributeName: if present and not undefined, the name of\n"
+"         property of 'element' that holds this code. This is what\n"
+"         Debugger.Source.prototype.elementAttributeName returns.\n"
+"      sourceMapURL: if present with value |v|, convert |v| to a string, and\n"
+"         provide that as the code's source map URL. If omitted, attach no\n"
+"         source map URL to the code (although the code may provide one itself,\n"
+"         via a //#sourceMappingURL comment).\n"
+"      sourceIsLazy: if present and true, indicates that, after compilation, \n"
+          "script source should not be cached by the JS engine and should be \n"
+          "lazily loaded from the embedding as-needed.\n"
+"      loadBytecode: if true, and if the source is a CacheEntryObject,\n"
+"         the bytecode would be loaded and decoded from the cache entry instead\n"
+"         of being parsed, then it would be executed as usual.\n"
+"      saveBytecode: if true, and if the source is a CacheEntryObject,\n"
+"         the bytecode would be encoded and saved into the cache entry after\n"
+"         the script execution.\n"
+"      assertEqBytecode: if true, and if both loadBytecode and saveBytecode are \n"
+"         true, then the loaded bytecode and the encoded bytecode are compared.\n"
+"         and an assertion is raised if they differ.\n"
+),
 
     JS_FN_HELP("run", Run, 1, 0,
 "run('foo.js')",
@@ -3613,6 +5757,12 @@ static const JSFunctionSpecWithHelp shell_functions[] = {
     JS_FN_HELP("readline", ReadLine, 0, 0,
 "readline()",
 "  Read a single line from stdin."),
+
+    JS_FN_HELP("readlineBuf", ReadLineBuf, 1, 0,
+"readlineBuf([ buf ])",
+"  Emulate readline() on the specified string. The first call with a string\n"
+"  argument sets the source buffer. Subsequent calls without an argument\n"
+"  then read from this buffer line by line.\n"),
 
     JS_FN_HELP("print", Print, 0, 0,
 "print([exp ...])",
@@ -3643,13 +5793,13 @@ static const JSFunctionSpecWithHelp shell_functions[] = {
 "  Throw if the first two arguments are not the same (both +0 or both -0,\n"
 "  both NaN, or non-zero and ===)."),
 
-    JS_FN_HELP("setDebug", SetDebug, 1, 0,
-"setDebug(debug)",
-"  Set debug mode."),
+    JS_FN_HELP("startTimingMutator", StartTimingMutator, 0, 0,
+"startTimingMutator()",
+"  Start accounting time to mutator vs GC."),
 
-    JS_FN_HELP("setDebuggerHandler", SetDebuggerHandler, 1, 0,
-"setDebuggerHandler(f)",
-"  Set handler for debugger keyword to f."),
+    JS_FN_HELP("stopTimingMutator", StopTimingMutator, 0, 0,
+"stopTimingMutator()",
+"  Stop accounting time to mutator vs GC and dump the results."),
 
     JS_FN_HELP("throwError", ThrowError, 0, 0,
 "throwError()",
@@ -3657,85 +5807,42 @@ static const JSFunctionSpecWithHelp shell_functions[] = {
 
 #ifdef DEBUG
     JS_FN_HELP("disassemble", DisassembleToString, 1, 0,
-"disassemble([fun])",
-"  Return the disassembly for the given function."),
+"disassemble([fun/code])",
+"  Return the disassembly for the given function or code.\n"
+"  All disassembly functions take these options as leading string arguments:\n"
+"    \"-r\" (disassemble recursively)\n"
+"    \"-l\" (show line numbers)\n"
+"    \"-S\" (omit source notes)"),
 
     JS_FN_HELP("dis", Disassemble, 1, 0,
-"dis([fun])",
+"dis([fun/code])",
 "  Disassemble functions into bytecodes."),
 
     JS_FN_HELP("disfile", DisassFile, 1, 0,
 "disfile('foo.js')",
-"  Disassemble script file into bytecodes.\n"
-"  dis and disfile take these options as preceeding string arguments:\n"
-"    \"-r\" (disassemble recursively)\n"
-"    \"-l\" (show line numbers)"),
+"  Disassemble script file into bytecodes.\n"),
 
     JS_FN_HELP("dissrc", DisassWithSrc, 1, 0,
-"dissrc([fun])",
+"dissrc([fun/code])",
 "  Disassemble functions with source lines."),
-
-    JS_FN_HELP("dumpHeap", DumpHeap, 0, 0,
-"dumpHeap([fileName[, start[, toFind[, maxDepth[, toIgnore]]]]])",
-"  Interface to JS_DumpHeap with output sent to file."),
-
-    JS_FN_HELP("dumpObject", DumpObject, 1, 0,
-"dumpObject()",
-"  Dump an internal representation of an object."),
 
     JS_FN_HELP("notes", Notes, 1, 0,
 "notes([fun])",
 "  Show source notes for functions."),
 
-    JS_FN_HELP("findReferences", FindReferences, 1, 0,
-"findReferences(target)",
-"  Walk the entire heap, looking for references to |target|, and return a\n"
-"  \"references object\" describing what we found.\n"
-"\n"
-"  Each property of the references object describes one kind of reference. The\n"
-"  property's name is the label supplied to MarkObject, JS_CALL_TRACER, or what\n"
-"  have you, prefixed with \"edge: \" to avoid collisions with system properties\n"
-"  (like \"toString\" and \"__proto__\"). The property's value is an array of things\n"
-"  that refer to |thing| via that kind of reference. Ordinary references from\n"
-"  one object to another are named after the property name (with the \"edge: \"\n"
-"  prefix).\n"
-"\n"
-"  Garbage collection roots appear as references from 'null'. We use the name\n"
-"  given to the root (with the \"edge: \" prefix) as the name of the reference.\n"
-"\n"
-"  Note that the references object does record references from objects that are\n"
-"  only reachable via |thing| itself, not just the references reachable\n"
-"  themselves from roots that keep |thing| from being collected. (We could make\n"
-"  this distinction if it is useful.)\n"
-"\n"
-"  If any references are found by the conservative scanner, the references\n"
-"  object will have a property named \"edge: machine stack\"; the referrers will\n"
-"  be 'null', because they are roots."),
+    JS_FN_HELP("stackDump", StackDump, 3, 0,
+"stackDump(showArgs, showLocals, showThisProps)",
+"  Tries to print a lot of information about the current stack. \n"
+"  Similar to the DumpJSStack() function in the browser."),
 
 #endif
-    JS_FN_HELP("build", BuildDate, 0, 0,
-"build()",
-"  Show build date and time."),
-
     JS_FN_HELP("intern", Intern, 1, 0,
 "intern(str)",
 "  Internalize str in the atom table."),
 
-    JS_FN_HELP("clone", Clone, 1, 0,
-"clone(fun[, scope])",
-"  Clone function object."),
-
-    JS_FN_HELP("getpda", GetPDA, 1, 0,
-"getpda(obj)",
-"  Get the property descriptors for obj."),
-
     JS_FN_HELP("getslx", GetSLX, 1, 0,
 "getslx(obj)",
 "  Get script line extent."),
-
-    JS_FN_HELP("toint32", ToInt32, 1, 0,
-"toint32(n)",
-"  Testing hook for JS_ValueToInt32."),
 
     JS_FN_HELP("evalcx", EvalInContext, 1, 0,
 "evalcx(s[, o])",
@@ -3743,49 +5850,64 @@ static const JSFunctionSpecWithHelp shell_functions[] = {
 "  if (s == '' && !o) return new o with eager standard classes\n"
 "  if (s == 'lazy' && !o) return new o with lazy standard classes"),
 
-    JS_FN_HELP("evalInFrame", EvalInFrame, 2, 0,
-"evalInFrame(n,str,save)",
-"  Evaluate 'str' in the nth up frame.\n"
-"  If 'save' (default false), save the frame chain."),
+    JS_FN_HELP("evalInWorker", EvalInWorker, 1, 0,
+"evalInWorker(str)",
+"  Evaluate 'str' in a separate thread with its own runtime.\n"),
+
+    JS_FN_HELP("getSharedArrayBuffer", GetSharedArrayBuffer, 0, 0,
+"getSharedArrayBuffer()",
+"  Retrieve the SharedArrayBuffer object from the cross-worker mailbox.\n"
+"  The object retrieved may not be identical to the object that was\n"
+"  installed, but it references the same shared memory.\n"
+"  getSharedArrayBuffer performs an ordering memory barrier.\n"),
+
+    JS_FN_HELP("setSharedArrayBuffer", SetSharedArrayBuffer, 0, 0,
+"setSharedArrayBuffer()",
+"  Install the SharedArrayBuffer object in the cross-worker mailbox.\n"
+"  setSharedArrayBuffer performs an ordering memory barrier.\n"),
 
     JS_FN_HELP("shapeOf", ShapeOf, 1, 0,
 "shapeOf(obj)",
 "  Get the shape of obj (an implementation detail)."),
 
-    JS_FN_HELP("resolver", Resolver, 1, 0,
-"resolver(src[, proto])",
-"  Create object with resolve hook that copies properties\n"
-"  from src. If proto is omitted, use Object.prototype."),
+    JS_FN_HELP("groupOf", GroupOf, 1, 0,
+"groupOf(obj)",
+"  Get the group of obj (an implementation detail)."),
+
+    JS_FN_HELP("unwrappedObjectsHaveSameShape", UnwrappedObjectsHaveSameShape, 2, 0,
+"unwrappedObjectsHaveSameShape(obj1, obj2)",
+"  Returns true iff obj1 and obj2 have the same shape, false otherwise. Both\n"
+"  objects are unwrapped first, so this can be used on objects from different\n"
+"  globals."),
 
 #ifdef DEBUG
-    JS_FN_HELP("arrayInfo", js_ArrayInfo, 1, 0,
+    JS_FN_HELP("arrayInfo", ArrayInfo, 1, 0,
 "arrayInfo(a1, a2, ...)",
 "  Report statistics about arrays."),
-
 #endif
-#ifdef JS_THREADSAFE
+
     JS_FN_HELP("sleep", Sleep_fn, 1, 0,
 "sleep(dt)",
 "  Sleep for dt seconds."),
 
-#endif
-    JS_FN_HELP("snarf", Snarf, 1, 0,
-"snarf(filename, [\"binary\"])",
-"  Read filename into returned string. Filename is relative to the current\n"
-               "  working directory."),
-
-    JS_FN_HELP("read", Snarf, 1, 0,
-"read(filename, [\"binary\"])",
-"  Synonym for snarf."),
-
-    JS_FN_HELP("readRelativeToScript", ReadRelativeToScript, 1, 0,
-"readRelativeToScript(filename, [\"binary\"])",
-"  Read filename into returned string. Filename is relative to the directory\n"
-               "  containing the current script."),
-
     JS_FN_HELP("compile", Compile, 1, 0,
 "compile(code)",
 "  Compiles a string to bytecode, potentially throwing."),
+
+    JS_FN_HELP("parseModule", ParseModule, 1, 0,
+"parseModule(code)",
+"  Parses source text as a module and returns a Module object."),
+
+    JS_FN_HELP("setModuleResolveHook", SetModuleResolveHook, 1, 0,
+"setModuleResolveHook(function(module, specifier) {})",
+"  Set the HostResolveImportedModule hook to |function|.\n"
+"  This hook is used to look up a previously loaded module object.  It should\n"
+"  be implemented by the module loader."),
+
+    JS_FN_HELP("getModuleLoadPath", GetModuleLoadPath, 0, 0,
+"getModuleLoadPath()",
+"  Return any --module-load-path argument passed to the shell.  Used by the\n"
+"  module loader.\n"),
 
     JS_FN_HELP("parse", Parse, 1, 0,
 "parse(code)",
@@ -3795,23 +5917,86 @@ static const JSFunctionSpecWithHelp shell_functions[] = {
 "syntaxParse(code)",
 "  Check the syntax of a string, returning success value"),
 
+    JS_FN_HELP("offThreadCompileScript", OffThreadCompileScript, 1, 0,
+"offThreadCompileScript(code[, options])",
+"  Compile |code| on a helper thread. To wait for the compilation to finish\n"
+"  and run the code, call |runOffThreadScript|. If present, |options| may\n"
+"  have properties saying how the code should be compiled:\n"
+"      noScriptRval: use the no-script-rval compiler option (default: false)\n"
+"      fileName: filename for error messages and debug info\n"
+"      lineNumber: starting line number for error messages and debug info\n"
+"      columnNumber: starting column number for error messages and debug info\n"
+"      element: if present with value |v|, convert |v| to an object |o| and\n"
+"         mark the source as being attached to the DOM element |o|. If the\n"
+"         property is omitted or |v| is null, don't attribute the source to\n"
+"         any DOM element.\n"
+"      elementAttributeName: if present and not undefined, the name of\n"
+"         property of 'element' that holds this code. This is what\n"
+"         Debugger.Source.prototype.elementAttributeName returns.\n"),
+
+    JS_FN_HELP("runOffThreadScript", runOffThreadScript, 0, 0,
+"runOffThreadScript()",
+"  Wait for off-thread compilation to complete. If an error occurred,\n"
+"  throw the appropriate exception; otherwise, run the script and return\n"
+"  its value."),
+
+    JS_FN_HELP("offThreadCompileModule", OffThreadCompileModule, 1, 0,
+"offThreadCompileModule(code)",
+"  Compile |code| on a helper thread. To wait for the compilation to finish\n"
+"  and get the module object, call |finishOffThreadModule|."),
+
+    JS_FN_HELP("finishOffThreadModule", FinishOffThreadModule, 0, 0,
+"finishOffThreadModule()",
+"  Wait for off-thread compilation to complete. If an error occurred,\n"
+"  throw the appropriate exception; otherwise, return the module object"),
+
     JS_FN_HELP("timeout", Timeout, 1, 0,
 "timeout([seconds], [func])",
 "  Get/Set the limit in seconds for the execution time for the current context.\n"
 "  A negative value (default) means that the execution time is unlimited.\n"
-"  If a second argument is provided, it will be invoked when the timer elapses.\n"),
+"  If a second argument is provided, it will be invoked when the timer elapses.\n"
+"  Calling this function will replace any callback set by |setInterruptCallback|.\n"),
+
+    JS_FN_HELP("interruptIf", InterruptIf, 1, 0,
+"interruptIf(cond)",
+"  Requests interrupt callback if cond is true. If a callback function is set via\n"
+"  |timeout| or |setInterruptCallback|, it will be called. No-op otherwise."),
+
+    JS_FN_HELP("invokeInterruptCallback", InvokeInterruptCallbackWrapper, 0, 0,
+"invokeInterruptCallback(fun)",
+"  Forcefully set the interrupt flag and invoke the interrupt handler. If a\n"
+"  callback function is set via |timeout| or |setInterruptCallback|, it will\n"
+"  be called. Before returning, fun is called with the return value of the\n"
+"  interrupt handler."),
+
+    JS_FN_HELP("setInterruptCallback", SetInterruptCallback, 1, 0,
+"setInterruptCallback(func)",
+"  Sets func as the interrupt callback function.\n"
+"  Calling this function will replace any callback set by |timeout|.\n"),
+
+    JS_FN_HELP("enableLastWarning", EnableLastWarning, 0, 0,
+"enableLastWarning()",
+"  Enable storing the last warning."),
+
+    JS_FN_HELP("disableLastWarning", DisableLastWarning, 0, 0,
+"disableLastWarning()",
+"  Disable storing the last warning."),
+
+    JS_FN_HELP("getLastWarning", GetLastWarning, 0, 0,
+"getLastWarning()",
+"  Returns an object that represents the last warning."),
+
+    JS_FN_HELP("clearLastWarning", ClearLastWarning, 0, 0,
+"clearLastWarning()",
+"  Clear the last warning."),
 
     JS_FN_HELP("elapsed", Elapsed, 0, 0,
 "elapsed()",
-"  Execution time elapsed for the current context."),
+"  Execution time elapsed for the current thread."),
 
     JS_FN_HELP("decompileFunction", DecompileFunction, 1, 0,
 "decompileFunction(func)",
 "  Decompile a function."),
-
-    JS_FN_HELP("decompileBody", DecompileBody, 1, 0,
-"decompileBody(func)",
-"  Decompile a function's body."),
 
     JS_FN_HELP("decompileThis", DecompileThisScript, 0, 0,
 "decompileThis()",
@@ -3821,33 +6006,32 @@ static const JSFunctionSpecWithHelp shell_functions[] = {
 "thisFilename()",
 "  Return the filename of the current script"),
 
-    JS_FN_HELP("wrap", Wrap, 1, 0,
-"wrap(obj)",
-"  Wrap an object into a noop wrapper."),
-
-    JS_FN_HELP("wrapWithProto", WrapWithProto, 2, 0,
-"wrapWithProto(obj)",
-"  Wrap an object into a noop wrapper with prototype semantics."),
-
-    JS_FN_HELP("serialize", Serialize, 1, 0,
-"serialize(sd)",
-"  Serialize sd using JS_WriteStructuredClone. Returns a TypedArray."),
-
-    JS_FN_HELP("deserialize", Deserialize, 1, 0,
-"deserialize(a)",
-"  Deserialize data generated by serialize."),
-
     JS_FN_HELP("newGlobal", NewGlobal, 1, 0,
-"newGlobal([obj])",
-"  Return a new global object in a new compartment. If obj\n"
-"  is given, the compartment will be in the same zone as obj."),
+"newGlobal([options])",
+"  Return a new global object in a new compartment. If options\n"
+"  is given, it may have any of the following properties:\n"
+"      sameZoneAs: the compartment will be in the same zone as the given object (defaults to a new zone)\n"
+"      invisibleToDebugger: the global will be invisible to the debugger (default false)\n"
+"      principal: if present, its value converted to a number must be an\n"
+"         integer that fits in 32 bits; use that as the new compartment's\n"
+"         principal. Shell principals are toys, meant only for testing; one\n"
+"         shell principal subsumes another if its set bits are a superset of\n"
+"         the other's. Thus, a principal of 0 subsumes nothing, while a\n"
+"         principals of ~0 subsumes all other principals. The absence of a\n"
+"         principal is treated as if its bits were 0xffff, for subsumption\n"
+"         purposes. If this property is omitted, supply no principal."),
 
-    JS_FN_HELP("enableStackWalkingAssertion", EnableStackWalkingAssertion, 1, 0,
-"enableStackWalkingAssertion(enabled)",
-"  Enables or disables a particularly expensive assertion in stack-walking\n"
-"  code.  If your test isn't ridiculously thorough, such that performing this\n"
-"  assertion increases test duration by an order of magnitude, you shouldn't\n"
-"  use this."),
+    JS_FN_HELP("nukeCCW", NukeCCW, 1, 0,
+"nukeCCW(wrapper)",
+"  Nuke a CrossCompartmentWrapper, which turns it into a DeadProxyObject."),
+
+    JS_FN_HELP("createMappedArrayBuffer", CreateMappedArrayBuffer, 1, 0,
+"createMappedArrayBuffer(filename, [offset, [size]])",
+"  Create an array buffer that mmaps the given file."),
+
+    JS_FN_HELP("addPromiseReactions", AddPromiseReactions, 3, 0,
+"addPromiseReactions(promise, onResolve, onReject)",
+"  Calls the JS::AddPromiseReactions JSAPI function with the given arguments."),
 
     JS_FN_HELP("getMaxArgs", GetMaxArgs, 0, 0,
 "getMaxArgs()",
@@ -3858,18 +6042,116 @@ static const JSFunctionSpecWithHelp shell_functions[] = {
 "  Return a new object obj for which typeof obj === \"undefined\", obj == null\n"
 "  and obj == undefined (and vice versa for !=), and ToBoolean(obj) === false.\n"),
 
+    JS_FN_HELP("isCachingEnabled", IsCachingEnabled, 0, 0,
+"isCachingEnabled()",
+"  Return whether JS caching is enabled."),
+
+    JS_FN_HELP("setCachingEnabled", SetCachingEnabled, 1, 0,
+"setCachingEnabled(b)",
+"  Enable or disable JS caching."),
+
+    JS_FN_HELP("cacheEntry", CacheEntry, 1, 0,
+"cacheEntry(code)",
+"  Return a new opaque object which emulates a cache entry of a script.  This\n"
+"  object encapsulates the code and its cached content. The cache entry is filled\n"
+"  and read by the \"evaluate\" function by using it in place of the source, and\n"
+"  by setting \"saveBytecode\" and \"loadBytecode\" options."),
+
+    JS_FN_HELP("printProfilerEvents", PrintProfilerEvents, 0, 0,
+"printProfilerEvents()",
+"  Register a callback with the profiler that prints javascript profiler events\n"
+"  to stderr.  Callback is only registered if profiling is enabled."),
+
+    JS_FN_HELP("enableSingleStepProfiling", EnableSingleStepProfiling, 0, 0,
+"enableSingleStepProfiling()",
+"  This function will fail on platforms that don't support single-step profiling\n"
+"  (currently everything but ARM-simulator). When enabled, at every instruction a\n"
+"  backtrace will be recorded and stored in an array. Adjacent duplicate backtraces\n"
+"  are discarded."),
+
+    JS_FN_HELP("disableSingleStepProfiling", DisableSingleStepProfiling, 0, 0,
+"disableSingleStepProfiling()",
+"  Return the array of backtraces recorded by enableSingleStepProfiling."),
+
+    JS_FN_HELP("enableSPSProfiling", EnableSPSProfiling, 0, 0,
+"enableSPSProfiling()",
+"  Enables SPS instrumentation and corresponding assertions, with slow\n"
+"  assertions disabled.\n"),
+
+    JS_FN_HELP("enableSPSProfilingWithSlowAssertions", EnableSPSProfilingWithSlowAssertions, 0, 0,
+"enableSPSProfilingWithSlowAssertions()",
+"  Enables SPS instrumentation and corresponding assertions, with slow\n"
+"  assertions enabled.\n"),
+
+    JS_FN_HELP("disableSPSProfiling", DisableSPSProfiling, 0, 0,
+"disableSPSProfiling()",
+"  Disables SPS instrumentation"),
+
+    JS_FN_HELP("isLatin1", IsLatin1, 1, 0,
+"isLatin1(s)",
+"  Return true iff the string's characters are stored as Latin1."),
+
+    JS_FN_HELP("stackPointerInfo", StackPointerInfo, 0, 0,
+"stackPointerInfo()",
+"  Return an int32 value which corresponds to the offset of the latest stack\n"
+"  pointer, such that one can take the differences of 2 to estimate a frame-size."),
+
+    JS_FN_HELP("entryPoints", EntryPoints, 1, 0,
+"entryPoints(params)",
+"Carry out some JSAPI operation as directed by |params|, and return an array of\n"
+"objects describing which JavaScript entry points were invoked as a result.\n"
+"|params| is an object whose properties indicate what operation to perform. Here\n"
+"are the recognized groups of properties:\n"
+"\n"
+"{ function }: Call the object |params.function| with no arguments.\n"
+"\n"
+"{ object, property }: Fetch the property named |params.property| of\n"
+"|params.object|.\n"
+"\n"
+"{ ToString }: Apply JS::ToString to |params.toString|.\n"
+"\n"
+"{ ToNumber }: Apply JS::ToNumber to |params.toNumber|.\n"
+"\n"
+"{ eval }: Apply JS::Evaluate to |params.eval|.\n"
+"\n"
+"The return value is an array of strings, with one element for each\n"
+"JavaScript invocation that occurred as a result of the given\n"
+"operation. Each element is the name of the function invoked, or the\n"
+"string 'eval:FILENAME' if the code was invoked by 'eval' or something\n"
+"similar.\n"),
+
+    JS_FN_HELP("drainJobQueue", DrainJobQueue, 0, 0,
+"drainJobQueue()",
+"Take jobs from the shell's job queue in FIFO order and run them until the\n"
+"queue is empty.\n"),
+
+    JS_FN_HELP("setPromiseRejectionTrackerCallback", SetPromiseRejectionTrackerCallback, 1, 0,
+"setPromiseRejectionTrackerCallback()",
+"Sets the callback to be invoked whenever a Promise rejection is unhandled\n"
+"or a previously-unhandled rejection becomes handled."),
+
+#ifdef ENABLE_INTL_API
+    JS_FN_HELP("addIntlExtras", AddIntlExtras, 1, 0,
+"addIntlExtras(obj)",
+"Adds various not-yet-standardized Intl functions as properties on the\n"
+"provided object (this should generally be Intl itself).  The added\n"
+"functions and their behavior are experimental: don't depend upon them\n"
+"unless you're willing to update your code if these experimental APIs change\n"
+"underneath you."),
+#endif // ENABLE_INTL_API
+
     JS_FS_HELP_END
 };
 
 static const JSFunctionSpecWithHelp fuzzing_unsafe_functions[] = {
+    JS_FN_HELP("clone", Clone, 1, 0,
+"clone(fun[, scope])",
+"  Clone function object."),
+
     JS_FN_HELP("getSelfHostedValue", GetSelfHostedValue, 1, 0,
 "getSelfHostedValue()",
 "  Get a self-hosted value by its name. Note that these values don't get \n"
 "  cached, so repeatedly getting the same value creates multiple distinct clones."),
-
-    JS_FN_HELP("parent", Parent, 1, 0,
-"parent(obj)",
-"  Returns the parent of obj."),
 
     JS_FN_HELP("line2pc", LineToPC, 0, 0,
 "line2pc([fun,] line)",
@@ -3879,24 +6161,93 @@ static const JSFunctionSpecWithHelp fuzzing_unsafe_functions[] = {
 "pc2line(fun[, pc])",
 "  Map PC to line number."),
 
-    JS_FN_HELP("setThrowHook", SetThrowHook, 1, 0,
-"setThrowHook(f)",
-"  Set throw hook to f."),
+    JS_FN_HELP("nestedShell", NestedShell, 0, 0,
+"nestedShell(shellArgs...)",
+"  Execute the given code in a new JS shell process, passing this nested shell\n"
+"  the arguments passed to nestedShell. argv[0] of the nested shell will be argv[0]\n"
+"  of the current shell (which is assumed to be the actual path to the shell.\n"
+"  arguments[0] (of the call to nestedShell) will be argv[1], arguments[1] will\n"
+"  be argv[2], etc."),
 
-    JS_FN_HELP("system", System, 1, 0,
-"system(command)",
-"  Execute command on the current host, returning result code."),
+    JS_INLINABLE_FN_HELP("assertFloat32", testingFunc_assertFloat32, 2, 0, TestAssertFloat32,
+"assertFloat32(value, isFloat32)",
+"  In IonMonkey only, asserts that value has (resp. hasn't) the MIRType::Float32 if isFloat32 is true (resp. false)."),
 
-    JS_FN_HELP("trap", Trap, 3, 0,
-"trap([fun, [pc,]] exp)",
-"  Trap bytecode execution."),
+    JS_INLINABLE_FN_HELP("assertRecoveredOnBailout", testingFunc_assertRecoveredOnBailout, 2, 0,
+TestAssertRecoveredOnBailout,
+"assertRecoveredOnBailout(var)",
+"  In IonMonkey only, asserts that variable has RecoveredOnBailout flag."),
 
-    JS_FN_HELP("untrap", Untrap, 2, 0,
-"untrap(fun[, pc])",
-"  Remove a trap."),
+    JS_FN_HELP("withSourceHook", WithSourceHook, 1, 0,
+"withSourceHook(hook, fun)",
+"  Set this JS runtime's lazy source retrieval hook (that is, the hook\n"
+"  used to find sources compiled with |CompileOptions::LAZY_SOURCE|) to\n"
+"  |hook|; call |fun| with no arguments; and then restore the runtime's\n"
+"  original hook. Return or throw whatever |fun| did. |hook| gets\n"
+"  passed the requested code's URL, and should return a string.\n"
+"\n"
+"  Notes:\n"
+"\n"
+"  1) SpiderMonkey may assert if the returned code isn't close enough\n"
+"  to the script's real code, so this function is not fuzzer-safe.\n"
+"\n"
+"  2) The runtime can have only one source retrieval hook active at a\n"
+"  time. If |fun| is not careful, |hook| could be asked to retrieve the\n"
+"  source code for compilations that occurred long before it was set,\n"
+"  and that it knows nothing about. The reverse applies as well: the\n"
+"  original hook, that we reinstate after the call to |fun| completes,\n"
+"  might be asked for the source code of compilations that |fun|\n"
+"  performed, and which, presumably, only |hook| knows how to find.\n"),
+
+    JS_FN_HELP("wrapWithProto", WrapWithProto, 2, 0,
+"wrapWithProto(obj)",
+"  Wrap an object into a noop wrapper with prototype semantics.\n"
+"  Note: This is not fuzzing safe because it can be used to construct\n"
+"        deeply nested wrapper chains that cannot exist in the wild."),
+
+    JS_FN_HELP("trackedOpts", ReflectTrackedOptimizations, 1, 0,
+"trackedOpts(fun)",
+"  Returns an object describing the tracked optimizations of |fun|, if\n"
+"  any. If |fun| is not a scripted function or has not been compiled by\n"
+"  Ion, null is returned."),
+
+    JS_FN_HELP("dumpScopeChain", DumpScopeChain, 1, 0,
+"dumpScopeChain(obj)",
+"  Prints the scope chain of an interpreted function or a module."),
+
+    JS_FN_HELP("crash", Crash, 0, 0,
+"crash([message])",
+"  Crashes the process with a MOZ_CRASH."),
+
+    JS_FN_HELP("setARMHwCapFlags", SetARMHwCapFlags, 1, 0,
+"setARMHwCapFlags(\"flag1,flag2 flag3\")",
+"  On non-ARM, no-op. On ARM, set the hardware capabilities. The list of \n"
+"  flags is available by calling this function with \"help\" as the flag's name"),
+
+    JS_FN_HELP("wasmLoop", WasmLoop, 2, 0,
+"wasmLoop(filename, imports)",
+"  Performs an AFL-style persistent loop reading data from the given file and passing it\n"
+"  to the 'wasmEval' function together with the specified imports object."),
 
     JS_FS_HELP_END
 };
+
+static const JSFunctionSpecWithHelp console_functions[] = {
+    JS_FN_HELP("log", Print, 0, 0,
+"log([exp ...])",
+"  Evaluate and print expressions to stdout.\n"
+"  This function is an alias of the print() function."),
+    JS_FS_HELP_END
+};
+
+bool
+DefineConsole(JSContext* cx, HandleObject global)
+{
+    RootedObject obj(cx, JS_NewPlainObject(cx));
+    return obj &&
+           JS_DefineFunctionsWithHelp(cx, obj, console_functions) &&
+           JS_DefineProperty(cx, global, "console", obj, 0);
+}
 
 #ifdef MOZ_PROFILING
 # define PROFILING_FUNCTION_COUNT 5
@@ -3921,417 +6272,263 @@ static const JSFunctionSpecWithHelp fuzzing_unsafe_functions[] = {
 #undef EXTERNAL_FUNCTION_COUNT
 
 static bool
-PrintHelpString(JSContext *cx, jsval v)
+PrintHelpString(JSContext* cx, HandleValue v)
 {
-    JSString *str = JSVAL_TO_STRING(v);
-    JS::Anchor<JSString *> a_str(str);
-    const jschar *chars = JS_GetStringCharsZ(cx, str);
-    if (!chars)
+    JSString* str = v.toString();
+    MOZ_ASSERT(gOutFile->isOpen());
+
+    JSLinearString* linear = str->ensureLinear(cx);
+    if (!linear)
         return false;
 
-    for (const jschar *p = chars; *p; p++)
-        fprintf(gOutFile, "%c", char(*p));
-
-    fprintf(gOutFile, "\n");
+    JS::AutoCheckCannotGC nogc;
+    if (linear->hasLatin1Chars()) {
+        for (const Latin1Char* p = linear->latin1Chars(nogc); *p; p++)
+            fprintf(gOutFile->fp, "%c", char(*p));
+    } else {
+        for (const char16_t* p = linear->twoByteChars(nogc); *p; p++)
+            fprintf(gOutFile->fp, "%c", char(*p));
+    }
+    fprintf(gOutFile->fp, "\n");
 
     return true;
 }
 
 static bool
-PrintHelp(JSContext *cx, HandleObject obj)
+PrintHelp(JSContext* cx, HandleObject obj)
 {
     RootedValue usage(cx);
-    if (!JS_LookupProperty(cx, obj, "usage", usage.address()))
+    if (!JS_GetProperty(cx, obj, "usage", &usage))
         return false;
     RootedValue help(cx);
-    if (!JS_LookupProperty(cx, obj, "help", help.address()))
+    if (!JS_GetProperty(cx, obj, "help", &help))
         return false;
 
-    if (JSVAL_IS_VOID(usage) || JSVAL_IS_VOID(help))
+    if (!usage.isString() || !help.isString())
         return true;
 
     return PrintHelpString(cx, usage) && PrintHelpString(cx, help);
 }
 
-static JSBool
-Help(JSContext *cx, unsigned argc, jsval *vp)
+static bool
+PrintEnumeratedHelp(JSContext* cx, HandleObject obj, bool brief)
 {
-    fprintf(gOutFile, "%s\n", JS_GetImplementationVersion());
+    AutoIdVector idv(cx);
+    if (!GetPropertyKeys(cx, obj, JSITER_OWNONLY | JSITER_HIDDEN, &idv))
+        return false;
+
+    for (size_t i = 0; i < idv.length(); i++) {
+        RootedValue v(cx);
+        RootedId id(cx, idv[i]);
+        if (!JS_GetPropertyById(cx, obj, id, &v))
+            return false;
+        if (v.isObject()) {
+            RootedObject funcObj(cx, &v.toObject());
+            if (!PrintHelp(cx, funcObj))
+                return false;
+        }
+    }
+
+    return true;
+}
+
+static bool
+Help(JSContext* cx, unsigned argc, Value* vp)
+{
+    if (!gOutFile->isOpen()) {
+        JS_ReportErrorASCII(cx, "output file is closed");
+        return false;
+    }
+
+    CallArgs args = CallArgsFromVp(argc, vp);
 
     RootedObject obj(cx);
-    if (argc == 0) {
-        RootedObject global(cx, JS_GetGlobalForScopeChain(cx));
-        AutoIdArray ida(cx, JS_Enumerate(cx, global));
-        if (!ida)
-            return false;
+    if (args.length() == 0) {
+        fprintf(gOutFile->fp, "%s\n", JS_GetImplementationVersion());
 
-        for (size_t i = 0; i < ida.length(); i++) {
-            RootedValue v(cx);
-            if (!JS_LookupPropertyById(cx, global, ida[i], v.address()))
-                return false;
-            if (JSVAL_IS_PRIMITIVE(v)) {
-                JS_ReportError(cx, "primitive arg");
-                return false;
-            }
-            obj = JSVAL_TO_OBJECT(v);
-            if (!PrintHelp(cx, obj))
-                return false;
-        }
+        RootedObject global(cx, JS::CurrentGlobalOrNull(cx));
+        if (!PrintEnumeratedHelp(cx, global, false))
+            return false;
     } else {
-        jsval *argv = JS_ARGV(cx, vp);
-        for (unsigned i = 0; i < argc; i++) {
-            if (JSVAL_IS_PRIMITIVE(argv[i])) {
-                JS_ReportError(cx, "primitive arg");
+        for (unsigned i = 0; i < args.length(); i++) {
+            if (args[i].isPrimitive()) {
+                JS_ReportErrorASCII(cx, "primitive arg");
                 return false;
             }
-            obj = JSVAL_TO_OBJECT(argv[i]);
+            obj = args[i].toObjectOrNull();
             if (!PrintHelp(cx, obj))
                 return false;
         }
     }
 
-    JS_SET_RVAL(cx, vp, UndefinedValue());
+    args.rval().setUndefined();
     return true;
 }
 
-/*
- * Define a JS object called "it".  Give it class operations that printf why
- * they're being called for tutorial purposes.
- */
-enum its_tinyid {
-    ITS_COLOR, ITS_HEIGHT, ITS_WIDTH, ITS_FUNNY, ITS_ARRAY, ITS_RDONLY,
-    ITS_CUSTOM, ITS_CUSTOMRDONLY
-};
-
-static JSBool
-its_getter(JSContext *cx, HandleObject obj, HandleId id, MutableHandleValue vp);
-
-static JSBool
-its_setter(JSContext *cx, HandleObject obj, HandleId id, JSBool strict, MutableHandleValue vp);
-
-static JSBool
-its_get_customNative(JSContext *cx, unsigned argc, jsval *vp);
-
-static JSBool
-its_set_customNative(JSContext *cx, unsigned argc, jsval *vp);
-
-static const JSPropertySpec its_props[] = {
-    {"color",           ITS_COLOR,      JSPROP_ENUMERATE,       JSOP_NULLWRAPPER, JSOP_NULLWRAPPER},
-    {"height",          ITS_HEIGHT,     JSPROP_ENUMERATE,       JSOP_NULLWRAPPER, JSOP_NULLWRAPPER},
-    {"width",           ITS_WIDTH,      JSPROP_ENUMERATE,       JSOP_NULLWRAPPER, JSOP_NULLWRAPPER},
-    {"funny",           ITS_FUNNY,      JSPROP_ENUMERATE,       JSOP_NULLWRAPPER, JSOP_NULLWRAPPER},
-    {"array",           ITS_ARRAY,      JSPROP_ENUMERATE,       JSOP_NULLWRAPPER, JSOP_NULLWRAPPER},
-    {"rdonly",          ITS_RDONLY,     JSPROP_READONLY,        JSOP_NULLWRAPPER, JSOP_NULLWRAPPER},
-    {"custom",          ITS_CUSTOM,     JSPROP_ENUMERATE,
-                        JSOP_WRAPPER(its_getter),     JSOP_WRAPPER(its_setter)},
-    {"customRdOnly",    ITS_CUSTOMRDONLY, JSPROP_ENUMERATE | JSPROP_READONLY,
-                        JSOP_WRAPPER(its_getter),     JSOP_WRAPPER(its_setter)},
-    JS_PSGS("customNative", its_get_customNative, its_set_customNative, JSPROP_ENUMERATE),
-    JS_PS_END
-};
-
-static JSBool its_noisy;    /* whether to be noisy when finalizing it */
-static JSBool its_enum_fail;/* whether to fail when enumerating it */
-
-static JSBool
-its_addProperty(JSContext *cx, HandleObject obj, HandleId id, MutableHandleValue vp)
-{
-    if (!its_noisy)
-        return true;
-
-    ToStringHelper idString(cx, id);
-    fprintf(gOutFile, "adding its property %s,", idString.getBytes());
-    ToStringHelper valueString(cx, vp);
-    fprintf(gOutFile, " initial value %s\n", valueString.getBytes());
-    return true;
-}
-
-static JSBool
-its_delProperty(JSContext *cx, HandleObject obj, HandleId id, JSBool *succeeded)
-{
-    if (!its_noisy) {
-        *succeeded = true;
-        return true;
-    }
-
-    ToStringHelper idString(cx, id);
-    if (idString.threw())
-        return false;
-
-    fprintf(gOutFile, "deleting its property %s,", idString.getBytes());
-
-    *succeeded = true;
-    return true;
-}
-
-static JSBool
-its_getProperty(JSContext *cx, HandleObject obj, HandleId id, MutableHandleValue vp)
-{
-    if (!its_noisy)
-        return true;
-
-    ToStringHelper idString(cx, id);
-    fprintf(gOutFile, "getting its property %s,", idString.getBytes());
-    ToStringHelper valueString(cx, vp);
-    fprintf(gOutFile, " initial value %s\n", valueString.getBytes());
-    return true;
-}
-
-static JSBool
-its_setProperty(JSContext *cx, HandleObject obj, HandleId id, JSBool strict, MutableHandleValue vp)
-{
-    ToStringHelper idString(cx, id);
-    if (its_noisy) {
-        fprintf(gOutFile, "setting its property %s,", idString.getBytes());
-        ToStringHelper valueString(cx, vp);
-        fprintf(gOutFile, " new value %s\n", valueString.getBytes());
-    }
-
-    if (!JSID_IS_ATOM(id))
-        return true;
-
-    if (!strcmp(idString.getBytes(), "noisy"))
-        JS_ValueToBoolean(cx, vp, &its_noisy);
-    else if (!strcmp(idString.getBytes(), "enum_fail"))
-        JS_ValueToBoolean(cx, vp, &its_enum_fail);
-
-    return true;
-}
-
-/*
- * Its enumerator, implemented using the "new" enumerate API,
- * see class flags.
- */
-static JSBool
-its_enumerate(JSContext *cx, HandleObject obj, JSIterateOp enum_op,
-              jsval *statep, jsid *idp)
-{
-    RootedObject iterator(cx);
-
-    switch (enum_op) {
-      case JSENUMERATE_INIT:
-      case JSENUMERATE_INIT_ALL:
-        if (its_noisy)
-            fprintf(gOutFile, "enumerate its properties\n");
-
-        iterator = JS_NewPropertyIterator(cx, obj);
-        if (!iterator)
-            return false;
-
-        *statep = OBJECT_TO_JSVAL(iterator);
-        if (idp)
-            *idp = INT_TO_JSID(0);
-        break;
-
-      case JSENUMERATE_NEXT:
-        if (its_enum_fail) {
-            JS_ReportError(cx, "its enumeration failed");
-            return false;
-        }
-
-        iterator = (JSObject *) JSVAL_TO_OBJECT(*statep);
-        if (!JS_NextProperty(cx, iterator, idp))
-            return false;
-
-        if (!JSID_IS_VOID(*idp))
-            break;
-        /* Fall through. */
-
-      case JSENUMERATE_DESTROY:
-        /* Allow our iterator object to be GC'd. */
-        *statep = NullValue();
-        break;
-    }
-
-    return true;
-}
-
-static JSBool
-its_resolve(JSContext *cx, HandleObject obj, HandleId id, unsigned flags,
-            MutableHandleObject objp)
-{
-    if (its_noisy) {
-        ToStringHelper idString(cx, id);
-        fprintf(gOutFile, "resolving its property %s, flags {%s}\n",
-               idString.getBytes(),
-               (flags & JSRESOLVE_ASSIGNING) ? "assigning" : "");
-    }
-    return true;
-}
-
-static JSBool
-its_convert(JSContext *cx, HandleObject obj, JSType type, MutableHandleValue vp)
-{
-    if (its_noisy)
-        fprintf(gOutFile, "converting it to %s type\n", JS_GetTypeName(cx, type));
-    return JS_ConvertStub(cx, obj, type, vp);
-}
-
-static void
-its_finalize(JSFreeOp *fop, JSObject *obj)
-{
-    if (its_noisy)
-        fprintf(gOutFile, "finalizing it\n");
-}
-
-static JSClass its_class = {
-    "It", JSCLASS_NEW_RESOLVE | JSCLASS_NEW_ENUMERATE | JSCLASS_HAS_RESERVED_SLOTS(1),
-    its_addProperty,  its_delProperty,  its_getProperty,  its_setProperty,
-    (JSEnumerateOp)its_enumerate, (JSResolveOp)its_resolve,
-    its_convert,      its_finalize,
-};
-
-static JSBool
-its_getter(JSContext *cx, HandleObject obj, HandleId id, MutableHandleValue vp)
-{
-    if (JS_GetClass(obj) != &its_class) {
-        vp.set(UndefinedValue());
-        return true;
-    }
-
-    vp.set(JS_GetReservedSlot(obj, 0));
-    return true;
-}
-
-static JSBool
-its_setter(JSContext *cx, HandleObject obj, HandleId id, JSBool strict, MutableHandleValue vp)
-{
-    if (JS_GetClass(obj) != &its_class)
-        return true;
-
-    JS_SetReservedSlot(obj, 0, vp);
-
-    vp.set(UndefinedValue());
-    return true;
-}
-
-static JSBool
-its_get_customNative(JSContext *cx, unsigned argc, jsval *vp)
-{
-    JSObject *obj = JS_THIS_OBJECT(cx, vp);
-    if (!obj)
-        return false;
-
-    if (JS_GetClass(obj) != &its_class) {
-        JS_SET_RVAL(cx, vp, UndefinedValue());
-        return true;
-    }
-
-    JS_SET_RVAL(cx, vp, JS_GetReservedSlot(obj, 0));
-    return true;
-}
-
-static JSBool
-its_set_customNative(JSContext *cx, unsigned argc, jsval *vp)
-{
-    JSObject *obj = JS_THIS_OBJECT(cx, vp);
-    if (!obj)
-        return false;
-
-    if (JS_GetClass(obj) != &its_class)
-        return true;
-
-    JS_SetReservedSlot(obj, 0, argc >= 1 ? JS_ARGV(cx, vp)[0] : UndefinedValue());
-    JS_SET_RVAL(cx, vp, UndefinedValue());
-    return true;
-}
-
-JSErrorFormatString jsShell_ErrorFormatString[JSShellErr_Limit] = {
-#define MSG_DEF(name, number, count, exception, format) \
-    { format, count, JSEXN_ERR } ,
+static const JSErrorFormatString jsShell_ErrorFormatString[JSShellErr_Limit] = {
+#define MSG_DEF(name, count, exception, format) \
+    { #name, format, count, JSEXN_ERR } ,
 #include "jsshell.msg"
 #undef MSG_DEF
 };
 
-static const JSErrorFormatString *
-my_GetErrorMessage(void *userRef, const char *locale, const unsigned errorNumber)
+const JSErrorFormatString*
+js::shell::my_GetErrorMessage(void* userRef, const unsigned errorNumber)
 {
     if (errorNumber == 0 || errorNumber >= JSShellErr_Limit)
-        return NULL;
+        return nullptr;
 
     return &jsShell_ErrorFormatString[errorNumber];
 }
 
-static void
-my_ErrorReporter(JSContext *cx, const char *message, JSErrorReport *report)
+static bool
+CreateLastWarningObject(JSContext* cx, JSErrorReport* report)
 {
-    gGotError = PrintError(cx, gErrFile, message, report, reportWarnings);
-    if (!JSREPORT_IS_WARNING(report->flags)) {
-        if (report->errorNumber == JSMSG_OUT_OF_MEMORY) {
-            gExitCode = EXITCODE_OUT_OF_MEMORY;
-        } else {
-            gExitCode = EXITCODE_RUNTIME_ERROR;
-        }
-    }
+    RootedObject warningObj(cx, JS_NewObject(cx, nullptr));
+    if (!warningObj)
+        return false;
+
+    RootedString nameStr(cx);
+    if (report->exnType == JSEXN_WARN)
+        nameStr = JS_NewStringCopyZ(cx, "Warning");
+    else
+        nameStr = GetErrorTypeName(cx, report->exnType);
+    if (!nameStr)
+        return false;
+    RootedValue nameVal(cx, StringValue(nameStr));
+    if (!DefineProperty(cx, warningObj, cx->names().name, nameVal))
+        return false;
+
+    RootedString messageStr(cx, report->newMessageString(cx));
+    if (!messageStr)
+        return false;
+    RootedValue messageVal(cx, StringValue(messageStr));
+    if (!DefineProperty(cx, warningObj, cx->names().message, messageVal))
+        return false;
+
+    RootedValue linenoVal(cx, Int32Value(report->lineno));
+    if (!DefineProperty(cx, warningObj, cx->names().lineNumber, linenoVal))
+        return false;
+
+    RootedValue columnVal(cx, Int32Value(report->column));
+    if (!DefineProperty(cx, warningObj, cx->names().columnNumber, columnVal))
+        return false;
+
+    GetShellContext(cx)->lastWarning.setObject(*warningObj);
+    return true;
 }
 
-#if defined(SHELL_HACK) && defined(DEBUG) && defined(XP_UNIX)
-static JSBool
-Exec(JSContext *cx, unsigned argc, jsval *vp)
+static FILE*
+ErrorFilePointer()
 {
-    JSFunction *fun;
-    const char *name, **nargv;
-    unsigned i, nargc;
-    JSString *str;
-    bool ok;
-    pid_t pid;
-    int status;
+    if (gErrFile->isOpen())
+        return gErrFile->fp;
 
-    JS_SET_RVAL(cx, vp, UndefinedValue());
+    fprintf(stderr, "error file is closed; falling back to stderr\n");
+    return stderr;
+}
 
-    fun = JS_ValueToFunction(cx, vp[0]);
-    if (!fun)
+static bool
+PrintStackTrace(JSContext* cx, HandleValue exn)
+{
+    if (!exn.isObject())
         return false;
-    if (!fun->atom)
+
+    Maybe<JSAutoCompartment> ac;
+    RootedObject exnObj(cx, &exn.toObject());
+    if (IsCrossCompartmentWrapper(exnObj)) {
+        exnObj = UncheckedUnwrap(exnObj);
+        ac.emplace(cx, exnObj);
+    }
+
+    // Ignore non-ErrorObject thrown by |throw| statement.
+    if (!exnObj->is<ErrorObject>())
         return true;
 
-    nargc = 1 + argc;
+    // Exceptions thrown while compiling top-level script have no stack.
+    RootedObject stackObj(cx, exnObj->as<ErrorObject>().stack());
+    if (!stackObj)
+        return true;
 
-    /* nargc + 1 accounts for the terminating NULL. */
-    nargv = new (char *)[nargc + 1];
-    if (!nargv)
+    RootedString stackStr(cx);
+    if (!BuildStackString(cx, stackObj, &stackStr, 2))
         return false;
-    memset(nargv, 0, sizeof(nargv[0]) * (nargc + 1));
-    nargv[0] = name;
-    jsval *argv = JS_ARGV(cx, vp);
-    for (i = 0; i < nargc; i++) {
-        str = (i == 0) ? fun->atom : JS_ValueToString(cx, argv[i-1]);
-        if (!str) {
-            ok = false;
-            goto done;
-        }
-        nargv[i] = JSStringToUTF8(cx, str);
-        if (!nargv[i]) {
-            ok = false;
-            goto done;
-        }
-    }
-    pid = fork();
-    switch (pid) {
-      case -1:
-        perror("js");
-        break;
-      case 0:
-        (void) execvp(name, (char **)nargv);
-        perror("js");
-        exit(127);
-      default:
-        while (waitpid(pid, &status, 0) < 0 && errno == EINTR)
-            continue;
-        break;
-    }
-    ok = true;
 
-  done:
-    for (i = 0; i < nargc; i++)
-        JS_free(cx, nargv[i]);
-    delete[] nargv;
-    return ok;
+    UniqueChars stack(JS_EncodeStringToUTF8(cx, stackStr));
+    if (!stack)
+        return false;
+
+    FILE* fp = ErrorFilePointer();
+    fputs("Stack:\n", fp);
+    fputs(stack.get(), fp);
+
+    return true;
 }
-#endif
 
-static JSBool
-global_enumerate(JSContext *cx, HandleObject obj)
+js::shell::AutoReportException::~AutoReportException()
+{
+    if (!JS_IsExceptionPending(cx))
+        return;
+
+    // Get exception object before printing and clearing exception.
+    RootedValue exn(cx);
+    (void) JS_GetPendingException(cx, &exn);
+
+    JS_ClearPendingException(cx);
+
+    ShellContext* sc = GetShellContext(cx);
+    js::ErrorReport report(cx);
+    if (!report.init(cx, exn, js::ErrorReport::WithSideEffects)) {
+        fprintf(stderr, "out of memory initializing ErrorReport\n");
+        fflush(stderr);
+        JS_ClearPendingException(cx);
+        return;
+    }
+
+    MOZ_ASSERT(!JSREPORT_IS_WARNING(report.report()->flags));
+
+    FILE* fp = ErrorFilePointer();
+    PrintError(cx, fp, report.toStringResult(), report.report(), reportWarnings);
+
+    {
+        JS::AutoSaveExceptionState savedExc(cx);
+        if (!PrintStackTrace(cx, exn))
+            fputs("(Unable to print stack trace)\n", fp);
+        savedExc.restore();
+    }
+
+    if (report.report()->errorNumber == JSMSG_OUT_OF_MEMORY)
+        sc->exitCode = EXITCODE_OUT_OF_MEMORY;
+    else
+        sc->exitCode = EXITCODE_RUNTIME_ERROR;
+
+    JS_ClearPendingException(cx);
+}
+
+void
+js::shell::WarningReporter(JSContext* cx, JSErrorReport* report)
+{
+    ShellContext* sc = GetShellContext(cx);
+    FILE* fp = ErrorFilePointer();
+
+    MOZ_ASSERT(report);
+    MOZ_ASSERT(JSREPORT_IS_WARNING(report->flags));
+
+    if (sc->lastWarningEnabled) {
+        JS::AutoSaveExceptionState savedExc(cx);
+        if (!CreateLastWarningObject(cx, report)) {
+            fputs("Unhandled error happened while creating last warning object.\n", fp);
+            fflush(fp);
+        }
+        savedExc.restore();
+    }
+
+    // Print the warning.
+    PrintError(cx, fp, JS::ConstUTF8CharsZ(), report, reportWarnings);
+}
+
+static bool
+global_enumerate(JSContext* cx, HandleObject obj)
 {
 #ifdef LAZY_STANDARD_CLASSES
     return JS_EnumerateStandardClasses(cx, obj);
@@ -4340,185 +6537,33 @@ global_enumerate(JSContext *cx, HandleObject obj)
 #endif
 }
 
-static JSBool
-global_resolve(JSContext *cx, HandleObject obj, HandleId id, unsigned flags,
-               MutableHandleObject objp)
+static bool
+global_resolve(JSContext* cx, HandleObject obj, HandleId id, bool* resolvedp)
 {
 #ifdef LAZY_STANDARD_CLASSES
-    JSBool resolved;
-
-    if (!JS_ResolveStandardClass(cx, obj, id, &resolved))
+    if (!JS_ResolveStandardClass(cx, obj, id, resolvedp))
         return false;
-    if (resolved) {
-        objp.set(obj);
-        return true;
-    }
 #endif
-
-#if defined(SHELL_HACK) && defined(DEBUG) && defined(XP_UNIX)
-    /*
-     * Do this expensive hack only for unoptimized Unix builds, which are
-     * not used for benchmarking.
-     */
-    char *path, *comp, *full;
-    const char *name;
-    bool ok, found;
-    JSFunction *fun;
-
-    if (!JSVAL_IS_STRING(id))
-        return true;
-    path = getenv("PATH");
-    if (!path)
-        return true;
-    path = JS_strdup(cx, path);
-    if (!path)
-        return false;
-    JSAutoByteString name(cx, JSVAL_TO_STRING(id));
-    if (!name)
-        return false;
-    ok = true;
-    for (comp = strtok(path, ":"); comp; comp = strtok(NULL, ":")) {
-        if (*comp != '\0') {
-            full = JS_smprintf("%s/%s", comp, name.ptr());
-            if (!full) {
-                JS_ReportOutOfMemory(cx);
-                ok = false;
-                break;
-            }
-        } else {
-            full = (char *)name;
-        }
-        found = (access(full, X_OK) == 0);
-        if (*comp != '\0')
-            free(full);
-        if (found) {
-            fun = JS_DefineFunction(cx, obj, name, Exec, 0,
-                                    JSPROP_ENUMERATE);
-            ok = (fun != NULL);
-            if (ok)
-                objp.set(obj);
-            break;
-        }
-    }
-    JS_free(cx, path);
-    return ok;
-#else
     return true;
-#endif
 }
 
-JSClass global_class = {
-    "global", JSCLASS_NEW_RESOLVE | JSCLASS_GLOBAL_FLAGS,
-    JS_PropertyStub,  JS_DeletePropertyStub,
-    JS_PropertyStub,  JS_StrictPropertyStub,
-    global_enumerate, (JSResolveOp) global_resolve,
-    JS_ConvertStub,   NULL
+static bool
+global_mayResolve(const JSAtomState& names, jsid id, JSObject* maybeObj)
+{
+    return JS_MayResolveStandardClass(names, id, maybeObj);
+}
+
+static const JSClassOps global_classOps = {
+    nullptr, nullptr, nullptr, nullptr,
+    global_enumerate, global_resolve, global_mayResolve,
+    nullptr,
+    nullptr, nullptr, nullptr,
+    JS_GlobalObjectTraceHook
 };
 
-static JSBool
-env_setProperty(JSContext *cx, HandleObject obj, HandleId id, JSBool strict, MutableHandleValue vp)
-{
-/* XXX porting may be easy, but these don't seem to supply setenv by default */
-#if !defined XP_OS2 && !defined SOLARIS
-    int rv;
-
-    ToStringHelper idstr(cx, id, true);
-    if (idstr.threw())
-        return false;
-    ToStringHelper valstr(cx, vp, true);
-    if (valstr.threw())
-        return false;
-#if defined XP_WIN || defined HPUX || defined OSF1
-    {
-        char *waste = JS_smprintf("%s=%s", idstr.getBytes(), valstr.getBytes());
-        if (!waste) {
-            JS_ReportOutOfMemory(cx);
-            return false;
-        }
-        rv = putenv(waste);
-#ifdef XP_WIN
-        /*
-         * HPUX9 at least still has the bad old non-copying putenv.
-         *
-         * Per mail from <s.shanmuganathan@digital.com>, OSF1 also has a putenv
-         * that will crash if you pass it an auto char array (so it must place
-         * its argument directly in the char *environ[] array).
-         */
-        JS_smprintf_free(waste);
-#endif
-    }
-#else
-    rv = setenv(idstr.getBytes(), valstr.getBytes(), 1);
-#endif
-    if (rv < 0) {
-        JS_ReportError(cx, "can't set env variable %s to %s", idstr.getBytes(), valstr.getBytes());
-        return false;
-    }
-    vp.set(valstr.getJSVal());
-#endif /* !defined XP_OS2 && !defined SOLARIS */
-    return true;
-}
-
-static JSBool
-env_enumerate(JSContext *cx, HandleObject obj)
-{
-    static bool reflected;
-    char **evp, *name, *value;
-    JSString *valstr;
-    bool ok;
-
-    if (reflected)
-        return true;
-
-    for (evp = (char **)JS_GetPrivate(obj); (name = *evp) != NULL; evp++) {
-        value = strchr(name, '=');
-        if (!value)
-            continue;
-        *value++ = '\0';
-        valstr = JS_NewStringCopyZ(cx, value);
-        ok = valstr && JS_DefineProperty(cx, obj, name, STRING_TO_JSVAL(valstr),
-                                         NULL, NULL, JSPROP_ENUMERATE);
-        value[-1] = '=';
-        if (!ok)
-            return false;
-    }
-
-    reflected = true;
-    return true;
-}
-
-static JSBool
-env_resolve(JSContext *cx, HandleObject obj, HandleId id, unsigned flags,
-            MutableHandleObject objp)
-{
-    JSString *valstr;
-    const char *name, *value;
-
-    ToStringHelper idstr(cx, id, true);
-    if (idstr.threw())
-        return false;
-
-    name = idstr.getBytes();
-    value = getenv(name);
-    if (value) {
-        valstr = JS_NewStringCopyZ(cx, value);
-        if (!valstr)
-            return false;
-        if (!JS_DefineProperty(cx, obj, name, STRING_TO_JSVAL(valstr),
-                               NULL, NULL, JSPROP_ENUMERATE)) {
-            return false;
-        }
-        objp.set(obj);
-    }
-    return true;
-}
-
-static JSClass env_class = {
-    "environment", JSCLASS_HAS_PRIVATE | JSCLASS_NEW_RESOLVE,
-    JS_PropertyStub,  JS_DeletePropertyStub,
-    JS_PropertyStub,  env_setProperty,
-    env_enumerate, (JSResolveOp) env_resolve,
-    JS_ConvertStub
+static const JSClass global_class = {
+    "global", JSCLASS_GLOBAL_FLAGS,
+    &global_classOps
 };
 
 /*
@@ -4526,83 +6571,106 @@ static JSClass env_class = {
  * setter and method with attached JitInfo. This object can be used to test
  * IonMonkey DOM optimizations in the shell.
  */
-static uint32_t DOM_OBJECT_SLOT = 0;
+static const uint32_t DOM_OBJECT_SLOT = 0;
 
-static JSBool
-dom_genericGetter(JSContext* cx, unsigned argc, JS::Value *vp);
+static bool
+dom_genericGetter(JSContext* cx, unsigned argc, JS::Value* vp);
 
-static JSBool
-dom_genericSetter(JSContext* cx, unsigned argc, JS::Value *vp);
+static bool
+dom_genericSetter(JSContext* cx, unsigned argc, JS::Value* vp);
 
-static JSBool
-dom_genericMethod(JSContext *cx, unsigned argc, JS::Value *vp);
+static bool
+dom_genericMethod(JSContext* cx, unsigned argc, JS::Value* vp);
 
 #ifdef DEBUG
-static JSClass *GetDomClass();
+static const JSClass* GetDomClass();
 #endif
 
 static bool
-dom_get_x(JSContext* cx, HandleObject obj, void *self, JSJitGetterCallArgs args)
+dom_get_x(JSContext* cx, HandleObject obj, void* self, JSJitGetterCallArgs args)
 {
-    JS_ASSERT(JS_GetClass(obj) == GetDomClass());
-    JS_ASSERT(self == (void *)0x1234);
+    MOZ_ASSERT(JS_GetClass(obj) == GetDomClass());
+    MOZ_ASSERT(self == (void*)0x1234);
     args.rval().set(JS_NumberValue(double(3.14)));
     return true;
 }
 
 static bool
-dom_set_x(JSContext* cx, HandleObject obj, void *self, JSJitSetterCallArgs args)
+dom_set_x(JSContext* cx, HandleObject obj, void* self, JSJitSetterCallArgs args)
 {
-    JS_ASSERT(JS_GetClass(obj) == GetDomClass());
-    JS_ASSERT(self == (void *)0x1234);
+    MOZ_ASSERT(JS_GetClass(obj) == GetDomClass());
+    MOZ_ASSERT(self == (void*)0x1234);
     return true;
 }
 
 static bool
-dom_doFoo(JSContext* cx, HandleObject obj, void *self, const JSJitMethodCallArgs& args)
+dom_doFoo(JSContext* cx, HandleObject obj, void* self, const JSJitMethodCallArgs& args)
 {
-    JS_ASSERT(JS_GetClass(obj) == GetDomClass());
-    JS_ASSERT(self == (void *)0x1234);
+    MOZ_ASSERT(JS_GetClass(obj) == GetDomClass());
+    MOZ_ASSERT(self == (void*)0x1234);
 
     /* Just return args.length(). */
     args.rval().setInt32(args.length());
     return true;
 }
 
-const JSJitInfo dom_x_getterinfo = {
+static const JSJitInfo dom_x_getterinfo = {
     { (JSJitGetterOp)dom_get_x },
-    0,        /* protoID */
-    0,        /* depth */
+    { 0 },    /* protoID */
+    { 0 },    /* depth */
+    JSJitInfo::AliasNone, /* aliasSet */
     JSJitInfo::Getter,
+    JSVAL_TYPE_UNKNOWN, /* returnType */
     true,     /* isInfallible. False in setters. */
-    true      /* isConstant. Only relevant for getters. */
+    true,     /* isMovable */
+    true,     /* isEliminatable */
+    false,    /* isAlwaysInSlot */
+    false,    /* isLazilyCachedInSlot */
+    false,    /* isTypedMethod */
+    0         /* slotIndex */
 };
 
-const JSJitInfo dom_x_setterinfo = {
+static const JSJitInfo dom_x_setterinfo = {
     { (JSJitGetterOp)dom_set_x },
-    0,        /* protoID */
-    0,        /* depth */
+    { 0 },    /* protoID */
+    { 0 },    /* depth */
     JSJitInfo::Setter,
+    JSJitInfo::AliasEverything, /* aliasSet */
+    JSVAL_TYPE_UNKNOWN, /* returnType */
     false,    /* isInfallible. False in setters. */
-    false     /* isConstant. Only relevant for getters. */
+    false,    /* isMovable. */
+    false,    /* isEliminatable. */
+    false,    /* isAlwaysInSlot */
+    false,    /* isLazilyCachedInSlot */
+    false,    /* isTypedMethod */
+    0         /* slotIndex */
 };
 
-const JSJitInfo doFoo_methodinfo = {
+static const JSJitInfo doFoo_methodinfo = {
     { (JSJitGetterOp)dom_doFoo },
-    0,        /* protoID */
-    0,        /* depth */
+    { 0 },    /* protoID */
+    { 0 },    /* depth */
     JSJitInfo::Method,
+    JSJitInfo::AliasEverything, /* aliasSet */
+    JSVAL_TYPE_UNKNOWN, /* returnType */
     false,    /* isInfallible. False in setters. */
-    false     /* isConstant. Only relevant for getters. */
+    false,    /* isMovable */
+    false,    /* isEliminatable */
+    false,    /* isAlwaysInSlot */
+    false,    /* isLazilyCachedInSlot */
+    false,    /* isTypedMethod */
+    0         /* slotIndex */
 };
 
 static const JSPropertySpec dom_props[] = {
-    {"x", 0,
-     JSPROP_SHARED | JSPROP_ENUMERATE | JSPROP_NATIVE_ACCESSORS,
-     { (JSPropertyOp)dom_genericGetter, &dom_x_getterinfo },
-     { (JSStrictPropertyOp)dom_genericSetter, &dom_x_setterinfo }
+    {"x",
+     JSPROP_SHARED | JSPROP_ENUMERATE,
+     { {
+        { { dom_genericGetter, &dom_x_getterinfo } },
+        { { dom_genericSetter, &dom_x_setterinfo } }
+     } },
     },
-    {NULL,0,0,JSOP_NULLWRAPPER, JSOP_NULLWRAPPER}
+    JS_PS_END
 };
 
 static const JSFunctionSpec dom_methods[] = {
@@ -4610,32 +6678,18 @@ static const JSFunctionSpec dom_methods[] = {
     JS_FS_END
 };
 
-static JSClass dom_class = {
-    "FakeDOMObject", JSCLASS_IS_DOMJSCLASS | JSCLASS_HAS_RESERVED_SLOTS(2),
-    JS_PropertyStub,       /* addProperty */
-    JS_DeletePropertyStub, /* delProperty */
-    JS_PropertyStub,       /* getProperty */
-    JS_StrictPropertyStub, /* setProperty */
-    JS_EnumerateStub,
-    JS_ResolveStub,
-    JS_ConvertStub,
-    NULL,                  /* finalize */
-    NULL,                  /* checkAccess */
-    NULL,                  /* call */
-    NULL,                  /* hasInstance */
-    NULL,                  /* construct */
-    NULL,                  /* trace */
-    JSCLASS_NO_INTERNAL_MEMBERS
+static const JSClass dom_class = {
+    "FakeDOMObject", JSCLASS_IS_DOMJSCLASS | JSCLASS_HAS_RESERVED_SLOTS(2)
 };
 
 #ifdef DEBUG
-static JSClass *GetDomClass() {
+static const JSClass* GetDomClass() {
     return &dom_class;
 }
 #endif
 
-static JSBool
-dom_genericGetter(JSContext *cx, unsigned argc, JS::Value *vp)
+static bool
+dom_genericGetter(JSContext* cx, unsigned argc, JS::Value* vp)
 {
     CallArgs args = CallArgsFromVp(argc, vp);
     RootedObject obj(cx, JS_THIS_OBJECT(cx, vp));
@@ -4649,13 +6703,13 @@ dom_genericGetter(JSContext *cx, unsigned argc, JS::Value *vp)
 
     JS::Value val = js::GetReservedSlot(obj, DOM_OBJECT_SLOT);
 
-    const JSJitInfo *info = FUNCTION_VALUE_TO_JITINFO(JS_CALLEE(cx, vp));
-    MOZ_ASSERT(info->type == JSJitInfo::Getter);
+    const JSJitInfo* info = FUNCTION_VALUE_TO_JITINFO(args.calleev());
+    MOZ_ASSERT(info->type() == JSJitInfo::Getter);
     JSJitGetterOp getter = info->getter;
     return getter(cx, obj, val.toPrivate(), JSJitGetterCallArgs(args));
 }
 
-static JSBool
+static bool
 dom_genericSetter(JSContext* cx, unsigned argc, JS::Value* vp)
 {
     CallArgs args = CallArgsFromVp(argc, vp);
@@ -4663,7 +6717,7 @@ dom_genericSetter(JSContext* cx, unsigned argc, JS::Value* vp)
     if (!obj)
         return false;
 
-    JS_ASSERT(argc == 1);
+    MOZ_ASSERT(args.length() == 1);
 
     if (JS_GetClass(obj) != &dom_class) {
         args.rval().set(UndefinedValue());
@@ -4672,8 +6726,8 @@ dom_genericSetter(JSContext* cx, unsigned argc, JS::Value* vp)
 
     JS::Value val = js::GetReservedSlot(obj, DOM_OBJECT_SLOT);
 
-    const JSJitInfo *info = FUNCTION_VALUE_TO_JITINFO(JS_CALLEE(cx, vp));
-    MOZ_ASSERT(info->type == JSJitInfo::Setter);
+    const JSJitInfo* info = FUNCTION_VALUE_TO_JITINFO(args.calleev());
+    MOZ_ASSERT(info->type() == JSJitInfo::Setter);
     JSJitSetterOp setter = info->setter;
     if (!setter(cx, obj, val.toPrivate(), JSJitSetterCallArgs(args)))
         return false;
@@ -4681,8 +6735,8 @@ dom_genericSetter(JSContext* cx, unsigned argc, JS::Value* vp)
     return true;
 }
 
-static JSBool
-dom_genericMethod(JSContext* cx, unsigned argc, JS::Value *vp)
+static bool
+dom_genericMethod(JSContext* cx, unsigned argc, JS::Value* vp)
 {
     CallArgs args = CallArgsFromVp(argc, vp);
     RootedObject obj(cx, JS_THIS_OBJECT(cx, vp));
@@ -4696,8 +6750,8 @@ dom_genericMethod(JSContext* cx, unsigned argc, JS::Value *vp)
 
     JS::Value val = js::GetReservedSlot(obj, DOM_OBJECT_SLOT);
 
-    const JSJitInfo *info = FUNCTION_VALUE_TO_JITINFO(JS_CALLEE(cx, vp));
-    MOZ_ASSERT(info->type == JSJitInfo::Method);
+    const JSJitInfo* info = FUNCTION_VALUE_TO_JITINFO(args.calleev());
+    MOZ_ASSERT(info->type() == JSJitInfo::Method);
     JSJitMethodOp method = info->method;
     return method(cx, obj, val.toPrivate(), JSJitMethodCallArgs(args));
 }
@@ -4706,25 +6760,27 @@ static void
 InitDOMObject(HandleObject obj)
 {
     /* Fow now just initialize to a constant we can check. */
-    SetReservedSlot(obj, DOM_OBJECT_SLOT, PRIVATE_TO_JSVAL((void *)0x1234));
+    SetReservedSlot(obj, DOM_OBJECT_SLOT, PrivateValue((void*)0x1234));
 }
 
-static JSBool
-dom_constructor(JSContext* cx, unsigned argc, JS::Value *vp)
+static bool
+dom_constructor(JSContext* cx, unsigned argc, JS::Value* vp)
 {
     CallArgs args = CallArgsFromVp(argc, vp);
 
     RootedObject callee(cx, &args.callee());
     RootedValue protov(cx);
-    if (!JSObject::getProperty(cx, callee, callee, cx->names().classPrototype, &protov))
+    if (!GetProperty(cx, callee, callee, cx->names().prototype, &protov))
         return false;
 
     if (!protov.isObject()) {
-        JS_ReportErrorNumber(cx, js_GetErrorMessage, NULL, JSMSG_BAD_PROTOTYPE, "FakeDOMObject");
+        JS_ReportErrorNumberASCII(cx, GetErrorMessage, nullptr, JSMSG_BAD_PROTOTYPE,
+                                  "FakeDOMObject");
         return false;
     }
 
-    RootedObject domObj(cx, JS_NewObject(cx, &dom_class, &protov.toObject(), NULL));
+    RootedObject proto(cx, &protov.toObject());
+    RootedObject domObj(cx, JS_NewObjectWithGivenProto(cx, &dom_class, proto));
     if (!domObj)
         return false;
 
@@ -4734,485 +6790,882 @@ dom_constructor(JSContext* cx, unsigned argc, JS::Value *vp)
     return true;
 }
 
-static JSBool
-InstanceClassHasProtoAtDepth(HandleObject protoObject, uint32_t protoID, uint32_t depth)
+static bool
+InstanceClassHasProtoAtDepth(const Class* clasp, uint32_t protoID, uint32_t depth)
 {
     /* There's only a single (fake) DOM object in the shell, so just return true. */
     return true;
 }
 
-/*
- * Avoid a reentrancy hazard.
- *
- * The non-JS_THREADSAFE shell uses a signal handler to implement timeout().
- * The JS engine is not really reentrant, but JS_TriggerAllOperationCallbacks
- * is mostly safe--the only danger is that we might interrupt JS_NewContext or
- * JS_DestroyContext while the context list is being modified. Therefore we
- * disable the signal handler around calls to those functions.
- */
-#ifdef JS_THREADSAFE
-# define WITH_SIGNALS_DISABLED(x)  x
+class ScopedFileDesc
+{
+    intptr_t fd_;
+  public:
+    enum LockType { READ_LOCK, WRITE_LOCK };
+    ScopedFileDesc(int fd, LockType lockType)
+      : fd_(fd)
+    {
+        if (fd == -1)
+            return;
+        if (!jsCacheOpened.compareExchange(false, true)) {
+            close(fd_);
+            fd_ = -1;
+            return;
+        }
+    }
+    ~ScopedFileDesc() {
+        if (fd_ == -1)
+            return;
+        MOZ_ASSERT(jsCacheOpened == true);
+        jsCacheOpened = false;
+        close(fd_);
+    }
+    operator intptr_t() const {
+        return fd_;
+    }
+    intptr_t forget() {
+        intptr_t ret = fd_;
+        fd_ = -1;
+        return ret;
+    }
+};
+
+// To guard against corrupted cache files generated by previous crashes, write
+// asmJSCacheCookie to the first uint32_t of the file only after the file is
+// fully serialized and flushed to disk.
+static const uint32_t asmJSCacheCookie = 0xabbadaba;
+
+static bool
+ShellOpenAsmJSCacheEntryForRead(HandleObject global, const char16_t* begin, const char16_t* limit,
+                                size_t* serializedSizeOut, const uint8_t** memoryOut,
+                                intptr_t* handleOut)
+{
+    if (!jsCachingEnabled || !jsCacheAsmJSPath)
+        return false;
+
+    ScopedFileDesc fd(open(jsCacheAsmJSPath, O_RDWR), ScopedFileDesc::READ_LOCK);
+    if (fd == -1)
+        return false;
+
+    // Get the size and make sure we can dereference at least one uint32_t.
+    off_t off = lseek(fd, 0, SEEK_END);
+    if (off == -1 || off < (off_t)sizeof(uint32_t))
+        return false;
+
+    // Map the file into memory.
+    void* memory;
+#ifdef XP_WIN
+    HANDLE fdOsHandle = (HANDLE)_get_osfhandle(fd);
+    HANDLE fileMapping = CreateFileMapping(fdOsHandle, nullptr, PAGE_READWRITE, 0, 0, nullptr);
+    if (!fileMapping)
+        return false;
+
+    memory = MapViewOfFile(fileMapping, FILE_MAP_READ, 0, 0, 0);
+    CloseHandle(fileMapping);
+    if (!memory)
+        return false;
 #else
-# define WITH_SIGNALS_DISABLED(x)                                               \
-    JS_BEGIN_MACRO                                                              \
-        ScheduleWatchdog(gRuntime, -1);                                         \
-        x;                                                                      \
-        ScheduleWatchdog(gRuntime, gTimeoutInterval);                           \
-    JS_END_MACRO
+    memory = mmap(nullptr, off, PROT_READ, MAP_SHARED, fd, 0);
+    if (memory == MAP_FAILED)
+        return false;
 #endif
 
-static JSContext *
-NewContext(JSRuntime *rt)
-{
-    JSContext *cx;
-    WITH_SIGNALS_DISABLED(cx = JS_NewContext(rt, gStackChunkSize));
-    if (!cx)
-        return NULL;
-
-    JSShellContextData *data = NewContextData();
-    if (!data) {
-        DestroyContext(cx, false);
-        return NULL;
+    // Perform check described by asmJSCacheCookie comment.
+    if (*(uint32_t*)memory != asmJSCacheCookie) {
+#ifdef XP_WIN
+        UnmapViewOfFile(memory);
+#else
+        munmap(memory, off);
+#endif
+        return false;
     }
 
-    JS_SetContextPrivate(cx, data);
-    JS_SetErrorReporter(cx, my_ErrorReporter);
-    SetContextOptions(cx);
-    if (enableTypeInference)
-        JS_ToggleOptions(cx, JSOPTION_TYPE_INFERENCE);
-    if (enableIon)
-        JS_ToggleOptions(cx, JSOPTION_ION);
-    if (enableBaseline)
-        JS_ToggleOptions(cx, JSOPTION_BASELINE);
-    if (enableAsmJS)
-        JS_ToggleOptions(cx, JSOPTION_ASMJS);
-    return cx;
+    // The embedding added the cookie so strip it off of the buffer returned to
+    // the JS engine.
+    *serializedSizeOut = off - sizeof(uint32_t);
+    *memoryOut = (uint8_t*)memory + sizeof(uint32_t);
+    *handleOut = fd.forget();
+    return true;
 }
 
 static void
-DestroyContext(JSContext *cx, bool withGC)
+ShellCloseAsmJSCacheEntryForRead(size_t serializedSize, const uint8_t* memory, intptr_t handle)
 {
-    JSShellContextData *data = GetContextData(cx);
-    JS_SetContextPrivate(cx, NULL);
-    free(data);
-    WITH_SIGNALS_DISABLED(withGC ? JS_DestroyContext(cx) : JS_DestroyContextNoGC(cx));
+    // Undo the cookie adjustment done when opening the file.
+    memory -= sizeof(uint32_t);
+    serializedSize += sizeof(uint32_t);
+
+    // Release the memory mapping and file.
+#ifdef XP_WIN
+    UnmapViewOfFile(const_cast<uint8_t*>(memory));
+#else
+    munmap(const_cast<uint8_t*>(memory), serializedSize);
+#endif
+
+    MOZ_ASSERT(jsCacheOpened == true);
+    jsCacheOpened = false;
+    close(handle);
 }
 
-static JSObject *
-NewGlobalObject(JSContext *cx, JSObject *sameZoneAs)
+static JS::AsmJSCacheResult
+ShellOpenAsmJSCacheEntryForWrite(HandleObject global, bool installed,
+                                 const char16_t* begin, const char16_t* end,
+                                 size_t serializedSize, uint8_t** memoryOut, intptr_t* handleOut)
 {
-    JS::CompartmentOptions options;
-    options.setZone(sameZoneAs ? JS::SameZoneAs(sameZoneAs) : JS::FreshZone)
-           .setVersion(JSVERSION_LATEST);
-    RootedObject glob(cx, JS_NewGlobalObject(cx, &global_class, NULL, options));
+    if (!jsCachingEnabled || !jsCacheAsmJSPath)
+        return JS::AsmJSCache_Disabled_ShellFlags;
+
+    // Create the cache directory if it doesn't already exist.
+    struct stat dirStat;
+    if (stat(jsCacheDir, &dirStat) == 0) {
+        if (!(dirStat.st_mode & S_IFDIR))
+            return JS::AsmJSCache_InternalError;
+    } else {
+#ifdef XP_WIN
+        if (mkdir(jsCacheDir) != 0)
+            return JS::AsmJSCache_InternalError;
+#else
+        if (mkdir(jsCacheDir, 0777) != 0)
+            return JS::AsmJSCache_InternalError;
+#endif
+    }
+
+    ScopedFileDesc fd(open(jsCacheAsmJSPath, O_CREAT|O_RDWR, 0660), ScopedFileDesc::WRITE_LOCK);
+    if (fd == -1)
+        return JS::AsmJSCache_InternalError;
+
+    // Include extra space for the asmJSCacheCookie.
+    serializedSize += sizeof(uint32_t);
+
+    // Resize the file to the appropriate size after zeroing their contents.
+#ifdef XP_WIN
+    if (chsize(fd, 0))
+        return JS::AsmJSCache_InternalError;
+    if (chsize(fd, serializedSize))
+        return JS::AsmJSCache_InternalError;
+#else
+    if (ftruncate(fd, 0))
+        return JS::AsmJSCache_InternalError;
+    if (ftruncate(fd, serializedSize))
+        return JS::AsmJSCache_InternalError;
+#endif
+
+    // Map the file into memory.
+    void* memory;
+#ifdef XP_WIN
+    HANDLE fdOsHandle = (HANDLE)_get_osfhandle(fd);
+    HANDLE fileMapping = CreateFileMapping(fdOsHandle, nullptr, PAGE_READWRITE, 0, 0, nullptr);
+    if (!fileMapping)
+        return JS::AsmJSCache_InternalError;
+
+    memory = MapViewOfFile(fileMapping, FILE_MAP_WRITE, 0, 0, 0);
+    CloseHandle(fileMapping);
+    if (!memory)
+        return JS::AsmJSCache_InternalError;
+    MOZ_ASSERT(*(uint32_t*)memory == 0);
+#else
+    memory = mmap(nullptr, serializedSize, PROT_READ, MAP_SHARED, fd, 0);
+    if (memory == MAP_FAILED)
+        return JS::AsmJSCache_InternalError;
+    MOZ_ASSERT(*(uint32_t*)memory == 0);
+    if (mprotect(memory, serializedSize, PROT_WRITE))
+        return JS::AsmJSCache_InternalError;
+#endif
+
+    // The embedding added the cookie so strip it off of the buffer returned to
+    // the JS engine. The asmJSCacheCookie will be written on close, below.
+    *memoryOut = (uint8_t*)memory + sizeof(uint32_t);
+    *handleOut = fd.forget();
+    return JS::AsmJSCache_Success;
+}
+
+static void
+ShellCloseAsmJSCacheEntryForWrite(size_t serializedSize, uint8_t* memory, intptr_t handle)
+{
+    // Undo the cookie adjustment done when opening the file.
+    memory -= sizeof(uint32_t);
+    serializedSize += sizeof(uint32_t);
+
+    // Write the magic cookie value after flushing the entire cache entry.
+#ifdef XP_WIN
+    FlushViewOfFile(memory, serializedSize);
+    FlushFileBuffers(HANDLE(_get_osfhandle(handle)));
+#else
+    msync(memory, serializedSize, MS_SYNC);
+#endif
+
+    MOZ_ASSERT(*(uint32_t*)memory == 0);
+    *(uint32_t*)memory = asmJSCacheCookie;
+
+    // Free the memory mapping and file.
+#ifdef XP_WIN
+    UnmapViewOfFile(const_cast<uint8_t*>(memory));
+#else
+    munmap(memory, serializedSize);
+#endif
+
+    MOZ_ASSERT(jsCacheOpened == true);
+    jsCacheOpened = false;
+    close(handle);
+}
+
+static bool
+ShellBuildId(JS::BuildIdCharVector* buildId)
+{
+    // The browser embeds the date into the buildid and the buildid is embedded
+    // in the binary, so every 'make' necessarily builds a new firefox binary.
+    // Fortunately, the actual firefox executable is tiny -- all the code is in
+    // libxul.so and other shared modules -- so this isn't a big deal. Not so
+    // for the statically-linked JS shell. To avoid recompiling js.cpp and
+    // re-linking 'js' on every 'make', we use a constant buildid and rely on
+    // the shell user to manually clear the cache (deleting the dir passed to
+    // --js-cache) between cache-breaking updates. Note: jit_tests.py does this
+    // on every run).
+    const char buildid[] = "JS-shell";
+    return buildId->append(buildid, sizeof(buildid));
+}
+
+static const JS::AsmJSCacheOps asmJSCacheOps = {
+    ShellOpenAsmJSCacheEntryForRead,
+    ShellCloseAsmJSCacheEntryForRead,
+    ShellOpenAsmJSCacheEntryForWrite,
+    ShellCloseAsmJSCacheEntryForWrite
+};
+
+static JSObject*
+NewGlobalObject(JSContext* cx, JS::CompartmentOptions& options,
+                JSPrincipals* principals)
+{
+    RootedObject glob(cx, JS_NewGlobalObject(cx, &global_class, principals,
+                                             JS::DontFireOnNewGlobalHook, options));
     if (!glob)
-        return NULL;
+        return nullptr;
 
     {
         JSAutoCompartment ac(cx, glob);
 
 #ifndef LAZY_STANDARD_CLASSES
         if (!JS_InitStandardClasses(cx, glob))
-            return NULL;
+            return nullptr;
 #endif
+
+        bool succeeded;
+        if (!JS_SetImmutablePrototype(cx, glob, &succeeded))
+            return nullptr;
+        MOZ_ASSERT(succeeded,
+                   "a fresh, unexposed global object is always capable of "
+                   "having its [[Prototype]] be immutable");
 
 #ifdef JS_HAS_CTYPES
         if (!JS_InitCTypesClass(cx, glob))
-            return NULL;
+            return nullptr;
 #endif
-        if (!JS_InitReflect(cx, glob))
-            return NULL;
+        if (!JS_InitReflectParse(cx, glob))
+            return nullptr;
         if (!JS_DefineDebuggerObject(cx, glob))
-            return NULL;
+            return nullptr;
         if (!JS::RegisterPerfMeasurement(cx, glob))
-            return NULL;
+            return nullptr;
         if (!JS_DefineFunctionsWithHelp(cx, glob, shell_functions) ||
             !JS_DefineProfilingFunctions(cx, glob))
         {
-            return NULL;
+            return nullptr;
         }
-        if (!js::DefineTestingFunctions(cx, glob))
-            return NULL;
+        if (!js::DefineTestingFunctions(cx, glob, fuzzingSafe, disableOOMFunctions))
+            return nullptr;
 
-        if (!fuzzingSafe && !JS_DefineFunctionsWithHelp(cx, glob, fuzzing_unsafe_functions))
-            return NULL;
-
-        RootedObject it(cx, JS_DefineObject(cx, glob, "it", &its_class, NULL, 0));
-        if (!it)
-            return NULL;
-        if (!JS_DefineProperties(cx, it, its_props))
-            return NULL;
-
-        if (!JS_DefineProperty(cx, glob, "custom", UndefinedValue(), its_getter,
-                               its_setter, 0))
-            return NULL;
-        if (!JS_DefineProperty(cx, glob, "customRdOnly", UndefinedValue(), its_getter,
-                               its_setter, JSPROP_READONLY))
-            return NULL;
-
-        if (!JS_DefineProperty(cx, glob, "customNative", UndefinedValue(),
-                               JS_CAST_NATIVE_TO(its_get_customNative, JSPropertyOp),
-                               JS_CAST_NATIVE_TO(its_set_customNative, JSStrictPropertyOp),
-                               JSPROP_SHARED | JSPROP_NATIVE_ACCESSORS))
-        {
-            return NULL;
+        if (!fuzzingSafe) {
+            if (!JS_DefineFunctionsWithHelp(cx, glob, fuzzing_unsafe_functions))
+                return nullptr;
+            if (!DefineConsole(cx, glob))
+                return nullptr;
         }
+
+        if (!DefineOS(cx, glob, fuzzingSafe, &gOutFile, &gErrFile))
+            return nullptr;
+
+        RootedObject performanceObj(cx, JS_NewObject(cx, nullptr));
+        if (!performanceObj)
+            return nullptr;
+        RootedObject mozMemoryObj(cx, JS_NewObject(cx, nullptr));
+        if (!mozMemoryObj)
+            return nullptr;
+        RootedObject gcObj(cx, gc::NewMemoryInfoObject(cx));
+        if (!gcObj)
+            return nullptr;
+        if (!JS_DefineProperty(cx, glob, "performance", performanceObj, JSPROP_ENUMERATE))
+            return nullptr;
+        if (!JS_DefineProperty(cx, performanceObj, "mozMemory", mozMemoryObj, JSPROP_ENUMERATE))
+            return nullptr;
+        if (!JS_DefineProperty(cx, mozMemoryObj, "gc", gcObj, JSPROP_ENUMERATE))
+            return nullptr;
 
         /* Initialize FakeDOMObject. */
-        static js::DOMCallbacks DOMcallbacks = {
+        static const js::DOMCallbacks DOMcallbacks = {
             InstanceClassHasProtoAtDepth
         };
-        SetDOMCallbacks(cx->runtime(), &DOMcallbacks);
+        SetDOMCallbacks(cx, &DOMcallbacks);
 
-        RootedObject domProto(cx, JS_InitClass(cx, glob, NULL, &dom_class, dom_constructor, 0,
-                                               dom_props, dom_methods, NULL, NULL));
+        RootedObject domProto(cx, JS_InitClass(cx, glob, nullptr, &dom_class, dom_constructor,
+                                               0, dom_props, dom_methods, nullptr, nullptr));
         if (!domProto)
-            return NULL;
+            return nullptr;
 
         /* Initialize FakeDOMObject.prototype */
         InitDOMObject(domProto);
     }
 
+    JS_FireOnNewGlobalObject(cx, glob);
+
     return glob;
 }
 
 static bool
-BindScriptArgs(JSContext *cx, JSObject *obj_, OptionParser *op)
+BindScriptArgs(JSContext* cx, OptionParser* op)
 {
-    RootedObject obj(cx, obj_);
+    AutoReportException are(cx);
 
     MultiStringRange msr = op->getMultiStringArg("scriptArgs");
     RootedObject scriptArgs(cx);
-    scriptArgs = JS_NewArrayObject(cx, 0, NULL);
+    scriptArgs = JS_NewArrayObject(cx, 0);
     if (!scriptArgs)
         return false;
 
-    if (!JS_DefineProperty(cx, obj, "scriptArgs", OBJECT_TO_JSVAL(scriptArgs), NULL, NULL, 0))
+    if (!JS_DefineProperty(cx, cx->global(), "scriptArgs", scriptArgs, 0))
         return false;
 
     for (size_t i = 0; !msr.empty(); msr.popFront(), ++i) {
-        const char *scriptArg = msr.front();
-        JSString *str = JS_NewStringCopyZ(cx, scriptArg);
+        const char* scriptArg = msr.front();
+        JS::RootedString str(cx, JS_NewStringCopyZ(cx, scriptArg));
         if (!str ||
-            !JS_DefineElement(cx, scriptArgs, i, STRING_TO_JSVAL(str), NULL, NULL,
-                              JSPROP_ENUMERATE)) {
+            !JS_DefineElement(cx, scriptArgs, i, str, JSPROP_ENUMERATE))
+        {
             return false;
         }
+    }
+
+    const char* scriptPath = op->getStringArg("script");
+    RootedValue scriptPathValue(cx);
+    if (scriptPath) {
+        RootedString scriptPathString(cx, JS_NewStringCopyZ(cx, scriptPath));
+        if (!scriptPathString)
+            return false;
+        scriptPathValue = StringValue(scriptPathString);
+    } else {
+        scriptPathValue = UndefinedValue();
+    }
+
+    if (!JS_DefineProperty(cx, cx->global(), "scriptPath", scriptPathValue, 0))
+        return false;
+
+    return true;
+}
+
+static bool
+OptionFailure(const char* option, const char* str)
+{
+    fprintf(stderr, "Unrecognized option for %s: %s\n", option, str);
+    return false;
+}
+
+static MOZ_MUST_USE bool
+ProcessArgs(JSContext* cx, OptionParser* op)
+{
+    ShellContext* sc = GetShellContext(cx);
+
+    if (op->getBoolOption('s'))
+        JS::ContextOptionsRef(cx).toggleExtraWarnings();
+
+    /* |scriptArgs| gets bound on the global before any code is run. */
+    if (!BindScriptArgs(cx, op))
+        return false;
+
+    MultiStringRange filePaths = op->getMultiStringOption('f');
+    MultiStringRange codeChunks = op->getMultiStringOption('e');
+    MultiStringRange modulePaths = op->getMultiStringOption('m');
+
+    if (filePaths.empty() &&
+        codeChunks.empty() &&
+        modulePaths.empty() &&
+        !op->getStringArg("script"))
+    {
+        return Process(cx, nullptr, true); /* Interactive. */
+    }
+
+    if (const char* path = op->getStringOption("module-load-path"))
+        moduleLoadPath = path;
+
+    if (!modulePaths.empty() && !InitModuleLoader(cx))
+        return false;
+
+    while (!filePaths.empty() || !codeChunks.empty() || !modulePaths.empty()) {
+        size_t fpArgno = filePaths.empty() ? SIZE_MAX : filePaths.argno();
+        size_t ccArgno = codeChunks.empty() ? SIZE_MAX : codeChunks.argno();
+        size_t mpArgno = modulePaths.empty() ? SIZE_MAX : modulePaths.argno();
+
+        if (fpArgno < ccArgno && fpArgno < mpArgno) {
+            char* path = filePaths.front();
+            if (!Process(cx, path, false, FileScript))
+                return false;
+            filePaths.popFront();
+        } else if (ccArgno < fpArgno && ccArgno < mpArgno) {
+            const char* code = codeChunks.front();
+            RootedValue rval(cx);
+            JS::CompileOptions opts(cx);
+            opts.setFileAndLine("-e", 1);
+            if (!JS::Evaluate(cx, opts, code, strlen(code), &rval))
+                return false;
+            codeChunks.popFront();
+            if (sc->quitting)
+                break;
+        } else {
+            MOZ_ASSERT(mpArgno < fpArgno && mpArgno < ccArgno);
+            char* path = modulePaths.front();
+            if (!Process(cx, path, false, FileModule))
+                return false;
+            modulePaths.popFront();
+        }
+    }
+
+    if (sc->quitting)
+        return false;
+
+    /* The |script| argument is processed after all options. */
+    if (const char* path = op->getStringArg("script")) {
+        if (!Process(cx, path, false))
+            return false;
+    }
+
+    DrainJobQueue(cx);
+
+    if (op->getBoolOption('i')) {
+        if (!Process(cx, nullptr, true))
+            return false;
     }
 
     return true;
 }
 
-// This function is currently only called from "#if defined(JS_ION)" chunks,
-// so we're guarding the function definition with an #ifdef, too, to avoid
-// build warning for unused function in non-ion-enabled builds:
-#if defined(JS_ION)
-static int
-OptionFailure(const char *option, const char *str)
+static bool
+SetContextOptions(JSContext* cx, const OptionParser& op)
 {
-    fprintf(stderr, "Unrecognized option for %s: %s\n", option, str);
-    return EXIT_FAILURE;
-}
-#endif /* JS_ION */
+    enableBaseline = !op.getBoolOption("no-baseline");
+    enableIon = !op.getBoolOption("no-ion");
+    enableAsmJS = !op.getBoolOption("no-asmjs");
+    enableWasm = !op.getBoolOption("no-wasm");
+    enableNativeRegExp = !op.getBoolOption("no-native-regexp");
+    enableUnboxedArrays = op.getBoolOption("unboxed-arrays");
+    enableWasmAlwaysBaseline = op.getBoolOption("wasm-always-baseline");
 
-static int
-ProcessArgs(JSContext *cx, JSObject *obj_, OptionParser *op)
-{
-    RootedObject obj(cx, obj_);
+    JS::ContextOptionsRef(cx).setBaseline(enableBaseline)
+                             .setIon(enableIon)
+                             .setAsmJS(enableAsmJS)
+                             .setWasm(enableWasm)
+                             .setWasmAlwaysBaseline(enableWasmAlwaysBaseline)
+                             .setNativeRegExp(enableNativeRegExp)
+                             .setUnboxedArrays(enableUnboxedArrays);
 
-    if (op->getBoolOption('c'))
-        compileOnly = true;
+    if (op.getBoolOption("wasm-check-bce"))
+        jit::JitOptions.wasmAlwaysCheckBounds = true;
 
-    if (op->getBoolOption('w'))
-        reportWarnings = JS_TRUE;
-    else if (op->getBoolOption('W'))
-        reportWarnings = JS_FALSE;
+    if (op.getBoolOption("no-unboxed-objects"))
+        jit::JitOptions.disableUnboxedObjects = true;
 
-    if (op->getBoolOption('s'))
-        JS_ToggleOptions(cx, JSOPTION_EXTRA_WARNINGS);
-
-    if (op->getBoolOption('d')) {
-        JS_SetRuntimeDebugMode(JS_GetRuntime(cx), true);
-        JS_SetDebugMode(cx, true);
-    }
-
-    if (op->getBoolOption('b'))
-        printTiming = true;
-
-    if (op->getBoolOption('D'))
-        enableDisassemblyDumps = true;
-
-#ifdef JS_THREADSAFE
-    int32_t threadCount = op->getIntOption("thread-count");
-    if (threadCount >= 0)
-        cx->runtime()->requestHelperThreadCount(threadCount);
-#endif /* JS_THREADSAFE */
-
-#if defined(JS_ION)
-    if (op->getBoolOption("no-ion")) {
-        enableIon = false;
-        JS_ToggleOptions(cx, JSOPTION_ION);
-    }
-    if (op->getBoolOption("no-asmjs")) {
-        enableAsmJS = false;
-        JS_ToggleOptions(cx, JSOPTION_ASMJS);
-    }
-
-    if (op->getBoolOption("no-baseline")) {
-        enableBaseline = false;
-        JS_ToggleOptions(cx, JSOPTION_BASELINE);
-    }
-
-    if (const char *str = op->getStringOption("ion-gvn")) {
-        if (strcmp(str, "off") == 0)
-            jit::js_IonOptions.gvn = false;
-        else if (strcmp(str, "pessimistic") == 0)
-            jit::js_IonOptions.gvnIsOptimistic = false;
-        else if (strcmp(str, "optimistic") == 0)
-            jit::js_IonOptions.gvnIsOptimistic = true;
-        else
-            return OptionFailure("ion-gvn", str);
-    }
-
-    if (const char *str = op->getStringOption("ion-licm")) {
+    if (const char* str = op.getStringOption("cache-ir-stubs")) {
         if (strcmp(str, "on") == 0)
-            jit::js_IonOptions.licm = true;
+            jit::JitOptions.disableCacheIR = false;
         else if (strcmp(str, "off") == 0)
-            jit::js_IonOptions.licm = false;
+            jit::JitOptions.disableCacheIR = true;
+        else
+            return OptionFailure("cache-ir-stubs", str);
+    }
+
+    if (const char* str = op.getStringOption("ion-scalar-replacement")) {
+        if (strcmp(str, "on") == 0)
+            jit::JitOptions.disableScalarReplacement = false;
+        else if (strcmp(str, "off") == 0)
+            jit::JitOptions.disableScalarReplacement = true;
+        else
+            return OptionFailure("ion-scalar-replacement", str);
+    }
+
+    if (const char* str = op.getStringOption("ion-shared-stubs")) {
+        if (strcmp(str, "on") == 0)
+            jit::JitOptions.disableSharedStubs = false;
+        else if (strcmp(str, "off") == 0)
+            jit::JitOptions.disableSharedStubs = true;
+        else
+            return OptionFailure("ion-shared-stubs", str);
+    }
+
+    if (const char* str = op.getStringOption("ion-gvn")) {
+        if (strcmp(str, "off") == 0) {
+            jit::JitOptions.disableGvn = true;
+        } else if (strcmp(str, "on") != 0 &&
+                   strcmp(str, "optimistic") != 0 &&
+                   strcmp(str, "pessimistic") != 0)
+        {
+            // We accept "pessimistic" and "optimistic" as synonyms for "on"
+            // for backwards compatibility.
+            return OptionFailure("ion-gvn", str);
+        }
+    }
+
+    if (const char* str = op.getStringOption("ion-aa")) {
+        if (strcmp(str, "flow-sensitive") == 0)
+            jit::JitOptions.disableFlowAA = false;
+        else if (strcmp(str, "flow-insensitive") == 0)
+            jit::JitOptions.disableFlowAA = true;
+        else
+            return OptionFailure("ion-aa", str);
+    }
+
+    if (const char* str = op.getStringOption("ion-licm")) {
+        if (strcmp(str, "on") == 0)
+            jit::JitOptions.disableLicm = false;
+        else if (strcmp(str, "off") == 0)
+            jit::JitOptions.disableLicm = true;
         else
             return OptionFailure("ion-licm", str);
     }
 
-    if (const char *str = op->getStringOption("ion-edgecase-analysis")) {
+    if (const char* str = op.getStringOption("ion-edgecase-analysis")) {
         if (strcmp(str, "on") == 0)
-            jit::js_IonOptions.edgeCaseAnalysis = true;
+            jit::JitOptions.disableEdgeCaseAnalysis = false;
         else if (strcmp(str, "off") == 0)
-            jit::js_IonOptions.edgeCaseAnalysis = false;
+            jit::JitOptions.disableEdgeCaseAnalysis = true;
         else
             return OptionFailure("ion-edgecase-analysis", str);
     }
 
-     if (const char *str = op->getStringOption("ion-range-analysis")) {
-         if (strcmp(str, "on") == 0)
-             jit::js_IonOptions.rangeAnalysis = true;
-         else if (strcmp(str, "off") == 0)
-             jit::js_IonOptions.rangeAnalysis = false;
-         else
-             return OptionFailure("ion-range-analysis", str);
-     }
-
-    if (const char *str = op->getStringOption("ion-inlining")) {
+    if (const char* str = op.getStringOption("ion-pgo")) {
         if (strcmp(str, "on") == 0)
-            jit::js_IonOptions.inlining = true;
+            jit::JitOptions.disablePgo = false;
         else if (strcmp(str, "off") == 0)
-            jit::js_IonOptions.inlining = false;
+            jit::JitOptions.disablePgo = true;
+        else
+            return OptionFailure("ion-pgo", str);
+    }
+
+    if (const char* str = op.getStringOption("ion-range-analysis")) {
+        if (strcmp(str, "on") == 0)
+            jit::JitOptions.disableRangeAnalysis = false;
+        else if (strcmp(str, "off") == 0)
+            jit::JitOptions.disableRangeAnalysis = true;
+        else
+            return OptionFailure("ion-range-analysis", str);
+    }
+
+    if (const char *str = op.getStringOption("ion-sincos")) {
+        if (strcmp(str, "on") == 0)
+            jit::JitOptions.disableSincos = false;
+        else if (strcmp(str, "off") == 0)
+            jit::JitOptions.disableSincos = true;
+        else
+            return OptionFailure("ion-sincos", str);
+    }
+
+    if (const char* str = op.getStringOption("ion-sink")) {
+        if (strcmp(str, "on") == 0)
+            jit::JitOptions.disableSink = false;
+        else if (strcmp(str, "off") == 0)
+            jit::JitOptions.disableSink = true;
+        else
+            return OptionFailure("ion-sink", str);
+    }
+
+    if (const char* str = op.getStringOption("ion-loop-unrolling")) {
+        if (strcmp(str, "on") == 0)
+            jit::JitOptions.disableLoopUnrolling = false;
+        else if (strcmp(str, "off") == 0)
+            jit::JitOptions.disableLoopUnrolling = true;
+        else
+            return OptionFailure("ion-loop-unrolling", str);
+    }
+
+    if (const char* str = op.getStringOption("ion-instruction-reordering")) {
+        if (strcmp(str, "on") == 0)
+            jit::JitOptions.disableInstructionReordering = false;
+        else if (strcmp(str, "off") == 0)
+            jit::JitOptions.disableInstructionReordering = true;
+        else
+            return OptionFailure("ion-instruction-reordering", str);
+    }
+
+    if (op.getBoolOption("ion-check-range-analysis"))
+        jit::JitOptions.checkRangeAnalysis = true;
+
+    if (op.getBoolOption("ion-extra-checks"))
+        jit::JitOptions.runExtraChecks = true;
+
+    if (const char* str = op.getStringOption("ion-inlining")) {
+        if (strcmp(str, "on") == 0)
+            jit::JitOptions.disableInlining = false;
+        else if (strcmp(str, "off") == 0)
+            jit::JitOptions.disableInlining = true;
         else
             return OptionFailure("ion-inlining", str);
     }
 
-    if (const char *str = op->getStringOption("ion-osr")) {
+    if (const char* str = op.getStringOption("ion-osr")) {
         if (strcmp(str, "on") == 0)
-            jit::js_IonOptions.osr = true;
+            jit::JitOptions.osr = true;
         else if (strcmp(str, "off") == 0)
-            jit::js_IonOptions.osr = false;
+            jit::JitOptions.osr = false;
         else
             return OptionFailure("ion-osr", str);
     }
 
-    if (const char *str = op->getStringOption("ion-limit-script-size")) {
+    if (const char* str = op.getStringOption("ion-limit-script-size")) {
         if (strcmp(str, "on") == 0)
-            jit::js_IonOptions.limitScriptSize = true;
+            jit::JitOptions.limitScriptSize = true;
         else if (strcmp(str, "off") == 0)
-            jit::js_IonOptions.limitScriptSize = false;
+            jit::JitOptions.limitScriptSize = false;
         else
             return OptionFailure("ion-limit-script-size", str);
     }
 
-    int32_t useCount = op->getIntOption("ion-uses-before-compile");
-    if (useCount >= 0)
-        jit::js_IonOptions.usesBeforeCompile = useCount;
+    int32_t warmUpThreshold = op.getIntOption("ion-warmup-threshold");
+    if (warmUpThreshold >= 0)
+        jit::JitOptions.setCompilerWarmUpThreshold(warmUpThreshold);
 
-    useCount = op->getIntOption("baseline-uses-before-compile");
-    if (useCount >= 0)
-        jit::js_IonOptions.baselineUsesBeforeCompile = useCount;
+    warmUpThreshold = op.getIntOption("baseline-warmup-threshold");
+    if (warmUpThreshold >= 0)
+        jit::JitOptions.baselineWarmUpThreshold = warmUpThreshold;
 
-    if (op->getBoolOption("baseline-eager"))
-        jit::js_IonOptions.baselineUsesBeforeCompile = 0;
+    if (op.getBoolOption("baseline-eager"))
+        jit::JitOptions.baselineWarmUpThreshold = 0;
 
-    if (const char *str = op->getStringOption("ion-regalloc")) {
-        if (strcmp(str, "lsra") == 0)
-            jit::js_IonOptions.registerAllocator = jit::RegisterAllocator_LSRA;
-        else if (strcmp(str, "backtracking") == 0)
-            jit::js_IonOptions.registerAllocator = jit::RegisterAllocator_Backtracking;
-        else if (strcmp(str, "stupid") == 0)
-            jit::js_IonOptions.registerAllocator = jit::RegisterAllocator_Stupid;
-        else
+    if (const char* str = op.getStringOption("ion-regalloc")) {
+        jit::JitOptions.forcedRegisterAllocator = jit::LookupRegisterAllocator(str);
+        if (!jit::JitOptions.forcedRegisterAllocator.isSome())
             return OptionFailure("ion-regalloc", str);
     }
 
-    if (op->getBoolOption("ion-eager"))
-        jit::js_IonOptions.setEagerCompilation();
+    if (op.getBoolOption("ion-eager"))
+        jit::JitOptions.setEagerCompilation();
 
-#ifdef JS_THREADSAFE
-    if (const char *str = op->getStringOption("ion-parallel-compile")) {
-        if (strcmp(str, "on") == 0) {
-            if (cx->runtime()->helperThreadCount() == 0) {
-                fprintf(stderr, "Parallel compilation not available without helper threads");
-                return EXIT_FAILURE;
-            }
-            jit::js_IonOptions.parallelCompilation = true;
-        } else if (strcmp(str, "off") == 0) {
-            jit::js_IonOptions.parallelCompilation = false;
-        } else {
-            return OptionFailure("ion-parallel-compile", str);
-        }
+    offthreadCompilation = true;
+    if (const char* str = op.getStringOption("ion-offthread-compile")) {
+        if (strcmp(str, "off") == 0)
+            offthreadCompilation = false;
+        else if (strcmp(str, "on") != 0)
+            return OptionFailure("ion-offthread-compile", str);
     }
-#endif /* JS_THREADSAFE */
+    cx->setOffthreadIonCompilationEnabled(offthreadCompilation);
 
-#endif /* JS_ION */
-
-    /* |scriptArgs| gets bound on the global before any code is run. */
-    if (!BindScriptArgs(cx, obj, op))
-        return EXIT_FAILURE;
-
-    MultiStringRange filePaths = op->getMultiStringOption('f');
-    MultiStringRange codeChunks = op->getMultiStringOption('e');
-
-    if (filePaths.empty() && codeChunks.empty() && !op->getStringArg("script")) {
-        Process(cx, obj, NULL, true); /* Interactive. */
-        return gExitCode;
+    if (op.getStringOption("ion-parallel-compile")) {
+        fprintf(stderr, "--ion-parallel-compile is deprecated. Please use --ion-offthread-compile instead.\n");
+        return false;
     }
 
-    while (!filePaths.empty() || !codeChunks.empty()) {
-        size_t fpArgno = filePaths.empty() ? -1 : filePaths.argno();
-        size_t ccArgno = codeChunks.empty() ? -1 : codeChunks.argno();
-        if (fpArgno < ccArgno) {
-            char *path = filePaths.front();
-            Process(cx, obj, path, false);
-            if (gExitCode)
-                return gExitCode;
-            filePaths.popFront();
-        } else {
-            const char *code = codeChunks.front();
-            RootedValue rval(cx);
-            if (!JS_EvaluateScript(cx, obj, code, strlen(code), "-e", 1, rval.address()))
-                return gExitCode ? gExitCode : EXITCODE_RUNTIME_ERROR;
-            codeChunks.popFront();
-        }
+#ifdef ENABLE_SHARED_ARRAY_BUFFER
+    if (const char* str = op.getStringOption("shared-memory")) {
+        if (strcmp(str, "off") == 0)
+            enableSharedMemory = false;
+        else if (strcmp(str, "on") == 0)
+            enableSharedMemory = true;
+        else
+            return OptionFailure("shared-memory", str);
+    }
+#endif
+
+#if defined(JS_CODEGEN_ARM)
+    if (const char* str = op.getStringOption("arm-hwcap"))
+        jit::ParseARMHwCapFlags(str);
+
+    int32_t fill = op.getIntOption("arm-asm-nop-fill");
+    if (fill >= 0)
+        jit::Assembler::NopFill = fill;
+
+    int32_t poolMaxOffset = op.getIntOption("asm-pool-max-offset");
+    if (poolMaxOffset >= 5 && poolMaxOffset <= 1024)
+        jit::Assembler::AsmPoolMaxOffset = poolMaxOffset;
+#endif
+
+#if defined(JS_SIMULATOR_ARM)
+    if (op.getBoolOption("arm-sim-icache-checks"))
+        jit::Simulator::ICacheCheckingEnabled = true;
+
+    int32_t stopAt = op.getIntOption("arm-sim-stop-at");
+    if (stopAt >= 0)
+        jit::Simulator::StopSimAt = stopAt;
+#elif defined(JS_SIMULATOR_MIPS32) || defined(JS_SIMULATOR_MIPS64)
+    if (op.getBoolOption("mips-sim-icache-checks"))
+        jit::Simulator::ICacheCheckingEnabled = true;
+
+    int32_t stopAt = op.getIntOption("mips-sim-stop-at");
+    if (stopAt >= 0)
+        jit::Simulator::StopSimAt = stopAt;
+#endif
+
+    reportWarnings = op.getBoolOption('w');
+    compileOnly = op.getBoolOption('c');
+    printTiming = op.getBoolOption('b');
+    enableCodeCoverage = op.getBoolOption("code-coverage");
+    enableDisassemblyDumps = op.getBoolOption('D');
+    cx->profilingScripts = enableCodeCoverage || enableDisassemblyDumps;
+
+    jsCacheDir = op.getStringOption("js-cache");
+    if (jsCacheDir) {
+        if (!op.getBoolOption("no-js-cache-per-process"))
+            jsCacheDir = JS_smprintf("%s/%u", jsCacheDir, (unsigned)getpid());
+        else
+            jsCacheDir = JS_strdup(cx, jsCacheDir);
+        if (!jsCacheDir)
+            return false;
+        jsCacheAsmJSPath = JS_smprintf("%s/asmjs.cache", jsCacheDir);
     }
 
-    /* The |script| argument is processed after all options. */
-    if (const char *path = op->getStringArg("script")) {
-        Process(cx, obj, path, false);
-        if (gExitCode)
-            return gExitCode;
+#ifdef DEBUG
+    dumpEntrainedVariables = op.getBoolOption("dump-entrained-variables");
+#endif
+
+#ifdef JS_GC_ZEAL
+    const char* zealStr = op.getStringOption("gc-zeal");
+    if (zealStr) {
+        if (!cx->gc.parseAndSetZeal(zealStr))
+            return false;
+        uint32_t nextScheduled;
+        cx->gc.getZealBits(&gZealBits, &gZealFrequency, &nextScheduled);
     }
+#endif
 
-    if (op->getBoolOption('i'))
-        Process(cx, obj, NULL, true);
-
-    return gExitCode ? gExitCode : EXIT_SUCCESS;
+    return true;
 }
 
-int
-Shell(JSContext *cx, OptionParser *op, char **envp)
+static void
+SetWorkerContextOptions(JSContext* cx)
 {
-    JSAutoRequest ar(cx);
+    // Copy option values from the main thread.
+    JS::ContextOptionsRef(cx).setBaseline(enableBaseline)
+                             .setIon(enableIon)
+                             .setAsmJS(enableAsmJS)
+                             .setWasm(enableWasm)
+                             .setWasmAlwaysBaseline(enableWasmAlwaysBaseline)
+                             .setNativeRegExp(enableNativeRegExp)
+                             .setUnboxedArrays(enableUnboxedArrays);
+    cx->setOffthreadIonCompilationEnabled(offthreadCompilation);
+    cx->profilingScripts = enableCodeCoverage || enableDisassemblyDumps;
 
-    /*
-     * First check to see if type inference is enabled. These flags
-     * must be set on the compartment when it is constructed.
-     */
-    if (op->getBoolOption("no-ti")) {
-        enableTypeInference = false;
-        JS_ToggleOptions(cx, JSOPTION_TYPE_INFERENCE);
+#ifdef JS_GC_ZEAL
+    if (gZealBits && gZealFrequency) {
+#define ZEAL_MODE(_, value)                        \
+        if (gZealBits & (1 << value))              \
+            cx->gc.setZeal(value, gZealFrequency);
+        JS_FOR_EACH_ZEAL_MODE(ZEAL_MODE)
+#undef ZEAL_MODE
     }
+#endif
+
+    JS_SetNativeStackQuota(cx, gMaxStackSize);
+}
+
+static int
+Shell(JSContext* cx, OptionParser* op, char** envp)
+{
+    Maybe<JS::AutoDisableGenerationalGC> noggc;
+    if (op->getBoolOption("no-ggc"))
+        noggc.emplace(cx->runtime());
+
+    Maybe<AutoDisableCompactingGC> nocgc;
+    if (op->getBoolOption("no-cgc"))
+        nocgc.emplace(cx);
+
+    JSAutoRequest ar(cx);
 
     if (op->getBoolOption("fuzzing-safe"))
         fuzzingSafe = true;
+    else
+        fuzzingSafe = (getenv("MOZ_FUZZING_SAFE") && getenv("MOZ_FUZZING_SAFE")[0] != '0');
 
-    RootedObject glob(cx);
-    glob = NewGlobalObject(cx, NULL);
+    if (op->getBoolOption("disable-oom-functions"))
+        disableOOMFunctions = true;
+
+    JS::CompartmentOptions options;
+    SetStandardCompartmentOptions(options);
+    RootedObject glob(cx, NewGlobalObject(cx, options, nullptr));
     if (!glob)
         return 1;
 
     JSAutoCompartment ac(cx, glob);
-    JS_SetGlobalObject(cx, glob);
 
-    JSObject *envobj = JS_DefineObject(cx, glob, "environment", &env_class, NULL, 0);
-    if (!envobj)
-        return 1;
-    JS_SetPrivate(envobj, envp);
+    ShellContext* sc = GetShellContext(cx);
+    int result = EXIT_SUCCESS;
+    {
+        AutoReportException are(cx);
+        if (!ProcessArgs(cx, op) && !sc->quitting)
+            result = EXITCODE_RUNTIME_ERROR;
+    }
 
-    int result = ProcessArgs(cx, glob, op);
+    if (sc->exitCode)
+        result = sc->exitCode;
 
-    if (enableDisassemblyDumps)
-        JS_DumpCompartmentPCCounts(cx);
+    if (enableDisassemblyDumps) {
+        AutoReportException are(cx);
+        if (!js::DumpCompartmentPCCounts(cx))
+            result = EXITCODE_OUT_OF_MEMORY;
+    }
+
+    if (!op->getBoolOption("no-js-cache-per-process")) {
+        if (jsCacheAsmJSPath) {
+            unlink(jsCacheAsmJSPath);
+            JS_free(cx, const_cast<char*>(jsCacheAsmJSPath));
+        }
+        if (jsCacheDir) {
+            rmdir(jsCacheDir);
+            JS_free(cx, const_cast<char*>(jsCacheDir));
+        }
+    }
 
     return result;
 }
 
 static void
-MaybeOverrideOutFileFromEnv(const char* const envVar,
-                            FILE* defaultOut,
-                            FILE** outFile)
+SetOutputFile(const char* const envVar,
+              RCFile* defaultOut,
+              RCFile** outFileP)
 {
+    RCFile* outFile;
+
     const char* outPath = getenv(envVar);
-    if (!outPath || !*outPath || !(*outFile = fopen(outPath, "w"))) {
-        *outFile = defaultOut;
+    FILE* newfp;
+    if (outPath && *outPath && (newfp = fopen(outPath, "w")))
+        outFile = js_new<RCFile>(newfp);
+    else
+        outFile = defaultOut;
+
+    outFile->acquire();
+    *outFileP = outFile;
+}
+
+static void
+PreInit()
+{
+#ifdef XP_WIN
+    const char* crash_option = getenv("XRE_NO_WINDOWS_CRASH_DIALOG");
+    if (crash_option && crash_option[0] == '1') {
+        // Disable the segfault dialog. We want to fail the tests immediately
+        // instead of hanging automation.
+        UINT newMode = SEM_NOGPFAULTERRORBOX | SEM_NOOPENFILEERRORBOX;
+        UINT prevMode = SetErrorMode(newMode);
+        SetErrorMode(prevMode | newMode);
     }
-}
-
-/* Set the initial counter to 1 so the principal will never be destroyed. */
-JSPrincipals shellTrustedPrincipals = { 1 };
-
-JSBool
-CheckObjectAccess(JSContext *cx, HandleObject obj, HandleId id, JSAccessMode mode,
-                  MutableHandleValue vp)
-{
-    return true;
-}
-
-JSSecurityCallbacks securityCallbacks = {
-    CheckObjectAccess,
-    NULL
-};
-
-/* Pretend we can always preserve wrappers for dummy DOM objects. */
-static bool
-DummyPreserveWrapperCallback(JSContext *cx, JSObject *obj)
-{
-    return true;
+#endif
 }
 
 int
-main(int argc, char **argv, char **envp)
+main(int argc, char** argv, char** envp)
 {
-    int stackDummy;
-    JSRuntime *rt;
-    JSContext *cx;
+    PreInit();
+
+    sArgc = argc;
+    sArgv = argv;
+
     int result;
-#ifdef XP_WIN
-    {
-        const char *crash_option = getenv("XRE_NO_WINDOWS_CRASH_DIALOG");
-        if (crash_option && strncmp(crash_option, "1", 1)) {
-            DWORD oldmode = SetErrorMode(SEM_NOGPFAULTERRORBOX);
-            SetErrorMode(oldmode | SEM_NOGPFAULTERRORBOX);
-        }
-    }
-#endif
 
 #ifdef HAVE_SETLOCALE
     setlocale(LC_ALL, "");
-#endif
-
-#ifdef JS_THREADSAFE
-    if (PR_FAILURE == PR_NewThreadPrivateIndex(&gStackBaseThreadIndex, NULL) ||
-        PR_FAILURE == PR_SetThreadPrivate(gStackBaseThreadIndex, &stackDummy)) {
-        return 1;
-    }
-#else
-    gStackBase = (uintptr_t) &stackDummy;
 #endif
 
 #ifdef XP_OS2
@@ -5222,8 +7675,15 @@ main(int argc, char **argv, char **envp)
     setbuf(stderr,0);
 #endif
 
-    MaybeOverrideOutFileFromEnv("JS_STDERR", stderr, &gErrFile);
-    MaybeOverrideOutFileFromEnv("JS_STDOUT", stdout, &gOutFile);
+    // Special-case stdout and stderr. We bump their refcounts to prevent them
+    // from getting closed and then having some printf fail somewhere.
+    RCFile rcStdout(stdout);
+    rcStdout.acquire();
+    RCFile rcStderr(stderr);
+    rcStderr.acquire();
+
+    SetOutputFile("JS_STDOUT", &rcStdout, &gOutFile);
+    SetOutputFile("JS_STDERR", &rcStderr, &gErrFile);
 
     OptionParser op("Usage: {progname} [options] [[script] scriptArgs*]");
 
@@ -5237,20 +7697,25 @@ main(int argc, char **argv, char **envp)
     op.setVersion(JS_GetImplementationVersion());
 
     if (!op.addMultiStringOption('f', "file", "PATH", "File path to run")
+        || !op.addMultiStringOption('m', "module", "PATH", "Module path to run")
         || !op.addMultiStringOption('e', "execute", "CODE", "Inline code to run")
         || !op.addBoolOption('i', "shell", "Enter prompt after running code")
-        || !op.addBoolOption('m', "jm", "No-op (still used by fuzzers)")
-        || !op.addBoolOption('\0', "no-jm", "No-op (still used by fuzzers)")
-        || !op.addBoolOption('n', "ti", "Enable type inference (default)")
-        || !op.addBoolOption('\0', "no-ti", "Disable type inference")
         || !op.addBoolOption('c', "compileonly", "Only compile, don't run (syntax checking mode)")
         || !op.addBoolOption('w', "warnings", "Emit warnings")
         || !op.addBoolOption('W', "nowarnings", "Don't emit warnings")
         || !op.addBoolOption('s', "strict", "Check strictness")
-        || !op.addBoolOption('d', "debugjit", "Enable runtime debug mode for method JIT code")
-        || !op.addBoolOption('a', "always-mjit", "No-op (still used by fuzzers)")
         || !op.addBoolOption('D', "dump-bytecode", "Dump bytecode with exec count for all scripts")
         || !op.addBoolOption('b', "print-timing", "Print sub-ms runtime for each file that's run")
+        || !op.addStringOption('\0', "js-cache", "[path]",
+                               "Enable the JS cache by specifying the path of the directory to use "
+                               "to hold cache files")
+        || !op.addBoolOption('\0', "no-js-cache-per-process",
+                               "Deactivates cache per process. Otherwise, generate a separate cache"
+                               "sub-directory for this process inside the cache directory"
+                               "specified by --js-cache. This cache directory will be removed"
+                               "when the js shell exits. This is useful for running tests in"
+                               "parallel.")
+        || !op.addBoolOption('\0', "code-coverage", "Enable code coverage instrumentation.")
 #ifdef DEBUG
         || !op.addBoolOption('O', "print-alloc", "Print the number of allocations at exit")
 #endif
@@ -5258,56 +7723,136 @@ main(int argc, char **argv, char **envp)
         || !op.addOptionalMultiStringArg("scriptArgs",
                                          "String arguments to bind as |scriptArgs| in the "
                                          "shell's global")
-#ifdef JS_THREADSAFE
         || !op.addIntOption('\0', "thread-count", "COUNT", "Use COUNT auxiliary threads "
                             "(default: # of cores - 1)", -1)
-#endif
         || !op.addBoolOption('\0', "ion", "Enable IonMonkey (default)")
         || !op.addBoolOption('\0', "no-ion", "Disable IonMonkey")
         || !op.addBoolOption('\0', "no-asmjs", "Disable asm.js compilation")
+        || !op.addBoolOption('\0', "no-wasm", "Disable WebAssembly compilation")
+        || !op.addBoolOption('\0', "no-native-regexp", "Disable native regexp compilation")
+        || !op.addBoolOption('\0', "no-unboxed-objects", "Disable creating unboxed plain objects")
+        || !op.addBoolOption('\0', "unboxed-arrays", "Allow creating unboxed arrays")
+        || !op.addBoolOption('\0', "wasm-always-baseline", "Enable wasm baseline compiler when possible")
+        || !op.addBoolOption('\0', "wasm-check-bce", "Always generate wasm bounds check, even redundant ones.")
+#ifdef ENABLE_SHARED_ARRAY_BUFFER
+        || !op.addStringOption('\0', "shared-memory", "on/off",
+                               "SharedArrayBuffer and Atomics "
+#  if SHARED_MEMORY_DEFAULT
+                               "(default: on, off to disable)"
+#  else
+                               "(default: off, on to enable)"
+#  endif
+            )
+#endif
+        || !op.addStringOption('\0', "cache-ir-stubs", "on/off",
+                               "Use CacheIR stubs (default: on, off to disable)")
+        || !op.addStringOption('\0', "ion-shared-stubs", "on/off",
+                               "Use shared stubs (default: on, off to disable)")
+        || !op.addStringOption('\0', "ion-scalar-replacement", "on/off",
+                               "Scalar Replacement (default: on, off to disable)")
         || !op.addStringOption('\0', "ion-gvn", "[mode]",
                                "Specify Ion global value numbering:\n"
                                "  off: disable GVN\n"
-                               "  pessimistic: (default) use pessimistic GVN\n"
-                               "  optimistic: use optimistic GVN")
+                               "  on:  enable GVN (default)\n")
         || !op.addStringOption('\0', "ion-licm", "on/off",
                                "Loop invariant code motion (default: on, off to disable)")
+        || !op.addStringOption('\0', "ion-aa", "flow-sensitive/flow-insensitive",
+                               "Specify wheter or not to use flow sensitive Alias Analysis"
+                               "(default: flow-insensitive)")
         || !op.addStringOption('\0', "ion-edgecase-analysis", "on/off",
                                "Find edge cases where Ion can avoid bailouts (default: on, off to disable)")
+        || !op.addStringOption('\0', "ion-pgo", "on/off",
+                               "Profile guided optimization (default: on, off to disable)")
         || !op.addStringOption('\0', "ion-range-analysis", "on/off",
-                               "Range analysis (default: off, on to enable)")
+                               "Range analysis (default: on, off to disable)")
+#if defined(__APPLE__)
+        || !op.addStringOption('\0', "ion-sincos", "on/off",
+                               "Replace sin(x)/cos(x) to sincos(x) (default: on, off to disable)")
+#else
+        || !op.addStringOption('\0', "ion-sincos", "on/off",
+                               "Replace sin(x)/cos(x) to sincos(x) (default: off, on to enable)")
+#endif
+        || !op.addStringOption('\0', "ion-sink", "on/off",
+                               "Sink code motion (default: off, on to enable)")
+        || !op.addStringOption('\0', "ion-loop-unrolling", "on/off",
+                               "Loop unrolling (default: off, on to enable)")
+        || !op.addStringOption('\0', "ion-instruction-reordering", "on/off",
+                               "Instruction reordering (default: off, on to enable)")
+        || !op.addBoolOption('\0', "ion-check-range-analysis",
+                               "Range analysis checking")
+        || !op.addBoolOption('\0', "ion-extra-checks",
+                               "Perform extra dynamic validation checks")
         || !op.addStringOption('\0', "ion-inlining", "on/off",
                                "Inline methods where possible (default: on, off to disable)")
         || !op.addStringOption('\0', "ion-osr", "on/off",
                                "On-Stack Replacement (default: on, off to disable)")
         || !op.addStringOption('\0', "ion-limit-script-size", "on/off",
                                "Don't compile very large scripts (default: on, off to disable)")
-        || !op.addIntOption('\0', "ion-uses-before-compile", "COUNT",
+        || !op.addIntOption('\0', "ion-warmup-threshold", "COUNT",
                             "Wait for COUNT calls or iterations before compiling "
-                            "(default: 10240)", -1)
+                            "(default: 1000)", -1)
         || !op.addStringOption('\0', "ion-regalloc", "[mode]",
                                "Specify Ion register allocation:\n"
-                               "  lsra: Linear Scan register allocation (default)\n"
-                               "  backtracking: Priority based backtracking register allocation\n"
+                               "  backtracking: Priority based backtracking register allocation (default)\n"
+                               "  testbed: Backtracking allocator with experimental features\n"
                                "  stupid: Simple block local register allocation")
         || !op.addBoolOption('\0', "ion-eager", "Always ion-compile methods (implies --baseline-eager)")
-#ifdef JS_THREADSAFE
+        || !op.addStringOption('\0', "ion-offthread-compile", "on/off",
+                               "Compile scripts off thread (default: on)")
         || !op.addStringOption('\0', "ion-parallel-compile", "on/off",
-                               "Compile scripts off thread (default: off)")
-#endif
+                               "--ion-parallel compile is deprecated. Use --ion-offthread-compile.")
         || !op.addBoolOption('\0', "baseline", "Enable baseline compiler (default)")
         || !op.addBoolOption('\0', "no-baseline", "Disable baseline compiler")
         || !op.addBoolOption('\0', "baseline-eager", "Always baseline-compile methods")
-        || !op.addIntOption('\0', "baseline-uses-before-compile", "COUNT",
+        || !op.addIntOption('\0', "baseline-warmup-threshold", "COUNT",
                             "Wait for COUNT calls or iterations before baseline-compiling "
                             "(default: 10)", -1)
-        || !op.addBoolOption('\0', "no-fpu", "Pretend CPU does not support floating-point operations "
-                             "to test JIT codegen (no-op on platforms other than x86).")
+        || !op.addBoolOption('\0', "non-writable-jitcode", "(NOP for fuzzers) Allocate JIT code as non-writable memory.")
+        || !op.addBoolOption('\0', "no-sse3", "Pretend CPU does not support SSE3 instructions and above "
+                             "to test JIT codegen (no-op on platforms other than x86 and x64).")
+        || !op.addBoolOption('\0', "no-sse4", "Pretend CPU does not support SSE4 instructions"
+                             "to test JIT codegen (no-op on platforms other than x86 and x64).")
+        || !op.addBoolOption('\0', "enable-avx", "AVX is disabled by default. Enable AVX. "
+                             "(no-op on platforms other than x86 and x64).")
+        || !op.addBoolOption('\0', "no-avx", "No-op. AVX is currently disabled by default.")
         || !op.addBoolOption('\0', "fuzzing-safe", "Don't expose functions that aren't safe for "
                              "fuzzers to call")
-#ifdef JSGC_GENERATIONAL
-        || !op.addBoolOption('\0', "no-ggc", "Disable Generational GC")
+        || !op.addBoolOption('\0', "disable-oom-functions", "Disable functions that cause "
+                            "artificial OOMs")
+        || !op.addBoolOption('\0', "no-threads", "Disable helper threads")
+#ifdef DEBUG
+        || !op.addBoolOption('\0', "dump-entrained-variables", "Print variables which are "
+                             "unnecessarily entrained by inner functions")
 #endif
+        || !op.addBoolOption('\0', "no-ggc", "Disable Generational GC")
+        || !op.addBoolOption('\0', "no-cgc", "Disable Compacting GC")
+        || !op.addBoolOption('\0', "no-incremental-gc", "Disable Incremental GC")
+        || !op.addIntOption('\0', "available-memory", "SIZE",
+                            "Select GC settings based on available memory (MB)", 0)
+#if defined(JS_CODEGEN_ARM)
+        || !op.addStringOption('\0', "arm-hwcap", "[features]",
+                               "Specify ARM code generation features, or 'help' to list all features.")
+        || !op.addIntOption('\0', "arm-asm-nop-fill", "SIZE",
+                            "Insert the given number of NOP instructions at all possible pool locations.", 0)
+        || !op.addIntOption('\0', "asm-pool-max-offset", "OFFSET",
+                            "The maximum pc relative OFFSET permitted in pool reference instructions.", 1024)
+#endif
+#if defined(JS_SIMULATOR_ARM)
+        || !op.addBoolOption('\0', "arm-sim-icache-checks", "Enable icache flush checks in the ARM "
+                             "simulator.")
+        || !op.addIntOption('\0', "arm-sim-stop-at", "NUMBER", "Stop the ARM simulator after the given "
+                            "NUMBER of instructions.", -1)
+#elif defined(JS_SIMULATOR_MIPS32) || defined(JS_SIMULATOR_MIPS64)
+	|| !op.addBoolOption('\0', "mips-sim-icache-checks", "Enable icache flush checks in the MIPS "
+                             "simulator.")
+        || !op.addIntOption('\0', "mips-sim-stop-at", "NUMBER", "Stop the MIPS simulator after the given "
+                            "NUMBER of instructions.", -1)
+#endif
+        || !op.addIntOption('\0', "nursery-size", "SIZE-MB", "Set the maximum nursery size in MB", 16)
+#ifdef JS_GC_ZEAL
+        || !op.addStringOption('z', "gc-zeal", "LEVEL(;LEVEL)*[,N]", gc::ZealModeHelpText)
+#endif
+        || !op.addStringOption('\0', "module-load-path", "DIR", "Set directory to load modules from")
     )
     {
         return EXIT_FAILURE;
@@ -5317,7 +7862,7 @@ main(int argc, char **argv, char **envp)
     op.setArgCapturesRest("scriptArgs");
 
     switch (op.parseArgs(argc, argv)) {
-      case OptionParser::ParseHelp:
+      case OptionParser::EarlyExit:
         return EXIT_SUCCESS;
       case OptionParser::ParseError:
         op.printHelp(argv[0]);
@@ -5336,65 +7881,128 @@ main(int argc, char **argv, char **envp)
      * Process OOM options as early as possible so that we can observe as many
      * allocations as possible.
      */
-    if (op.getBoolOption('O'))
-        OOM_printAllocationCount = true;
+    OOM_printAllocationCount = op.getBoolOption('O');
+#endif
 
-#if defined(JS_CPU_X86)
-    if (op.getBoolOption("no-fpu"))
-        JSC::MacroAssembler::SetFloatingPointDisabled();
+#if defined(JS_CODEGEN_X86) || defined(JS_CODEGEN_X64)
+    if (op.getBoolOption("no-sse3")) {
+        js::jit::CPUInfo::SetSSE3Disabled();
+        PropagateFlagToNestedShells("--no-sse3");
+    }
+    if (op.getBoolOption("no-sse4")) {
+        js::jit::CPUInfo::SetSSE4Disabled();
+        PropagateFlagToNestedShells("--no-sse4");
+    }
+    if (op.getBoolOption("enable-avx")) {
+        js::jit::CPUInfo::SetAVXEnabled();
+        PropagateFlagToNestedShells("--enable-avx");
+    }
 #endif
-#endif
+
+    if (op.getBoolOption("no-threads"))
+        js::DisableExtraThreads();
+
+    // Start the engine.
+    if (!JS_Init())
+        return 1;
+
+    if (!InitSharedArrayBufferMailbox())
+        return 1;
+
+    // The fake thread count must be set before initializing the Runtime,
+    // which spins up the thread pool.
+    int32_t threadCount = op.getIntOption("thread-count");
+    if (threadCount >= 0)
+        SetFakeCPUCount(threadCount);
+
+    size_t nurseryBytes = JS::DefaultNurseryBytes;
+    nurseryBytes = op.getIntOption("nursery-size") * 1024L * 1024L;
 
     /* Use the same parameters as the browser in xpcjsruntime.cpp. */
-    rt = JS_NewRuntime(32L * 1024L * 1024L, JS_USE_HELPER_THREADS);
-    if (!rt)
-        return 1;
-    gTimeoutFunc = NullValue();
-    if (!JS_AddNamedValueRootRT(rt, &gTimeoutFunc, "gTimeoutFunc"))
-        return 1;
-
-    JS_SetGCParameter(rt, JSGC_MAX_BYTES, 0xffffffff);
-#ifdef JSGC_GENERATIONAL
-    if (op.getBoolOption("no-ggc"))
-        JS::DisableGenerationalGC(rt);
-#endif
-
-    JS_SetTrustedPrincipals(rt, &shellTrustedPrincipals);
-    JS_SetSecurityCallbacks(rt, &securityCallbacks);
-
-    JS_SetNativeStackQuota(rt, gMaxStackSize);
-
-    if (!InitWatchdog(rt))
-        return 1;
-
-    cx = NewContext(rt);
+    JSContext* cx = JS_NewContext(JS::DefaultHeapMaxBytes, nurseryBytes);
     if (!cx)
         return 1;
 
-    JS_SetGCParameter(rt, JSGC_MODE, JSGC_MODE_INCREMENTAL);
-    JS_SetGCParameterForThread(cx, JSGC_MAX_CODE_CACHE_BYTES, 16 * 1024 * 1024);
+    UniquePtr<ShellContext> sc = MakeUnique<ShellContext>(cx);
+    if (!sc)
+        return 1;
 
-    js::SetPreserveWrapperCallback(rt, DummyPreserveWrapperCallback);
+    JS_SetContextPrivate(cx, sc.get());
+    // Waiting is allowed on the shell's main thread, for now.
+    JS_SetFutexCanWait(cx);
+    JS::SetWarningReporter(cx, WarningReporter);
+    if (!SetContextOptions(cx, op))
+        return 1;
 
-    /* Must be done before creating the global object */
-    if (op.getBoolOption('D'))
-        JS_ToggleOptions(cx, JSOPTION_PCCOUNT);
+    JS_SetGCParameter(cx, JSGC_MAX_BYTES, 0xffffffff);
+
+    size_t availMem = op.getIntOption("available-memory");
+    if (availMem > 0)
+        JS_SetGCParametersBasedOnAvailableMemory(cx, availMem);
+
+    JS_SetTrustedPrincipals(cx, &ShellPrincipals::fullyTrusted);
+    JS_SetSecurityCallbacks(cx, &ShellPrincipals::securityCallbacks);
+    JS_InitDestroyPrincipalsCallback(cx, ShellPrincipals::destroy);
+
+    JS_AddInterruptCallback(cx, ShellInterruptCallback);
+    JS::SetBuildIdOp(cx, ShellBuildId);
+    JS::SetAsmJSCacheOps(cx, &asmJSCacheOps);
+
+    JS_SetNativeStackQuota(cx, gMaxStackSize);
+
+    JS::dbg::SetDebuggerMallocSizeOf(cx, moz_malloc_size_of);
+
+    if (!JS::InitSelfHostedCode(cx))
+        return 1;
+
+#ifdef SPIDERMONKEY_PROMISE
+    sc->jobQueue.init(cx, JobQueue(SystemAllocPolicy()));
+    JS::SetEnqueuePromiseJobCallback(cx, ShellEnqueuePromiseJobCallback);
+    JS::SetGetIncumbentGlobalCallback(cx, ShellGetIncumbentGlobalCallback);
+    JS::SetAsyncTaskCallbacks(cx, ShellStartAsyncTaskCallback, ShellFinishAsyncTaskCallback);
+#endif // SPIDERMONKEY_PROMISE
+
+    EnvironmentPreparer environmentPreparer(cx);
+
+    JS_SetGCParameter(cx, JSGC_MODE, JSGC_MODE_INCREMENTAL);
+
+    JS::SetLargeAllocationFailureCallback(cx, my_LargeAllocFailCallback, (void*)cx);
+
+    // Set some parameters to allow incremental GC in low memory conditions,
+    // as is done for the browser, except in more-deterministic builds or when
+    // disabled by command line options.
+#ifndef JS_MORE_DETERMINISTIC
+    if (!op.getBoolOption("no-incremental-gc")) {
+        JS_SetGCParameter(cx, JSGC_DYNAMIC_HEAP_GROWTH, 1);
+        JS_SetGCParameter(cx, JSGC_DYNAMIC_MARK_SLICE, 1);
+        JS_SetGCParameter(cx, JSGC_SLICE_TIME_BUDGET, 10);
+    }
+#endif
+
+    js::SetPreserveWrapperCallback(cx, DummyPreserveWrapperCallback);
 
     result = Shell(cx, &op, envp);
 
 #ifdef DEBUG
     if (OOM_printAllocationCount)
-        printf("OOM max count: %u\n", OOM_counter);
+        printf("OOM max count: %" PRIu64 "\n", js::oom::counter);
 #endif
 
-    gTimeoutFunc = NullValue();
-    JS_RemoveValueRootRT(rt, &gTimeoutFunc);
+    JS::SetLargeAllocationFailureCallback(cx, nullptr, nullptr);
 
-    DestroyContext(cx, true);
+#ifdef SPIDERMONKEY_PROMISE
+    JS::SetGetIncumbentGlobalCallback(cx, nullptr);
+    JS::SetEnqueuePromiseJobCallback(cx, nullptr);
+    sc->jobQueue.reset();
+#endif // SPIDERMONKEY_PROMISE
 
-    KillWatchdog();
+    KillWatchdog(cx);
 
-    JS_DestroyRuntime(rt);
+    KillWorkerThreads();
+
+    DestructSharedArrayBufferMailbox();
+
+    JS_DestroyContext(cx);
     JS_ShutDown();
     return result;
 }

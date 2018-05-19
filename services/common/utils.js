@@ -2,7 +2,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-const {classes: Cc, interfaces: Ci, utils: Cu, results: Cr} = Components;
+var {classes: Cc, interfaces: Ci, utils: Cu, results: Cr} = Components;
 
 this.EXPORTED_SYMBOLS = ["CommonUtils"];
 
@@ -10,54 +10,63 @@ Cu.import("resource://gre/modules/Promise.jsm");
 Cu.import("resource://gre/modules/Services.jsm");
 Cu.import("resource://gre/modules/XPCOMUtils.jsm");
 Cu.import("resource://gre/modules/osfile.jsm")
-Cu.import("resource://services-common/log4moz.js");
+Cu.import("resource://gre/modules/Log.jsm");
 
 this.CommonUtils = {
-  exceptionStr: function exceptionStr(e) {
-    if (!e) {
-      return "" + e;
+  /*
+   * Set manipulation methods. These should be lifted into toolkit, or added to
+   * `Set` itself.
+   */
+
+  /**
+   * Return elements of `a` or `b`.
+   */
+  union: function (a, b) {
+    let out = new Set(a);
+    for (let x of b) {
+      out.add(x);
     }
-    let message = e.message ? e.message : e;
-    return message + " " + CommonUtils.stackTrace(e);
+    return out;
   },
 
-  stackTrace: function stackTrace(e) {
-    // Wrapped nsIException
-    if (e.location) {
-      let frame = e.location;
-      let output = [];
-      while (frame) {
-        // Works on frames or exceptions, munges file:// URIs to shorten the paths
-        // FIXME: filename munging is sort of hackish, might be confusing if
-        // there are multiple extensions with similar filenames
-        let str = "<file:unknown>";
+  /**
+   * Return elements of `a` that are not present in `b`.
+   */
+  difference: function (a, b) {
+    let out = new Set(a);
+    for (let x of b) {
+      out.delete(x);
+    }
+    return out;
+  },
 
-        let file = frame.filename || frame.fileName;
-        if (file){
-          str = file.replace(/^(?:chrome|file):.*?([^\/\.]+\.\w+)$/, "$1");
-        }
-
-        if (frame.lineNumber){
-          str += ":" + frame.lineNumber;
-        }
-        if (frame.name){
-          str = frame.name + "()@" + str;
-        }
-
-        if (str){
-          output.push(str);
-        }
-        frame = frame.caller;
+  /**
+   * Return elements of `a` that are also in `b`.
+   */
+  intersection: function (a, b) {
+    let out = new Set();
+    for (let x of a) {
+      if (b.has(x)) {
+        out.add(x);
       }
-      return "Stack trace: " + output.join(" < ");
     }
-    // Standard JS exception
-    if (e.stack){
-      return "JS Stack trace: " + e.stack.trim().replace(/\n/g, " < ").
-        replace(/@[^@]*?([^\/\.]+\.\w+:)/g, "@$1");
-    }
+    return out;
+  },
 
-    return "No traceback available";
+  /**
+   * Return true if `a` and `b` are the same size, and
+   * every element of `a` is in `b`.
+   */
+  setEqual: function (a, b) {
+    if (a.size != b.size) {
+      return false;
+    }
+    for (let x of a) {
+      if (!b.has(x)) {
+        return false;
+      }
+    }
+    return true;
   },
 
   /**
@@ -70,10 +79,10 @@ this.CommonUtils = {
    *        to true for historical reasons.
    */
   encodeBase64URL: function encodeBase64URL(bytes, pad=true) {
-    let s = btoa(bytes).replace("+", "-", "g").replace("/", "_", "g");
+    let s = btoa(bytes).replace(/\+/g, "-").replace(/\//g, "_");
 
     if (!pad) {
-      s = s.replace("=", "");
+      return s.replace(/=+$/, "");
     }
 
     return s;
@@ -88,8 +97,8 @@ this.CommonUtils = {
     try {
       return Services.io.newURI(URIString, null, null);
     } catch (e) {
-      let log = Log4Moz.repository.getLogger("Common.Utils");
-      log.debug("Could not create URI: " + CommonUtils.exceptionStr(e));
+      let log = Log.repository.getLogger("Common.Utils");
+      log.debug("Could not create URI", e);
       return null;
     }
   },
@@ -153,8 +162,7 @@ this.CommonUtils = {
     }
 
     // Create a special timer that we can add extra properties
-    let timer = {};
-    timer.__proto__ = Cc["@mozilla.org/timer;1"].createInstance(Ci.nsITimer);
+    let timer = Object.create(Cc["@mozilla.org/timer;1"].createInstance(Ci.nsITimer));
 
     // Provide an easy way to clear out the timer
     timer.clear = function() {
@@ -193,15 +201,35 @@ this.CommonUtils = {
   },
 
   byteArrayToString: function byteArrayToString(bytes) {
-    return [String.fromCharCode(byte) for each (byte in bytes)].join("");
+    return bytes.map(byte => String.fromCharCode(byte)).join("");
+  },
+
+  stringToByteArray: function stringToByteArray(bytesString) {
+    return Array.prototype.slice.call(bytesString).map(c => c.charCodeAt(0));
   },
 
   bytesAsHex: function bytesAsHex(bytes) {
-    let hex = "";
-    for (let i = 0; i < bytes.length; i++) {
-      hex += ("0" + bytes[i].charCodeAt().toString(16)).slice(-2);
+    return Array.prototype.slice.call(bytes).map(c => ("0" + c.charCodeAt(0).toString(16)).slice(-2)).join("");
+  },
+
+  stringAsHex: function stringAsHex(str) {
+    return CommonUtils.bytesAsHex(CommonUtils.encodeUTF8(str));
+  },
+
+  stringToBytes: function stringToBytes(str) {
+    return CommonUtils.hexToBytes(CommonUtils.stringAsHex(str));
+  },
+
+  hexToBytes: function hexToBytes(str) {
+    let bytes = [];
+    for (let i = 0; i < str.length - 1; i += 2) {
+      bytes.push(parseInt(str.substr(i, 2), 16));
     }
-    return hex;
+    return String.fromCharCode.apply(String, bytes);
+  },
+
+  hexAsString: function hexAsString(hex) {
+    return CommonUtils.decodeUTF8(CommonUtils.hexToBytes(hex));
   },
 
   /**
@@ -223,7 +251,7 @@ this.CommonUtils = {
     // is turned into 8 characters from the 32 character base.
     let ret = "";
     for (let i = 0; i < bytes.length; i += 5) {
-      let c = [byte.charCodeAt() for each (byte in bytes.slice(i, i + 5))];
+      let c = Array.prototype.slice.call(bytes.slice(i, i + 5)).map(byte => byte.charCodeAt(0));
       ret += key[c[0] >> 3]
            + key[((c[0] << 2) & 0x1f) | (c[1] >> 6)]
            + key[(c[1] >> 1) & 0x1f]
@@ -281,8 +309,9 @@ this.CommonUtils = {
       }
 
       // Handle a left shift, restricted to bytes.
-      function left(octet, shift)
-        (octet << shift) & 0xff;
+      function left(octet, shift) {
+        return (octet << shift) & 0xff;
+      }
 
       advance();
       accumulate(left(val, 3));
@@ -352,10 +381,8 @@ this.CommonUtils = {
    * @return a promise that resolves to the JSON contents of the named file.
    */
   readJSON: function(path) {
-    let decoder = new TextDecoder();
-    let promise = OS.File.read(path);
-    return promise.then(function onSuccess(array) {
-      return JSON.parse(decoder.decode(array));
+    return OS.File.read(path, { encoding: "utf-8" }).then((data) => {
+      return JSON.parse(data);
     });
   },
 
@@ -367,9 +394,8 @@ this.CommonUtils = {
    * @return a promise, as produced by OS.File.writeAtomic.
    */
   writeJSON: function(contents, path) {
-    let encoder = new TextEncoder();
-    let array = encoder.encode(JSON.stringify(contents));
-    return OS.File.writeAtomic(path, array, {tmpPath: path + ".tmp"});
+    let data = JSON.stringify(contents);
+    return OS.File.writeAtomic(path, data, {encoding: "utf-8", tmpPath: path + ".tmp"});
   },
 
 
@@ -464,7 +490,7 @@ this.CommonUtils = {
    * @param def
    *        (Number) The default value to use if the preference is not defined.
    * @param log
-   *        (Log4Moz.Logger) Logger to write warnings to.
+   *        (Log.Logger) Logger to write warnings to.
    */
   getEpochPref: function getEpochPref(branch, pref, def=0, log=null) {
     if (!Number.isInteger(def)) {
@@ -507,7 +533,7 @@ this.CommonUtils = {
    *        (Number) The default value (in milliseconds) if the preference is
    *        not defined or invalid.
    * @param log
-   *        (Log4Moz.Logger) Logger to write warnings to.
+   *        (Log.Logger) Logger to write warnings to.
    * @param oldestYear
    *        (Number) Oldest year to accept in read values.
    */

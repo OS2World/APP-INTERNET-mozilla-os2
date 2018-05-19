@@ -52,6 +52,7 @@ typedef struct nr_turn_stun_ctx_ {
   char *realm;
   NR_async_cb success_cb;
   NR_async_cb error_cb;
+  int last_error_code;
 
   STAILQ_ENTRY(nr_turn_stun_ctx_) entry;
 } nr_turn_stun_ctx;
@@ -69,7 +70,6 @@ typedef struct nr_turn_permission_ {
 typedef STAILQ_HEAD(nr_turn_permission_head_, nr_turn_permission_)
     nr_turn_permission_head;
 
-
 /* A single connection to a TURN server. Use one
    turn_client_ctx per socket/server pair. */
 typedef struct nr_turn_client_ctx_ {
@@ -77,11 +77,13 @@ typedef struct nr_turn_client_ctx_ {
 #define NR_TURN_CLIENT_STATE_INITTED         1
 #define NR_TURN_CLIENT_STATE_ALLOCATING      2
 #define NR_TURN_CLIENT_STATE_ALLOCATED       3
-#define NR_TURN_CLIENT_STATE_FAILED          6
-#define NR_TURN_CLIENT_STATE_CANCELLED       8
+#define NR_TURN_CLIENT_STATE_FAILED          4
+#define NR_TURN_CLIENT_STATE_CANCELLED       5
+#define NR_TURN_CLIENT_STATE_DEALLOCATING    6
 
   char *label;
   nr_socket *sock;
+
   char *username;
   Data *password;
   char *nonce;
@@ -97,6 +99,7 @@ typedef struct nr_turn_client_ctx_ {
   NR_async_cb finished_cb;
   void *cb_arg;
 
+  void *connected_timer_handle;
   void *refresh_timer_handle;
 } nr_turn_client_ctx;
 
@@ -117,6 +120,8 @@ int nr_turn_client_process_response(nr_turn_client_ctx *ctx,
                                     UCHAR *msg, int len,
                                     nr_transport_addr *turn_server_addr);
 int nr_turn_client_cancel(nr_turn_client_ctx *ctx);
+int nr_turn_client_failed(nr_turn_client_ctx *ctx);
+int nr_turn_client_deallocate(nr_turn_client_ctx *ctx);
 int nr_turn_client_send_indication(nr_turn_client_ctx *ctx,
                                    const UCHAR *msg, size_t len,
                                    int flags, nr_transport_addr *remote_addr);
@@ -126,5 +131,7 @@ int nr_turn_client_parse_data_indication(nr_turn_client_ctx *ctx,
                                          UCHAR *newmsg, size_t *newlen,
                                          size_t newsize,
                                          nr_transport_addr *remote_addr);
+int nr_turn_client_ensure_perm(nr_turn_client_ctx *ctx,
+                               nr_transport_addr *addr);
 #endif
 

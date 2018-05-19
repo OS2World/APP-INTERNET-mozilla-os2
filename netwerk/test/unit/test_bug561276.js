@@ -3,22 +3,18 @@
 // coming from cache.
 //
 
-const Cc = Components.classes;
-const Ci = Components.interfaces;
-const Cu = Components.utils;
-const Cr = Components.results;
-
 Cu.import("resource://testing-common/httpd.js");
+Cu.import("resource://gre/modules/NetUtil.jsm");
 
 var httpserver = new HttpServer();
 var iteration = 0;
 
 function setupChannel(suffix)
 {
-    var ios =
-        Components.classes["@mozilla.org/network/io-service;1"]
-        .getService(Ci.nsIIOService);
-    var chan = ios.newChannel("http://localhost:4444" + suffix, "", null);
+    var chan = NetUtil.newChannel({
+      uri: "http://localhost:" + httpserver.identity.primaryPort + suffix,
+      loadUsingSystemPrincipal: true
+    });
     var httpChan = chan.QueryInterface(Components.interfaces.nsIHttpChannel);
     httpChan.requestMethod = "GET";
     return httpChan;
@@ -34,14 +30,14 @@ function run_test()
 {
     httpserver.registerPathHandler("/redirect1", redirectHandler1);
     httpserver.registerPathHandler("/redirect2", redirectHandler2);
-    httpserver.start(4444);
+    httpserver.start(-1);
 
     // clear cache
     evict_cache_entries();
 
     // load first time
     var channel = setupChannel("/redirect1");
-    channel.asyncOpen(new ChannelListener(checkValueAndTrigger, null), null);
+    channel.asyncOpen2(new ChannelListener(checkValueAndTrigger, null));
 
     do_test_pending();
 }

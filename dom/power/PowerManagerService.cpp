@@ -1,4 +1,5 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
+/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
+/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -9,6 +10,7 @@
 #include "mozilla/ClearOnShutdown.h"
 #include "mozilla/Preferences.h"
 #include "mozilla/Services.h"
+#include "jsprf.h"
 #include "nsIDOMWakeLockListener.h"
 #include "nsIDOMWindow.h"
 #include "nsIObserverService.h"
@@ -22,13 +24,31 @@
 #include <unistd.h>
 #endif
 
+#ifdef ANDROID
+#include <android/log.h>
+extern "C" char* PrintJSStack();
+static void LogFunctionAndJSStack(const char* funcname) {
+  char *jsstack = PrintJSStack();
+  __android_log_print(ANDROID_LOG_INFO, "PowerManagerService", \
+                      "Call to %s. The JS stack is:\n%s\n",
+                      funcname,
+                      jsstack ? jsstack : "<no JS stack>");
+  JS_smprintf_free(jsstack);
+}
+// bug 839452
+#define LOG_FUNCTION_AND_JS_STACK() \
+  LogFunctionAndJSStack(__PRETTY_FUNCTION__);
+#else
+#define LOG_FUNCTION_AND_JS_STACK()
+#endif
+
 namespace mozilla {
 namespace dom {
 namespace power {
 
 using namespace hal;
 
-NS_IMPL_ISUPPORTS1(PowerManagerService, nsIPowerManagerService)
+NS_IMPL_ISUPPORTS(PowerManagerService, nsIPowerManagerService)
 
 /* static */ StaticRefPtr<PowerManagerService> PowerManagerService::sSingleton;
 
@@ -41,7 +61,7 @@ PowerManagerService::GetInstance()
     ClearOnShutdown(&sSingleton);
   }
 
-  nsRefPtr<PowerManagerService> service = sSingleton.get();
+  RefPtr<PowerManagerService> service = sSingleton.get();
   return service.forget();
 }
 
@@ -54,7 +74,7 @@ PowerManagerService::Init()
   // absent, in case the profile might be damaged and we need to
   // restart to repair it.
   mWatchdogTimeoutSecs =
-    Preferences::GetInt("shutdown.watchdog.timeoutSecs", 5);
+    Preferences::GetInt("shutdown.watchdog.timeoutSecs", 10);
 }
 
 PowerManagerService::~PowerManagerService()
@@ -92,7 +112,7 @@ PowerManagerService::Notify(const WakeLockInformation& aWakeLockInfo)
    * because the callbacks may install new listeners. We expect no
    * more than one listener per window, so it shouldn't be too long.
    */
-  nsAutoTArray<nsCOMPtr<nsIDOMMozWakeLockListener>, 2> listeners(mWakeLockListeners);
+  AutoTArray<nsCOMPtr<nsIDOMMozWakeLockListener>, 2> listeners(mWakeLockListeners);
 
   for (uint32_t i = 0; i < listeners.Length(); ++i) {
     listeners[i]->Callback(aWakeLockInfo.topic(), state);
@@ -108,35 +128,40 @@ PowerManagerService::SyncProfile()
     obsServ->NotifyObservers(nullptr, "profile-change-net-teardown", context.get());
     obsServ->NotifyObservers(nullptr, "profile-change-teardown", context.get());
     obsServ->NotifyObservers(nullptr, "profile-before-change", context.get());
-    obsServ->NotifyObservers(nullptr, "profile-before-change2", context.get());
+    obsServ->NotifyObservers(nullptr, "profile-before-change-qm", context.get());
+    obsServ->NotifyObservers(nullptr, "profile-before-change-telemetry", context.get());
   }
 }
 
 NS_IMETHODIMP
 PowerManagerService::Reboot()
 {
+  LOG_FUNCTION_AND_JS_STACK() // bug 839452
+
   StartForceQuitWatchdog(eHalShutdownMode_Reboot, mWatchdogTimeoutSecs);
   // To synchronize any unsaved user data before rebooting.
   SyncProfile();
   hal::Reboot();
-  MOZ_NOT_REACHED("hal::Reboot() shouldn't return");
-  return NS_OK;
+  MOZ_CRASH("hal::Reboot() shouldn't return");
 }
 
 NS_IMETHODIMP
 PowerManagerService::PowerOff()
 {
+  LOG_FUNCTION_AND_JS_STACK() // bug 839452
+
   StartForceQuitWatchdog(eHalShutdownMode_PowerOff, mWatchdogTimeoutSecs);
   // To synchronize any unsaved user data before powering off.
   SyncProfile();
   hal::PowerOff();
-  MOZ_NOT_REACHED("hal::PowerOff() shouldn't return");
-  return NS_OK;
+  MOZ_CRASH("hal::PowerOff() shouldn't return");
 }
 
 NS_IMETHODIMP
 PowerManagerService::Restart()
 {
+  LOG_FUNCTION_AND_JS_STACK() // bug 839452
+
   // FIXME/bug 796826 this implementation is currently gonk-specific,
   // because it relies on the Gonk to initialize the Gecko processes to
   // restart B2G. It's better to do it here to have a real "restart".
@@ -153,8 +178,7 @@ PowerManagerService::Restart()
   sync();
 #endif
   _exit(0);
-  MOZ_NOT_REACHED("_exit() shouldn't return");
-  return NS_OK;
+  MOZ_CRASH("_exit() shouldn't return");
 }
 
 NS_IMETHODIMP
@@ -185,31 +209,47 @@ PowerManagerService::GetWakeLockState(const nsAString &aTopic, nsAString &aState
   return NS_OK;
 }
 
+already_AddRefed<WakeLock>
+PowerManagerService::NewWakeLock(const nsAString& aTopic,
+                                 nsPIDOMWindowInner* aWindow,
+                                 mozilla::ErrorResult& aRv)
+{
+  RefPtr<WakeLock> wakelock = new WakeLock();
+  aRv = wakelock->Init(aTopic, aWindow);
+  if (aRv.Failed()) {
+    return nullptr;
+  }
+
+  return wakelock.forget();
+}
+
 NS_IMETHODIMP
 PowerManagerService::NewWakeLock(const nsAString &aTopic,
-                                 nsIDOMWindow *aWindow,
-                                 nsIDOMMozWakeLock **aWakeLock)
+                                 mozIDOMWindow *aWindow,
+                                 nsISupports **aWakeLock)
 {
-  nsRefPtr<WakeLock> wakelock = new WakeLock();
-  nsresult rv = wakelock->Init(aTopic, aWindow);
-  NS_ENSURE_SUCCESS(rv, rv);
+  mozilla::ErrorResult rv;
+  RefPtr<WakeLock> wakelock =
+    NewWakeLock(aTopic, nsPIDOMWindowInner::From(aWindow), rv);
+  if (rv.Failed()) {
+    return rv.StealNSResult();
+  }
 
-  nsCOMPtr<nsIDOMMozWakeLock> wl(wakelock);
-  wl.forget(aWakeLock);
-
+  nsCOMPtr<nsIDOMEventListener> eventListener = wakelock.get();
+  eventListener.forget(aWakeLock);
   return NS_OK;
 }
 
-already_AddRefed<nsIDOMMozWakeLock>
+already_AddRefed<WakeLock>
 PowerManagerService::NewWakeLockOnBehalfOfProcess(const nsAString& aTopic,
                                                   ContentParent* aContentParent)
 {
-  nsRefPtr<WakeLock> wakelock = new WakeLock();
+  RefPtr<WakeLock> wakelock = new WakeLock();
   nsresult rv = wakelock->Init(aTopic, aContentParent);
   NS_ENSURE_SUCCESS(rv, nullptr);
   return wakelock.forget();
 }
 
-} // power
-} // dom
-} // mozilla
+} // namespace power
+} // namespace dom
+} // namespace mozilla

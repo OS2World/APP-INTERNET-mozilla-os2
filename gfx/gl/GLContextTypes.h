@@ -6,30 +6,26 @@
 #ifndef GLCONTEXT_TYPES_H_
 #define GLCONTEXT_TYPES_H_
 
-typedef unsigned int GLenum;
-typedef unsigned int GLbitfield;
-typedef unsigned int GLuint;
-typedef int GLint;
-typedef int GLsizei;
+#include "GLTypes.h"
+#include "mozilla/TypedEnumBits.h"
 
 namespace mozilla {
 namespace gl {
 
-enum ShaderProgramType {
-    RGBALayerProgramType,
-    RGBALayerExternalProgramType,
-    BGRALayerProgramType,
-    RGBXLayerProgramType,
-    BGRXLayerProgramType,
-    RGBARectLayerProgramType,
-    RGBAExternalLayerProgramType,
-    ColorLayerProgramType,
-    YCbCrLayerProgramType,
-    ComponentAlphaPass1ProgramType,
-    ComponentAlphaPass2ProgramType,
-    Copy2DProgramType,
-    Copy2DRectProgramType,
-    NumProgramTypes
+class GLContext;
+
+enum class GLContextType {
+    Unknown,
+    WGL,
+    CGL,
+    GLX,
+    EGL,
+    EAGL
+};
+
+enum class OriginPos : uint8_t {
+  TopLeft,
+  BottomLeft
 };
 
 struct GLFormats
@@ -49,20 +45,19 @@ struct GLFormats
     GLsizei samples;
 };
 
+enum class CreateContextFlags : int8_t {
+    NONE = 0,
+    REQUIRE_COMPAT_PROFILE = 1 << 0,
+    // Force the use of hardware backed GL, don't allow software implementations.
+    FORCE_ENABLE_HARDWARE = 1 << 1,
+    /* Don't force discrete GPU to be used (if applicable) */
+    ALLOW_OFFLINE_RENDERER =  1 << 2,
+    // Ask for ES3 if possible
+    PREFER_ES3 = 1 << 3,
 
-struct PixelBufferFormat
-{
-    // Constructs a zeroed object:
-    PixelBufferFormat();
-
-    int red, green, blue;
-    int alpha;
-    int depth, stencil;
-    int samples;
-
-    int ColorBits() const { return red + green + blue; }
+    NO_VALIDATION = 1 << 4,
 };
-
+MOZ_MAKE_ENUM_CLASS_BITWISE_OPERATORS(CreateContextFlags)
 
 } /* namespace gl */
 } /* namespace mozilla */

@@ -1,21 +1,38 @@
-﻿// ***************************************************************************
-// *
-// * Copyright (C) 2012 International Business Machines
-// * Corporation and others.  All Rights Reserved.
-// * Tool: org.unicode.cldr.icu.NewLdml2IcuConverter
-// * Source File: <path>/common/main/es_US.xml
-// *
-// ***************************************************************************
+﻿// © 2016 and later: Unicode, Inc. and others.
+// License & terms of use: http://www.unicode.org/copyright.html#License
 es_US{
     %%Parent{"es_419"}
-    MeasurementSystem:int{1}
-    PaperSize:intvector{
-        279,
-        216,
+    NumberElements{
+        latn{
+            patternsShort{
+                decimalFormat{
+                    1000{
+                        one{"0"}
+                        other{"0"}
+                    }
+                    10000{
+                        one{"00k"}
+                        other{"00k"}
+                    }
+                    100000{
+                        one{"000k"}
+                        other{"000k"}
+                    }
+                }
+            }
+        }
     }
-    Version{"2.0.74.64"}
+    Version{"2.1.27.99"}
     calendar{
         gregorian{
+            AmPmMarkers{
+                "a. m.",
+                "p. m.",
+            }
+            AmPmMarkersAbbr{
+                "a. m.",
+                "p. m.",
+            }
             DateTimePatterns{
                 "h:mm:ss a zzzz",
                 "h:mm:ss a z",
@@ -23,25 +40,54 @@ es_US{
                 "h:mm a",
                 "EEEE, d 'de' MMMM 'de' y",
                 "d 'de' MMMM 'de' y",
-                "MMM d, y",
-                "M/d/yy",
+                "d MMM y",
+                "d/M/yy",
                 "{1} {0}",
-                "{1} {0}",
-                "{1} {0}",
+                "{1}, {0}",
+                "{1}, {0}",
                 "{1} {0}",
                 "{1} {0}",
             }
-            availableFormats{
-                MEd{"E, MM/dd"}
-                MMMEd{"E, MMM d"}
-                MMMd{"MMM d"}
-                MMd{"MM/d"}
-                Md{"M/d"}
-                yM{"M/yy"}
-                yMEd{"E, M/d/yy"}
-                yMMMEd{"E, MMM d, y"}
-                yMMMd{"MMM d, y"}
-                yMd{"M/d/yy"}
+            dayPeriod{
+                format{
+                    narrow{
+                        evening1{"de la tarde"}
+                        morning1{"de la madrugada"}
+                        morning2{"mañana"}
+                        night1{"de la noche"}
+                        noon{"del mediodía"}
+                    }
+                }
+                stand-alone{
+                    abbreviated{
+                        am{"a. m."}
+                        pm{"p. m."}
+                    }
+                    narrow{
+                        am{"a. m."}
+                        pm{"p. m."}
+                    }
+                    wide{
+                        am{"a. m."}
+                        pm{"p. m."}
+                    }
+                }
+            }
+            intervalFormats{
+                H{
+                    H{"HH – HH"}
+                }
+                Hm{
+                    H{"HH:mm – HH:mm"}
+                    m{"HH:mm – HH:mm"}
+                }
+                Hmv{
+                    H{"HH:mm – HH:mm v"}
+                    m{"HH:mm – HH:mm v"}
+                }
+                Hv{
+                    H{"HH – HH v"}
+                }
             }
         }
     }

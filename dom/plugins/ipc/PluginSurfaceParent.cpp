@@ -12,12 +12,22 @@ namespace mozilla {
 namespace plugins {
 
 PluginSurfaceParent::PluginSurfaceParent(const WindowsSharedMemoryHandle& handle,
-                                         const gfxIntSize& size,
+                                         const gfx::IntSize& size,
                                          bool transparent)
 {
   SharedDIBSurface* dibsurf = new SharedDIBSurface();
   if (dibsurf->Attach(handle, size.width, size.height, transparent))
     mSurface = dibsurf;
+}
+
+PluginSurfaceParent::~PluginSurfaceParent()
+{
+}
+
+void
+PluginSurfaceParent::ActorDestroy(ActorDestroyReason aWhy)
+{
+  // Implement me! Bug 1005167
 }
 
 }

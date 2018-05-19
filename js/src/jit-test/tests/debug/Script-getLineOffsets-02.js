@@ -1,6 +1,6 @@
 // getLineOffsets correctly places the various parts of a ForStatement.
 
-var g = newGlobal('new-compartment');
+var g = newGlobal();
 var dbg = Debugger(g);
 dbg.onDebuggerStatement = function (frame) {
     function handler(line) {
@@ -12,7 +12,7 @@ dbg.onDebuggerStatement = function (frame) {
         var offs = s.getLineOffsets(g.line0 + line);
         var h = handler(line);
         for (var i = 0; i < offs.length; i++) {
-            assertEq(s.getOffsetLine(offs[i]), g.line0 + line);
+            assertEq(s.getOffsetLocation(offs[i]).lineNumber, g.line0 + line);
             s.setBreakpoint(offs[i], h);
         }
     }

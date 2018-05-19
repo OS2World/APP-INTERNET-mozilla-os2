@@ -26,24 +26,28 @@ const request = ns();
 const { validateOptions, validateSingleOption } = new OptionsValidator({
   url: {
     // Also converts a URL instance to string, bug 857902
-    map: function (url) url.toString(),
+    map: url => url.toString(),
     ok: isValidURI
   },
   headers: {
-    map: function (v) v || {},
+    map: v => v || {},
     is:  ["object"],
   },
   content: {
-    map: function (v) v || null,
+    map: v => v || null,
     is:  ["string", "object", "null"],
   },
   contentType: {
-    map: function (v) v || "application/x-www-form-urlencoded",
+    map: v => v || "application/x-www-form-urlencoded",
     is:  ["string"],
   },
   overrideMimeType: {
-    map: function(v) v || null,
+    map: v => v || null,
     is: ["string", "null"],
+  },
+  anonymous: {
+    map: v => v || false,
+    is: ["boolean", "null"],
   }
 });
 
@@ -54,7 +58,7 @@ const REUSE_ERROR = "This request object has been used already. You must " +
 // request types
 function runRequest(mode, target) {
   let source = request(target)
-  let { xhr, url, content, contentType, headers, overrideMimeType } = source;
+  let { xhr, url, content, contentType, headers, overrideMimeType, anonymous } = source;
 
   let isGetOrHead = (mode == "GET" || mode == "HEAD");
 
@@ -63,7 +67,9 @@ function runRequest(mode, target) {
   if (xhr)
     throw new Error(REUSE_ERROR);
 
-  xhr = source.xhr = new XMLHttpRequest();
+  xhr = source.xhr = new XMLHttpRequest({
+    mozAnon: anonymous
+  });
 
   // Build the data to be set. For GET or HEAD requests, we want to append that
   // to the URL before opening the request.
@@ -129,7 +135,12 @@ const Request = Class({
   set contentType(value) {
     request(this).contentType = validateSingleOption('contentType', value);
   },
+  get anonymous() { return request(this).anonymous; },
   get response() { return request(this).response; },
+  delete: function() {
+    runRequest('DELETE', this);
+    return this;
+  },
   get: function() {
     runRequest('GET', this);
     return this;
@@ -153,13 +164,23 @@ const Response = Class({
   initialize: function initialize(request) {
     response(this).request = request;
   },
-  get text() response(this).request.responseText,
+  // more about responseURL: https://bugzilla.mozilla.org/show_bug.cgi?id=998076
+  get url() {
+    return response(this).request.responseURL;
+  },
+  get text() {
+    return response(this).request.responseText;
+  },
   get xml() {
     throw new Error("Sorry, the 'xml' property is no longer available. " +
                     "see bug 611042 for more information.");
   },
-  get status() response(this).request.status,
-  get statusText() response(this).request.statusText,
+  get status() {
+    return response(this).request.status;
+  },
+  get statusText() {
+    return response(this).request.statusText;
+  },
   get json() {
     try {
       return JSON.parse(this.text);
@@ -198,6 +219,9 @@ const Response = Class({
       }
     });
     return headers;
+  },
+  get anonymous() {
+    return response(this).request.mozAnon;
   }
 });
 

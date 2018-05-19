@@ -8,7 +8,7 @@
  *  be found in the AUTHORS file in the root of the source tree.
  */
 
-#include "engine_configurations.h"
+#include "webrtc/engine_configurations.h"
 #if defined(COCOA_RENDERING)
 
 #ifndef WEBRTC_MODULES_VIDEO_RENDER_MAIN_SOURCE_MAC_VIDEO_RENDER_NSOPENGL_H_
@@ -16,16 +16,17 @@
 
 #import <Cocoa/Cocoa.h>
 #import <OpenGL/OpenGL.h>
-#import <OpenGL/glu.h>
 #import <OpenGL/glext.h>
+#import <OpenGL/glu.h>
 #include <QuickTime/QuickTime.h>
 #include <list>
 #include <map>
 
-#include "video_render_defines.h"
+#include "webrtc/base/thread_annotations.h"
+#include "webrtc/modules/video_render/include/video_render_defines.h"
 
-#import "cocoa_render_view.h"
-#import "cocoa_full_screen_window.h"
+#import "webrtc/modules/video_render/mac/cocoa_full_screen_window.h"
+#import "webrtc/modules/video_render/mac/cocoa_render_view.h"
 
 class Trace;
 
@@ -46,7 +47,8 @@ public:
     // A new frame is delivered
     virtual int DeliverFrame(const I420VideoFrame& videoFrame);
 
-    // Called when the incomming frame size and/or number of streams in mix changes
+    // Called when the incoming frame size and/or number of streams in mix
+    // changes.
     virtual int FrameSizeChange(int width, int height, int numberOfStreams);
 
     virtual int UpdateSize(int width, int height);
@@ -63,23 +65,23 @@ public:
     virtual int UpdateStretchSize(int stretchHeight, int stretchWidth);
 
     // ********** new module functions ************ //
-    virtual WebRtc_Word32 RenderFrame(const WebRtc_UWord32 streamId,
-                                      I420VideoFrame& videoFrame);
+    virtual int32_t RenderFrame(const uint32_t streamId,
+                                const I420VideoFrame& videoFrame);
 
     // ********** new module helper functions ***** //
     int ChangeContext(NSOpenGLContext *nsglContext);
-    WebRtc_Word32 GetChannelProperties(float& left,
-            float& top,
-            float& right,
-            float& bottom);
+    int32_t GetChannelProperties(float& left,
+                                 float& top,
+                                 float& right,
+                                 float& bottom);
 
 private:
 
     NSOpenGLContext* _nsglContext;
-    int _id;
+    const int _id;
     VideoRenderNSOpenGL* _owner;
-    WebRtc_Word32 _width;
-    WebRtc_Word32 _height;
+    int32_t _width;
+    int32_t _height;
     float _startWidth;
     float _startHeight;
     float _stopWidth;
@@ -89,8 +91,8 @@ private:
     int _oldStretchedHeight;
     int _oldStretchedWidth;
     unsigned char* _buffer;
-    int _bufferSize;
-    int _incommingBufferSize;
+    size_t _bufferSize;
+    size_t _incomingBufferSize;
     bool _bufferIsUpdated;
     int _numberOfStreams;
     GLenum _pixelFormat;
@@ -118,31 +120,30 @@ public: // methods
     bool HasChannels();
     bool HasChannel(int channel);
     int GetChannels(std::list<int>& channelList);
-    void LockAGLCntx();
-    void UnlockAGLCntx();
+    void LockAGLCntx() EXCLUSIVE_LOCK_FUNCTION(_nsglContextCritSec);
+    void UnlockAGLCntx() UNLOCK_FUNCTION(_nsglContextCritSec);
 
     // ********** new module functions ************ //
     int ChangeWindow(CocoaRenderView* newWindowRef);
-    WebRtc_Word32 ChangeUniqueID(WebRtc_Word32 id);
-    WebRtc_Word32 StartRender();
-    WebRtc_Word32 StopRender();
-    WebRtc_Word32 DeleteNSGLChannel(const WebRtc_UWord32 streamID);
-    WebRtc_Word32 GetChannelProperties(const WebRtc_UWord16 streamId,
-            WebRtc_UWord32& zOrder,
-            float& left,
-            float& top,
-            float& right,
-            float& bottom);
+    int32_t StartRender();
+    int32_t StopRender();
+    int32_t DeleteNSGLChannel(const uint32_t streamID);
+    int32_t GetChannelProperties(const uint16_t streamId,
+                                 uint32_t& zOrder,
+                                 float& left,
+                                 float& top,
+                                 float& right,
+                                 float& bottom);
 
-    WebRtc_Word32 SetText(const WebRtc_UWord8 textId,
-            const WebRtc_UWord8* text,
-            const WebRtc_Word32 textLength,
-            const WebRtc_UWord32 textColorRef,
-            const WebRtc_UWord32 backgroundColorRef,
-            const float left,
-            const float top,
-            const float right,
-            const float bottom);
+    int32_t SetText(const uint8_t textId,
+                    const uint8_t* text,
+                    const int32_t textLength,
+                    const uint32_t textColorRef,
+                    const uint32_t backgroundColorRef,
+                    const float left,
+                    const float top,
+                    const float right,
+                    const float bottom);
 
     // ********** new module helper functions ***** //
     int configureNSOpenGLEngine();
@@ -168,7 +169,7 @@ private: // variables
     bool _fullScreen;
     int _id;
     CriticalSectionWrapper& _nsglContextCritSec;
-    ThreadWrapper* _screenUpdateThread;
+    rtc::scoped_ptr<ThreadWrapper> _screenUpdateThread;
     EventWrapper* _screenUpdateEvent;
     NSOpenGLContext* _nsglContext;
     NSOpenGLContext* _nsglFullScreenContext;
@@ -178,14 +179,12 @@ private: // variables
     int _windowHeight;
     std::map<int, VideoChannelNSOpenGL*> _nsglChannels;
     std::multimap<int, int> _zOrderToChannel;
-    unsigned int _threadID;
     bool _renderingIsPaused;
     NSView* _windowRefSuperView;
     NSRect _windowRefSuperViewFrame;
 };
 
-} //namespace webrtc
+}  // namespace webrtc
 
 #endif   // WEBRTC_MODULES_VIDEO_RENDER_MAIN_SOURCE_MAC_VIDEO_RENDER_NSOPENGL_H_
 #endif	 // COCOA_RENDERING
-

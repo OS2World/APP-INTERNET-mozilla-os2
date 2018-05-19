@@ -10,9 +10,11 @@
 #include "jsobj.h"
 #include "jsstr.h"
 
+#include "vm/Shape.h"
+
 namespace js {
 
-class StringObject : public JSObject
+class StringObject : public NativeObject
 {
     static const unsigned PRIMITIVE_VALUE_SLOT = 0;
     static const unsigned LENGTH_SLOT = 1;
@@ -20,16 +22,25 @@ class StringObject : public JSObject
   public:
     static const unsigned RESERVED_SLOTS = 2;
 
-    static Class class_;
+    static const Class class_;
 
     /*
      * Creates a new String object boxing the given string.  The object's
      * [[Prototype]] is determined from context.
      */
-    static inline StringObject *create(JSContext *cx, HandleString str,
+    static inline StringObject* create(JSContext* cx, HandleString str,
+                                       HandleObject proto = nullptr,
                                        NewObjectKind newKind = GenericObject);
 
-    JSString *unbox() const {
+    /*
+     * Compute the initial shape to associate with fresh String objects, which
+     * encodes the initial length property. Return the shape after changing
+     * |obj|'s last property to it.
+     */
+    static Shape*
+    assignInitialShape(ExclusiveContext* cx, Handle<StringObject*> obj);
+
+    JSString* unbox() const {
         return getFixedSlot(PRIMITIVE_VALUE_SLOT).toString();
     }
 
@@ -45,24 +56,17 @@ class StringObject : public JSObject
     }
 
   private:
-    inline bool init(JSContext *cx, HandleString str);
+    inline bool init(JSContext* cx, HandleString str);
 
-    void setStringThis(JSString *str) {
-        JS_ASSERT(getReservedSlot(PRIMITIVE_VALUE_SLOT).isUndefined());
+    void setStringThis(JSString* str) {
+        MOZ_ASSERT(getReservedSlot(PRIMITIVE_VALUE_SLOT).isUndefined());
         setFixedSlot(PRIMITIVE_VALUE_SLOT, StringValue(str));
         setFixedSlot(LENGTH_SLOT, Int32Value(int32_t(str->length())));
     }
 
     /* For access to init, as String.prototype is special. */
-    friend JSObject *
-    ::js_InitStringClass(JSContext *cx, js::HandleObject global);
-
-    /*
-     * Compute the initial shape to associate with fresh String objects, which
-     * encodes the initial length property. Return the shape after changing
-     * this String object's last property to it.
-     */
-    Shape *assignInitialShape(JSContext *cx);
+    friend JSObject*
+    js::InitStringClass(JSContext* cx, HandleObject global);
 };
 
 } // namespace js

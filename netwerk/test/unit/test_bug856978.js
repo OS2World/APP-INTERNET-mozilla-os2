@@ -9,11 +9,8 @@
 // authorization header got added at all and if so it gets removed. This test
 // passes iff both succeeds.
 
-const Cc = Components.classes;
-const Ci = Components.interfaces;
-const Cr = Components.results;
-
 Components.utils.import("resource://testing-common/httpd.js");
+Components.utils.import("resource://gre/modules/NetUtil.jsm");
 
 var notification = "http-on-modify-request";
 
@@ -100,9 +97,8 @@ var listener = {
 };
 
 function makeChan(url) {
-  var ios = Cc["@mozilla.org/network/io-service;1"].getService(Ci.nsIIOService);
-  var chan = ios.newChannel(url, null, null).QueryInterface(Ci.nsIHttpChannel);
-  return chan;
+  return NetUtil.newChannel({uri: url, loadUsingSystemPrincipal: true})
+                .QueryInterface(Ci.nsIHttpChannel);
 }
 
 var tests = [startAuthHeaderTest, removeAuthHeaderTest];
@@ -121,7 +117,7 @@ function run_test() {
 
 function startAuthHeaderTest() {
   var chan = makeChan(authCredsURL);
-  chan.asyncOpen(listener, null);
+  chan.asyncOpen2(listener);
 
   do_test_pending();
 }
@@ -133,7 +129,7 @@ function removeAuthHeaderTest() {
   var chan = makeChan(authURL);
   // Indicating that the request is coming from the second test.
   chan.setRequestHeader("Test", "1", false);
-  chan.asyncOpen(listener, null);
+  chan.asyncOpen2(listener);
 
   do_test_pending();
 }

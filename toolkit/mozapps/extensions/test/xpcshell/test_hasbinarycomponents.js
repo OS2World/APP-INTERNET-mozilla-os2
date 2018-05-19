@@ -12,7 +12,7 @@ function run_test() {
   createAppInfo("xpcshell@tests.mozilla.org", "XPCShell", "2", "2");
 
   startupManager();
-  
+
   installAllFiles([do_get_addon("test_chromemanifest_1"),
                    do_get_addon("test_chromemanifest_2"),
                    do_get_addon("test_chromemanifest_3"),
@@ -76,7 +76,7 @@ function run_test() {
       do_check_true(a5.isActive);
       do_check_true(isExtensionInAddonsList(profileDir, a5.id));
 
-      do_test_finished();
+      do_execute_soon(do_test_finished);
     });
   });
 }

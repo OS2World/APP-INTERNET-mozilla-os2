@@ -7,34 +7,25 @@
 #define nsFtpProtocolHandler_h__
 
 #include "nsFtpControlConnection.h"
-#include "nsIServiceManager.h"
 #include "nsIProxiedProtocolHandler.h"
 #include "nsTArray.h"
-#include "nsIIOService.h"
 #include "nsITimer.h"
-#include "nsIObserverService.h"
-#include "nsICacheSession.h"
 #include "nsIObserver.h"
 #include "nsWeakReference.h"
-#include "nsCRT.h"
-
-class nsITimer;
-class nsIStreamListener;
 
 //-----------------------------------------------------------------------------
 
-class nsFtpProtocolHandler : public nsIProxiedProtocolHandler
-                           , public nsIObserver
-                           , public nsSupportsWeakReference
+class nsFtpProtocolHandler final : public nsIProxiedProtocolHandler
+                                 , public nsIObserver
+                                 , public nsSupportsWeakReference
 {
 public:
-    NS_DECL_ISUPPORTS
+    NS_DECL_THREADSAFE_ISUPPORTS
     NS_DECL_NSIPROTOCOLHANDLER
     NS_DECL_NSIPROXIEDPROTOCOLHANDLER
     NS_DECL_NSIOBSERVER
     
     nsFtpProtocolHandler();
-    virtual ~nsFtpProtocolHandler();
     
     nsresult Init();
 
@@ -47,22 +38,23 @@ public:
     uint8_t GetControlQoSBits() { return mControlQoSBits; }
 
 private:
+    virtual ~nsFtpProtocolHandler();
+
     // Stuff for the timer callback function
     struct timerStruct {
-        nsCOMPtr<nsITimer>      timer;
-        nsFtpControlConnection *conn;
-        char                   *key;
+        nsCOMPtr<nsITimer> timer;
+        RefPtr<nsFtpControlConnection> conn;
+        char *key;
         
-        timerStruct() : conn(nullptr), key(nullptr) {}
+        timerStruct() : key(nullptr) {}
         
         ~timerStruct() {
             if (timer)
                 timer->Cancel();
             if (key)
-                nsMemory::Free(key);
+                free(key);
             if (conn) {
                 conn->Disconnect(NS_ERROR_ABORT);
-                NS_RELEASE(conn);
             }
         }
     };
@@ -72,7 +64,6 @@ private:
 
     nsTArray<timerStruct*> mRootConnectionList;
 
-    nsCOMPtr<nsICacheSession> mCacheSession;
     int32_t mIdleTimeout;
 
     // When "clear active logins" is performed, all idle connection are dropped
@@ -90,8 +81,7 @@ private:
 
 extern nsFtpProtocolHandler *gFtpHandler;
 
-#ifdef PR_LOGGING
-extern PRLogModuleInfo* gFTPLog;
-#endif
+#include "mozilla/Logging.h"
+extern mozilla::LazyLogModule gFTPLog;
 
 #endif // !nsFtpProtocolHandler_h__

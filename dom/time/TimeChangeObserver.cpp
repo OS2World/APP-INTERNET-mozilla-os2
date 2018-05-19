@@ -1,14 +1,19 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
+/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
+/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "TimeChangeObserver.h"
+#include "mozilla/Hal.h"
+#include "mozilla/Observer.h"
+#include "mozilla/HalTypes.h"
+#include "nsWeakPtr.h"
+#include "nsTObserverArray.h"
 #include "mozilla/ClearOnShutdown.h"
 #include "mozilla/Services.h"
 #include "mozilla/StaticPtr.h"
 #include "nsPIDOMWindow.h"
-#include "nsDOMEvent.h"
 #include "nsContentUtils.h"
 #include "nsIObserverService.h"
 #include "nsIDocument.h"
@@ -16,6 +21,30 @@
 using namespace mozilla;
 using namespace mozilla::hal;
 using namespace mozilla::services;
+
+class nsSystemTimeChangeObserver : public SystemClockChangeObserver,
+                                   public SystemTimezoneChangeObserver
+{
+  typedef nsTObserverArray<nsWeakPtr> ListenerArray;
+public:
+  static nsSystemTimeChangeObserver* GetInstance();
+  virtual ~nsSystemTimeChangeObserver();
+
+  // Implementing hal::SystemClockChangeObserver::Notify()
+  void Notify(const int64_t& aClockDeltaMS);
+
+  // Implementing hal::SystemTimezoneChangeObserver::Notify()
+  void Notify(
+    const mozilla::hal::SystemTimezoneChangeInformation& aSystemTimezoneChangeInfo);
+
+  nsresult AddWindowListenerImpl(nsPIDOMWindowInner* aWindow);
+  nsresult RemoveWindowListenerImpl(nsPIDOMWindowInner* aWindow);
+
+private:
+  nsSystemTimeChangeObserver() { };
+  ListenerArray mWindowListeners;
+  void FireMozTimeChangeEvent();
+};
 
 StaticAutoPtr<nsSystemTimeChangeObserver> sObserver;
 
@@ -40,8 +69,8 @@ nsSystemTimeChangeObserver::FireMozTimeChangeEvent()
   ListenerArray::ForwardIterator iter(mWindowListeners);
   while (iter.HasMore()) {
     nsWeakPtr weakWindow = iter.GetNext();
-    nsCOMPtr<nsPIDOMWindow> innerWindow = do_QueryReferent(weakWindow);
-    nsCOMPtr<nsPIDOMWindow> outerWindow;
+    nsCOMPtr<nsPIDOMWindowInner> innerWindow = do_QueryReferent(weakWindow);
+    nsCOMPtr<nsPIDOMWindowOuter> outerWindow;
     nsCOMPtr<nsIDocument> document;
     if (!innerWindow ||
         !(document = innerWindow->GetExtantDoc()) ||
@@ -79,23 +108,16 @@ nsSystemTimeChangeObserver::Notify(
 }
 
 nsresult
-nsSystemTimeChangeObserver::AddWindowListener(nsPIDOMWindow* aWindow)
+mozilla::time::AddWindowListener(nsPIDOMWindowInner* aWindow)
 {
-  return GetInstance()->AddWindowListenerImpl(aWindow);
+  return nsSystemTimeChangeObserver::GetInstance()->AddWindowListenerImpl(aWindow);
 }
 
 nsresult
-nsSystemTimeChangeObserver::AddWindowListenerImpl(nsPIDOMWindow* aWindow)
+nsSystemTimeChangeObserver::AddWindowListenerImpl(nsPIDOMWindowInner* aWindow)
 {
   if (!aWindow) {
     return NS_ERROR_ILLEGAL_VALUE;
-  }
-
-  if (aWindow->IsOuterWindow()) {
-    aWindow = aWindow->GetCurrentInnerWindow();
-    if (!aWindow) {
-      return NS_ERROR_FAILURE;
-    }
   }
 
   nsWeakPtr windowWeakRef = do_GetWeakReference(aWindow);
@@ -116,30 +138,24 @@ nsSystemTimeChangeObserver::AddWindowListenerImpl(nsPIDOMWindow* aWindow)
 }
 
 nsresult
-nsSystemTimeChangeObserver::RemoveWindowListener(nsPIDOMWindow* aWindow)
+mozilla::time::RemoveWindowListener(nsPIDOMWindowInner* aWindow)
 {
   if (!sObserver) {
     return NS_OK;
   }
 
-  return GetInstance()->RemoveWindowListenerImpl(aWindow);
+  return nsSystemTimeChangeObserver::GetInstance()->RemoveWindowListenerImpl(aWindow);
 }
 
 nsresult
-nsSystemTimeChangeObserver::RemoveWindowListenerImpl(nsPIDOMWindow* aWindow)
+nsSystemTimeChangeObserver::RemoveWindowListenerImpl(nsPIDOMWindowInner* aWindow)
 {
   if (!aWindow) {
     return NS_OK;
   }
 
-  if (aWindow->IsOuterWindow()) {
-    aWindow = aWindow->GetCurrentInnerWindow();
-    if (!aWindow) {
-      return NS_ERROR_FAILURE;
-    }
-  }
-
-  mWindowListeners.RemoveElement(NS_GetWeakReference(aWindow));
+  nsWeakPtr windowWeakRef = do_GetWeakReference(aWindow);
+  mWindowListeners.RemoveElement(windowWeakRef);
 
   if (mWindowListeners.IsEmpty()) {
     UnregisterSystemClockChangeObserver(sObserver);

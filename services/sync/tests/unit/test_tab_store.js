@@ -4,25 +4,14 @@
 Cu.import("resource://services-sync/engines/tabs.js");
 Cu.import("resource://services-sync/service.js");
 Cu.import("resource://services-sync/util.js");
-Cu.import("resource://testing-common/services-common/utils.js");
+Cu.import("resource://testing-common/services/common/utils.js");
 
-function test_lastUsed() {
-  let store = new TabEngine(Service)._store;
-
-  _("Check extraction of last used times from tab objects.");
-  let expected = [
-    [0,         {}],
-    [0,         {extData: null}],
-    [0,         {extData: {}}],
-    [0,         {extData: {weaveLastUsed: null}}],
-    [123456789, {extData: {weaveLastUsed: "123456789"}}],
-    [123456789, {extData: {weaveLastUsed: 123456789}}],
-    [123456789, {extData: {weaveLastUsed: 123456789.12}}]
-  ];
-
-  for each (let [ex, input] in expected) {
-    do_check_eq(ex, store.tabLastUsed(input));
-  }
+function getMockStore() {
+  let engine = new TabEngine(Service);
+  let store = engine._store;
+  store.getTabState = mockGetTabState;
+  store.shouldSkipWindow = mockShouldSkipWindow;
+  return store;
 }
 
 function test_create() {
@@ -31,112 +20,96 @@ function test_create() {
   _("Create a first record");
   let rec = {id: "id1",
              clientName: "clientName1",
-             cleartext: "cleartext1",
+             cleartext: { "foo": "bar" },
              modified: 1000};
   store.applyIncoming(rec);
-  do_check_eq(store._remoteClients["id1"], "cleartext1");
-  do_check_eq(Svc.Prefs.get("notifyTabState"), 1);
+  deepEqual(store._remoteClients["id1"], { lastModified: 1000, foo: "bar" });
 
   _("Create a second record");
-  let rec = {id: "id2",
-             clientName: "clientName2",
-             cleartext: "cleartext2",
-             modified: 2000};
+  rec = {id: "id2",
+         clientName: "clientName2",
+         cleartext: { "foo2": "bar2" },
+         modified: 2000};
   store.applyIncoming(rec);
-  do_check_eq(store._remoteClients["id2"], "cleartext2");
-  do_check_eq(Svc.Prefs.get("notifyTabState"), 0);
+  deepEqual(store._remoteClients["id2"], { lastModified: 2000, foo2: "bar2" });
 
   _("Create a third record");
-  let rec = {id: "id3",
-             clientName: "clientName3",
-             cleartext: "cleartext3",
-             modified: 3000};
+  rec = {id: "id3",
+         clientName: "clientName3",
+         cleartext: { "foo3": "bar3" },
+         modified: 3000};
   store.applyIncoming(rec);
-  do_check_eq(store._remoteClients["id3"], "cleartext3");
-  do_check_eq(Svc.Prefs.get("notifyTabState"), 0);
-
-  // reset the notifyTabState
-  Svc.Prefs.reset("notifyTabState");
+  deepEqual(store._remoteClients["id3"], { lastModified: 3000, foo3: "bar3" });
 }
 
-function fakeSessionSvc(url, numtabs) {
-  // first delete the getter, or the previously
-  // created fake Session
-  delete Svc.Session;
-  Svc.Session = {
-    getBrowserState: function() {
-      let obj = {
-        windows: [{
-          tabs: [{
-            index: 1,
-            entries: [{
-              url: url,
-              title: "title"
-            }],
-            attributes: {
-              image: "image"
-            },
-            extData: {
-              weaveLastUsed: 1
-            }
-          }]
-        }]
-      };
-      if (numtabs) {
-        let tabs = obj.windows[0].tabs;
-        for (let i = 0; i < numtabs-1; i++)
-          tabs.push(TestingUtils.deepCopy(tabs[0]));
-      }
-      return JSON.stringify(obj);
-    }
-  };
-};
-
 function test_getAllTabs() {
-  let store = new TabEngine(Service)._store, tabs;
+  let store = getMockStore();
+  let tabs;
 
-  _("get all tabs");
-  fakeSessionSvc("http://foo.com");
+  let threeUrls = ["http://foo.com", "http://fuubar.com", "http://barbar.com"];
+
+  store.getWindowEnumerator = mockGetWindowEnumerator.bind(this, "http://bar.com", 1, 1, () => 2, () => threeUrls);
+
+  _("Get all tabs.");
   tabs = store.getAllTabs();
-  do_check_eq(tabs.length, 1);
-  do_check_eq(tabs[0].title, "title");
-  do_check_eq(tabs[0].urlHistory.length, 1);
-  do_check_eq(tabs[0].urlHistory[0], ["http://foo.com"]);
-  do_check_eq(tabs[0].icon, "image");
-  do_check_eq(tabs[0].lastUsed, 1);
+  _("Tabs: " + JSON.stringify(tabs));
+  equal(tabs.length, 1);
+  equal(tabs[0].title, "title");
+  equal(tabs[0].urlHistory.length, 2);
+  equal(tabs[0].urlHistory[0], "http://foo.com");
+  equal(tabs[0].urlHistory[1], "http://bar.com");
+  equal(tabs[0].icon, "image");
+  equal(tabs[0].lastUsed, 1);
 
-  _("get all tabs, and check that filtering works");
-  // we don't bother testing every URL type here, the
-  // filteredUrls regex really should have it own tests
-  fakeSessionSvc("about:foo");
+  _("Get all tabs, and check that filtering works.");
+  let twoUrls = ["about:foo", "http://fuubar.com"];
+  store.getWindowEnumerator = mockGetWindowEnumerator.bind(this, "http://foo.com", 1, 1, () => 2, () => twoUrls);
   tabs = store.getAllTabs(true);
-  do_check_eq(tabs.length, 0);
+  _("Filtered: " + JSON.stringify(tabs));
+  equal(tabs.length, 0);
+
+  _("Get all tabs, and check that the entries safety limit works.");
+  let allURLs = [];
+  for (let i = 0; i < 50; i++) {
+    allURLs.push("http://foo" + i + ".bar");
+  }
+  allURLs.splice(35, 0, "about:foo", "about:bar", "about:foobar");
+
+  store.getWindowEnumerator = mockGetWindowEnumerator.bind(this, "http://bar.com", 1, 1, () => 45, () => allURLs);
+  tabs = store.getAllTabs((url) => url.startsWith("about"));
+
+  _("Sliced: " + JSON.stringify(tabs));
+  equal(tabs.length, 1);
+  equal(tabs[0].urlHistory.length, 25);
+  equal(tabs[0].urlHistory[0], "http://foo40.bar");
+  equal(tabs[0].urlHistory[24], "http://foo16.bar");
 }
 
 function test_createRecord() {
-  let store = new TabEngine(Service)._store, record;
+  let store = getMockStore();
+  let record;
 
-  // get some values before testing
-  fakeSessionSvc("http://foo.com");
+  store.getTabState = mockGetTabState;
+  store.shouldSkipWindow = mockShouldSkipWindow;
+  store.getWindowEnumerator = mockGetWindowEnumerator.bind(this, "http://foo.com", 1, 1);
+
   let tabs = store.getAllTabs();
   let tabsize = JSON.stringify(tabs[0]).length;
   let numtabs = Math.ceil(20000./77.);
 
-  _("create a record");
-  fakeSessionSvc("http://foo.com");
+  store.getWindowEnumerator = mockGetWindowEnumerator.bind(this, "http://foo.com", 1, 1);
   record = store.createRecord("fake-guid");
-  do_check_true(record instanceof TabSetRecord);
-  do_check_eq(record.tabs.length, 1);
+  ok(record instanceof TabSetRecord);
+  equal(record.tabs.length, 1);
 
   _("create a big record");
-  fakeSessionSvc("http://foo.com", numtabs);
+  store.getWindowEnumerator = mockGetWindowEnumerator.bind(this, "http://foo.com", 1, numtabs);
   record = store.createRecord("fake-guid");
-  do_check_true(record instanceof TabSetRecord);
-  do_check_eq(record.tabs.length, 256);
+  ok(record instanceof TabSetRecord);
+  equal(record.tabs.length, 256);
 }
 
 function run_test() {
-  test_lastUsed();
   test_create();
   test_getAllTabs();
   test_createRecord();

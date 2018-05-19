@@ -7,17 +7,17 @@
 #ifndef jit_x64_LOpcodes_x64_h
 #define jit_x64_LOpcodes_x64_h
 
+#include "jit/shared/LOpcodes-shared.h"
+
 #define LIR_CPU_OPCODE_LIST(_)      \
-    _(Box)                          \
-    _(Unbox)                        \
-    _(UnboxDouble)                  \
-    _(DivI)                         \
-    _(DivPowTwoI)                   \
-    _(ModI)                         \
-    _(ModPowTwoI)                   \
-    _(PowHalfD)                     \
-    _(UInt32ToDouble)               \
-    _(AsmJSLoadFuncPtr)             \
-    _(AsmJSDivOrMod)
+    _(DivOrModConstantI)            \
+    _(DivOrModI64)                  \
+    _(UDivOrModI64)                 \
+    _(WasmTruncateToInt64)          \
+    _(Int64ToFloatingPoint)         \
+    _(SimdValueInt32x4)             \
+    _(SimdValueFloat32x4)           \
+    _(UDivOrMod)                    \
+    _(UDivOrModConstant)
 
 #endif /* jit_x64_LOpcodes_x64_h */

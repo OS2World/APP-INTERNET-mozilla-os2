@@ -7,19 +7,13 @@
 
 #include <stdlib.h>
 
-#define INCL_PM
-#define INCL_SPLDOSPRINT
-#define INCL_DEV
-#define INCL_DEVDJP
-#define INCL_GRE_DEVICE
-#include <os2.h>
+#include "nsPrintOS2.h"
 
 #include "nsIServiceManager.h"
 #include "nsIPrefService.h"
 #include "nsIPrefBranch.h"
 #include "nsUnicharUtils.h"
-#include "nsOS2Uni.h"
-#include "nsPrintOS2.h"
+#include "nsNativeCharsetUtils.h"
 
 //---------------------------------------------------------------------------
 
@@ -131,13 +125,7 @@ nsAString* os2PrintQ::PrinterTitle()
     if (cName.Length() > 64)
       cName.Truncate(64);
 
-    nsAutoChar16Buffer uName;
-    int32_t uNameLength = 123;
-    if (NS_FAILED(MultiByteToWideChar(0, cName.get(), cName.Length(), uName, uNameLength))) {
-      mPrinterTitle.Assign(NS_LITERAL_STRING("Error"));
-    } else {
-      mPrinterTitle.Assign(nsDependentString(uName.Elements()));
-    }
+    NS_CopyNativeToUnicode(cName, mPrinterTitle);
 
     // store printer description in prefs for the print dialog
     nsresult rv;
@@ -172,24 +160,50 @@ DBGNX();
 
   ULONG  TotalQueues = 0;
   ULONG  MemNeeded = 0;
-  SPLERR rc;
 
-  rc = SplEnumQueue(0, 3, 0, 0, &mQueueCount, &TotalQueues,
-                    &MemNeeded, 0);
+   SplEnumQueue(0, 3, 0, 0, &mQueueCount, &TotalQueues,
+                &MemNeeded, 0);
 
   PRQINFO3* pPQI3Buf = (PRQINFO3*)malloc(MemNeeded);
-  rc = SplEnumQueue(0, 3, pPQI3Buf, MemNeeded, &mQueueCount, &TotalQueues,
-                    &MemNeeded, 0);
+  SplEnumQueue(0, 3, pPQI3Buf, MemNeeded, &mQueueCount, &TotalQueues,
+               &MemNeeded, 0);
 
   if (mQueueCount > MAX_PRINT_QUEUES)
     mQueueCount = MAX_PRINT_QUEUES;
 
+  // Since we have native GPI printing temporarily disabled (see #171), we rely
+  // on internal PostScript support in Cairo (former print.os2.postscript.use_builtin
+  // pref) which, in turn, requires the native printer driver to support PS.
+  // It makes no sense to show any other printers in the FF UI since printing
+  // to them will always fail with a vague "An error occurred while printing"
+  // message box. Thus, we hide other printers from the UI.
+
   ULONG defaultQueue = 0;
+  ULONG idx = 0;
   for (ULONG cnt = 0; cnt < mQueueCount; cnt++) {
+    os2PrintQ *pq = new os2PrintQ(&pPQI3Buf[cnt]);
+    HDC hdc = pq->OpenHDC();
+    if (!hdc) {
+      DBGM("OpenHDC failed");
+      delete pq;
+      continue;
+    }
+    long driverType;
+    if (!DevQueryCaps(hdc, CAPS_TECHNOLOGY, 1, &driverType))
+      driverType = 0;
+    DevCloseDC(hdc);
+    if (driverType != CAPS_TECH_POSTSCRIPT) {
+      delete pq;
+      continue;
+    }
+    mPQBuf[idx] = pq;
     if (pPQI3Buf[cnt].fsType & PRQ3_TYPE_APPDEFAULT)
-      defaultQueue = cnt;
-    mPQBuf[cnt] = new os2PrintQ(&pPQI3Buf[cnt]);
+      defaultQueue = idx;
+    ++idx;
   }
+
+  // adjust the number of printers we accepted
+  mQueueCount = idx;
 
   // move the entry for the default printer to index 0 (if necessary)
   if (defaultQueue > 0) {
@@ -210,28 +224,32 @@ DBGNX();
 
 void os2Printers::RefreshPrintQueue()
 {
-DBGX();
+DBGN();
   ULONG  newQueueCount = 0;
   ULONG  TotalQueues = 0;
   ULONG  MemNeeded = 0;
-  SPLERR rc;
 
-  rc = SplEnumQueue(0, 3, 0, 0, &newQueueCount, &TotalQueues,
-                    &MemNeeded, 0);
+  SplEnumQueue(0, 3, 0, 0, &newQueueCount, &TotalQueues,
+               &MemNeeded, 0);
   PRQINFO3* pPQI3Buf = (PRQINFO3*)malloc(MemNeeded);
 
-  rc = SplEnumQueue(0, 3, pPQI3Buf, MemNeeded, &newQueueCount, &TotalQueues,
-                    &MemNeeded, 0);
+  SplEnumQueue(0, 3, pPQI3Buf, MemNeeded, &newQueueCount, &TotalQueues,
+               &MemNeeded, 0);
   if (newQueueCount > MAX_PRINT_QUEUES)
     newQueueCount = MAX_PRINT_QUEUES;
 
   os2PrintQ* tmpBuf[MAX_PRINT_QUEUES];
 
-  ULONG defaultQueue = 0;
-  for (ULONG cnt = 0; cnt < newQueueCount; cnt++) {
-    if (pPQI3Buf[cnt].fsType & PRQ3_TYPE_APPDEFAULT)
-      defaultQueue = cnt;
+  // Since we have native GPI printing temporarily disabled (see #171), we rely
+  // on internal PostScript support in Cairo (former print.os2.postscript.use_builtin
+  // pref) which, in turn, requires the native printer driver to support PS.
+  // It makes no sense to show any other printers in the FF UI since printing
+  // to them will always fail with a vague "An error occurred while printing"
+  // message box. Thus, we hide other printers from the UI.
 
+  ULONG defaultQueue = 0;
+  ULONG newIdx = 0;
+  for (ULONG cnt = 0; cnt < newQueueCount; cnt++) {
     BOOL found = FALSE;
     for (ULONG index = 0; index < mQueueCount && !found; index++) {
        // Compare printer from requeried list with what's already in
@@ -241,14 +259,36 @@ DBGX();
          if (!strcmp(pPQI3Buf[cnt].pszPrinters, mPQBuf[index]->PrinterName()) &&
              !strcmp(pPQI3Buf[cnt].pszDriverName, mPQBuf[index]->FullName())) {
            found = TRUE;
-           tmpBuf[cnt] = mPQBuf[index];
+           tmpBuf[newIdx] = mPQBuf[index];
            mPQBuf[index] = 0;
          }
        }
     }
-    if (!found)
-       tmpBuf[cnt] = new os2PrintQ(&pPQI3Buf[cnt]);
+    if (!found) {
+      os2PrintQ *pq = new os2PrintQ(&pPQI3Buf[cnt]);
+      HDC hdc = pq->OpenHDC();
+      if (!hdc) {
+        DBGM("OpenHDC failed");
+        delete pq;
+        continue;
+      }
+      long driverType;
+      if (!DevQueryCaps(hdc, CAPS_TECHNOLOGY, 1, &driverType))
+        driverType = 0;
+      DevCloseDC(hdc);
+      if (driverType != CAPS_TECH_POSTSCRIPT) {
+        delete pq;
+        continue;
+      }
+      tmpBuf[newIdx] = pq;
+    }
+    if (pPQI3Buf[cnt].fsType & PRQ3_TYPE_APPDEFAULT)
+      defaultQueue = newIdx;
+    ++newIdx;
   }
+
+  // adjust the number of printers we accepted
+  newQueueCount = newIdx;
 
   for (ULONG index = 0; index < newQueueCount; index++) {
     if (mPQBuf[index] != 0)
@@ -376,7 +416,7 @@ nsAString* os2Printers::GetPrinterTitle(ULONG printerNdx)
   return mPQBuf[printerNdx]->PrinterTitle();
 }
 
-int32_t os2Printers::GetPrinterIndex(const PRUnichar* aPrinterName)
+int32_t os2Printers::GetPrinterIndex(const char16_t* aPrinterName)
 {
   ULONG index;
 

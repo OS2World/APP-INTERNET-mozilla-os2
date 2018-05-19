@@ -3,6 +3,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+#include "mozilla/dom/Event.h"
 #include "nsMenuUtilsX.h"
 #include "nsMenuBarX.h"
 #include "nsMenuX.h"
@@ -11,12 +12,12 @@
 #include "nsObjCExceptions.h"
 #include "nsCocoaUtils.h"
 #include "nsCocoaWindow.h"
-#include "nsDOMEvent.h"
 #include "nsGkAtoms.h"
 #include "nsIDocument.h"
 #include "nsIDOMDocument.h"
 #include "nsIDOMXULCommandEvent.h"
 #include "nsPIDOMWindow.h"
+#include "nsQueryObject.h"
 
 using namespace mozilla;
 
@@ -27,7 +28,7 @@ void nsMenuUtilsX::DispatchCommandTo(nsIContent* aTargetContent)
   nsIDocument* doc = aTargetContent->OwnerDoc();
   if (doc) {
     ErrorResult rv;
-    nsRefPtr<nsDOMEvent> event =
+    RefPtr<dom::Event> event =
       doc->CreateEvent(NS_LITERAL_STRING("xulcommandevent"), rv);
     nsCOMPtr<nsIDOMXULCommandEvent> command = do_QueryObject(event);
 
@@ -36,7 +37,7 @@ void nsMenuUtilsX::DispatchCommandTo(nsIContent* aTargetContent)
     if (command &&
         NS_SUCCEEDED(command->InitCommandEvent(NS_LITERAL_STRING("command"),
                                                true, true,
-                                               doc->GetWindow(), 0,
+                                               doc->GetInnerWindow(), 0,
                                                false, false, false,
                                                false, nullptr))) {
       event->SetTrusted(true);
@@ -54,7 +55,8 @@ NSString* nsMenuUtilsX::GetTruncatedCocoaLabel(const nsString& itemLabel)
   // good API for doing that which works for all OS versions and architectures. For now
   // we'll do nothing for consistency and depend on good user interface design to limit
   // string lengths.
-  return [NSString stringWithCharacters:itemLabel.get() length:itemLabel.Length()];
+  return [NSString stringWithCharacters:reinterpret_cast<const unichar*>(itemLabel.get())
+                                 length:itemLabel.Length()];
 
   NS_OBJC_END_TRY_ABORT_BLOCK_NIL;
 }
@@ -114,7 +116,7 @@ NSMenuItem* nsMenuUtilsX::GetStandardEditMenuItem()
   NS_OBJC_BEGIN_TRY_ABORT_BLOCK_NIL;
 
   // In principle we should be able to allocate this once and then always
-  // return the same object.  But wierd interactions happen between native
+  // return the same object.  But weird interactions happen between native
   // app-modal dialogs and Gecko-modal dialogs that open above them.  So what
   // we return here isn't always released before it needs to be added to
   // another menu.  See bmo bug 468393.

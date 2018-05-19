@@ -4,16 +4,13 @@
  * You can obtain one at http://mozilla.org/MPL/2.0/.
  *
  * The origin of this IDL file is
- * https://dvcs.w3.org/hg/audio/raw-file/tip/webaudio/specification.html
+ * https://webaudio.github.io/web-audio-api/
  *
  * Copyright © 2012 W3C® (MIT, ERCIM, Keio), All Rights Reserved. W3C
  * liability, trademark and document use rules apply.
  */
 
 enum BiquadFilterType {
-  // Hack: Use numbers to support alternate enum values
-  "0", "1", "2", "3", "4", "5", "6", "7",
-
   "lowpass",
   "highpass",
   "bandpass",
@@ -24,7 +21,7 @@ enum BiquadFilterType {
   "allpass"
 };
 
-[PrefControlled]
+[Pref="dom.webaudio.enabled"]
 interface BiquadFilterNode : AudioNode {
 
     attribute BiquadFilterType type;
@@ -39,27 +36,6 @@ interface BiquadFilterNode : AudioNode {
 
 };
 
-/*
- * The origin of this IDL file is
- * https://dvcs.w3.org/hg/audio/raw-file/tip/webaudio/specification.html#AlternateNames
- */
-[PrefControlled]
-partial interface BiquadFilterNode {
-    [Pref="media.webaudio.legacy.BiquadFilterNode"]
-    const unsigned short LOWPASS = 0;
-    [Pref="media.webaudio.legacy.BiquadFilterNode"]
-    const unsigned short HIGHPASS = 1;
-    [Pref="media.webaudio.legacy.BiquadFilterNode"]
-    const unsigned short BANDPASS = 2;
-    [Pref="media.webaudio.legacy.BiquadFilterNode"]
-    const unsigned short LOWSHELF = 3;
-    [Pref="media.webaudio.legacy.BiquadFilterNode"]
-    const unsigned short HIGHSHELF = 4;
-    [Pref="media.webaudio.legacy.BiquadFilterNode"]
-    const unsigned short PEAKING = 5;
-    [Pref="media.webaudio.legacy.BiquadFilterNode"]
-    const unsigned short NOTCH = 6;
-    [Pref="media.webaudio.legacy.BiquadFilterNode"]
-    const unsigned short ALLPASS = 7;
-};
+// Mozilla extension
+BiquadFilterNode implements AudioNodePassThrough;
 

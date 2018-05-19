@@ -24,11 +24,11 @@ function run_test() {
 
   server = new HttpServer();
   server.registerDirectory("/", do_get_file("data/test_bug470377"));
-  server.start(4444);
+  server.start(-1);
 
   startupManager();
 
-  installAllFiles([do_get_addon(a) for each (a in ADDONS)], function() {
+  installAllFiles(ADDONS.map(a => do_get_addon(a)), function() {
     restartManager();
 
     AddonManager.getAddonsByIDs(["bug470377_1@tests.mozilla.org",

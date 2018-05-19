@@ -3,7 +3,6 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#include "prtypes.h"
 #include "nsIConsoleService.h"
 #include "nsIScriptError.h"
 
@@ -16,10 +15,32 @@
 #define NOTIFY_OBSERVERS(canFire, cache, array, type, method)                  \
   PR_BEGIN_MACRO                                                               \
   if (canFire) {                                                               \
-    const nsCOMArray<type> &entries = cache.GetEntries();                      \
+    nsCOMArray<type> entries;                                                  \
+    cache.GetEntries(entries);                                                 \
     for (int32_t idx = 0; idx < entries.Count(); ++idx)                        \
         entries[idx]->method;                                                  \
     ENUMERATE_WEAKARRAY(array, type, method)                                   \
+  }                                                                            \
+  PR_END_MACRO;
+
+#define NOTIFY_BOOKMARKS_OBSERVERS(canFire, cache, array, skipIf, method)      \
+  PR_BEGIN_MACRO                                                               \
+  if (canFire) {                                                               \
+    nsCOMArray<nsINavBookmarkObserver> entries;                                \
+    cache.GetEntries(entries);                                                 \
+    for (int32_t idx = 0; idx < entries.Count(); ++idx) {                      \
+      if (skipIf(entries[idx]))                                                \
+        continue;                                                              \
+      entries[idx]->method;                                                    \
+    }                                                                          \
+    for (uint32_t idx = 0; idx < array.Length(); ++idx) {                      \
+      const nsCOMPtr<nsINavBookmarkObserver> &e = array.ElementAt(idx).GetValue(); \
+      if (e) {                                                                 \
+        if (skipIf(e))                                                         \
+            continue;                                                          \
+        e->method;                                                             \
+      }                                                                        \
+    }                                                                          \
   }                                                                            \
   PR_END_MACRO;
 
@@ -30,11 +51,11 @@
   _className::GetSingleton()                                                   \
   {                                                                            \
     if (_sInstance) {                                                          \
-      nsRefPtr<_className> ret = _sInstance;                                   \
+      RefPtr<_className> ret = _sInstance;                                   \
       return ret.forget();                                                     \
     }                                                                          \
     _sInstance = new _className();                                             \
-    nsRefPtr<_className> ret = _sInstance;                                     \
+    RefPtr<_className> ret = _sInstance;                                     \
     if (NS_FAILED(_sInstance->Init())) {                                       \
       /* Null out ret before _sInstance so the destructor doesn't assert */    \
       ret = nullptr;                                                           \
@@ -46,7 +67,7 @@
 
 #define PLACES_WARN_DEPRECATED()                                               \
   PR_BEGIN_MACRO                                                               \
-  nsCString msg = NS_LITERAL_CSTRING(__FUNCTION__);                            \
+  nsCString msg(__FUNCTION__);                                                 \
   msg.AppendLiteral(" is deprecated and will be removed in the next version.");\
   NS_WARNING(msg.get());                                                       \
   nsCOMPtr<nsIConsoleService> cs = do_GetService(NS_CONSOLESERVICE_CONTRACTID);\

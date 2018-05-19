@@ -4,7 +4,6 @@
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "nsIAppStartup.h"
-#include "nsIDOMWindow.h"
 #include "nsIFile.h"
 #include "nsIStringBundle.h"
 #include "nsIToolkitProfile.h"
@@ -14,12 +13,14 @@
 
 #include "nsDirectoryServiceDefs.h"
 #include "nsDirectoryServiceUtils.h"
+#include "nsPIDOMWindow.h"
 #include "nsPrintfCString.h"
 #include "nsToolkitCompsCID.h"
 #include "nsXPCOMCIDInternal.h"
 #include "nsXREAppData.h"
 
 #include "mozilla/Services.h"
+#include "prtime.h"
 
 extern const nsXREAppData* gAppData;
 
@@ -32,14 +33,13 @@ static const char kProfileProperties[] =
 nsresult
 CreateResetProfile(nsIToolkitProfileService* aProfileSvc, nsIToolkitProfile* *aNewProfile)
 {
-  NS_ABORT_IF_FALSE(aProfileSvc, "NULL profile service");
+  MOZ_ASSERT(aProfileSvc, "NULL profile service");
 
   nsCOMPtr<nsIToolkitProfile> newProfile;
   // Make the new profile "default-" + the time in seconds since epoch for uniqueness.
   nsAutoCString newProfileName("default-");
   newProfileName.Append(nsPrintfCString("%lld", PR_Now() / 1000));
   nsresult rv = aProfileSvc->CreateProfile(nullptr, // choose a default dir for us
-                                           nullptr, // choose a default dir for us
                                            newProfileName,
                                            getter_AddRefs(newProfile));
   if (NS_FAILED(rv)) return rv;
@@ -76,11 +76,11 @@ ProfileResetCleanup(nsIToolkitProfile* aOldProfile)
   if (!sb) return NS_ERROR_FAILURE;
 
   NS_ConvertUTF8toUTF16 appName(gAppData->name);
-  const PRUnichar* params[] = {appName.get(), appName.get()};
+  const char16_t* params[] = {appName.get(), appName.get()};
 
   nsXPIDLString resetBackupDirectoryName;
 
-  static const PRUnichar* kResetBackupDirectory = NS_LITERAL_STRING("resetBackupDirectory").get();
+  static const char16_t* kResetBackupDirectory = u"resetBackupDirectory";
   rv = sb->FormatStringFromName(kResetBackupDirectory, params, 2,
                                 getter_Copies(resetBackupDirectoryName));
 
@@ -134,12 +134,12 @@ ProfileResetCleanup(nsIToolkitProfile* aOldProfile)
   nsCOMPtr<nsIAppStartup> appStartup(do_GetService(NS_APPSTARTUP_CONTRACTID));
   if (!appStartup) return NS_ERROR_FAILURE;
 
-  nsCOMPtr<nsIDOMWindow> progressWindow;
+  nsCOMPtr<mozIDOMWindowProxy> progressWindow;
   rv = windowWatcher->OpenWindow(nullptr,
                                  kResetProgressURL,
                                  "_blank",
                                  "centerscreen,chrome,titlebar",
-                                 NULL,
+                                 nullptr,
                                  getter_AddRefs(progressWindow));
   if (NS_FAILED(rv)) return rv;
 
@@ -164,7 +164,8 @@ ProfileResetCleanup(nsIToolkitProfile* aOldProfile)
     return rv;
   }
   // Close the progress window now that the cleanup thread is done.
-  progressWindow->Close();
+  auto* piWindow = nsPIDOMWindowOuter::From(progressWindow);
+  piWindow->Close();
 
   // Delete the old profile from profiles.ini. The folder was already deleted by the thread above.
   rv = aOldProfile->Remove(false);

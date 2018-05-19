@@ -2,12 +2,8 @@
 // Private channel test
 //
 
-const Cc = Components.classes;
-const Ci = Components.interfaces;
-const Cu = Components.utils;
-const Cr = Components.results;
-
 Cu.import("resource://testing-common/httpd.js");
+Cu.import("resource://gre/modules/NetUtil.jsm");
 
 var httpserver = new HttpServer();
 var testpath = "/simple";
@@ -21,7 +17,7 @@ function run_test() {
   evict_cache_entries();
 
   httpserver.registerPathHandler(testpath, serverHandler);
-  httpserver.start(4444);
+  httpserver.start(-1);
 
   var channel = setupChannel(testpath);
   channel.loadGroup = Cc["@mozilla.org/network/load-group;1"].createInstance();
@@ -29,15 +25,16 @@ function run_test() {
   channel.QueryInterface(Ci.nsIPrivateBrowsingChannel);
   channel.setPrivate(true);
 
-  channel.asyncOpen(new ChannelListener(checkRequest, channel), null);
+  channel.asyncOpen2(new ChannelListener(checkRequest, channel));
 
   do_test_pending();
 }
 
 function setupChannel(path) {
-  var ios = Cc["@mozilla.org/network/io-service;1"].getService(Ci.nsIIOService);
-  return chan = ios.newChannel("http://localhost:4444" + path, "", null)
-                   .QueryInterface(Ci.nsIHttpChannel);
+  return NetUtil.newChannel({
+    uri: "http://localhost:" + httpserver.identity.primaryPort + path,
+    loadUsingSystemPrincipal: true
+  }).QueryInterface(Ci.nsIHttpChannel);
 }
 
 function serverHandler(metadata, response) {
@@ -46,7 +43,11 @@ function serverHandler(metadata, response) {
 }
 
 function checkRequest(request, data, context) {
-  do_check_eq(get_device_entry_count("disk"), 0);
-  do_check_eq(get_device_entry_count("memory"), 1);
-  httpserver.stop(do_test_finished);
+  get_device_entry_count("disk", null, function(count) {
+    do_check_eq(count, 0)
+    get_device_entry_count("disk", LoadContextInfo.private, function(count) {
+      do_check_eq(count, 1);
+      httpserver.stop(do_test_finished);
+    });
+  });
 }

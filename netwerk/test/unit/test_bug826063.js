@@ -6,9 +6,9 @@
  * result for various combinations of .setPrivate() and nsILoadContexts
  */
 
-const {classes: Cc, interfaces: Ci, utils: Cu} = Components;
 Cu.import("resource://gre/modules/XPCOMUtils.jsm");
-Cu.import("resource://gre/modules/Services.jsm");
+Cu.import("resource://gre/modules/NetUtil.jsm");
+
 
 var URIs = [
   "http://example.org",
@@ -20,13 +20,17 @@ function LoadContext(usePrivateBrowsing) {
   this.usePrivateBrowsing = usePrivateBrowsing;
 }
 LoadContext.prototype = {
+  originAttributes: {},
   QueryInterface: XPCOMUtils.generateQI([Ci.nsILoadContext, Ci.nsIInterfaceRequestor]),
   getInterface: XPCOMUtils.generateQI([Ci.nsILoadContext])
 };
 
 function getChannels() {
   for (let u of URIs) {
-    yield Services.io.newChannel(u, null, null);
+    yield NetUtil.newChannel({
+      uri: u,
+      loadUsingSystemPrincipal: true
+    });
   }
 }
 

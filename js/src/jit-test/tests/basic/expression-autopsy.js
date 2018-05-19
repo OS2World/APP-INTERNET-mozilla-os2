@@ -1,7 +1,5 @@
-// |jit-test| no-ion
-//
-// We can't guarantee error identity when functions are Ion-compiled due to
-// optimization.
+load(libdir + "asserts.js");
+load(libdir + "iteration.js");
 
 function check_one(expected, f, err) {
     var failed = true;
@@ -11,14 +9,14 @@ function check_one(expected, f, err) {
     } catch (ex) {
         var s = ex.toString();
         assertEq(s.slice(0, 11), "TypeError: ");
-        assertEq(s.slice(-err.length), err);
+        assertEq(s.slice(-err.length), err, "" + f);
         assertEq(s.slice(11, -err.length), expected);
     }
     if (!failed)
         throw new Error("didn't fail");
 }
 ieval = eval;
-function check(expr, expected=expr) {
+function check(expr, expected=expr, testStrict=true) {
     var end, err;
     for ([end, err] of [[".random_prop", " is undefined"], ["()", " is not a function"]]) {
         var statement = "o = {};" + expr + end, f;
@@ -41,23 +39,19 @@ function check(expr, expected=expr) {
             Function("o", "undef", "function myfunc() { return o + undef; }\n" + statement),
             // Let definitions in a block
             Function("{ let o, undef;\n" + statement + "}"),
-            // Let block
-            Function("let (o, undef) { " + statement + " }"),
-            // Let block with some other variables
-            Function("var v1, v2; let (o, undef) { " + statement + " }"),
-            // Shadowed let block
-            Function("o", "undef", "let (o, undef) { " + statement + " }"),
             // Let in a switch
             Function("var x = 4; switch (x) { case 4: let o, undef;" + statement + "\ncase 6: break;}"),
-            // Let in for-in
-            Function("var undef, o; for (let z in [1, 2]) { " + statement + " }"),
-            // The more lets the merrier
-            Function("let (x=4, y=5) { x + y; }\nlet (a, b, c) { a + b - c; }\nlet (o, undef) {" + statement + " }"),
-            // Let destructuring
-            Function("o", "undef", "let ([] = 4) {} let (o, undef) { " + statement + " }"),
             // Try-catch blocks
-            Function("o", "undef", "try { let q = 4; try { let p = 4; } catch (e) {} } catch (e) {} let (o, undef) { " + statement + " }")
+            Function("o", "undef", "try { let q = 4; try { let p = 4; } catch (e) {} } catch (e) {} { let o, undef; " + statement + " }"),
+            // Let in for-in (uses with to prevent jit compilation: bug 942804, bug 831120 and bug 1041586)
+            Function("with ({}) {} var undef, o; for (let z in [1, 2]) { " + statement + " }"),
         ];
+
+        if (testStrict) {
+            // Strict mode.
+            cases.push(Function("o", "undef", "\"use strict\";\n" + statement));
+        }
+
         for (var f of cases) {
             check_one(expected, f, err);
         }
@@ -78,9 +72,15 @@ check("o[65536]");
 check("o[268435455]");
 check("o['1.1']");
 check("o[4 + 'h']", "o['4h']");
-check("this.x");
 check("ieval(undef)", "ieval(...)");
 check("ieval.call()", "ieval.call(...)");
+check("ieval(...[])", "ieval(...)");
+check("ieval(...[undef])", "ieval(...)");
+check("ieval(...[undef, undef])", "ieval(...)");
+check("(o[0] = 4).foo", "o[0].foo");
+// NOTE: This one produces different output in strict mode since "this" is
+// undefined in that case.
+check("this.x", "this.x", false);
 
 for (let tok of ["|", "^", "&", "==", "!==", "===", "!==", "<", "<=", ">", ">=",
                  ">>", "<<", ">>>", "+", "-", "*", "/", "%"]) {
@@ -92,11 +92,47 @@ check("o[~(o)]");
 check("o[+ (o)]");
 check("o[- (o)]");
 
+
 // A few one off tests
 check_one("6", (function () { 6() }), " is not a function");
-check_one("Array.prototype.reverse.call(...)", (function () { Array.prototype.reverse.call('123'); }), " is read-only");
-check_one("null", function () { var [{ x }] = [null, {}]; }, " has no properties");
-check_one("x", function () { ieval("let (x) { var [a, b, [c0, c1]] = [x, x, x]; }") }, " is undefined");
+check_one("4", (function() { (4||eval)(); }), " is not a function");
+check_one("0", (function () { Array.prototype.reverse.call('123'); }), " is read-only");
+check_one("(intermediate value)[Symbol.iterator](...).next(...).value",
+          function () { ieval("{ let x; var [a, b, [c0, c1]] = [x, x, x]; }") }, " is undefined");
+check_one("void 1", function() { (void 1)(); }, " is not a function");
+check_one("void o[1]", function() { var o = []; (void o[1])() }, " is not a function");
+
+// Manual testing for this case: the only way to trigger an error is *not* on
+// an attempted property access during destructuring, and the error message
+// invoking ToObject(null) is different: "can't convert {0} to object".
+try
+{
+  (function() {
+    var [{x}] = [null, {}];
+   })();
+  throw new Error("didn't throw");
+}
+catch (e)
+{
+  assertEq(e instanceof TypeError, true,
+           "expected TypeError, got " + e);
+  assertEq(e.message, "can't convert null to object");
+}
+
+try {
+  (function() {
+    "use strict";
+    var o = [];
+    Object.freeze(o);
+    o[0] = "foo";
+  }());
+  throw new Error("didn't throw");
+} catch (e) {
+  assertEq(e instanceof TypeError, true,
+           "expected TypeError, got " + e);
+  assertEq(e.message,
+           "can't define array index property past the end of an array with non-writable length");
+}
 
 // Check fallback behavior
-check_one("undefined", (function () { for (let x of undefined) {} }), " has no properties");
+assertThrowsInstanceOf(function () { for (let x of undefined) {} }, TypeError);

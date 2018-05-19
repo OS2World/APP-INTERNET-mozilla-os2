@@ -11,19 +11,29 @@
 #include <string.h>
 #include <stdlib.h>
 
-#define INCL_DOS
-#define INCL_WINSHELLDATA
-#define INCL_MMIOOS2
+#define INCL_BASE
+#define INCL_PM
 #include <os2.h>
+#ifdef BYTE_ORDER
+#undef BYTE_ORDER // pmord.h def conflicts with machine/endian.h
+#endif
+
 #include <mmioos2.h>
 #include <mcios2.h>
 
+#ifdef MOZ_LIBKAI
+#include <kai.h>
+#endif
+
 #include "nsSound.h"
 #include "nsIURL.h"
+#include "nsIFile.h"
+#include "nsIFileURL.h"
 #include "nsNetUtil.h"
+#include "nsContentUtils.h"
 #include "nsNativeCharsetUtils.h"
 
-NS_IMPL_ISUPPORTS2(nsSound, nsISound, nsIStreamLoaderObserver)
+NS_IMPL_ISUPPORTS(nsSound, nsISound, nsIStreamLoaderObserver)
 
 /*****************************************************************************/
 
@@ -52,13 +62,23 @@ static char *   sSoundFiles[EVENT_CNT] = {0}; // an array of sound file names
 // function pointer definitions (underscore works around redef. warning)
 static HMMIO  (*APIENTRY _mmioOpen)(PSZ, PMMIOINFO, ULONG);
 static USHORT (*APIENTRY _mmioClose)(HMMIO, USHORT);
+#ifdef MOZ_LIBKAI
+static ULONG  (*APIENTRY _mmioGetHeader)(HMMIO, PVOID, LONG, PLONG, ULONG,
+                                         ULONG);
+static LONG   (*APIENTRY _mmioRead)(HMMIO, PCHAR, LONG);
+#else
 static ULONG  (*APIENTRY _mciSendCommand)(USHORT, USHORT, ULONG, PVOID, USHORT);
+#endif
 
 // helper functions
 static void   initSounds(void);
 static bool initDlls(void);
 static void   playSound(void *aArgs);
 static FOURCC determineFourCC(uint32_t aDataLen, const char *aData);
+#ifdef MOZ_LIBKAI
+static ULONG APIENTRY kaiCallback(PVOID pCBData, PVOID pBuffer,
+                                  ULONG cchBuffer);
+#endif
 
 /*****************************************************************************/
 /*  nsSound implementation                                                   */
@@ -106,7 +126,12 @@ NS_IMETHODIMP nsSound::Play(nsIURL *aURL)
   }
 
   nsCOMPtr<nsIStreamLoader> loader;
-  return NS_NewStreamLoader(getter_AddRefs(loader), aURL, this);
+  return NS_NewStreamLoader(getter_AddRefs(loader),
+                            aURL,
+                            this, // aObserver
+                            nsContentUtils::GetSystemPrincipal(),
+                            nsILoadInfo::SEC_NORMAL,
+                            nsIContentPolicy::TYPE_OTHER);
 }
 
 /*****************************************************************************/
@@ -145,8 +170,11 @@ NS_IMETHODIMP nsSound::OnStreamComplete(nsIStreamLoader *aLoader,
   // allocate a buffer to hold the ARGBUFFER struct and sound data;
   // try using high-memory - if that fails, try low-memory
   ARGBUFFER *   arg;
+#if defined(MOZ_OS2_HIGH_MEMORY)
   if (DosAllocMem((PPVOID)&arg, sizeof(ARGBUFFER) + dataLen,
-                  OBJ_ANY | PAG_READ | PAG_WRITE | PAG_COMMIT)) {
+                  OBJ_ANY | PAG_READ | PAG_WRITE | PAG_COMMIT))
+#endif
+  {
     if (DosAllocMem((PPVOID)&arg, sizeof(ARGBUFFER) + dataLen,
                     PAG_READ | PAG_WRITE | PAG_COMMIT)) {
       DBG_MSG("nsSound::OnStreamComplete:  DosAllocMem failed");
@@ -159,7 +187,7 @@ NS_IMETHODIMP nsSound::OnStreamComplete(nsIStreamLoader *aLoader,
   memcpy(arg->buffer, data, dataLen);
 
   // Play the sound on a new thread using MMOS2
-  if (_beginthread(playSound, NULL, 32768, (void*)arg) < 0) {
+  if (_beginthread(playSound, nullptr, 32768, (void*)arg) < 0) {
     DosFreeMem((void*)arg);
     DBG_MSG("nsSound::OnStreamComplete:  _beginthread failed");
   }
@@ -387,10 +415,16 @@ static bool initDlls(void)
   sDllInit = TRUE;
 
   HMODULE   hmodMMIO = 0;
+#ifndef MOZ_LIBKAI
   HMODULE   hmodMDM = 0;
+#endif
   char      szError[32];
+#ifdef MOZ_LIBKAI
+  if (DosLoadModule(szError, sizeof(szError), "MMIO", &hmodMMIO)) {
+#else
   if (DosLoadModule(szError, sizeof(szError), "MMIO", &hmodMMIO) ||
       DosLoadModule(szError, sizeof(szError), "MDM", &hmodMDM)) {
+#endif
     DBG_MSG("initDlls:  DosLoadModule failed");
     sDllError = TRUE;
     return FALSE;
@@ -398,7 +432,12 @@ static bool initDlls(void)
 
   if (DosQueryProcAddr(hmodMMIO, 0L, "mmioOpen", (PFN *)&_mmioOpen) ||
       DosQueryProcAddr(hmodMMIO, 0L, "mmioClose", (PFN *)&_mmioClose) ||
+#ifdef MOZ_LIBKAI
+      DosQueryProcAddr(hmodMMIO, 0L, "mmioGetHeader", (PFN *)&_mmioGetHeader) ||
+      DosQueryProcAddr(hmodMMIO, 0L, "mmioRead", (PFN *)&_mmioRead)) {
+#else
       DosQueryProcAddr(hmodMDM,  0L, "mciSendCommand", (PFN *)&_mciSendCommand)) {
+#endif
     DBG_MSG("initDlls:  DosQueryProcAddr failed");
     sDllError = TRUE;
     return FALSE;
@@ -434,12 +473,69 @@ static void playSound(void * aArgs)
       break;
     }
 
-    hmmio = _mmioOpen(NULL, &mi, MMIO_READ | MMIO_DENYWRITE);
+    hmmio = _mmioOpen(nullptr, &mi, MMIO_READ | MMIO_DENYWRITE);
     if (!hmmio) {
       DBG_MSG("playSound:  _mmioOpen failed");
       break;
     }
 
+#ifdef MOZ_LIBKAI
+    if (kaiInit(KAIM_AUTO)) {
+      DBG_MSG("playSound:  kaiInit failed");
+      break;
+    }
+
+    MMAUDIOHEADER   mmAudioHeader;
+    LONG            lBytesRead;
+
+    // get header
+    if (_mmioGetHeader(hmmio, &mmAudioHeader, sizeof(MMAUDIOHEADER),
+                       &lBytesRead, 0, 0)) {
+      DBG_MSG("playSound:  _mmioGetHeader failed");
+
+      kaiDone();
+      break;
+    }
+
+    KAISPEC ksWanted, ksObtained;
+    HKAI    hkai;
+
+    ksWanted.usDeviceIndex   = 0;
+    ksWanted.ulType          = KAIT_PLAY;
+    ksWanted.ulBitsPerSample = mmAudioHeader.mmXWAVHeader.WAVEHeader.usBitsPerSample;
+    ksWanted.ulSamplingRate  = mmAudioHeader.mmXWAVHeader.WAVEHeader.ulSamplesPerSec;
+    ksWanted.ulDataFormat    = mmAudioHeader.mmXWAVHeader.WAVEHeader.usFormatTag;
+    ksWanted.ulChannels      = mmAudioHeader.mmXWAVHeader.WAVEHeader.usChannels;
+    ksWanted.ulNumBuffers    = 2;    // at leat 2 buffers are needed
+    ksWanted.ulBufferSize    = 2048 * ksWanted.ulBitsPerSample / 8 *
+                               ksWanted.ulChannels;  // 2048 samples
+    ksWanted.fShareable      = TRUE;
+    ksWanted.pfnCallBack     = kaiCallback;
+    ksWanted.pCallBackData   = &hmmio;
+
+    // open KAI instance
+    if (kaiOpen(&ksWanted, &ksObtained, &hkai)) {
+      DBG_MSG("playSound:  kaiOpen failed");
+
+      kaiDone();
+      break;
+    }
+
+    fOK = TRUE;
+
+    // set thread priority to maximum to prevent choppy shound at startup
+    DosSetPriority(PRTYS_THREAD, PRTYC_TIMECRITICAL, PRTYD_MAXIMUM, 0);
+
+    // play the sound
+    kaiPlay(hkai);
+
+    // wait to complete
+    while (kaiStatus(hkai) == KAIS_PLAYING)
+      DosSleep(1);
+
+    kaiClose(hkai);
+    kaiDone();
+#else
     // open the sound device
     MCI_OPEN_PARMS mop;
     memset(&mop, 0, sizeof(mop));
@@ -467,6 +563,7 @@ static void playSound(void * aArgs)
       DBG_MSG("playSound:  MCI_CLOSE failed");
     }
 
+#endif
   } while (0);
 
   if (!fOK)
@@ -515,3 +612,24 @@ static FOURCC determineFourCC(uint32_t aDataLen, const char *aData)
 
 /*****************************************************************************/
 
+#ifdef MOZ_LIBKAI
+
+// Callback function called from KAI
+
+static ULONG APIENTRY kaiCallback(PVOID pCBData, PVOID pBuffer,
+                                  ULONG cchBuffer)
+{
+    HMMIO hmmio = *(HMMIO *)pCBData;
+    LONG len;
+
+    len = _mmioRead(hmmio, (PCHAR)pBuffer, cchBuffer);
+    // If error, stop
+    if (len == (LONG)MMIO_ERROR)
+      len = 0;
+
+    return len;
+}
+
+/*****************************************************************************/
+
+#endif

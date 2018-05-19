@@ -1,5 +1,3 @@
-/* -*- Mode: Java; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim:set ts=2 sw=2 sts=2 et: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -11,7 +9,6 @@ module.metadata = {
 };
 
 const { Cc, Ci } = require("chrome");
-const errors = require("../deprecated/errors");
 const { Class } = require("../core/heritage");
 const { List, addListItem, removeListItem } = require("../util/list");
 const { EventTarget } = require("../event/target");
@@ -25,8 +22,8 @@ const { fromIterator } = require("../util/array");
 
 // This cache is used to access friend properties between functions
 // without exposing them on the public API.
-let cache = new Set();
-let elements = new WeakMap();
+var cache = new Set();
+var elements = new WeakMap();
 
 function contentLoaded(target) {
   var deferred = defer();
@@ -51,7 +48,7 @@ FrameOptions.validator = {
     ok: function(v) {
       if (getTypeOf(v) === "array") {
         // make sure every item is a function
-        return v.every(function (item) typeof(item) === "function")
+        return v.every(item => typeof(item) === "function")
       }
       return true;
     }
@@ -115,4 +112,4 @@ function removeHiddenFrame(frame) {
 }
 exports.remove = removeHiddenFrame;
 
-unload(function() fromIterator(cache).forEach(removeHiddenFrame));
+unload(() => fromIterator(cache).forEach(removeHiddenFrame));

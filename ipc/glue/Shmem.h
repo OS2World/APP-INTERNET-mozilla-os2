@@ -1,6 +1,5 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * vim: sw=2 ts=8 et :
- */
+/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
+/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -35,7 +34,7 @@
  *  means is OS specific.)
  *
  *  (4a) The child receives the special IPC message, and using the
- *  |SharedMemory{SysV,Basic}::Handle| it was passed, creates a
+ *  |SharedMemory{Basic}::Handle| it was passed, creates a
  *  |mozilla::ipc::SharedMemory| in the child
  *  process.
  *
@@ -54,11 +53,19 @@
  */
 
 namespace mozilla {
+namespace layers {
+class ShadowLayerForwarder;
+} // namespace layers
+
 namespace ipc {
 
-class Shmem MOZ_FINAL
+class Shmem final
 {
   friend struct IPC::ParamTraits<mozilla::ipc::Shmem>;
+#ifdef DEBUG
+  // For ShadowLayerForwarder::CheckSurfaceDescriptor
+  friend class mozilla::layers::ShadowLayerForwarder;
+#endif
 
 public:
   typedef int32_t id_t;
@@ -68,8 +75,8 @@ public:
   struct IHadBetterBeIPDLCodeCallingThis_OtherwiseIAmADoodyhead {};
 
   Shmem() :
-    mSegment(0),
-    mData(0),
+    mSegment(nullptr),
+    mData(nullptr),
     mSize(0),
     mId(0)
   {
@@ -116,13 +123,7 @@ public:
 
   bool operator==(const Shmem& aRhs) const
   {
-    // need to compare IDs because of AdoptShmem(); two Shmems might
-    // refer to the same segment but with different IDs for different
-    // protocol trees.  (NB: it's possible for this method to
-    // spuriously return true if AdoptShmem() gives the same ID for
-    // two protocol trees, but I don't think that can cause any
-    // problems since the Shmems really would be indistinguishable.)
-    return mSegment == aRhs.mSegment && mId == aRhs.mId;
+    return mSegment == aRhs.mSegment;
   }
 
   // Returns whether this Shmem is writable by you, and thus whether you can
@@ -130,7 +131,7 @@ public:
   bool
   IsWritable() const
   {
-    return mSegment != NULL;
+    return mSegment != nullptr;
   }
 
   // Returns whether this Shmem is readable by you, and thus whether you can
@@ -138,7 +139,7 @@ public:
   bool
   IsReadable() const
   {
-    return mSegment != NULL;
+    return mSegment != nullptr;
   }
 
   // Return a pointer to the user-visible data segment.
@@ -166,8 +167,6 @@ public:
     return mSize / sizeof(T);
   }
 
-  int GetSysVID() const;
-
   // These shouldn't be used directly, use the IPDL interface instead.
   id_t Id(IHadBetterBeIPDLCodeCallingThis_OtherwiseIAmADoodyhead) const {
     return mId;
@@ -187,13 +186,13 @@ public:
 
   void forget(IHadBetterBeIPDLCodeCallingThis_OtherwiseIAmADoodyhead)
   {
-    mSegment = 0;
-    mData = 0;
+    mSegment = nullptr;
+    mData = nullptr;
     mSize = 0;
     mId = 0;
   }
 
-  static SharedMemory*
+  static already_AddRefed<Shmem::SharedMemory>
   Alloc(IHadBetterBeIPDLCodeCallingThis_OtherwiseIAmADoodyhead,
         size_t aNBytes,
         SharedMemoryType aType,
@@ -203,26 +202,26 @@ public:
   // Prepare this to be shared with |aProcess|.  Return an IPC message
   // that contains enough information for the other process to map
   // this segment in OpenExisting() below.  Return a new message if
-  // successful (owned by the caller), NULL if not.
+  // successful (owned by the caller), nullptr if not.
   IPC::Message*
   ShareTo(IHadBetterBeIPDLCodeCallingThis_OtherwiseIAmADoodyhead,
-          base::ProcessHandle aProcess,
+          base::ProcessId aTargetPid,
           int32_t routingId);
 
-  // Stop sharing this with |aProcess|.  Return an IPC message that
+  // Stop sharing this with |aTargetPid|.  Return an IPC message that
   // contains enough information for the other process to unmap this
   // segment.  Return a new message if successful (owned by the
-  // caller), NULL if not.
+  // caller), nullptr if not.
   IPC::Message*
   UnshareFrom(IHadBetterBeIPDLCodeCallingThis_OtherwiseIAmADoodyhead,
-              base::ProcessHandle aProcess,
+              base::ProcessId aTargetPid,
               int32_t routingId);
 
   // Return a SharedMemory instance in this process using the
   // descriptor shared to us by the process that created the
   // underlying OS shmem resource.  The contents of the descriptor
   // depend on the type of SharedMemory that was passed to us.
-  static SharedMemory*
+  static already_AddRefed<SharedMemory>
   OpenExisting(IHadBetterBeIPDLCodeCallingThis_OtherwiseIAmADoodyhead,
                const IPC::Message& aDescriptor,
                id_t* aId,
@@ -256,7 +255,7 @@ private:
   void AssertInvariants() const;
 #endif
 
-  SharedMemory* mSegment;
+  RefPtr<SharedMemory> mSegment;
   void* mData;
   size_t mSize;
   id_t mId;
@@ -283,7 +282,7 @@ struct ParamTraits<mozilla::ipc::Shmem>
     WriteParam(aMsg, aParam.mId);
   }
 
-  static bool Read(const Message* aMsg, void** aIter, paramType* aResult)
+  static bool Read(const Message* aMsg, PickleIterator* aIter, paramType* aResult)
   {
     paramType::id_t id;
     if (!ReadParam(aMsg, aIter, &id))

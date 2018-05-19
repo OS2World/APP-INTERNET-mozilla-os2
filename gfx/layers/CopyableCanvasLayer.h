@@ -6,19 +6,26 @@
 #ifndef GFX_COPYABLECANVASLAYER_H
 #define GFX_COPYABLECANVASLAYER_H
 
-#include "Layers.h"
-#include "mozilla/layers/CanvasClient.h"
-#include "mozilla/Preferences.h"
-
-#include "gfxPlatform.h"
-
-using namespace mozilla::gfx;
+#include <stdint.h>                     // for uint32_t
+#include "GLContextTypes.h"             // for GLContext
+#include "Layers.h"                     // for CanvasLayer, etc
+#include "gfxContext.h"                 // for gfxContext, etc
+#include "gfxTypes.h"
+#include "gfxPlatform.h"                // for gfxImageFormat
+#include "mozilla/Assertions.h"         // for MOZ_ASSERT, etc
+#include "mozilla/Preferences.h"        // for Preferences
+#include "mozilla/RefPtr.h"             // for RefPtr
+#include "mozilla/gfx/2D.h"             // for DrawTarget
+#include "mozilla/mozalloc.h"           // for operator delete, etc
+#include "nsISupportsImpl.h"            // for MOZ_COUNT_CTOR, etc
 
 namespace mozilla {
-namespace layers {
 
-class CanvasClient2D;
-class CanvasClientWebGL;
+namespace gl {
+class SharedSurface;
+} // namespace gl
+
+namespace layers {
 
 /**
  * A shared CanvasLayer implementation that supports copying
@@ -27,65 +34,34 @@ class CanvasClientWebGL;
 class CopyableCanvasLayer : public CanvasLayer
 {
 public:
-  CopyableCanvasLayer(LayerManager* aLayerManager, void *aImplData) :
-    CanvasLayer(aLayerManager, aImplData)
-  {
-    MOZ_COUNT_CTOR(CopyableCanvasLayer);
-    mForceReadback = Preferences::GetBool("webgl.force-layers-readback", false);
-  }
-  virtual ~CopyableCanvasLayer()
-  {
-    MOZ_COUNT_DTOR(CopyableCanvasLayer);
-  }
-
-  virtual void Initialize(const Data& aData);
-  
+  CopyableCanvasLayer(LayerManager* aLayerManager, void *aImplData);
 
 protected:
-  void PaintWithOpacity(gfxContext* aContext,
-                        float aOpacity,
-                        Layer* aMaskLayer,
-                        gfxContext::GraphicsOperator aOperator = gfxContext::OPERATOR_OVER);
+  virtual ~CopyableCanvasLayer();
 
-  void UpdateSurface(gfxASurface* aDestSurface = nullptr, Layer* aMaskLayer = nullptr);
+public:
+  virtual void Initialize(const Data& aData) override;
 
-  nsRefPtr<gfxASurface> mSurface;
-  nsRefPtr<mozilla::gl::GLContext> mGLContext;
-  mozilla::RefPtr<mozilla::gfx::DrawTarget> mDrawTarget;
+  virtual bool IsDataValid(const Data& aData) override;
 
-  uint32_t mCanvasFramebuffer;
+  bool IsGLLayer() { return !!mGLContext; }
 
-  bool mIsGLAlphaPremult;
-  bool mNeedsYFlip;
-  bool mForceReadback;
+protected:
+  RefPtr<gl::GLContext> mGLContext;
+  RefPtr<PersistentBufferProvider> mBufferProvider;
+  UniquePtr<gl::SharedSurface> mGLFrontbuffer;
 
-  nsRefPtr<gfxImageSurface> mCachedTempSurface;
-  gfxIntSize mCachedSize;
-  gfxImageFormat mCachedFormat;
+  bool mIsAlphaPremultiplied;
+  gl::OriginPos mOriginPos;
+  bool mIsMirror;
 
-  gfxImageSurface* GetTempSurface(const gfxIntSize& aSize, const gfxImageFormat aFormat)
-  {
-    if (!mCachedTempSurface ||
-        aSize.width != mCachedSize.width ||
-        aSize.height != mCachedSize.height ||
-        aFormat != mCachedFormat)
-    {
-      mCachedTempSurface = new gfxImageSurface(aSize, aFormat);
-      mCachedSize = aSize;
-      mCachedFormat = aFormat;
-    }
+  RefPtr<gfx::DataSourceSurface> mCachedTempSurface;
 
-    MOZ_ASSERT(mCachedTempSurface->Stride() == mCachedTempSurface->Width() * 4);
-    return mCachedTempSurface;
-  }
-
-  void DiscardTempSurface()
-  {
-    mCachedTempSurface = nullptr;
-  }
+  gfx::DataSourceSurface* GetTempSurface(const gfx::IntSize& aSize,
+                                         const gfx::SurfaceFormat aFormat);
 };
 
-}
-}
+} // namespace layers
+} // namespace mozilla
 
 #endif

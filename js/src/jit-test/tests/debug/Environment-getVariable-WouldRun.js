@@ -3,12 +3,12 @@
 
 load(libdir + "asserts.js");
 
-var g = newGlobal('new-compartment');
+var g = newGlobal();
 var dbg = Debugger(g);
 var hits = 0;
 dbg.onDebuggerStatement = function (frame) {
     assertThrowsInstanceOf(function () {
-        frame.environment.getVariable("x");
+        frame.environment.parent.parent.getVariable("x");
     }, Error);
     hits++;
 };
